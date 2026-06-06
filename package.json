@@ -1,0 +1,44 @@
+{
+  "name": "trustbridge-action",
+  "version": "1.0.0",
+  "description": "GitHub Action to verify Stellar account trustlines and XLM reserve before issue assignment workflows",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src __tests__ --ext .ts",
+    "prepare": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Stellar-TrustBridge/trustbridge-action.git"
+  },
+  "keywords": [
+    "github-action",
+    "stellar",
+    "trustline",
+    "horizon",
+    "usdc"
+  ],
+  "author": "Stellar-TrustBridge",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.1",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.2",
+    "@types/node-fetch": "^2.6.12",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.17.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
+  }
+}

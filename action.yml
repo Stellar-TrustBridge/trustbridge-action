@@ -1,0 +1,50 @@
+name: 'TrustBridge Action'
+description: >-
+  Verify that a Stellar account is funded, holds a trustline for a specified
+  asset (default USDC), and meets the minimum XLM reserve before continuing
+  GitHub issue workflows.
+author: 'Stellar-TrustBridge'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  horizon_url:
+    description: 'Stellar Horizon API base URL'
+    required: false
+    default: 'https://horizon.stellar.org'
+  asset_code:
+    description: 'Asset code to check trustline for'
+    required: false
+    default: 'USDC'
+  asset_issuer:
+    description: 'Asset issuer Stellar address (G-address)'
+    required: false
+    default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+  min_xlm_reserve:
+    description: 'Minimum native XLM balance required (string, e.g. 1.5)'
+    required: false
+    default: '1.5'
+  stellar_address_input:
+    description: 'Stellar account address (G-address) to validate'
+    required: true
+  fail_on_missing:
+    description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
+    required: false
+    default: 'true'
+  github_token:
+    description: 'GitHub token used to post issue comments'
+    required: true
+
+outputs:
+  trustline_exists:
+    description: 'Whether the account has a trustline for the configured asset'
+  xlm_balance:
+    description: 'Current native XLM balance as reported by Horizon'
+  account_funded:
+    description: 'Whether the account exists and is activated on the Stellar network'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
