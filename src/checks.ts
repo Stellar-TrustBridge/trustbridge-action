@@ -46,8 +46,9 @@ export function validateStellarAddress(address: string): void {
 }
 
 export function parseMinXlmReserve(value: string): number {
-  const parsed = Number(value);
-  if (Number.isNaN(parsed) || parsed < 0) {
+  const normalized = value.trim();
+  const parsed = Number(normalized);
+  if (!normalized || !Number.isFinite(parsed) || parsed < 0) {
     throw new Error(`min_xlm_reserve must be a non-negative number. Received: "${value}"`);
   }
   return parsed;

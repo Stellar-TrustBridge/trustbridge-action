@@ -79,8 +79,20 @@ describe('parseMinXlmReserve', () => {
     expect(parseMinXlmReserve('1.5')).toBe(1.5);
   });
 
+  it('trims valid numeric strings', () => {
+    expect(parseMinXlmReserve(' 2.25 ')).toBe(2.25);
+  });
+
   it('throws for non-numeric values', () => {
     expect(() => parseMinXlmReserve('abc')).toThrow(/min_xlm_reserve/i);
+  });
+
+  it('throws for blank values', () => {
+    expect(() => parseMinXlmReserve('   ')).toThrow(/min_xlm_reserve/i);
+  });
+
+  it('throws for non-finite values', () => {
+    expect(() => parseMinXlmReserve('Infinity')).toThrow(/min_xlm_reserve/i);
   });
 
   it('throws for negative values', () => {
