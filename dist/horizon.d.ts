@@ -37,6 +37,7 @@ export interface FetchAccountOptions {
     timeoutMs?: number;
     maxRetries?: number;
 }
+export declare function normalizeHorizonUrl(baseUrl: string): string;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
 export declare function getNativeBalance(account: HorizonAccount): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;

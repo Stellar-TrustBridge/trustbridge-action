@@ -33910,8 +33910,9 @@ function validateStellarAddress(address) {
     }
 }
 function parseMinXlmReserve(value) {
-    const parsed = Number(value);
-    if (Number.isNaN(parsed) || parsed < 0) {
+    const normalized = value.trim();
+    const parsed = Number(normalized);
+    if (!normalized || !Number.isFinite(parsed) || parsed < 0) {
         throw new Error(`min_xlm_reserve must be a non-negative number. Received: "${value}"`);
     }
     return parsed;
@@ -34078,16 +34079,22 @@ const checks_1 = __nccwpck_require__(2122);
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
-function buildStellarLabLink(stellarAddress) {
-    const params = new URLSearchParams({
-        network: 'public',
-    });
-    return `https://laboratory.stellar.org/#account-viewer?${params.toString()}&account=${stellarAddress}`;
+function inferStellarLabNetwork(horizonUrl) {
+    return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
 }
-function buildTxBuilderLink() {
-    return 'https://laboratory.stellar.org/#txbuilder?network=public';
+function buildStellarLabLink(stellarAddress, network) {
+    const params = new URLSearchParams({
+        network,
+        account: stellarAddress,
+    });
+    return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
+}
+function buildTxBuilderLink(network) {
+    const params = new URLSearchParams({ network });
+    return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
 }
 function formatCommentBody(result, config) {
+    const stellarLabNetwork = inferStellarLabNetwork(config.horizonUrl);
     const lines = [
         '## TrustBridge — Stellar Account Check',
         '',
@@ -34101,7 +34108,7 @@ function formatCommentBody(result, config) {
     for (const check of result.checks) {
         lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
     }
-    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM + checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress)})`, `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink()})`, `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM + checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink(stellarLabNetwork)})`, `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
     if (result.remediation) {
         lines.push('', '### Remediation', '', result.remediation);
     }
@@ -34169,6 +34176,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.HorizonError = void 0;
+exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.fetchAccount = fetchAccount;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
@@ -34184,7 +34192,7 @@ exports.HorizonError = HorizonError;
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 function normalizeHorizonUrl(baseUrl) {
-    return baseUrl.replace(/\/+$/, '');
+    return baseUrl.trim().replace(/\/+$/, '');
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
@@ -34211,7 +34219,11 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     const fetch = (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const url = `${normalizeHorizonUrl(horizonUrl)}/accounts/${stellarAddress}`;
+    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+    if (!normalizedHorizonUrl) {
+        throw new HorizonError('horizon_url is required.', 0, false);
+    }
+    const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
     let attempt = 0;
     let lastError;
     while (attempt <= maxRetries) {
@@ -34331,19 +34343,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const checks_1 = __nccwpck_require__(2122);
 const horizon_1 = __nccwpck_require__(9164);
 const comment_1 = __nccwpck_require__(2246);
-function parseBooleanInput(value, defaultValue) {
-    if (value === undefined || value === '') {
-        return defaultValue;
-    }
-    const normalized = value.trim().toLowerCase();
-    if (['true', '1', 'yes'].includes(normalized)) {
-        return true;
-    }
-    if (['false', '0', 'no'].includes(normalized)) {
-        return false;
-    }
-    return defaultValue;
-}
+const inputs_1 = __nccwpck_require__(8422);
 async function run() {
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
@@ -34351,7 +34351,7 @@ async function run() {
         'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
     const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
     const stellarAddress = core.getInput('stellar_address_input').trim();
-    const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
+    const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
     const githubToken = core.getInput('github_token', { required: true });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
@@ -34414,6 +34414,30 @@ async function run() {
 run().catch((error) => {
     core.setFailed(error instanceof Error ? error.message : String(error));
 });
+
+
+/***/ }),
+
+/***/ 8422:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseBooleanInput = parseBooleanInput;
+function parseBooleanInput(value, defaultValue) {
+    if (value === undefined || value === '') {
+        return defaultValue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes'].includes(normalized)) {
+        return true;
+    }
+    if (['false', '0', 'no'].includes(normalized)) {
+        return false;
+    }
+    return defaultValue;
+}
 
 
 /***/ }),
