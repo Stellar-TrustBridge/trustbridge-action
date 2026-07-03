@@ -52,8 +52,8 @@ export interface FetchAccountOptions {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
 
-function normalizeHorizonUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '');
+export function normalizeHorizonUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '');
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -88,7 +88,11 @@ export async function fetchAccount(
   const fetch = (await import('node-fetch')).default;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const url = `${normalizeHorizonUrl(horizonUrl)}/accounts/${stellarAddress}`;
+  const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+  if (!normalizedHorizonUrl) {
+    throw new HorizonError('horizon_url is required.', 0, false);
+  }
+  const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
 
   let attempt = 0;
   let lastError: Error | undefined;
