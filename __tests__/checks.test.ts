@@ -1,5 +1,6 @@
 import {
   isValidStellarAddress,
+  normalizeStellarAddress,
   parseMinXlmReserve,
   runAccountChecks,
   unfundedAccountResult,
@@ -61,6 +62,12 @@ describe('isValidStellarAddress', () => {
 
   it('rejects invalid base32 characters', () => {
     expect(isValidStellarAddress('G' + '0'.repeat(55))).toBe(false);
+  });
+});
+
+describe('normalizeStellarAddress', () => {
+  it('trims surrounding whitespace', () => {
+    expect(normalizeStellarAddress(`  ${TEST_ADDRESS}  `)).toBe(TEST_ADDRESS);
   });
 });
 

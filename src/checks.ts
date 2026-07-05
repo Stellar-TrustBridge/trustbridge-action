@@ -30,15 +30,19 @@ export interface ValidationResult {
 
 const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
 
+export function normalizeStellarAddress(address: string): string {
+  return address.trim();
+}
+
 export function isValidStellarAddress(address: string): boolean {
-  return STELLAR_ADDRESS_REGEX.test(address);
+  return STELLAR_ADDRESS_REGEX.test(normalizeStellarAddress(address));
 }
 
 export function validateStellarAddress(address: string): void {
   if (!address || !address.trim()) {
     throw new Error('stellar_address_input is required.');
   }
-  if (!isValidStellarAddress(address.trim())) {
+  if (!isValidStellarAddress(address)) {
     throw new Error(
       `Invalid Stellar address "${address}". Expected a 56-character public key starting with "G".`,
     );
