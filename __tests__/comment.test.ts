@@ -1,4 +1,4 @@
-import { formatCommentBody } from '../src/comment';
+import { TRUSTBRIDGE_FOOTER, formatCommentBody } from '../src/comment';
 import { ValidationResult } from '../src/checks';
 
 const validationResult: ValidationResult = {
@@ -22,6 +22,12 @@ const baseConfig = {
   assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
   minXlmReserve: 1.5,
 };
+
+describe('TRUSTBRIDGE_FOOTER', () => {
+  it('points back to the action repository', () => {
+    expect(TRUSTBRIDGE_FOOTER).toContain('trustbridge-action');
+  });
+});
 
 describe('formatCommentBody', () => {
   it('uses public Stellar Laboratory links for public Horizon', () => {

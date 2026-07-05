@@ -13,6 +13,8 @@ export interface CommentConfig extends CheckConfig {
   horizonUrl: string;
 }
 
+export const TRUSTBRIDGE_FOOTER = TRUSTBRIDGE_FOOTER;
+
 function statusIcon(passed: boolean): string {
   return passed ? '✅' : '❌';
 }
