@@ -1,4 +1,5 @@
-import { HorizonError, isCreditBalance, normalizeHorizonUrl } from '../src/horizon';
+import { HorizonError, isCreditBalance,
+  isRetryableStatus, normalizeHorizonUrl } from '../src/horizon';
 import { fetchAccount } from '../src/horizon';
 
 describe('normalizeHorizonUrl', () => {
@@ -10,6 +11,14 @@ describe('normalizeHorizonUrl', () => {
 
   it('returns an empty string for blank values', () => {
     expect(normalizeHorizonUrl('   ')).toBe('');
+  });
+});
+
+describe('isRetryableStatus', () => {
+  it('flags transient Horizon statuses', () => {
+    expect(isRetryableStatus(429)).toBe(true);
+    expect(isRetryableStatus(503)).toBe(true);
+    expect(isRetryableStatus(400)).toBe(false);
   });
 });
 

@@ -56,7 +56,7 @@ export function normalizeHorizonUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '');
 }
 
-function isRetryableStatus(status: number): boolean {
+export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 503 || status === 502 || status === 504;
 }
 
