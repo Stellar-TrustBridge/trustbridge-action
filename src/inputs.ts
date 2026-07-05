@@ -12,3 +12,7 @@ export function parseBooleanInput(value: string, defaultValue: boolean): boolean
   }
   return defaultValue;
 }
+
+export function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

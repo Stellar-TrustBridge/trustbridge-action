@@ -10,7 +10,7 @@ import {
 } from './checks';
 import { fetchAccount, HorizonError } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
-import { parseBooleanInput } from './inputs';
+import { getErrorMessage, parseBooleanInput } from './inputs';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -46,7 +46,7 @@ async function run(): Promise<void> {
       core.error(error.message);
       result = horizonFailureResult(error.message, checkConfig);
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       core.error(message);
       result = horizonFailureResult(message, checkConfig);
     }
@@ -65,8 +65,7 @@ async function run(): Promise<void> {
   try {
     await postIssueComment(githubToken, commentBody);
   } catch (commentError) {
-    const message =
-      commentError instanceof Error ? commentError.message : String(commentError);
+    const message = getErrorMessage(commentError);
     core.warning(`Failed to post issue comment: ${message}`);
   }
 
@@ -87,5 +86,5 @@ async function run(): Promise<void> {
 }
 
 run().catch((error) => {
-  core.setFailed(error instanceof Error ? error.message : String(error));
+  core.setFailed(getErrorMessage(error));
 });

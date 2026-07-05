@@ -1,4 +1,4 @@
-import { parseBooleanInput } from '../src/inputs';
+import { getErrorMessage, parseBooleanInput } from '../src/inputs';
 
 describe('parseBooleanInput', () => {
   it.each(['true', 'TRUE', '1', 'yes', ' Yes '])(
@@ -21,5 +21,12 @@ describe('parseBooleanInput', () => {
 
   it('falls back to the default for unknown values', () => {
     expect(parseBooleanInput('sometimes', false)).toBe(false);
+  });
+});
+
+describe('getErrorMessage', () => {
+  it('reads Error messages and stringifies unknown values', () => {
+    expect(getErrorMessage(new Error('boom'))).toBe('boom');
+    expect(getErrorMessage('plain')).toBe('plain');
   });
 });
