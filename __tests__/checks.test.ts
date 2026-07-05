@@ -6,6 +6,7 @@ import {
   unfundedAccountResult,
   validateStellarAddress,
   getFailedCheckLabels,
+  formatXlmDeficit,
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
@@ -105,6 +106,13 @@ describe('parseMinXlmReserve', () => {
 
   it('throws for negative values', () => {
     expect(() => parseMinXlmReserve('-1')).toThrow(/min_xlm_reserve/i);
+  });
+});
+
+describe('formatXlmDeficit', () => {
+  it('formats missing reserve without going negative', () => {
+    expect(formatXlmDeficit(1.5, 1)).toBe('0.5000000');
+    expect(formatXlmDeficit(1.5, 2)).toBe('0.0000000');
   });
 });
 

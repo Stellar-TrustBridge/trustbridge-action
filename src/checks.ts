@@ -58,6 +58,10 @@ export function parseMinXlmReserve(value: string): number {
   return parsed;
 }
 
+export function formatXlmDeficit(required: number, actual: number): string {
+  return Math.max(0, required - actual).toFixed(7);
+}
+
 export function runAccountChecks(
   account: HorizonAccount,
   config: CheckConfig,
@@ -104,7 +108,7 @@ export function runAccountChecks(
     }
     if (!xlmReserveMet) {
       steps.push(
-        `Send at least **${(config.minXlmReserve - xlmNumeric).toFixed(7)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`,
+        `Send at least **${formatXlmDeficit(config.minXlmReserve, xlmNumeric)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`,
       );
     }
     remediation = steps.join('\n\n');
