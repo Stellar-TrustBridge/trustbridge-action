@@ -5,6 +5,7 @@ import {
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
   ValidationResult,
+  estimateTrustlineSetupCost,
 } from './checks';
 
 export interface CommentConfig extends CheckConfig {
@@ -64,7 +65,7 @@ export function formatCommentBody(
     '',
     `- Stellar minimum account balance: **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`,
     `- Base reserve per trustline (ledger entry): **${STELLAR_BASE_RESERVE_XLM} XLM**`,
-    `- Typical minimum to fund account + one trustline: **~${STELLAR_MIN_ACCOUNT_BALANCE_XLM + STELLAR_BASE_RESERVE_XLM} XLM**`,
+    `- Typical minimum to fund account + one trustline: **~${estimateTrustlineSetupCost()} XLM**`,
     '',
     '### Add a trustline',
     '',

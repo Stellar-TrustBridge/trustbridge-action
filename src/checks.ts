@@ -58,6 +58,10 @@ export function parseMinXlmReserve(value: string): number {
   return parsed;
 }
 
+export function estimateTrustlineSetupCost(): number {
+  return STELLAR_MIN_ACCOUNT_BALANCE_XLM + STELLAR_BASE_RESERVE_XLM;
+}
+
 export function formatXlmDeficit(required: number, actual: number): string {
   return Math.max(0, required - actual).toFixed(7);
 }
@@ -157,7 +161,7 @@ export function unfundedAccountResult(
     remediation: [
       `Activate \`${stellarAddress}\` by sending at least **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
       `Then add a **${config.assetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
-      `Estimated setup cost: ~**${STELLAR_MIN_ACCOUNT_BALANCE_XLM + STELLAR_BASE_RESERVE_XLM} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
+      `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
     ].join('\n\n'),
   };
 }

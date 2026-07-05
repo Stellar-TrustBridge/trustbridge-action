@@ -7,6 +7,7 @@ import {
   validateStellarAddress,
   getFailedCheckLabels,
   formatXlmDeficit,
+  estimateTrustlineSetupCost,
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
@@ -106,6 +107,12 @@ describe('parseMinXlmReserve', () => {
 
   it('throws for negative values', () => {
     expect(() => parseMinXlmReserve('-1')).toThrow(/min_xlm_reserve/i);
+  });
+});
+
+describe('estimateTrustlineSetupCost', () => {
+  it('adds account and trustline reserves', () => {
+    expect(estimateTrustlineSetupCost()).toBe(1.5);
   });
 });
 
