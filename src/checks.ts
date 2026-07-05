@@ -158,6 +158,10 @@ export function unfundedAccountResult(
   };
 }
 
+export function getFailedCheckLabels(result: ValidationResult): string[] {
+  return result.checks.filter((check) => !check.passed).map((check) => check.label);
+}
+
 export function horizonFailureResult(message: string, config: CheckConfig): ValidationResult {
   const checks: CheckResultItem[] = [
     {

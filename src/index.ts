@@ -6,6 +6,7 @@ import {
   runAccountChecks,
   unfundedAccountResult,
   validateStellarAddress,
+  getFailedCheckLabels,
 } from './checks';
 import { fetchAccount, HorizonError } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
@@ -74,10 +75,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const summary = result.checks
-    .filter((c) => !c.passed)
-    .map((c) => c.label)
-    .join(', ');
+  const summary = getFailedCheckLabels(result).join(', ');
 
   const failureMessage = `TrustBridge checks failed: ${summary}`;
 

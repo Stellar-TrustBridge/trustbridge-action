@@ -5,6 +5,7 @@ import {
   runAccountChecks,
   unfundedAccountResult,
   validateStellarAddress,
+  getFailedCheckLabels,
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
@@ -216,6 +217,13 @@ describe('runAccountChecks', () => {
 
     const result = runAccountChecks(account, defaultConfig);
     expect(result.trustlineExists).toBe(false);
+  });
+});
+
+describe('getFailedCheckLabels', () => {
+  it('returns labels for failed checks only', () => {
+    const result = runAccountChecks(makeAccount({ balances: [] }), defaultConfig);
+    expect(getFailedCheckLabels(result)).toEqual(['USDC trustline', 'XLM reserve']);
   });
 });
 
