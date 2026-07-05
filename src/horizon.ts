@@ -174,6 +174,10 @@ export async function fetchAccount(
   throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
 
+export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
+  return balance.asset_type !== 'native';
+}
+
 export function getNativeBalance(account: HorizonAccount): string {
   const native = account.balances.find((b) => b.asset_type === 'native');
   return native?.balance ?? '0';
@@ -186,7 +190,7 @@ export function hasTrustline(
 ): boolean {
   return account.balances.some(
     (balance) =>
-      balance.asset_type !== 'native' &&
+      isCreditBalance(balance) &&
       balance.asset_code === assetCode &&
       balance.asset_issuer === assetIssuer,
   );

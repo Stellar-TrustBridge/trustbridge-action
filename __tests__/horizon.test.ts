@@ -1,4 +1,4 @@
-import { HorizonError, normalizeHorizonUrl } from '../src/horizon';
+import { HorizonError, isCreditBalance, normalizeHorizonUrl } from '../src/horizon';
 import { fetchAccount } from '../src/horizon';
 
 describe('normalizeHorizonUrl', () => {
@@ -10,6 +10,13 @@ describe('normalizeHorizonUrl', () => {
 
   it('returns an empty string for blank values', () => {
     expect(normalizeHorizonUrl('   ')).toBe('');
+  });
+});
+
+describe('isCreditBalance', () => {
+  it('detects credit balances', () => {
+    expect(isCreditBalance({ balance: '1', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: 'GISSUER', buying_liabilities: '0', selling_liabilities: '0' })).toBe(true);
+    expect(isCreditBalance({ balance: '1', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' })).toBe(false);
   });
 });
 
