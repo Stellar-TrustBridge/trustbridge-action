@@ -22,9 +22,13 @@ export interface ValidationResult {
     checks: CheckResultItem[];
     remediation?: string;
 }
+export declare function normalizeStellarAddress(address: string): string;
 export declare function isValidStellarAddress(address: string): boolean;
 export declare function validateStellarAddress(address: string): void;
 export declare function parseMinXlmReserve(value: string): number;
+export declare function estimateTrustlineSetupCost(): number;
+export declare function formatXlmDeficit(required: number, actual: number): string;
 export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): ValidationResult;
 export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig): ValidationResult;
+export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;

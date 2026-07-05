@@ -13,7 +13,7 @@ export interface CommentConfig extends CheckConfig {
   horizonUrl: string;
 }
 
-export const TRUSTBRIDGE_FOOTER = TRUSTBRIDGE_FOOTER;
+export const TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 
 function statusIcon(passed: boolean): string {
   return passed ? '✅' : '❌';

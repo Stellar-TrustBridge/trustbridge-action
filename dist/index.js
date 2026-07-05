@@ -33886,11 +33886,15 @@ function wrappy (fn, cb) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
+exports.normalizeStellarAddress = normalizeStellarAddress;
 exports.isValidStellarAddress = isValidStellarAddress;
 exports.validateStellarAddress = validateStellarAddress;
 exports.parseMinXlmReserve = parseMinXlmReserve;
+exports.estimateTrustlineSetupCost = estimateTrustlineSetupCost;
+exports.formatXlmDeficit = formatXlmDeficit;
 exports.runAccountChecks = runAccountChecks;
 exports.unfundedAccountResult = unfundedAccountResult;
+exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
 const horizon_1 = __nccwpck_require__(9164);
 /** Stellar public network base reserve per ledger entry (XLM). */
@@ -33898,14 +33902,17 @@ exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
 const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
+function normalizeStellarAddress(address) {
+    return address.trim();
+}
 function isValidStellarAddress(address) {
-    return STELLAR_ADDRESS_REGEX.test(address);
+    return STELLAR_ADDRESS_REGEX.test(normalizeStellarAddress(address));
 }
 function validateStellarAddress(address) {
     if (!address || !address.trim()) {
         throw new Error('stellar_address_input is required.');
     }
-    if (!isValidStellarAddress(address.trim())) {
+    if (!isValidStellarAddress(address)) {
         throw new Error(`Invalid Stellar address "${address}". Expected a 56-character public key starting with "G".`);
     }
 }
@@ -33916,6 +33923,12 @@ function parseMinXlmReserve(value) {
         throw new Error(`min_xlm_reserve must be a non-negative number. Received: "${value}"`);
     }
     return parsed;
+}
+function estimateTrustlineSetupCost() {
+    return exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM + exports.STELLAR_BASE_RESERVE_XLM;
+}
+function formatXlmDeficit(required, actual) {
+    return Math.max(0, required - actual).toFixed(7);
 }
 function runAccountChecks(account, config) {
     const xlmBalance = (0, horizon_1.getNativeBalance)(account);
@@ -33954,7 +33967,7 @@ function runAccountChecks(account, config) {
             steps.push(`Add a **${config.assetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
         }
         if (!xlmReserveMet) {
-            steps.push(`Send at least **${(config.minXlmReserve - xlmNumeric).toFixed(7)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
+            steps.push(`Send at least **${formatXlmDeficit(config.minXlmReserve, xlmNumeric)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
         }
         remediation = steps.join('\n\n');
     }
@@ -33996,9 +34009,12 @@ function unfundedAccountResult(stellarAddress, config) {
         remediation: [
             `Activate \`${stellarAddress}\` by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
             `Then add a **${config.assetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
-            `Estimated setup cost: ~**${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM + exports.STELLAR_BASE_RESERVE_XLM} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
+            `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
         ].join('\n\n'),
     };
+}
+function getFailedCheckLabels(result) {
+    return result.checks.filter((check) => !check.passed).map((check) => check.label);
 }
 function horizonFailureResult(message, config) {
     const checks = [
@@ -34071,11 +34087,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TRUSTBRIDGE_FOOTER = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const checks_1 = __nccwpck_require__(2122);
+exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
@@ -34108,7 +34126,7 @@ function formatCommentBody(result, config) {
     for (const check of result.checks) {
         lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
     }
-    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM + checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink(stellarLabNetwork)})`, `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink(stellarLabNetwork)})`, `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
     if (result.remediation) {
         lines.push('', '### Remediation', '', result.remediation);
     }
@@ -34177,7 +34195,10 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.HorizonError = void 0;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
+exports.isRetryableStatus = isRetryableStatus;
+exports.parseRetryAfterMs = parseRetryAfterMs;
 exports.fetchAccount = fetchAccount;
+exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
 class HorizonError extends Error {
@@ -34287,12 +34308,15 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     }
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
+function isCreditBalance(balance) {
+    return balance.asset_type !== 'native';
+}
 function getNativeBalance(account) {
     const native = account.balances.find((b) => b.asset_type === 'native');
     return native?.balance ?? '0';
 }
 function hasTrustline(account, assetCode, assetIssuer) {
-    return account.balances.some((balance) => balance.asset_type !== 'native' &&
+    return account.balances.some((balance) => isCreditBalance(balance) &&
         balance.asset_code === assetCode &&
         balance.asset_issuer === assetIssuer);
 }
@@ -34375,7 +34399,7 @@ async function run() {
             result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
         }
         else {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = (0, inputs_1.getErrorMessage)(error);
             core.error(message);
             result = (0, checks_1.horizonFailureResult)(message, checkConfig);
         }
@@ -34392,17 +34416,14 @@ async function run() {
         await (0, comment_1.postIssueComment)(githubToken, commentBody);
     }
     catch (commentError) {
-        const message = commentError instanceof Error ? commentError.message : String(commentError);
+        const message = (0, inputs_1.getErrorMessage)(commentError);
         core.warning(`Failed to post issue comment: ${message}`);
     }
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
         return;
     }
-    const summary = result.checks
-        .filter((c) => !c.passed)
-        .map((c) => c.label)
-        .join(', ');
+    const summary = (0, checks_1.getFailedCheckLabels)(result).join(', ');
     const failureMessage = `TrustBridge checks failed: ${summary}`;
     if (failOnMissing) {
         core.setFailed(failureMessage);
@@ -34412,7 +34433,7 @@ async function run() {
     }
 }
 run().catch((error) => {
-    core.setFailed(error instanceof Error ? error.message : String(error));
+    core.setFailed((0, inputs_1.getErrorMessage)(error));
 });
 
 
@@ -34425,6 +34446,7 @@ run().catch((error) => {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseBooleanInput = parseBooleanInput;
+exports.getErrorMessage = getErrorMessage;
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
         return defaultValue;
@@ -34437,6 +34459,9 @@ function parseBooleanInput(value, defaultValue) {
         return false;
     }
     return defaultValue;
+}
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }
 
 

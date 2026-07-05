@@ -38,6 +38,9 @@ export interface FetchAccountOptions {
     maxRetries?: number;
 }
 export declare function normalizeHorizonUrl(baseUrl: string): string;
+export declare function isRetryableStatus(status: number): boolean;
+export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
+export declare function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit;
 export declare function getNativeBalance(account: HorizonAccount): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;
