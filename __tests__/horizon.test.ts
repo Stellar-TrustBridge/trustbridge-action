@@ -1,5 +1,6 @@
 import { HorizonError, isCreditBalance,
-  isRetryableStatus, normalizeHorizonUrl } from '../src/horizon';
+  isRetryableStatus,
+  parseRetryAfterMs, normalizeHorizonUrl } from '../src/horizon';
 import { fetchAccount } from '../src/horizon';
 
 describe('normalizeHorizonUrl', () => {
@@ -11,6 +12,13 @@ describe('normalizeHorizonUrl', () => {
 
   it('returns an empty string for blank values', () => {
     expect(normalizeHorizonUrl('   ')).toBe('');
+  });
+});
+
+describe('parseRetryAfterMs', () => {
+  it('parses seconds-based retry headers', () => {
+    const response = { headers: { get: () => '2' } };
+    expect(parseRetryAfterMs(response as any)).toBe(2000);
   });
 });
 

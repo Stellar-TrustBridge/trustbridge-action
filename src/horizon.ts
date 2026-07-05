@@ -60,7 +60,7 @@ export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 503 || status === 502 || status === 504;
 }
 
-function parseRetryAfterMs(response: import('node-fetch').Response): number | null {
+export function parseRetryAfterMs(response: import('node-fetch').Response): number | null {
   const header = response.headers.get('retry-after');
   if (!header) {
     return null;
