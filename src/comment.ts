@@ -8,6 +8,7 @@ import {
   estimateTrustlineSetupCost,
 } from './checks';
 import { buildAccountViewerLink, buildChangeTrustLink, buildLobstrLink, inferStellarNetwork } from './links';
+import { inlineCode } from './markdown';
 
 export interface CommentConfig extends CheckConfig {
   stellarAddress: string;
@@ -28,9 +29,9 @@ export function formatCommentBody(
   const lines: string[] = [
     '## TrustBridge — Stellar Account Check',
     '',
-    `Checked account: \`${config.stellarAddress}\``,
-    `Horizon: \`${config.horizonUrl}\``,
-    `Asset: **${config.assetCode}** · Issuer: \`${config.assetIssuer}\``,
+    `Checked account: ${inlineCode(config.stellarAddress)}`,
+    `Horizon: ${inlineCode(config.horizonUrl)}`,
+    `Asset: **${config.assetCode}** · Issuer: ${inlineCode(config.assetIssuer)}`,
     '',
     '### Results',
     '',
