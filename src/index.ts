@@ -6,11 +6,11 @@ import {
   runAccountChecks,
   unfundedAccountResult,
   validateStellarAddress,
-  getFailedCheckLabels,
 } from './checks';
 import { fetchAccount, HorizonError } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { getErrorMessage, parseBooleanInput } from './inputs';
+import { formatFailureSummary } from './summary';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -74,7 +74,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const summary = getFailedCheckLabels(result).join(', ');
+  const summary = formatFailureSummary(result);
 
   const failureMessage = `TrustBridge checks failed: ${summary}`;
 
