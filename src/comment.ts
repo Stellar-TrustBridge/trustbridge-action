@@ -7,6 +7,7 @@ import {
   ValidationResult,
   estimateTrustlineSetupCost,
 } from './checks';
+import { buildAccountViewerLink, buildChangeTrustLink, buildLobstrLink, inferStellarNetwork } from './links';
 
 export interface CommentConfig extends CheckConfig {
   stellarAddress: string;
@@ -19,28 +20,11 @@ function statusIcon(passed: boolean): string {
   return passed ? '✅' : '❌';
 }
 
-function inferStellarLabNetwork(horizonUrl: string): 'public' | 'testnet' {
-  return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
-}
-
-function buildStellarLabLink(stellarAddress: string, network: 'public' | 'testnet'): string {
-  const params = new URLSearchParams({
-    network,
-    account: stellarAddress,
-  });
-  return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
-}
-
-function buildTxBuilderLink(network: 'public' | 'testnet'): string {
-  const params = new URLSearchParams({ network });
-  return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
-}
-
 export function formatCommentBody(
   result: ValidationResult,
   config: CommentConfig,
 ): string {
-  const stellarLabNetwork = inferStellarLabNetwork(config.horizonUrl);
+  const stellarLabNetwork = inferStellarNetwork(config.horizonUrl);
   const lines: string[] = [
     '## TrustBridge — Stellar Account Check',
     '',
@@ -71,9 +55,9 @@ export function formatCommentBody(
     '',
     '### Add a trustline',
     '',
-    `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress, stellarLabNetwork)})`,
-    `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink(stellarLabNetwork)})`,
-    `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
+    `- [View account on Stellar Laboratory](${buildAccountViewerLink(config.stellarAddress, stellarLabNetwork)})`,
+    `- [Open Transaction Builder (Change Trust)](${buildChangeTrustLink(stellarLabNetwork)})`,
+    `- [LOBSTR wallet](${buildLobstrLink()}) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
   );
 
   if (result.remediation) {
