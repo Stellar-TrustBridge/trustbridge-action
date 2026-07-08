@@ -1,6 +1,7 @@
 import { HorizonError, isCreditBalance,
   isRetryableStatus,
-  parseRetryAfterMs, normalizeHorizonUrl } from '../src/horizon';
+  parseRetryAfterMs,
+  parseHorizonBalance, normalizeHorizonUrl } from '../src/horizon';
 import { fetchAccount } from '../src/horizon';
 
 describe('normalizeHorizonUrl', () => {
@@ -44,5 +45,12 @@ describe('fetchAccount', () => {
       statusCode: 0,
       retryable: false,
     } satisfies Partial<HorizonError>);
+  });
+});
+
+describe('parseHorizonBalance', () => {
+  it('parses numeric balances and falls back to zero', () => {
+    expect(parseHorizonBalance('1.5000000')).toBe(1.5);
+    expect(parseHorizonBalance('bad')).toBe(0);
   });
 });

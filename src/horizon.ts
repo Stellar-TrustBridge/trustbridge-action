@@ -195,3 +195,8 @@ export function hasTrustline(
       balance.asset_issuer === assetIssuer,
   );
 }
+
+export function parseHorizonBalance(balance: string): number {
+  const parsed = Number(balance);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
