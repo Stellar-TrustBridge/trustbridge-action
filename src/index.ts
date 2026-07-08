@@ -12,6 +12,7 @@ import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
 import { getErrorMessage, parseBooleanInput } from './inputs';
 import { formatFailureSummary } from './summary';
+import { setValidationOutputs } from './outputs';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -54,9 +55,7 @@ async function run(): Promise<void> {
     }
   }
 
-  core.setOutput('trustline_exists', String(result.trustlineExists));
-  core.setOutput('xlm_balance', result.xlmBalance);
-  core.setOutput('account_funded', String(result.accountFunded));
+  setValidationOutputs(result);
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
