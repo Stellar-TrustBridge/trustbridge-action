@@ -44,3 +44,4 @@ export declare function fetchAccount(horizonUrl: string, stellarAddress: string,
 export declare function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit;
 export declare function getNativeBalance(account: HorizonAccount): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;
+export declare function parseHorizonBalance(balance: string): number;

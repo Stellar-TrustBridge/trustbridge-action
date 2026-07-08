@@ -32,3 +32,10 @@ export declare function runAccountChecks(account: HorizonAccount, config: CheckC
 export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig): ValidationResult;
 export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;
+export interface ReserveRequirement {
+    required: number;
+    actual: number;
+    missing: string;
+    met: boolean;
+}
+export declare function buildReserveRequirement(required: number, actual: number): ReserveRequirement;

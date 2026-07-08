@@ -33879,6 +33879,37 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 5462:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.normalizeAssetCode = normalizeAssetCode;
+exports.assertValidAssetCode = assertValidAssetCode;
+exports.normalizeAssetConfig = normalizeAssetConfig;
+const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
+function normalizeAssetCode(assetCode) {
+    return assetCode.trim().toUpperCase();
+}
+function assertValidAssetCode(assetCode) {
+    const normalized = normalizeAssetCode(assetCode);
+    if (!ASSET_CODE_REGEX.test(normalized)) {
+        throw new Error(`asset_code must be 1-12 uppercase alphanumeric characters. Received: "${assetCode}"`);
+    }
+}
+function normalizeAssetConfig(input) {
+    const assetCode = normalizeAssetCode(input.assetCode);
+    assertValidAssetCode(assetCode);
+    return {
+        assetCode,
+        assetIssuer: input.assetIssuer.trim(),
+    };
+}
+
+
+/***/ }),
+
 /***/ 2122:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -33896,6 +33927,7 @@ exports.runAccountChecks = runAccountChecks;
 exports.unfundedAccountResult = unfundedAccountResult;
 exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
+exports.buildReserveRequirement = buildReserveRequirement;
 const horizon_1 = __nccwpck_require__(9164);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -33932,9 +33964,10 @@ function formatXlmDeficit(required, actual) {
 }
 function runAccountChecks(account, config) {
     const xlmBalance = (0, horizon_1.getNativeBalance)(account);
-    const xlmNumeric = Number(xlmBalance);
+    const xlmNumeric = (0, horizon_1.parseHorizonBalance)(xlmBalance);
     const trustlineExists = (0, horizon_1.hasTrustline)(account, config.assetCode, config.assetIssuer);
-    const xlmReserveMet = xlmNumeric >= config.minXlmReserve;
+    const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric);
+    const xlmReserveMet = reserveRequirement.met;
     const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
     const checks = [
         {
@@ -33967,7 +34000,7 @@ function runAccountChecks(account, config) {
             steps.push(`Add a **${config.assetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
         }
         if (!xlmReserveMet) {
-            steps.push(`Send at least **${formatXlmDeficit(config.minXlmReserve, xlmNumeric)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
+            steps.push(`Send at least **${reserveRequirement.missing} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
         }
         remediation = steps.join('\n\n');
     }
@@ -34044,6 +34077,14 @@ function horizonFailureResult(message, config) {
         remediation: 'Horizon could not be reached. Retry later or verify your `horizon_url` input and network connectivity.',
     };
 }
+function buildReserveRequirement(required, actual) {
+    return {
+        required,
+        actual,
+        missing: formatXlmDeficit(required, actual),
+        met: actual >= required,
+    };
+}
 
 
 /***/ }),
@@ -34093,32 +34134,20 @@ exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const checks_1 = __nccwpck_require__(2122);
+const links_1 = __nccwpck_require__(3346);
+const markdown_1 = __nccwpck_require__(3758);
 exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
-function inferStellarLabNetwork(horizonUrl) {
-    return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
-}
-function buildStellarLabLink(stellarAddress, network) {
-    const params = new URLSearchParams({
-        network,
-        account: stellarAddress,
-    });
-    return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
-}
-function buildTxBuilderLink(network) {
-    const params = new URLSearchParams({ network });
-    return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
-}
 function formatCommentBody(result, config) {
-    const stellarLabNetwork = inferStellarLabNetwork(config.horizonUrl);
+    const stellarLabNetwork = (0, links_1.inferStellarNetwork)(config.horizonUrl);
     const lines = [
         '## TrustBridge — Stellar Account Check',
         '',
-        `Checked account: \`${config.stellarAddress}\``,
-        `Horizon: \`${config.horizonUrl}\``,
-        `Asset: **${config.assetCode}** · Issuer: \`${config.assetIssuer}\``,
+        `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
+        `Horizon: ${(0, markdown_1.inlineCode)(config.horizonUrl)}`,
+        `Asset: **${config.assetCode}** · Issuer: ${(0, markdown_1.inlineCode)(config.assetIssuer)}`,
         '',
         '### Results',
         '',
@@ -34126,7 +34155,7 @@ function formatCommentBody(result, config) {
     for (const check of result.checks) {
         lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
     }
-    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${buildStellarLabLink(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${buildTxBuilderLink(stellarLabNetwork)})`, `- [LOBSTR wallet](https://lobstr.co/) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+    lines.push('', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [LOBSTR wallet](${(0, links_1.buildLobstrLink)()}) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
     if (result.remediation) {
         lines.push('', '### Remediation', '', result.remediation);
     }
@@ -34201,6 +34230,7 @@ exports.fetchAccount = fetchAccount;
 exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
+exports.parseHorizonBalance = parseHorizonBalance;
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
         super(message);
@@ -34320,6 +34350,10 @@ function hasTrustline(account, assetCode, assetIssuer) {
         balance.asset_code === assetCode &&
         balance.asset_issuer === assetIssuer);
 }
+function parseHorizonBalance(balance) {
+    const parsed = Number(balance);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
 
 
 /***/ }),
@@ -34367,7 +34401,10 @@ const core = __importStar(__nccwpck_require__(7484));
 const checks_1 = __nccwpck_require__(2122);
 const horizon_1 = __nccwpck_require__(9164);
 const comment_1 = __nccwpck_require__(2246);
+const assets_1 = __nccwpck_require__(5462);
 const inputs_1 = __nccwpck_require__(8422);
+const summary_1 = __nccwpck_require__(8855);
+const outputs_1 = __nccwpck_require__(7729);
 async function run() {
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
@@ -34379,9 +34416,9 @@ async function run() {
     const githubToken = core.getInput('github_token', { required: true });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
+    const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
     const checkConfig = {
-        assetCode,
-        assetIssuer,
+        ...normalizedAsset,
         minXlmReserve,
     };
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
@@ -34404,9 +34441,7 @@ async function run() {
             result = (0, checks_1.horizonFailureResult)(message, checkConfig);
         }
     }
-    core.setOutput('trustline_exists', String(result.trustlineExists));
-    core.setOutput('xlm_balance', result.xlmBalance);
-    core.setOutput('account_funded', String(result.accountFunded));
+    (0, outputs_1.setValidationOutputs)(result);
     const commentBody = (0, comment_1.formatCommentBody)(result, {
         ...checkConfig,
         stellarAddress,
@@ -34423,7 +34458,7 @@ async function run() {
         core.info('All TrustBridge checks passed.');
         return;
     }
-    const summary = (0, checks_1.getFailedCheckLabels)(result).join(', ');
+    const summary = (0, summary_1.formatFailureSummary)(result);
     const failureMessage = `TrustBridge checks failed: ${summary}`;
     if (failOnMissing) {
         core.setFailed(failureMessage);
@@ -34462,6 +34497,140 @@ function parseBooleanInput(value, defaultValue) {
 }
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
+}
+
+
+/***/ }),
+
+/***/ 3346:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.inferStellarNetwork = inferStellarNetwork;
+exports.buildAccountViewerLink = buildAccountViewerLink;
+exports.buildChangeTrustLink = buildChangeTrustLink;
+exports.buildLobstrLink = buildLobstrLink;
+function inferStellarNetwork(horizonUrl) {
+    return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
+}
+function buildAccountViewerLink(stellarAddress, network) {
+    const params = new URLSearchParams({ network, account: stellarAddress });
+    return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
+}
+function buildChangeTrustLink(network) {
+    const params = new URLSearchParams({ network });
+    return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
+}
+function buildLobstrLink() {
+    return 'https://lobstr.co/';
+}
+
+
+/***/ }),
+
+/***/ 3758:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.escapeMarkdownInline = escapeMarkdownInline;
+exports.inlineCode = inlineCode;
+function escapeMarkdownInline(value) {
+    return value.replace(/([`*_{}[\]()#+.!|>~-])/g, '\\$1');
+}
+function inlineCode(value) {
+    return `\`${value.replace(/`/g, '\\`')}\``;
+}
+
+
+/***/ }),
+
+/***/ 7729:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toActionOutputs = toActionOutputs;
+exports.setValidationOutputs = setValidationOutputs;
+const core = __importStar(__nccwpck_require__(7484));
+function toActionOutputs(result) {
+    return {
+        trustline_exists: String(result.trustlineExists),
+        xlm_balance: result.xlmBalance,
+        account_funded: String(result.accountFunded),
+    };
+}
+function setValidationOutputs(result) {
+    const outputs = toActionOutputs(result);
+    for (const [name, value] of Object.entries(outputs)) {
+        core.setOutput(name, value);
+    }
+}
+
+
+/***/ }),
+
+/***/ 8855:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.summarizeChecks = summarizeChecks;
+exports.formatFailureSummary = formatFailureSummary;
+function summarizeChecks(result) {
+    const failedLabels = result.checks
+        .filter((check) => !check.passed)
+        .map((check) => check.label);
+    return {
+        total: result.checks.length,
+        passed: result.checks.length - failedLabels.length,
+        failed: failedLabels.length,
+        failedLabels,
+    };
+}
+function formatFailureSummary(result) {
+    const summary = summarizeChecks(result);
+    return summary.failedLabels.length > 0
+        ? summary.failedLabels.join(', ')
+        : 'none';
 }
 
 
