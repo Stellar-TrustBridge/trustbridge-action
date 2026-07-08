@@ -1,4 +1,4 @@
-import { HorizonAccount, getNativeBalance, hasTrustline } from './horizon';
+import { HorizonAccount, getNativeBalance, hasTrustline, parseHorizonBalance } from './horizon';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -71,7 +71,7 @@ export function runAccountChecks(
   config: CheckConfig,
 ): ValidationResult {
   const xlmBalance = getNativeBalance(account);
-  const xlmNumeric = Number(xlmBalance);
+  const xlmNumeric = parseHorizonBalance(xlmBalance);
   const trustlineExists = hasTrustline(account, config.assetCode, config.assetIssuer);
   const xlmReserveMet = xlmNumeric >= config.minXlmReserve;
   const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
