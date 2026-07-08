@@ -8,6 +8,7 @@ import {
   getFailedCheckLabels,
   formatXlmDeficit,
   estimateTrustlineSetupCost,
+  buildReserveRequirement,
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
@@ -262,5 +263,16 @@ describe('Stellar reserve constants', () => {
   it('exports documented reserve values', () => {
     expect(STELLAR_BASE_RESERVE_XLM).toBe(0.5);
     expect(STELLAR_MIN_ACCOUNT_BALANCE_XLM).toBe(1);
+  });
+});
+
+describe('buildReserveRequirement', () => {
+  it('summarizes reserve state', () => {
+    expect(buildReserveRequirement(1.5, 1)).toEqual({
+      required: 1.5,
+      actual: 1,
+      missing: '0.5000000',
+      met: false,
+    });
   });
 });

@@ -200,3 +200,19 @@ export function horizonFailureResult(message: string, config: CheckConfig): Vali
       'Horizon could not be reached. Retry later or verify your `horizon_url` input and network connectivity.',
   };
 }
+
+export interface ReserveRequirement {
+  required: number;
+  actual: number;
+  missing: string;
+  met: boolean;
+}
+
+export function buildReserveRequirement(required: number, actual: number): ReserveRequirement {
+  return {
+    required,
+    actual,
+    missing: formatXlmDeficit(required, actual),
+    met: actual >= required,
+  };
+}
