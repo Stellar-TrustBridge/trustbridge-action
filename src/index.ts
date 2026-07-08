@@ -9,6 +9,7 @@ import {
 } from './checks';
 import { fetchAccount, HorizonError } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
+import { normalizeAssetConfig } from './assets';
 import { getErrorMessage, parseBooleanInput } from './inputs';
 import { formatFailureSummary } from './summary';
 
@@ -26,9 +27,10 @@ async function run(): Promise<void> {
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
 
+  const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
+
   const checkConfig: CheckConfig = {
-    assetCode,
-    assetIssuer,
+    ...normalizedAsset,
     minXlmReserve,
   };
 
