@@ -73,7 +73,8 @@ export function runAccountChecks(
   const xlmBalance = getNativeBalance(account);
   const xlmNumeric = parseHorizonBalance(xlmBalance);
   const trustlineExists = hasTrustline(account, config.assetCode, config.assetIssuer);
-  const xlmReserveMet = xlmNumeric >= config.minXlmReserve;
+  const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric);
+  const xlmReserveMet = reserveRequirement.met;
   const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
 
   const checks: CheckResultItem[] = [
@@ -112,7 +113,7 @@ export function runAccountChecks(
     }
     if (!xlmReserveMet) {
       steps.push(
-        `Send at least **${formatXlmDeficit(config.minXlmReserve, xlmNumeric)} XLM** to \`${account.account_id}\` to meet the reserve requirement.`,
+        `Send at least **${reserveRequirement.missing} XLM** to \`${account.account_id}\` to meet the reserve requirement.`,
       );
     }
     remediation = steps.join('\n\n');
