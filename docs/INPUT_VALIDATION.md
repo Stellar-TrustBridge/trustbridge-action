@@ -16,3 +16,9 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
 ## Boolean behavior
 
 `fail_on_missing` accepts common truthy and falsy strings. Unknown values fall back to the default so workflow typos do not silently invert the gate.
+
+`debug_mode` accepts the same boolean-friendly values and enables verbose action logging.
+
+## Timeout values
+
+`horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.
