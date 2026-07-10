@@ -77,7 +77,7 @@ export function formatCommentBody(
 export async function postIssueComment(
   token: string,
   body: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const context = github.context;
   const issueNumber = context.payload.issue?.number;
 
@@ -85,18 +85,20 @@ export async function postIssueComment(
     core.warning(
       'No issue context found — skipping comment. This action posts comments on `issues` events.',
     );
-    return;
+    return undefined;
   }
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = context.repo;
 
-  await octokit.rest.issues.createComment({
+  const response = await octokit.rest.issues.createComment({
     owner,
     repo,
     issue_number: issueNumber,
     body,
   });
 
+  const commentUrl = response.data.html_url;
   core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+  return commentUrl;
 }

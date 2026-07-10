@@ -10,9 +10,10 @@ import {
 import { fetchAccount, HorizonError } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
-import { getErrorMessage, parseBooleanInput } from './inputs';
+import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs } from './outputs';
+import { logger } from './logger';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -23,7 +24,23 @@ async function run(): Promise<void> {
   const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
   const stellarAddress = core.getInput('stellar_address_input').trim();
   const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
+  const debugMode = parseBooleanInput(core.getInput('debug_mode'), false);
+  const horizonTimeoutMs = parseNumberInput(core.getInput('horizon_timeout_ms'), 15000, {
+    min: 1000,
+    max: 60000,
+  });
   const githubToken = core.getInput('github_token', { required: true });
+
+  logger.setDebugMode(debugMode);
+  logger.debug('Action inputs loaded', {
+    component: 'index',
+    horizonUrl,
+    assetCode,
+    assetIssuer,
+    minXlmReserveRaw,
+    debugMode,
+    horizonTimeoutMs,
+  });
 
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
@@ -40,7 +57,9 @@ async function run(): Promise<void> {
   let result;
 
   try {
-    const account = await fetchAccount(horizonUrl, stellarAddress);
+    const account = await fetchAccount(horizonUrl, stellarAddress, {
+      timeoutMs: horizonTimeoutMs,
+    });
     result = runAccountChecks(account, checkConfig);
   } catch (error) {
     if (error instanceof HorizonError && error.statusCode === 404) {
@@ -63,12 +82,18 @@ async function run(): Promise<void> {
     horizonUrl,
   });
 
+  let commentUrl: string | undefined;
   try {
-    await postIssueComment(githubToken, commentBody);
+    commentUrl = await postIssueComment(githubToken, commentBody);
+    if (commentUrl) {
+      logger.info('Issue comment created', { component: 'index', commentUrl });
+    }
   } catch (commentError) {
     const message = getErrorMessage(commentError);
     core.warning(`Failed to post issue comment: ${message}`);
   }
+
+  setValidationOutputs(result, commentUrl);
 
   if (result.valid) {
     core.info('All TrustBridge checks passed.');
