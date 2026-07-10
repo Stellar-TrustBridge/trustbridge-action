@@ -16,6 +16,16 @@ describe('toActionOutputs', () => {
       trustline_exists: 'true',
       xlm_balance: '5.0000000',
       account_funded: 'true',
+      comment_url: '',
+    });
+  });
+
+  it('includes a comment URL when provided', () => {
+    expect(toActionOutputs(result, 'https://github.com/comment')).toEqual({
+      trustline_exists: 'true',
+      xlm_balance: '5.0000000',
+      account_funded: 'true',
+      comment_url: 'https://github.com/comment',
     });
   });
 });
