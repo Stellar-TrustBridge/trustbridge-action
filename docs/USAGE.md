@@ -159,6 +159,35 @@ with:
 
 The step succeeds with `core.warning()`; the issue comment still shows ❌ for failed checks.
 
+## Debug mode and timeout
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  debug_mode: true
+  horizon_timeout_ms: 20000
+```
+
+- `debug_mode: true` enables extra action logs for troubleshooting.
+- `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
+
+## New output: `comment_url`
+
+When the action runs in an issue context, it sets `comment_url` to the created GitHub comment URL.
+
+```yaml
+- name: TrustBridge check
+  id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Capture comment URL
+  run: echo "Comment URL: ${{ steps.trustbridge.outputs.comment_url }}"
+```
+
 ---
 
 ## Extracting Stellar addresses from issues
@@ -215,7 +244,7 @@ jobs:
 ## Pinning versions
 
 | Reference | When to use |
-|-----------|-------------|
+| --------- | ------------- |
 | `@v1` | Recommended for production (semver major) |
 | `@main` | Latest development — use for testing only |
 | `@abc1234` | Pin to commit SHA for maximum reproducibility |
