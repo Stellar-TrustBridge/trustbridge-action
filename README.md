@@ -68,13 +68,15 @@ See [docs/USAGE.md](docs/USAGE.md) for advanced patterns (custom assets, testnet
 ## Inputs
 
 | Input | Required | Default | Description |
-|-------|----------|---------|-------------|
+| -------- | ---------- | --------- | ------------- |
 | `stellar_address_input` | **Yes** | — | Stellar public key (G-address, 56 characters) to validate |
 | `github_token` | **Yes** | — | Token with `issues: write` to post comments (`GITHUB_TOKEN` is typical) |
 | `horizon_url` | No | `https://horizon.stellar.org` | Horizon API base URL (use testnet URL for testing) |
 | `asset_code` | No | `USDC` | Asset code for trustline verification |
 | `asset_issuer` | No | `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN` | Issuer address for the asset |
 | `min_xlm_reserve` | No | `1.5` | Minimum native XLM balance required |
+| `debug_mode` | No | `false` | Enable extra action logs for troubleshooting |
+| `horizon_timeout_ms` | No | `15000` | Horizon request timeout in milliseconds |
 | `fail_on_missing` | No | `true` | `true` → `core.setFailed()`; `false` → warning only |
 
 Full input semantics and output reference: [docs/USAGE.md](docs/USAGE.md).
@@ -84,10 +86,11 @@ Full input semantics and output reference: [docs/USAGE.md](docs/USAGE.md).
 ## Outputs
 
 | Output | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | `trustline_exists` | boolean (string) | `true` if the configured asset trustline exists |
 | `xlm_balance` | string | Native XLM balance from Horizon (or `0` / `unknown`) |
 | `account_funded` | boolean (string) | `true` if Horizon returned an active account |
+| `comment_url` | string | URL to the created issue comment when run in issue context |
 
 Use outputs in downstream steps:
 
