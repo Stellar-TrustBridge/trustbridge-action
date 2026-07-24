@@ -229,6 +229,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for proposing changes.
 - **`github_token` scope** — use least privilege (`issues: write` only where needed).
 - **Horizon URL** — consumers on testnet should pass testnet Horizon explicitly; do not rely on address format alone.
 - **Input validation** — G-address regex prevents malformed Horizon paths and log injection in comments.
+- **Markdown escaping** — `checks.ts` escapes dynamic content (Horizon error text, asset code/issuer, account addresses) via `markdown.ts` before it's embedded in a check detail, so untrusted text (e.g. a `detail`/`title` field from a misconfigured or malicious `horizon_url`) can't inject Markdown formatting, links, or break out of the code spans rendered in the issue comment.
 
 ---
 

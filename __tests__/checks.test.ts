@@ -9,6 +9,7 @@ import {
   formatXlmDeficit,
   estimateTrustlineSetupCost,
   buildReserveRequirement,
+  horizonFailureResult,
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
@@ -274,5 +275,44 @@ describe('buildReserveRequirement', () => {
       missing: '0.5000000',
       met: false,
     });
+  });
+});
+
+describe('markdown escape hardening', () => {
+  it('escapes untrusted Horizon error text before it becomes a check detail', () => {
+    const maliciousMessage =
+      'Horizon down [click here](https://evil.example) *urgent* `rm -rf /` __alert__';
+
+    const result = horizonFailureResult(maliciousMessage, defaultConfig);
+
+    const detail = result.checks[0].detail;
+    expect(detail).not.toContain('[click here](https://evil.example)');
+    expect(detail).not.toContain('*urgent*');
+    expect(detail).not.toContain('`rm -rf /`');
+    expect(detail).toContain('\\[click here\\]');
+    expect(detail).toContain('\\*urgent\\*');
+  });
+
+  it('escapes a backtick in the issuer so it cannot close the inline-code span early', () => {
+    const account = makeAccount();
+    // A raw backtick here would close the surrounding `code span`, letting
+    // the rest of the value render as live Markdown (e.g. a clickable link).
+    const maliciousIssuer = 'GENUINE` [click me](https://evil.example) `INJECTED';
+
+    const result = runAccountChecks(account, {
+      ...defaultConfig,
+      assetIssuer: maliciousIssuer,
+    });
+
+    const detail = result.checks[1].detail;
+    expect(detail).toContain('\\`');
+    expect(detail).not.toContain('GENUINE` [click me]');
+  });
+
+  it('escapes backticks in the stellar address for unfunded results', () => {
+    const result = unfundedAccountResult('G`INJECTED`ADDRESS', defaultConfig);
+
+    expect(result.checks[0].detail).toContain('\\`INJECTED\\`');
+    expect(result.checks[0].detail).not.toMatch(/[^\\]`INJECTED[^\\]`/);
   });
 });

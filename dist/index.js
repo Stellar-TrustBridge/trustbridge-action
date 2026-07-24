@@ -33929,6 +33929,7 @@ exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
 exports.buildReserveRequirement = buildReserveRequirement;
 const horizon_1 = __nccwpck_require__(9164);
+const markdown_1 = __nccwpck_require__(3758);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
@@ -33969,27 +33970,28 @@ function runAccountChecks(account, config) {
     const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric);
     const xlmReserveMet = reserveRequirement.met;
     const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const checks = [
         {
             passed: true,
             label: 'Account funded',
-            detail: `Account \`${account.account_id}\` is active on the Stellar network.`,
+            detail: `Account ${(0, markdown_1.inlineCode)(account.account_id)} is active on the Stellar network.`,
         },
         {
             passed: trustlineExists,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: trustlineExists
-                ? `Trustline for **${config.assetCode}** (${config.assetIssuer}) is configured.`
+                ? `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured.`
                 : hasAnyTrustlines
-                    ? `Account has trustlines, but not for **${config.assetCode}** issued by \`${config.assetIssuer}\`.`
+                    ? `Account has trustlines, but not for **${safeAssetCode}** issued by ${(0, markdown_1.inlineCode)(config.assetIssuer)}.`
                     : 'Account has **zero trustlines** — add a trustline before receiving this asset.',
         },
         {
             passed: xlmReserveMet,
             label: 'XLM reserve',
             detail: xlmReserveMet
-                ? `Balance **${xlmBalance} XLM** meets the minimum of **${config.minXlmReserve} XLM**.`
-                : `Balance **${xlmBalance} XLM** is below the required **${config.minXlmReserve} XLM**.`,
+                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the minimum of **${config.minXlmReserve} XLM**.`
+                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${config.minXlmReserve} XLM**.`,
         },
     ];
     const valid = checks.every((c) => c.passed);
@@ -33997,10 +33999,10 @@ function runAccountChecks(account, config) {
     if (!valid) {
         const steps = [];
         if (!trustlineExists) {
-            steps.push(`Add a **${config.assetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
+            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
         }
         if (!xlmReserveMet) {
-            steps.push(`Send at least **${reserveRequirement.missing} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
+            steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
         }
         remediation = steps.join('\n\n');
     }
@@ -34015,15 +34017,17 @@ function runAccountChecks(account, config) {
     };
 }
 function unfundedAccountResult(stellarAddress, config) {
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
     const checks = [
         {
             passed: false,
             label: 'Account funded',
-            detail: `Account \`${stellarAddress}\` was **not found** on Horizon — it may not be funded or activated yet.`,
+            detail: `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`,
         },
         {
             passed: false,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: 'Cannot verify trustline until the account exists.',
         },
         {
@@ -34040,8 +34044,8 @@ function unfundedAccountResult(stellarAddress, config) {
         xlmReserveMet: false,
         checks,
         remediation: [
-            `Activate \`${stellarAddress}\` by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-            `Then add a **${config.assetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
+            `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
+            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
             `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
         ].join('\n\n'),
     };
@@ -34050,15 +34054,22 @@ function getFailedCheckLabels(result) {
     return result.checks.filter((check) => !check.passed).map((check) => check.label);
 }
 function horizonFailureResult(message, config) {
+    // `message` may originate from the configured Horizon endpoint's HTTP
+    // response body (e.g. the `detail`/`title` fields of an error payload),
+    // which is not trusted content — escape it before it lands in the
+    // Markdown comment so it can't inject formatting, links, or break out of
+    // the comment structure.
+    const safeMessage = (0, markdown_1.escapeMarkdownInline)(message);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const checks = [
         {
             passed: false,
             label: 'Horizon availability',
-            detail: message,
+            detail: safeMessage,
         },
         {
             passed: false,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: 'Check could not be completed.',
         },
         {
