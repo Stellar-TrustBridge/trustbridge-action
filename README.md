@@ -114,6 +114,12 @@ Use outputs in downstream steps:
 
 ---
 
+## Soroban contract asset issuers
+
+`asset_issuer` normally holds a classic Stellar issuer address (`G...`). If you pass a Soroban contract address (`C...`) instead — e.g. for a SEP-41 fungible token contract — TrustBridge validates it against the Stellar StrKey contract-address policy (56 characters, `C` prefix, base32 alphabet) before proceeding. An invalid contract address fails the run immediately with a clear error instead of reaching Horizon or being written into the metrics/JSON output. Valid contract addresses are recorded as a metric point (`asset_issuer_contract_validated`) tagged with the contract address, visible in the metrics summary logged under `debug_mode: true`.
+
+---
+
 ## Waiting for a contributor to fund their account
 
 By default, TrustBridge checks the account once: if Horizon returns 404 (not funded), the run immediately posts an unfunded result. For workflows where a contributor is expected to fund their wallet moments after assignment (e.g. a bot nudges them to send XLM as part of onboarding), set `wait_until_funded: true` to poll instead of failing on the first miss:

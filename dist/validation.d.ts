@@ -16,6 +16,12 @@ export declare function validateNumericInput(value: string, fieldName: string, o
     allowNegative?: boolean;
 }): ValidationResult;
 /**
+ * Validates a Soroban contract address ("C-address") against the
+ * StrKey structural policy: must be exactly 56 characters, start with
+ * "C", and use only the Stellar base32 alphabet (A-Z, 2-7).
+ */
+export declare function validateContractAddress(address: string): ValidationResult;
+/**
  * Validates an asset code (e.g., "USDC", "ETH", "BTC").
  */
 export declare function validateAssetCode(code: string): ValidationResult;

@@ -34488,6 +34488,8 @@ const inputs_1 = __nccwpck_require__(8422);
 const summary_1 = __nccwpck_require__(8855);
 const outputs_1 = __nccwpck_require__(7729);
 const logger_1 = __nccwpck_require__(6999);
+const metrics_1 = __nccwpck_require__(5670);
+const validation_1 = __nccwpck_require__(4344);
 async function run() {
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
@@ -34523,6 +34525,17 @@ async function run() {
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
+    // Soroban fungible token contracts (SEP-41) use a "C..." contract address
+    // as their issuer instead of a classic "G..." account. Validate that
+    // shape up front so a malformed contract address fails fast with a clear
+    // error instead of silently reaching Horizon or the metrics/JSON output.
+    if (normalizedAsset.assetIssuer.startsWith('C')) {
+        const contractCheck = (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
+        if (!contractCheck.valid) {
+            throw new Error(`Invalid asset_issuer contract address: ${contractCheck.errors.join('; ')}`);
+        }
+        metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
+    }
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve,
@@ -34579,6 +34592,10 @@ async function run() {
         core.warning(`Failed to post issue comment: ${message}`);
     }
     (0, outputs_1.setValidationOutputs)(result, commentUrl);
+    if (debugMode) {
+        logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+        core.debug(metrics_1.globalMetrics.toJSON());
+    }
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
         return;
@@ -34839,6 +34856,135 @@ function inlineCode(value) {
 
 /***/ }),
 
+/***/ 5670:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/**
+ * Metrics collection for monitoring action performance and behavior.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+const validation_1 = __nccwpck_require__(4344);
+/**
+ * Tag key that flags a metric as carrying a Soroban contract ("C-address").
+ * Metrics tagged this way are validated against the contract address
+ * policy before being recorded, so a malformed or malicious value never
+ * makes it into the JSON metrics artifact (see toJSON()).
+ */
+exports.CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+class MetricsCollector {
+    constructor() {
+        this.metrics = [];
+        this.counters = new Map();
+        this.timers = new Map();
+    }
+    /**
+     * Record a numeric metric. If a `contractAddress` tag is present, it is
+     * validated against the Soroban C-address policy first; an invalid
+     * address throws rather than being silently recorded.
+     */
+    recordMetric(name, value, unit = '', tags) {
+        const contractAddress = tags?.[exports.CONTRACT_ADDRESS_TAG_KEY];
+        if (contractAddress !== undefined) {
+            const result = (0, validation_1.validateContractAddress)(contractAddress);
+            if (!result.valid) {
+                throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
+            }
+        }
+        this.metrics.push({
+            name,
+            value,
+            unit,
+            timestamp: Date.now(),
+            tags,
+        });
+    }
+    /**
+     * Convenience wrapper for recording a metric tagged with a Soroban
+     * contract address, enforcing the C-address policy up front.
+     */
+    recordContractMetric(name, value, contractAddress, unit = '', extraTags) {
+        this.recordMetric(name, value, unit, {
+            ...extraTags,
+            [exports.CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+        });
+    }
+    /**
+     * Increment a counter.
+     */
+    incrementCounter(name, amount = 1) {
+        const current = this.counters.get(name) ?? 0;
+        this.counters.set(name, current + amount);
+    }
+    /**
+     * Get counter value.
+     */
+    getCounter(name) {
+        return this.counters.get(name) ?? 0;
+    }
+    /**
+     * Start a timer.
+     */
+    startTimer(name) {
+        this.timers.set(name, Date.now());
+    }
+    /**
+     * Stop a timer and record the elapsed time.
+     */
+    stopTimer(name, unit = 'ms') {
+        const startTime = this.timers.get(name);
+        if (startTime === undefined) {
+            return null;
+        }
+        const elapsed = Date.now() - startTime;
+        this.recordMetric(`${name}_duration`, elapsed, unit);
+        this.timers.delete(name);
+        return elapsed;
+    }
+    /**
+     * Get a summary of all recorded metrics.
+     */
+    getSummary() {
+        return {
+            metrics: this.metrics,
+            counters: Object.fromEntries(this.counters),
+            totalMetrics: this.metrics.length,
+        };
+    }
+    /**
+     * Export metrics in JSON format.
+     */
+    toJSON() {
+        return JSON.stringify(this.getSummary(), null, 2);
+    }
+    /**
+     * Clear all metrics.
+     */
+    reset() {
+        this.metrics = [];
+        this.counters.clear();
+        this.timers.clear();
+    }
+    /**
+     * Get average value for a metric.
+     */
+    getAverageMetric(name) {
+        const metricPoints = this.metrics.filter((m) => m.name === name);
+        if (metricPoints.length === 0) {
+            return null;
+        }
+        const sum = metricPoints.reduce((acc, m) => acc + m.value, 0);
+        return sum / metricPoints.length;
+    }
+}
+exports.MetricsCollector = MetricsCollector;
+exports.globalMetrics = new MetricsCollector();
+
+
+/***/ }),
+
 /***/ 7729:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -34923,6 +35069,143 @@ function formatFailureSummary(result) {
     return summary.failedLabels.length > 0
         ? summary.failedLabels.join(', ')
         : 'none';
+}
+
+
+/***/ }),
+
+/***/ 4344:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Extended input validation utilities for TrustBridge Action.
+ * Provides reusable validators with detailed error messages.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.validateNumericInput = validateNumericInput;
+exports.validateContractAddress = validateContractAddress;
+exports.validateAssetCode = validateAssetCode;
+exports.validateUrl = validateUrl;
+exports.combineResults = combineResults;
+/**
+ * Validates a numeric input string with min/max bounds.
+ */
+function validateNumericInput(value, fieldName, options = {}) {
+    const errors = [];
+    const warnings = [];
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) {
+        errors.push(`${fieldName} must be a valid number, got: "${value}"`);
+        return { valid: false, errors, warnings };
+    }
+    if (!options.allowNegative && parsed < 0) {
+        errors.push(`${fieldName} cannot be negative, got: ${parsed}`);
+    }
+    if (options.min !== undefined && parsed < options.min) {
+        errors.push(`${fieldName} must be >= ${options.min}, got: ${parsed}`);
+    }
+    if (options.max !== undefined && parsed > options.max) {
+        errors.push(`${fieldName} must be <= ${options.max}, got: ${parsed}`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/** Soroban contract address ("C-address") StrKey format: "C" + 55 base32 chars. */
+const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
+/**
+ * Validates a Soroban contract address ("C-address") against the
+ * StrKey structural policy: must be exactly 56 characters, start with
+ * "C", and use only the Stellar base32 alphabet (A-Z, 2-7).
+ */
+function validateContractAddress(address) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = address.trim();
+    if (!trimmed) {
+        errors.push('Contract address cannot be empty');
+        return { valid: false, errors, warnings };
+    }
+    if (!trimmed.startsWith('C')) {
+        errors.push(`Contract address must start with "C", got: "${trimmed}"`);
+    }
+    if (trimmed.length !== 56) {
+        errors.push(`Contract address must be 56 characters, got: ${trimmed.length}`);
+    }
+    if (!CONTRACT_ADDRESS_REGEX.test(trimmed)) {
+        errors.push(`Contract address must match StrKey format "C" + 55 base32 characters (A-Z, 2-7), got: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Validates an asset code (e.g., "USDC", "ETH", "BTC").
+ */
+function validateAssetCode(code) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = code.trim();
+    if (!trimmed) {
+        errors.push('Asset code cannot be empty');
+        return { valid: false, errors, warnings };
+    }
+    if (trimmed.length > 12) {
+        errors.push(`Asset code must be <= 12 characters, got: ${trimmed.length}`);
+    }
+    if (!/^[A-Za-z0-9]+$/.test(trimmed)) {
+        errors.push(`Asset code must be alphanumeric, got: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Validates a URL format and protocol.
+ */
+function validateUrl(url, fieldName, options = {}) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = url.trim();
+    if (!trimmed) {
+        errors.push(`${fieldName} cannot be empty`);
+        return { valid: false, errors, warnings };
+    }
+    try {
+        const parsed = new URL(trimmed);
+        const allowedProtos = options.protocols || ['http', 'https'];
+        if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
+            errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
+        }
+    }
+    catch {
+        errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Combines multiple validation results into a single summary.
+ */
+function combineResults(...results) {
+    const allErrors = results.flatMap((r) => r.errors);
+    const allWarnings = results.flatMap((r) => r.warnings);
+    return {
+        valid: allErrors.length === 0,
+        errors: allErrors,
+        warnings: allWarnings,
+    };
 }
 
 

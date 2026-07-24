@@ -14,6 +14,8 @@ import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs } from './outputs';
 import { logger } from './logger';
+import { globalMetrics } from './metrics';
+import { validateContractAddress } from './validation';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -62,6 +64,23 @@ async function run(): Promise<void> {
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
 
   const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
+
+  // Soroban fungible token contracts (SEP-41) use a "C..." contract address
+  // as their issuer instead of a classic "G..." account. Validate that
+  // shape up front so a malformed contract address fails fast with a clear
+  // error instead of silently reaching Horizon or the metrics/JSON output.
+  if (normalizedAsset.assetIssuer.startsWith('C')) {
+    const contractCheck = validateContractAddress(normalizedAsset.assetIssuer);
+    if (!contractCheck.valid) {
+      throw new Error(`Invalid asset_issuer contract address: ${contractCheck.errors.join('; ')}`);
+    }
+    globalMetrics.recordContractMetric(
+      'asset_issuer_contract_validated',
+      1,
+      normalizedAsset.assetIssuer,
+      'count',
+    );
+  }
 
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
@@ -126,6 +145,11 @@ async function run(): Promise<void> {
   }
 
   setValidationOutputs(result, commentUrl);
+
+  if (debugMode) {
+    logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+    core.debug(globalMetrics.toJSON());
+  }
 
   if (result.valid) {
     core.info('All TrustBridge checks passed.');

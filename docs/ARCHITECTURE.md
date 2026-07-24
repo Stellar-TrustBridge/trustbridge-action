@@ -214,7 +214,7 @@ The action ships compiled JavaScript in `dist/`. Consumers reference a release t
 
 Future enhancements that fit the current architecture:
 
-1. **Soroban / smart contract checks** — new module parallel to `horizon.ts`
+1. **Soroban / smart contract checks** — new module parallel to `horizon.ts`. `validation.ts` already validates the StrKey shape of a contract (`C...`) `asset_issuer`; querying contract state over Soroban RPC is still open.
 2. **Multi-asset trustlines** — extend `CheckConfig` to accept a list
 3. **PR comments** — extend `comment.ts` to detect `context.payload.pull_request`
 4. **Sponsor-aware reserve math** — use `num_sponsoring` / `num_sponsored` from Horizon
