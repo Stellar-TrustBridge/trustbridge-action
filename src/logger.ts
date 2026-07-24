@@ -72,6 +72,29 @@ class StructuredLogger {
   }
 
   /**
+   * Redact sensitive fields from log context.
+   */
+  private redactContext(context: LogContext): LogContext {
+    const redacted = { ...context };
+    // Redact Stellar addresses (G-prefixed)
+    if (redacted.stellarAddress) {
+      redacted.stellarAddress = this.redactStellarAddress(redacted.stellarAddress);
+    }
+    // Redact any other sensitive fields we might add later
+    return redacted;
+  }
+
+  /**
+   * Redact a Stellar address, showing only first 4 and last 4 characters.
+   */
+  private redactStellarAddress(address: string): string {
+    if (address.length < 8) {
+      return '[REDACTED]';
+    }
+    return `${address.slice(0, 4)}...${address.slice(-4)}`;
+  }
+
+  /**
    * Format a message with context information.
    */
   private formatMessage(message: string, context?: LogContext): string {
@@ -79,16 +102,17 @@ class StructuredLogger {
       return message;
     }
 
+    const redactedContext = this.redactContext(context);
     const parts: string[] = [message];
 
-    if (context.component) {
-      parts.push(`[${context.component}]`);
+    if (redactedContext.component) {
+      parts.push(`[${redactedContext.component}]`);
     }
 
-    const otherKeys = Object.keys(context).filter((k) => k !== 'component');
+    const otherKeys = Object.keys(redactedContext).filter((k) => k !== 'component');
     if (otherKeys.length > 0) {
       const contextStr = otherKeys
-        .map((k) => `${k}=${context[k]}`)
+        .map((k) => `${k}=${redactedContext[k]}`)
         .join(', ');
       parts.push(`(${contextStr})`);
     }

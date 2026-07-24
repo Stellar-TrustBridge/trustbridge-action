@@ -29,6 +29,14 @@ async function run(): Promise<void> {
     min: 1000,
     max: 60000,
   });
+  const maxRetries = parseNumberInput(core.getInput('max_retries'), 3, {
+    min: 0,
+    max: 10,
+  });
+  const retryBaseDelayMs = parseNumberInput(core.getInput('retry_base_delay_ms'), 1000, {
+    min: 100,
+    max: 60000,
+  });
   const githubToken = core.getInput('github_token', { required: true });
 
   logger.setDebugMode(debugMode);
@@ -40,6 +48,8 @@ async function run(): Promise<void> {
     minXlmReserveRaw,
     debugMode,
     horizonTimeoutMs,
+    maxRetries,
+    retryBaseDelayMs,
   });
 
   validateStellarAddress(stellarAddress);
@@ -59,6 +69,8 @@ async function run(): Promise<void> {
   try {
     const account = await fetchAccount(horizonUrl, stellarAddress, {
       timeoutMs: horizonTimeoutMs,
+      maxRetries,
+      retryBaseDelayMs,
     });
     result = runAccountChecks(account, checkConfig);
   } catch (error) {

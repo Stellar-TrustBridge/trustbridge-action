@@ -91,14 +91,36 @@ export async function postIssueComment(
   const octokit = github.getOctokit(token);
   const { owner, repo } = context.repo;
 
-  const response = await octokit.rest.issues.createComment({
+  // Look for an existing TrustBridge comment to update
+  const comments = await octokit.rest.issues.listComments({
     owner,
     repo,
     issue_number: issueNumber,
-    body,
   });
 
+  const existingComment = comments.data.find((comment: { body?: string; id: number }) =>
+    comment.body?.includes(TRUSTBRIDGE_FOOTER),
+  );
+
+  let response;
+  if (existingComment) {
+    response = await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: existingComment.id,
+      body,
+    });
+    core.info(`Updated TrustBridge comment on issue #${issueNumber}.`);
+  } else {
+    response = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    });
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+  }
+
   const commentUrl = response.data.html_url;
-  core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
   return commentUrl;
 }

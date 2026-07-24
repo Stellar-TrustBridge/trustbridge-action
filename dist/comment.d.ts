@@ -5,4 +5,4 @@ export interface CommentConfig extends CheckConfig {
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 export declare function formatCommentBody(result: ValidationResult, config: CommentConfig): string;
-export declare function postIssueComment(token: string, body: string): Promise<void>;
+export declare function postIssueComment(token: string, body: string): Promise<string | undefined>;

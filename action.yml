@@ -36,6 +36,14 @@ inputs:
   github_token:
     description: 'GitHub token used to post issue comments'
     required: true
+  max_retries:
+    description: 'Maximum number of retries for failed Horizon requests'
+    required: false
+    default: '3'
+  retry_base_delay_ms:
+    description: 'Base delay in milliseconds for exponential backoff retries'
+    required: false
+    default: '1000'
 
 outputs:
   trustline_exists:
@@ -44,6 +52,8 @@ outputs:
     description: 'Current native XLM balance as reported by Horizon'
   account_funded:
     description: 'Whether the account exists and is activated on the Stellar network'
+  comment_url:
+    description: 'URL of the posted issue comment (if any)'
 
 runs:
   using: 'node20'

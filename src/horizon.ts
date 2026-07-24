@@ -1,3 +1,13 @@
+import { logger } from './logger';
+import {
+  retryWithBackoff,
+  RetryPolicy,
+  DEFAULT_RETRY_POLICY,
+  calculateBackoffDelay,
+  addJitter,
+  sleep,
+} from './resilience';
+
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -38,6 +48,7 @@ export class HorizonError extends Error {
     message: string,
     public readonly statusCode: number,
     public readonly retryable: boolean = false,
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'HorizonError';
@@ -47,10 +58,12 @@ export class HorizonError extends Error {
 export interface FetchAccountOptions {
   timeoutMs?: number;
   maxRetries?: number;
+  retryBaseDelayMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '');
@@ -76,10 +89,6 @@ export function parseRetryAfterMs(response: import('node-fetch').Response): numb
   return null;
 }
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export async function fetchAccount(
   horizonUrl: string,
   stellarAddress: string,
@@ -88,90 +97,159 @@ export async function fetchAccount(
   const fetch = (await import('node-fetch')).default;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
   const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
   if (!normalizedHorizonUrl) {
     throw new HorizonError('horizon_url is required.', 0, false);
   }
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
 
-  let attempt = 0;
-  let lastError: Error | undefined;
+  const policy: RetryPolicy = {
+    ...DEFAULT_RETRY_POLICY,
+    maxRetries,
+    initialDelayMs: retryBaseDelayMs,
+    timeoutMs,
+  };
 
-  while (attempt <= maxRetries) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  logger.debug('Initiating Horizon account fetch', {
+    component: 'horizon',
+    horizonUrl: normalizedHorizonUrl,
+    stellarAddress,
+    maxRetries: policy.maxRetries,
+    timeoutMs: policy.timeoutMs,
+  });
 
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
+  let lastRetryAfterMs: number | undefined;
+
+  return await retryWithBackoff(
+    async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), policy.timeoutMs);
+
+      try {
+        logger.debug('Making Horizon request', {
+          component: 'horizon',
+        });
+
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
+
+        logger.debug('Received Horizon response', {
+          component: 'horizon',
+          status: response.status,
+        });
+
+        if (response.status === 404) {
+          logger.debug('Account not found on Horizon', {
+            component: 'horizon',
+            stellarAddress,
+          });
+          throw new HorizonError(
+            `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
+            404,
+            false,
+          );
+        }
+
+        if (!response.ok) {
+          const retryable = isRetryableStatus(response.status);
+          const retryAfter = parseRetryAfterMs(response);
+          let detail = response.statusText;
+          try {
+            const body = (await response.json()) as HorizonErrorResponse;
+            if (body.detail) {
+              detail = body.detail;
+            } else if (body.title) {
+              detail = body.title;
+            }
+          } catch {
+            // ignore JSON parse errors on error responses
+          }
+
+          logger.debug('Horizon request failed', {
+            component: 'horizon',
+            status: response.status,
+            detail,
+            retryable,
+            retryAfterMs: retryAfter,
+          });
+
+          throw new HorizonError(
+            `Horizon request failed (${response.status}): ${detail}`,
+            response.status,
+            retryable,
+            retryAfter ?? undefined,
+          );
+        }
+
+        logger.debug('Successfully fetched Horizon account', {
+          component: 'horizon',
+        });
+        return (await response.json()) as HorizonAccount;
+      } catch (error) {
+        if (error instanceof HorizonError) {
+          throw error;
+        }
+
+        const isAbort = error instanceof Error && error.name === 'AbortError';
+        const message = isAbort
+          ? `Horizon request timed out after ${policy.timeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : 'Unknown Horizon error';
+
+        logger.debug('Horizon request failed', {
+          component: 'horizon',
+          error: message,
+        });
+
+        throw new HorizonError(message, isAbort ? 408 : 0, true);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    policy,
+    (error, attempt) => {
+      if (!(error instanceof HorizonError)) {
+        return false;
+      }
+
+      if (!error.retryable) {
+        return false;
+      }
+
+      if (error.retryAfterMs !== undefined) {
+        logger.debug('Using Retry-After header for delay', {
+          component: 'horizon',
+          attempt,
+          retryAfterMs: error.retryAfterMs,
+        });
+        lastRetryAfterMs = error.retryAfterMs;
+      }
+
+      return true;
+    },
+    // Custom sleep that uses Retry-After if available
+    async (attempt, delayMs) => {
+      let sleepMs = lastRetryAfterMs;
+      lastRetryAfterMs = undefined;
+      if (sleepMs === undefined) {
+        const backoffDelay = calculateBackoffDelay(attempt, policy);
+        sleepMs = addJitter(backoffDelay);
+      }
+
+      logger.debug('Waiting before retry', {
+        component: 'horizon',
+        attempt,
+        sleepMs,
       });
 
-      if (response.status === 404) {
-        throw new HorizonError(
-          `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
-          404,
-          false,
-        );
-      }
-
-      if (!response.ok) {
-        const retryable = isRetryableStatus(response.status);
-        let detail = response.statusText;
-        try {
-          const body = (await response.json()) as HorizonErrorResponse;
-          if (body.detail) {
-            detail = body.detail;
-          } else if (body.title) {
-            detail = body.title;
-          }
-        } catch {
-          // ignore JSON parse errors on error responses
-        }
-
-        if (retryable && attempt < maxRetries) {
-          const retryAfter = parseRetryAfterMs(response) ?? 1000 * 2 ** attempt;
-          await sleep(retryAfter);
-          attempt += 1;
-          continue;
-        }
-
-        throw new HorizonError(
-          `Horizon request failed (${response.status}): ${detail}`,
-          response.status,
-          retryable,
-        );
-      }
-
-      return (await response.json()) as HorizonAccount;
-    } catch (error) {
-      if (error instanceof HorizonError) {
-        throw error;
-      }
-
-      const isAbort = error instanceof Error && error.name === 'AbortError';
-      const message = isAbort
-        ? `Horizon request timed out after ${timeoutMs}ms`
-        : error instanceof Error
-          ? error.message
-          : 'Unknown Horizon error';
-
-      lastError = new HorizonError(message, isAbort ? 408 : 0, true);
-
-      if (attempt < maxRetries) {
-        await sleep(1000 * 2 ** attempt);
-        attempt += 1;
-        continue;
-      }
-
-      throw lastError;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
+      await sleep(sleepMs);
+    },
+  );
 }
 
 export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
