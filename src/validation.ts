@@ -49,6 +49,46 @@ export function validateNumericInput(
   };
 }
 
+/** Soroban contract address ("C-address") StrKey format: "C" + 55 base32 chars. */
+const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
+
+/**
+ * Validates a Soroban contract address ("C-address") against the
+ * StrKey structural policy: must be exactly 56 characters, start with
+ * "C", and use only the Stellar base32 alphabet (A-Z, 2-7).
+ */
+export function validateContractAddress(address: string): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const trimmed = address.trim();
+
+  if (!trimmed) {
+    errors.push('Contract address cannot be empty');
+    return { valid: false, errors, warnings };
+  }
+
+  if (!trimmed.startsWith('C')) {
+    errors.push(`Contract address must start with "C", got: "${trimmed}"`);
+  }
+
+  if (trimmed.length !== 56) {
+    errors.push(`Contract address must be 56 characters, got: ${trimmed.length}`);
+  }
+
+  if (!CONTRACT_ADDRESS_REGEX.test(trimmed)) {
+    errors.push(
+      `Contract address must match StrKey format "C" + 55 base32 characters (A-Z, 2-7), got: "${trimmed}"`,
+    );
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
 /**
  * Validates an asset code (e.g., "USDC", "ETH", "BTC").
  */

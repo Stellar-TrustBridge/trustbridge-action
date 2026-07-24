@@ -11,7 +11,8 @@ Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Usag
 | Condition | HTTP / cause | Retries | Outputs | Comment | Workflow |
 |-----------|--------------|---------|---------|---------|----------|
 | Invalid G-address | Input validation | No | Not set (run fails early) | Not posted | `setFailed` |
-| Account not found | Horizon 404 | No | `account_funded=false`, others false/0 | Posted with activation steps | per `fail_on_missing` |
+| Account not found | Horizon 404 | No (unless `wait_until_funded`) | `account_funded=false`, others false/0 | Posted with activation steps | per `fail_on_missing` |
+| Account not found, `wait_until_funded: true` | Horizon 404 repeated | Polls every `wait_until_funded_interval_ms` until funded or `wait_until_funded_timeout_ms` elapses | Same as above if timeout reached | Same as above | per `fail_on_missing` |
 | Missing trustline | Horizon 200, no matching balance | No | `account_funded=true`, `trustline_exists=false` | Posted with Lab/LOBSTR links | per `fail_on_missing` |
 | Zero trustlines | Horizon 200, native only | No | Same as missing trustline | Specific “zero trustlines” message | per `fail_on_missing` |
 | Low XLM reserve | Horizon 200, native &lt; min | No | `xlm_balance` set, reserve fail | Posted with amount to send | per `fail_on_missing` |
@@ -70,6 +71,10 @@ Same retry policy as 429. Public Horizon occasionally returns 503 during mainten
 ### Timeout
 
 Default **15 seconds** per attempt. Network partitions or slow Horizon nodes trigger abort + retry.
+
+### Waiting for funding (`wait_until_funded`)
+
+When `wait_until_funded: true`, a 404 no longer resolves immediately to the unfunded result. Instead the action sleeps `wait_until_funded_interval_ms` and retries, up to a `wait_until_funded_timeout_ms` budget. Any non-404 error breaks out of the polling loop immediately and is handled the same as a normal Horizon failure — polling only ever waits on "not found," never on outages or rate limits.
 
 ---
 

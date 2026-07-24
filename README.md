@@ -17,6 +17,7 @@ Open-source programs and DAOs often gate contributions on Stellar wallet readine
 | Unclear setup instructions | Posts a Markdown comment with ✅/❌ per check and links to Stellar Lab / LOBSTR |
 | Silent CI failures | Configurable `fail_on_missing` to fail or warn |
 | Custom assets / testnet | All Horizon and asset inputs are configurable |
+| Re-runs spam the issue with duplicate comments | `sticky_comment` (default `true`) updates the previous TrustBridge comment in place |
 
 ---
 
@@ -77,6 +78,10 @@ See [docs/USAGE.md](docs/USAGE.md) for advanced patterns (custom assets, testnet
 | `min_xlm_reserve` | No | `1.5` | Minimum native XLM balance required |
 | `debug_mode` | No | `false` | Enable extra action logs for troubleshooting |
 | `horizon_timeout_ms` | No | `15000` | Horizon request timeout in milliseconds |
+| `sticky_comment` | No | `true` | Update TrustBridge's previous issue comment instead of posting a new one each run |
+| `wait_until_funded` | No | `false` | Poll Horizon until the account is funded instead of failing on the first 404 |
+| `wait_until_funded_timeout_ms` | No | `120000` | Max time to poll for funding, in milliseconds (0-600000) |
+| `wait_until_funded_interval_ms` | No | `5000` | Delay between funding polls, in milliseconds (1000-60000) |
 | `fail_on_missing` | No | `true` | `true` → `core.setFailed()`; `false` → warning only |
 
 Full input semantics and output reference: [docs/USAGE.md](docs/USAGE.md).
@@ -106,6 +111,29 @@ Use outputs in downstream steps:
   if: steps.trustbridge.outputs.account_funded == 'true'
   run: echo "Account is active"
 ```
+
+---
+
+## Soroban contract asset issuers
+
+`asset_issuer` normally holds a classic Stellar issuer address (`G...`). If you pass a Soroban contract address (`C...`) instead — e.g. for a SEP-41 fungible token contract — TrustBridge validates it against the Stellar StrKey contract-address policy (56 characters, `C` prefix, base32 alphabet) before proceeding. An invalid contract address fails the run immediately with a clear error instead of reaching Horizon or being written into the metrics/JSON output. Valid contract addresses are recorded as a metric point (`asset_issuer_contract_validated`) tagged with the contract address, visible in the metrics summary logged under `debug_mode: true`.
+
+---
+
+## Waiting for a contributor to fund their account
+
+By default, TrustBridge checks the account once: if Horizon returns 404 (not funded), the run immediately posts an unfunded result. For workflows where a contributor is expected to fund their wallet moments after assignment (e.g. a bot nudges them to send XLM as part of onboarding), set `wait_until_funded: true` to poll instead of failing on the first miss:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  wait_until_funded: true
+  wait_until_funded_timeout_ms: 120000   # give up after 2 minutes
+  wait_until_funded_interval_ms: 5000    # poll every 5 seconds
+```
+
+Only a Horizon 404 ("account not found") triggers a poll. Rate limits, timeouts, and other Horizon errors are not treated as "not yet funded" — they surface immediately as a failure result so a Horizon outage can't turn into a silent multi-minute hang.
 
 ---
 
@@ -159,7 +187,10 @@ flowchart TD
   C -->|No| D[Fail fast]
   C -->|Yes| E[GET Horizon /accounts/{address}]
   E --> F{Response}
-  F -->|404| G[Unfunded account result]
+  F -->|404, wait_until_funded=false| G[Unfunded account result]
+  F -->|404, wait_until_funded=true| W{Timeout budget left?}
+  W -->|Yes| WS[Sleep poll interval] --> E
+  W -->|No| G
   F -->|429/503/timeout| H[Retry with backoff]
   H --> E
   F -->|200| I[Run trustline + XLM checks]

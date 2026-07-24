@@ -37,3 +37,11 @@ jobs:
 
       - name: Verify action bundle exists
         run: test -f dist/index.js
+
+      - name: Verify dist/ matches src/
+        run: |
+          if ! git diff --quiet --exit-code -- dist; then
+            echo "::error::dist/ is out of date with src/. Run 'npm run build' and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi

@@ -33929,6 +33929,7 @@ exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
 exports.buildReserveRequirement = buildReserveRequirement;
 const horizon_1 = __nccwpck_require__(9164);
+const markdown_1 = __nccwpck_require__(3758);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
@@ -33969,27 +33970,28 @@ function runAccountChecks(account, config) {
     const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric);
     const xlmReserveMet = reserveRequirement.met;
     const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const checks = [
         {
             passed: true,
             label: 'Account funded',
-            detail: `Account \`${account.account_id}\` is active on the Stellar network.`,
+            detail: `Account ${(0, markdown_1.inlineCode)(account.account_id)} is active on the Stellar network.`,
         },
         {
             passed: trustlineExists,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: trustlineExists
-                ? `Trustline for **${config.assetCode}** (${config.assetIssuer}) is configured.`
+                ? `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured.`
                 : hasAnyTrustlines
-                    ? `Account has trustlines, but not for **${config.assetCode}** issued by \`${config.assetIssuer}\`.`
+                    ? `Account has trustlines, but not for **${safeAssetCode}** issued by ${(0, markdown_1.inlineCode)(config.assetIssuer)}.`
                     : 'Account has **zero trustlines** — add a trustline before receiving this asset.',
         },
         {
             passed: xlmReserveMet,
             label: 'XLM reserve',
             detail: xlmReserveMet
-                ? `Balance **${xlmBalance} XLM** meets the minimum of **${config.minXlmReserve} XLM**.`
-                : `Balance **${xlmBalance} XLM** is below the required **${config.minXlmReserve} XLM**.`,
+                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the minimum of **${config.minXlmReserve} XLM**.`
+                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${config.minXlmReserve} XLM**.`,
         },
     ];
     const valid = checks.every((c) => c.passed);
@@ -33997,10 +33999,10 @@ function runAccountChecks(account, config) {
     if (!valid) {
         const steps = [];
         if (!trustlineExists) {
-            steps.push(`Add a **${config.assetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
+            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
         }
         if (!xlmReserveMet) {
-            steps.push(`Send at least **${reserveRequirement.missing} XLM** to \`${account.account_id}\` to meet the reserve requirement.`);
+            steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
         }
         remediation = steps.join('\n\n');
     }
@@ -34015,15 +34017,17 @@ function runAccountChecks(account, config) {
     };
 }
 function unfundedAccountResult(stellarAddress, config) {
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
     const checks = [
         {
             passed: false,
             label: 'Account funded',
-            detail: `Account \`${stellarAddress}\` was **not found** on Horizon — it may not be funded or activated yet.`,
+            detail: `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`,
         },
         {
             passed: false,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: 'Cannot verify trustline until the account exists.',
         },
         {
@@ -34040,8 +34044,8 @@ function unfundedAccountResult(stellarAddress, config) {
         xlmReserveMet: false,
         checks,
         remediation: [
-            `Activate \`${stellarAddress}\` by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-            `Then add a **${config.assetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
+            `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
+            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
             `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
         ].join('\n\n'),
     };
@@ -34050,15 +34054,22 @@ function getFailedCheckLabels(result) {
     return result.checks.filter((check) => !check.passed).map((check) => check.label);
 }
 function horizonFailureResult(message, config) {
+    // `message` may originate from the configured Horizon endpoint's HTTP
+    // response body (e.g. the `detail`/`title` fields of an error payload),
+    // which is not trusted content — escape it before it lands in the
+    // Markdown comment so it can't inject formatting, links, or break out of
+    // the comment structure.
+    const safeMessage = (0, markdown_1.escapeMarkdownInline)(message);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const checks = [
         {
             passed: false,
             label: 'Horizon availability',
-            detail: message,
+            detail: safeMessage,
         },
         {
             passed: false,
-            label: `${config.assetCode} trustline`,
+            label: `${safeAssetCode} trustline`,
             detail: 'Check could not be completed.',
         },
         {
@@ -34128,8 +34139,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRUSTBRIDGE_FOOTER = void 0;
+exports.STICKY_COMMENT_MARKER = exports.TRUSTBRIDGE_FOOTER = void 0;
 exports.formatCommentBody = formatCommentBody;
+exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -34137,12 +34149,18 @@ const checks_1 = __nccwpck_require__(2122);
 const links_1 = __nccwpck_require__(3346);
 const markdown_1 = __nccwpck_require__(3758);
 exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
+/**
+ * Hidden marker embedded in every TrustBridge comment body. Used to find a
+ * prior comment to update in place instead of posting a new one each run.
+ */
+exports.STICKY_COMMENT_MARKER = '<!-- trustbridge-action:sticky-comment -->';
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
 function formatCommentBody(result, config) {
     const stellarLabNetwork = (0, links_1.inferStellarNetwork)(config.horizonUrl);
     const lines = [
+        exports.STICKY_COMMENT_MARKER,
         '## TrustBridge — Stellar Account Check',
         '',
         `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
@@ -34162,22 +34180,61 @@ function formatCommentBody(result, config) {
     lines.push('', '---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
     return lines.join('\n');
 }
-async function postIssueComment(token, body) {
+/**
+ * Find TrustBridge's previous sticky comment on the issue, if any.
+ * Paginates through every comment so the marker is found even on
+ * high-traffic issues with 100+ comments.
+ */
+async function findStickyComment(octokit, owner, repo, issueNumber) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: issueNumber,
+        per_page: 100,
+    });
+    const existing = comments.find((comment) => comment.body?.includes(exports.STICKY_COMMENT_MARKER));
+    return existing?.id;
+}
+async function postIssueComment(token, body, options = {}) {
+    const sticky = options.sticky ?? true;
     const context = github.context;
     const issueNumber = context.payload.issue?.number;
     if (!issueNumber) {
         core.warning('No issue context found — skipping comment. This action posts comments on `issues` events.');
-        return;
+        return undefined;
     }
     const octokit = github.getOctokit(token);
     const { owner, repo } = context.repo;
-    await octokit.rest.issues.createComment({
+    let existingCommentId;
+    if (sticky) {
+        try {
+            existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
+        }
+    }
+    if (existingCommentId) {
+        const response = await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: existingCommentId,
+            body,
+        });
+        const commentUrl = response.data.html_url;
+        core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+        return commentUrl;
+    }
+    const response = await octokit.rest.issues.createComment({
         owner,
         repo,
         issue_number: issueNumber,
         body,
     });
+    const commentUrl = response.data.html_url;
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    return commentUrl;
 }
 
 
@@ -34227,6 +34284,7 @@ exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
 exports.parseRetryAfterMs = parseRetryAfterMs;
 exports.fetchAccount = fetchAccount;
+exports.waitForFundedAccount = waitForFundedAccount;
 exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
@@ -34338,6 +34396,41 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     }
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
+const DEFAULT_WAIT_TIMEOUT_MS = 120000;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+/**
+ * Poll Horizon for an account until it becomes funded or the timeout budget
+ * is exhausted. Only Horizon 404 ("not found") responses are treated as
+ * "not yet funded" and trigger another poll — any other error (rate limit
+ * exhaustion, Horizon outage, network failure) is rethrown immediately so
+ * outages don't turn into a silent multi-minute hang.
+ */
+async function waitForFundedAccount(horizonUrl, stellarAddress, options = {}, fetchAccountFn = fetchAccount) {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const start = Date.now();
+    let attempt = 0;
+    for (;;) {
+        attempt += 1;
+        try {
+            return await fetchAccountFn(horizonUrl, stellarAddress, {
+                timeoutMs: options.requestTimeoutMs,
+                maxRetries: options.maxRetries,
+            });
+        }
+        catch (error) {
+            if (!(error instanceof HorizonError) || error.statusCode !== 404) {
+                throw error;
+            }
+            const elapsedMs = Date.now() - start;
+            if (elapsedMs >= timeoutMs) {
+                throw new HorizonError(`Account ${stellarAddress} was still not funded after waiting ${timeoutMs}ms (wait_until_funded timeout).`, 404, false);
+            }
+            options.onPoll?.(attempt, elapsedMs);
+            await sleep(Math.min(pollIntervalMs, timeoutMs - elapsedMs));
+        }
+    }
+}
 function isCreditBalance(balance) {
     return balance.asset_type !== 'native';
 }
@@ -34405,6 +34498,9 @@ const assets_1 = __nccwpck_require__(5462);
 const inputs_1 = __nccwpck_require__(8422);
 const summary_1 = __nccwpck_require__(8855);
 const outputs_1 = __nccwpck_require__(7729);
+const logger_1 = __nccwpck_require__(6999);
+const metrics_1 = __nccwpck_require__(5670);
+const validation_1 = __nccwpck_require__(4344);
 async function run() {
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
@@ -34413,18 +34509,66 @@ async function run() {
     const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
     const stellarAddress = core.getInput('stellar_address_input').trim();
     const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
+    const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
+    const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
+        min: 1000,
+        max: 60000,
+    });
+    const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
+    const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
+    const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
+    const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
     const githubToken = core.getInput('github_token', { required: true });
+    logger_1.logger.setDebugMode(debugMode);
+    logger_1.logger.debug('Action inputs loaded', {
+        component: 'index',
+        horizonUrl,
+        assetCode,
+        assetIssuer,
+        minXlmReserveRaw,
+        debugMode,
+        horizonTimeoutMs,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
+    });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
+    // Soroban fungible token contracts (SEP-41) use a "C..." contract address
+    // as their issuer instead of a classic "G..." account. Validate that
+    // shape up front so a malformed contract address fails fast with a clear
+    // error instead of silently reaching Horizon or the metrics/JSON output.
+    if (normalizedAsset.assetIssuer.startsWith('C')) {
+        const contractCheck = (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
+        if (!contractCheck.valid) {
+            throw new Error(`Invalid asset_issuer contract address: ${contractCheck.errors.join('; ')}`);
+        }
+        metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
+    }
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve,
     };
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
+    if (waitUntilFunded) {
+        core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
+    }
     let result;
     try {
-        const account = await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress);
+        const account = waitUntilFunded
+            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, stellarAddress, {
+                timeoutMs: waitUntilFundedTimeoutMs,
+                pollIntervalMs: waitUntilFundedIntervalMs,
+                requestTimeoutMs: horizonTimeoutMs,
+                onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
+                    component: 'index',
+                    attempt,
+                    elapsedMs,
+                }),
+            })
+            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, { timeoutMs: horizonTimeoutMs });
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
@@ -34447,12 +34591,21 @@ async function run() {
         stellarAddress,
         horizonUrl,
     });
+    let commentUrl;
     try {
-        await (0, comment_1.postIssueComment)(githubToken, commentBody);
+        commentUrl = await (0, comment_1.postIssueComment)(githubToken, commentBody, { sticky: stickyComment });
+        if (commentUrl) {
+            logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
+        }
     }
     catch (commentError) {
         const message = (0, inputs_1.getErrorMessage)(commentError);
         core.warning(`Failed to post issue comment: ${message}`);
+    }
+    (0, outputs_1.setValidationOutputs)(result, commentUrl);
+    if (debugMode) {
+        logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+        core.debug(metrics_1.globalMetrics.toJSON());
     }
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
@@ -34481,6 +34634,7 @@ run().catch((error) => {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseBooleanInput = parseBooleanInput;
+exports.parseNumberInput = parseNumberInput;
 exports.getErrorMessage = getErrorMessage;
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
@@ -34494,6 +34648,22 @@ function parseBooleanInput(value, defaultValue) {
         return false;
     }
     return defaultValue;
+}
+function parseNumberInput(value, defaultValue, options = {}) {
+    if (value === undefined || value.trim() === '') {
+        return defaultValue;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed)) {
+        throw new Error(`Expected a numeric input, but received: "${value}"`);
+    }
+    if (options.min !== undefined && parsed < options.min) {
+        throw new Error(`Value must be at least ${options.min}. Received: ${parsed}`);
+    }
+    if (options.max !== undefined && parsed > options.max) {
+        throw new Error(`Value must be at most ${options.max}. Received: ${parsed}`);
+    }
+    return parsed;
 }
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -34530,6 +34700,155 @@ function buildLobstrLink() {
 
 /***/ }),
 
+/***/ 6999:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Timer = exports.logger = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+class StructuredLogger {
+    constructor(debugMode = false) {
+        this.debugMode = debugMode;
+    }
+    /**
+     * Enable or disable debug output.
+     */
+    setDebugMode(enabled) {
+        this.debugMode = enabled;
+    }
+    /**
+     * Log an informational message.
+     */
+    info(message, context) {
+        core.info(this.formatMessage(message, context));
+    }
+    /**
+     * Log a warning message.
+     */
+    warn(message, context) {
+        core.warning(this.formatMessage(message, context));
+    }
+    /**
+     * Log an error message.
+     */
+    error(message, context, error) {
+        let fullMessage = this.formatMessage(message, context);
+        if (error) {
+            fullMessage += `\n  Error: ${error.message}`;
+            if (error.stack) {
+                fullMessage += `\n  Stack: ${error.stack}`;
+            }
+        }
+        core.error(fullMessage);
+    }
+    /**
+     * Log a debug message (only shown in debug mode).
+     */
+    debug(message, context) {
+        if (this.debugMode) {
+            core.debug(this.formatMessage(`[DEBUG] ${message}`, context));
+        }
+    }
+    /**
+     * Log performance metrics.
+     */
+    logMetric(name, value, unit = 'ms', context) {
+        const message = `METRIC: ${name}=${value}${unit}`;
+        this.info(message, context);
+    }
+    /**
+     * Format a message with context information.
+     */
+    formatMessage(message, context) {
+        if (!context) {
+            return message;
+        }
+        const parts = [message];
+        if (context.component) {
+            parts.push(`[${context.component}]`);
+        }
+        const otherKeys = Object.keys(context).filter((k) => k !== 'component');
+        if (otherKeys.length > 0) {
+            const contextStr = otherKeys
+                .map((k) => `${k}=${context[k]}`)
+                .join(', ');
+            parts.push(`(${contextStr})`);
+        }
+        return parts.join(' ');
+    }
+}
+exports.logger = new StructuredLogger();
+/**
+ * Create a timing helper for performance measurement.
+ */
+class Timer {
+    constructor(name) {
+        this.name = name;
+        this.startTime = Date.now();
+    }
+    /**
+     * Get elapsed time since timer creation.
+     */
+    elapsed() {
+        return Date.now() - this.startTime;
+    }
+    /**
+     * Log the elapsed time and reset the timer.
+     */
+    logAndReset() {
+        const elapsed = this.elapsed();
+        exports.logger.logMetric(this.name, elapsed, 'ms');
+        this.startTime = Date.now();
+        return elapsed;
+    }
+    /**
+     * Return a formatted elapsed time string.
+     */
+    toString() {
+        const elapsed = this.elapsed();
+        return `${elapsed}ms`;
+    }
+}
+exports.Timer = Timer;
+
+
+/***/ }),
+
 /***/ 3758:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -34544,6 +34863,135 @@ function escapeMarkdownInline(value) {
 function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
 }
+
+
+/***/ }),
+
+/***/ 5670:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/**
+ * Metrics collection for monitoring action performance and behavior.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+const validation_1 = __nccwpck_require__(4344);
+/**
+ * Tag key that flags a metric as carrying a Soroban contract ("C-address").
+ * Metrics tagged this way are validated against the contract address
+ * policy before being recorded, so a malformed or malicious value never
+ * makes it into the JSON metrics artifact (see toJSON()).
+ */
+exports.CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+class MetricsCollector {
+    constructor() {
+        this.metrics = [];
+        this.counters = new Map();
+        this.timers = new Map();
+    }
+    /**
+     * Record a numeric metric. If a `contractAddress` tag is present, it is
+     * validated against the Soroban C-address policy first; an invalid
+     * address throws rather than being silently recorded.
+     */
+    recordMetric(name, value, unit = '', tags) {
+        const contractAddress = tags?.[exports.CONTRACT_ADDRESS_TAG_KEY];
+        if (contractAddress !== undefined) {
+            const result = (0, validation_1.validateContractAddress)(contractAddress);
+            if (!result.valid) {
+                throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
+            }
+        }
+        this.metrics.push({
+            name,
+            value,
+            unit,
+            timestamp: Date.now(),
+            tags,
+        });
+    }
+    /**
+     * Convenience wrapper for recording a metric tagged with a Soroban
+     * contract address, enforcing the C-address policy up front.
+     */
+    recordContractMetric(name, value, contractAddress, unit = '', extraTags) {
+        this.recordMetric(name, value, unit, {
+            ...extraTags,
+            [exports.CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+        });
+    }
+    /**
+     * Increment a counter.
+     */
+    incrementCounter(name, amount = 1) {
+        const current = this.counters.get(name) ?? 0;
+        this.counters.set(name, current + amount);
+    }
+    /**
+     * Get counter value.
+     */
+    getCounter(name) {
+        return this.counters.get(name) ?? 0;
+    }
+    /**
+     * Start a timer.
+     */
+    startTimer(name) {
+        this.timers.set(name, Date.now());
+    }
+    /**
+     * Stop a timer and record the elapsed time.
+     */
+    stopTimer(name, unit = 'ms') {
+        const startTime = this.timers.get(name);
+        if (startTime === undefined) {
+            return null;
+        }
+        const elapsed = Date.now() - startTime;
+        this.recordMetric(`${name}_duration`, elapsed, unit);
+        this.timers.delete(name);
+        return elapsed;
+    }
+    /**
+     * Get a summary of all recorded metrics.
+     */
+    getSummary() {
+        return {
+            metrics: this.metrics,
+            counters: Object.fromEntries(this.counters),
+            totalMetrics: this.metrics.length,
+        };
+    }
+    /**
+     * Export metrics in JSON format.
+     */
+    toJSON() {
+        return JSON.stringify(this.getSummary(), null, 2);
+    }
+    /**
+     * Clear all metrics.
+     */
+    reset() {
+        this.metrics = [];
+        this.counters.clear();
+        this.timers.clear();
+    }
+    /**
+     * Get average value for a metric.
+     */
+    getAverageMetric(name) {
+        const metricPoints = this.metrics.filter((m) => m.name === name);
+        if (metricPoints.length === 0) {
+            return null;
+        }
+        const sum = metricPoints.reduce((acc, m) => acc + m.value, 0);
+        return sum / metricPoints.length;
+    }
+}
+exports.MetricsCollector = MetricsCollector;
+exports.globalMetrics = new MetricsCollector();
 
 
 /***/ }),
@@ -34590,15 +35038,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
 const core = __importStar(__nccwpck_require__(7484));
-function toActionOutputs(result) {
+function toActionOutputs(result, commentUrl) {
     return {
         trustline_exists: String(result.trustlineExists),
         xlm_balance: result.xlmBalance,
         account_funded: String(result.accountFunded),
+        comment_url: commentUrl ?? '',
     };
 }
-function setValidationOutputs(result) {
-    const outputs = toActionOutputs(result);
+function setValidationOutputs(result, commentUrl) {
+    const outputs = toActionOutputs(result, commentUrl);
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
     }
@@ -34631,6 +35080,143 @@ function formatFailureSummary(result) {
     return summary.failedLabels.length > 0
         ? summary.failedLabels.join(', ')
         : 'none';
+}
+
+
+/***/ }),
+
+/***/ 4344:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Extended input validation utilities for TrustBridge Action.
+ * Provides reusable validators with detailed error messages.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.validateNumericInput = validateNumericInput;
+exports.validateContractAddress = validateContractAddress;
+exports.validateAssetCode = validateAssetCode;
+exports.validateUrl = validateUrl;
+exports.combineResults = combineResults;
+/**
+ * Validates a numeric input string with min/max bounds.
+ */
+function validateNumericInput(value, fieldName, options = {}) {
+    const errors = [];
+    const warnings = [];
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) {
+        errors.push(`${fieldName} must be a valid number, got: "${value}"`);
+        return { valid: false, errors, warnings };
+    }
+    if (!options.allowNegative && parsed < 0) {
+        errors.push(`${fieldName} cannot be negative, got: ${parsed}`);
+    }
+    if (options.min !== undefined && parsed < options.min) {
+        errors.push(`${fieldName} must be >= ${options.min}, got: ${parsed}`);
+    }
+    if (options.max !== undefined && parsed > options.max) {
+        errors.push(`${fieldName} must be <= ${options.max}, got: ${parsed}`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/** Soroban contract address ("C-address") StrKey format: "C" + 55 base32 chars. */
+const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
+/**
+ * Validates a Soroban contract address ("C-address") against the
+ * StrKey structural policy: must be exactly 56 characters, start with
+ * "C", and use only the Stellar base32 alphabet (A-Z, 2-7).
+ */
+function validateContractAddress(address) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = address.trim();
+    if (!trimmed) {
+        errors.push('Contract address cannot be empty');
+        return { valid: false, errors, warnings };
+    }
+    if (!trimmed.startsWith('C')) {
+        errors.push(`Contract address must start with "C", got: "${trimmed}"`);
+    }
+    if (trimmed.length !== 56) {
+        errors.push(`Contract address must be 56 characters, got: ${trimmed.length}`);
+    }
+    if (!CONTRACT_ADDRESS_REGEX.test(trimmed)) {
+        errors.push(`Contract address must match StrKey format "C" + 55 base32 characters (A-Z, 2-7), got: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Validates an asset code (e.g., "USDC", "ETH", "BTC").
+ */
+function validateAssetCode(code) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = code.trim();
+    if (!trimmed) {
+        errors.push('Asset code cannot be empty');
+        return { valid: false, errors, warnings };
+    }
+    if (trimmed.length > 12) {
+        errors.push(`Asset code must be <= 12 characters, got: ${trimmed.length}`);
+    }
+    if (!/^[A-Za-z0-9]+$/.test(trimmed)) {
+        errors.push(`Asset code must be alphanumeric, got: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Validates a URL format and protocol.
+ */
+function validateUrl(url, fieldName, options = {}) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = url.trim();
+    if (!trimmed) {
+        errors.push(`${fieldName} cannot be empty`);
+        return { valid: false, errors, warnings };
+    }
+    try {
+        const parsed = new URL(trimmed);
+        const allowedProtos = options.protocols || ['http', 'https'];
+        if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
+            errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
+        }
+    }
+    catch {
+        errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+    };
+}
+/**
+ * Combines multiple validation results into a single summary.
+ */
+function combineResults(...results) {
+    const allErrors = results.flatMap((r) => r.errors);
+    const allWarnings = results.flatMap((r) => r.warnings);
+    return {
+        valid: allErrors.length === 0,
+        errors: allErrors,
+        warnings: allWarnings,
+    };
 }
 
 

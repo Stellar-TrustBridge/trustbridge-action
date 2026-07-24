@@ -76,7 +76,12 @@ sequenceDiagram
     HOR->>HZ: GET /accounts/{id}
     HZ-->>HOR: 200 | 404 | 429 | 503 | timeout
   end
-  alt 404
+  alt 404 and wait_until_funded
+    loop until funded or timeout budget exhausted
+      HOR->>HZ: GET /accounts/{id}
+    end
+    HOR-->>IDX: HorizonAccount | HorizonError(404) on timeout
+  else 404
     HOR-->>IDX: HorizonError(404)
     IDX->>CHK: unfundedAccountResult()
   else 200
@@ -209,7 +214,7 @@ The action ships compiled JavaScript in `dist/`. Consumers reference a release t
 
 Future enhancements that fit the current architecture:
 
-1. **Soroban / smart contract checks** — new module parallel to `horizon.ts`
+1. **Soroban / smart contract checks** — new module parallel to `horizon.ts`. `validation.ts` already validates the StrKey shape of a contract (`C...`) `asset_issuer`; querying contract state over Soroban RPC is still open.
 2. **Multi-asset trustlines** — extend `CheckConfig` to accept a list
 3. **PR comments** — extend `comment.ts` to detect `context.payload.pull_request`
 4. **Sponsor-aware reserve math** — use `num_sponsoring` / `num_sponsored` from Horizon
@@ -224,6 +229,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for proposing changes.
 - **`github_token` scope** — use least privilege (`issues: write` only where needed).
 - **Horizon URL** — consumers on testnet should pass testnet Horizon explicitly; do not rely on address format alone.
 - **Input validation** — G-address regex prevents malformed Horizon paths and log injection in comments.
+- **Markdown escaping** — `checks.ts` escapes dynamic content (Horizon error text, asset code/issuer, account addresses) via `markdown.ts` before it's embedded in a check detail, so untrusted text (e.g. a `detail`/`title` field from a misconfigured or malicious `horizon_url`) can't inject Markdown formatting, links, or break out of the code spans rendered in the issue comment.
 
 ---
 

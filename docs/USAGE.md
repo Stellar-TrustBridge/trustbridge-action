@@ -172,6 +172,30 @@ with:
 - `debug_mode: true` enables extra action logs for troubleshooting.
 - `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
 
+## Sticky comments across re-runs
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  sticky_comment: true   # default — update the previous comment instead of posting a new one
+```
+
+Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
+
+## Waiting for the account to be funded
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  wait_until_funded: true
+  wait_until_funded_timeout_ms: 120000
+  wait_until_funded_interval_ms: 5000
+```
+
+Use this when contributors are expected to fund their wallet right after assignment. The action polls `GET /accounts/{id}` every `wait_until_funded_interval_ms` until it stops 404ing or `wait_until_funded_timeout_ms` elapses, then proceeds exactly as it would for a single check (comment, outputs, `fail_on_missing`). Non-404 Horizon errors (rate limits, outages, timeouts) are not retried by the polling loop — the existing per-request retry/backoff in `horizon.ts` handles those, and if they're still failing after that, the run fails fast instead of continuing to poll.
+
 ## New output: `comment_url`
 
 When the action runs in an issue context, it sets `comment_url` to the created GitHub comment URL.
