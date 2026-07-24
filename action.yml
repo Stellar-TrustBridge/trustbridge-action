@@ -33,6 +33,14 @@ inputs:
     description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
     required: false
     default: 'true'
+  max_retries:
+    description: 'Maximum number of retries for Horizon API requests'
+    required: false
+    default: '3'
+  retry_base_delay_ms:
+    description: 'Base delay in milliseconds for exponential backoff retries'
+    required: false
+    default: '1000'
   github_token:
     description: 'GitHub token used to post issue comments'
     required: true

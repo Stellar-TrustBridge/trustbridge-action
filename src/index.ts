@@ -57,9 +57,21 @@ async function run(): Promise<void> {
   let result;
 
   try {
-    const account = await fetchAccount(horizonUrl, stellarAddress, {
-      timeoutMs: horizonTimeoutMs,
-    });
+  const maxRetries = parseNumberInput(core.getInput('max_retries'), 3, {
+    min: 0,
+    max: 10,
+  });
+  const retryBaseDelayMs = parseNumberInput(
+    core.getInput('retry_base_delay_ms'),
+    1000,
+    { min: 100, max: 30000 },
+  );
+
+  const account = await fetchAccount(horizonUrl, stellarAddress, {
+    timeoutMs: horizonTimeoutMs,
+    maxRetries,
+    retryBaseDelayMs,
+  });
     result = runAccountChecks(account, checkConfig);
   } catch (error) {
     if (error instanceof HorizonError && error.statusCode === 404) {
