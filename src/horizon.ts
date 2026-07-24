@@ -34,6 +34,8 @@ export interface HorizonErrorResponse {
 }
 
 export class HorizonError extends Error {
+  public retryAfterMs?: number;
+
   constructor(
     message: string,
     public readonly statusCode: number,
@@ -47,10 +49,17 @@ export class HorizonError extends Error {
 export interface FetchAccountOptions {
   timeoutMs?: number;
   maxRetries?: number;
+  retryBaseDelayMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
+
+import {
+  DEFAULT_RETRY_POLICY,
+  retryWithBackoff,
+  RetryPolicy,
+} from './resilience';
 
 export function normalizeHorizonUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '');
@@ -76,10 +85,6 @@ export function parseRetryAfterMs(response: import('node-fetch').Response): numb
   return null;
 }
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export async function fetchAccount(
   horizonUrl: string,
   stellarAddress: string,
@@ -88,90 +93,95 @@ export async function fetchAccount(
   const fetch = (await import('node-fetch')).default;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
+
   const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
   if (!normalizedHorizonUrl) {
     throw new HorizonError('horizon_url is required.', 0, false);
   }
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
 
-  let attempt = 0;
-  let lastError: Error | undefined;
+  const policy: RetryPolicy = {
+    ...DEFAULT_RETRY_POLICY,
+    maxRetries,
+    initialDelayMs: retryBaseDelayMs,
+    timeoutMs,
+  };
 
-  while (attempt <= maxRetries) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return retryWithBackoff(
+    async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      });
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
 
-      if (response.status === 404) {
-        throw new HorizonError(
-          `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
-          404,
-          false,
-        );
-      }
+        if (response.status === 404) {
+          throw new HorizonError(
+            `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
+            404,
+            false,
+          );
+        }
 
-      if (!response.ok) {
-        const retryable = isRetryableStatus(response.status);
-        let detail = response.statusText;
-        try {
-          const body = (await response.json()) as HorizonErrorResponse;
-          if (body.detail) {
-            detail = body.detail;
-          } else if (body.title) {
-            detail = body.title;
+        if (!response.ok) {
+          const retryable = isRetryableStatus(response.status);
+          let detail = response.statusText;
+          try {
+            const body = (await response.json()) as HorizonErrorResponse;
+            if (body.detail) {
+              detail = body.detail;
+            } else if (body.title) {
+              detail = body.title;
+            }
+          } catch {
+            // ignore JSON parse errors on error responses
           }
-        } catch {
-          // ignore JSON parse errors on error responses
+
+          const error = new HorizonError(
+            `Horizon request failed (${response.status}): ${detail}`,
+            response.status,
+            retryable,
+          );
+
+          const retryAfter = parseRetryAfterMs(response);
+          if (retryable && retryAfter !== null) {
+            error.retryAfterMs = retryAfter;
+          }
+
+          throw error;
         }
 
-        if (retryable && attempt < maxRetries) {
-          const retryAfter = parseRetryAfterMs(response) ?? 1000 * 2 ** attempt;
-          await sleep(retryAfter);
-          attempt += 1;
-          continue;
+        return (await response.json()) as HorizonAccount;
+      } catch (error) {
+        if (error instanceof HorizonError) {
+          throw error;
         }
 
-        throw new HorizonError(
-          `Horizon request failed (${response.status}): ${detail}`,
-          response.status,
-          retryable,
-        );
+        const isAbort = error instanceof Error && error.name === 'AbortError';
+        const message = isAbort
+          ? `Horizon request timed out after ${timeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : 'Unknown Horizon error';
+
+        throw new HorizonError(message, isAbort ? 408 : 0, true);
+      } finally {
+        clearTimeout(timer);
       }
-
-      return (await response.json()) as HorizonAccount;
-    } catch (error) {
+    },
+    policy,
+    (error) => {
       if (error instanceof HorizonError) {
-        throw error;
+        return error.retryable;
       }
-
-      const isAbort = error instanceof Error && error.name === 'AbortError';
-      const message = isAbort
-        ? `Horizon request timed out after ${timeoutMs}ms`
-        : error instanceof Error
-          ? error.message
-          : 'Unknown Horizon error';
-
-      lastError = new HorizonError(message, isAbort ? 408 : 0, true);
-
-      if (attempt < maxRetries) {
-        await sleep(1000 * 2 ** attempt);
-        attempt += 1;
-        continue;
-      }
-
-      throw lastError;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
+      return true;
+    },
+  );
 }
 
 export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {

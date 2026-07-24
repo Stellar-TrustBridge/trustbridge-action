@@ -54,3 +54,19 @@ describe('parseHorizonBalance', () => {
     expect(parseHorizonBalance('bad')).toBe(0);
   });
 });
+
+
+describe('fetchAccount with resilience policy', () => {
+  it('accepts maxRetries and retryBaseDelayMs options', async () => {
+    await expect(
+      fetchAccount('   ', 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', {
+        maxRetries: 2,
+        retryBaseDelayMs: 500,
+      }),
+    ).rejects.toMatchObject({
+      message: 'horizon_url is required.',
+      statusCode: 0,
+      retryable: false,
+    });
+  });
+});
