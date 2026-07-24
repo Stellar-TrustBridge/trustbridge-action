@@ -174,6 +174,68 @@ export async function fetchAccount(
   throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
 
+export interface WaitForFundedAccountOptions {
+  /** Total time budget to keep polling before giving up, in milliseconds. */
+  timeoutMs?: number;
+  /** Delay between polling attempts, in milliseconds. */
+  pollIntervalMs?: number;
+  /** Per-request timeout passed through to each `fetchAccount` call. */
+  requestTimeoutMs?: number;
+  /** Per-request retry count passed through to each `fetchAccount` call. */
+  maxRetries?: number;
+  /** Called after each unfunded (404) poll, before sleeping for the next attempt. */
+  onPoll?: (attempt: number, elapsedMs: number) => void;
+}
+
+const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
+const DEFAULT_POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Poll Horizon for an account until it becomes funded or the timeout budget
+ * is exhausted. Only Horizon 404 ("not found") responses are treated as
+ * "not yet funded" and trigger another poll — any other error (rate limit
+ * exhaustion, Horizon outage, network failure) is rethrown immediately so
+ * outages don't turn into a silent multi-minute hang.
+ */
+export async function waitForFundedAccount(
+  horizonUrl: string,
+  stellarAddress: string,
+  options: WaitForFundedAccountOptions = {},
+  fetchAccountFn: typeof fetchAccount = fetchAccount,
+): Promise<HorizonAccount> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const start = Date.now();
+  let attempt = 0;
+
+  for (;;) {
+    attempt += 1;
+
+    try {
+      return await fetchAccountFn(horizonUrl, stellarAddress, {
+        timeoutMs: options.requestTimeoutMs,
+        maxRetries: options.maxRetries,
+      });
+    } catch (error) {
+      if (!(error instanceof HorizonError) || error.statusCode !== 404) {
+        throw error;
+      }
+
+      const elapsedMs = Date.now() - start;
+      if (elapsedMs >= timeoutMs) {
+        throw new HorizonError(
+          `Account ${stellarAddress} was still not funded after waiting ${timeoutMs}ms (wait_until_funded timeout).`,
+          404,
+          false,
+        );
+      }
+
+      options.onPoll?.(attempt, elapsedMs);
+      await sleep(Math.min(pollIntervalMs, timeoutMs - elapsedMs));
+    }
+  }
+}
+
 export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
   return balance.asset_type !== 'native';
 }

@@ -6,7 +6,7 @@ Use this lightweight checklist before tagging a new action release.
 
 - Run the unit test suite.
 - Run linting.
-- Run the build so `dist/` matches `src/`.
+- Run the build so `dist/` matches `src/`. CI fails the build if `dist/` drifts from a fresh `npm run build` (see `.github/workflows/ci.yml`), but re-run it locally before tagging to be sure.
 - Confirm `action.yml` inputs and README inputs stay aligned.
 
 ## Tagging

@@ -7,7 +7,7 @@ import {
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError } from './horizon';
+import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
@@ -30,6 +30,17 @@ async function run(): Promise<void> {
     max: 60000,
   });
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
+  const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
+  const waitUntilFundedTimeoutMs = parseNumberInput(
+    core.getInput('wait_until_funded_timeout_ms'),
+    120000,
+    { min: 0, max: 600000 },
+  );
+  const waitUntilFundedIntervalMs = parseNumberInput(
+    core.getInput('wait_until_funded_interval_ms'),
+    5000,
+    { min: 1000, max: 60000 },
+  );
   const githubToken = core.getInput('github_token', { required: true });
 
   logger.setDebugMode(debugMode);
@@ -42,6 +53,9 @@ async function run(): Promise<void> {
     debugMode,
     horizonTimeoutMs,
     stickyComment,
+    waitUntilFunded,
+    waitUntilFundedTimeoutMs,
+    waitUntilFundedIntervalMs,
   });
 
   validateStellarAddress(stellarAddress);
@@ -56,12 +70,28 @@ async function run(): Promise<void> {
 
   core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
 
+  if (waitUntilFunded) {
+    core.info(
+      `wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`,
+    );
+  }
+
   let result;
 
   try {
-    const account = await fetchAccount(horizonUrl, stellarAddress, {
-      timeoutMs: horizonTimeoutMs,
-    });
+    const account = waitUntilFunded
+      ? await waitForFundedAccount(horizonUrl, stellarAddress, {
+          timeoutMs: waitUntilFundedTimeoutMs,
+          pollIntervalMs: waitUntilFundedIntervalMs,
+          requestTimeoutMs: horizonTimeoutMs,
+          onPoll: (attempt, elapsedMs) =>
+            logger.debug(`Account not yet funded — polling again`, {
+              component: 'index',
+              attempt,
+              elapsedMs,
+            }),
+        })
+      : await fetchAccount(horizonUrl, stellarAddress, { timeoutMs: horizonTimeoutMs });
     result = runAccountChecks(account, checkConfig);
   } catch (error) {
     if (error instanceof HorizonError && error.statusCode === 404) {

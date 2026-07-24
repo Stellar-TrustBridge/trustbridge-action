@@ -47,6 +47,24 @@ inputs:
       new one each run (true), or always post a new comment (false)
     required: false
     default: 'true'
+  wait_until_funded:
+    description: >-
+      Poll Horizon until the account becomes funded (true) instead of
+      immediately returning an unfunded result on the first 404 (false)
+    required: false
+    default: 'false'
+  wait_until_funded_timeout_ms:
+    description: >-
+      Maximum total time to poll for the account to become funded, in
+      milliseconds (0-600000). Only used when wait_until_funded is true.
+    required: false
+    default: '120000'
+  wait_until_funded_interval_ms:
+    description: >-
+      Delay between funded-account polling attempts, in milliseconds
+      (1000-60000). Only used when wait_until_funded is true.
+    required: false
+    default: '5000'
   github_token:
     description: 'GitHub token used to post issue comments'
     required: true

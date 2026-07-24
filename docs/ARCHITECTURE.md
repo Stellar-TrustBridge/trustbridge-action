@@ -76,7 +76,12 @@ sequenceDiagram
     HOR->>HZ: GET /accounts/{id}
     HZ-->>HOR: 200 | 404 | 429 | 503 | timeout
   end
-  alt 404
+  alt 404 and wait_until_funded
+    loop until funded or timeout budget exhausted
+      HOR->>HZ: GET /accounts/{id}
+    end
+    HOR-->>IDX: HorizonAccount | HorizonError(404) on timeout
+  else 404
     HOR-->>IDX: HorizonError(404)
     IDX->>CHK: unfundedAccountResult()
   else 200

@@ -24,3 +24,7 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
 ## Timeout values
 
 `horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.
+
+`wait_until_funded_timeout_ms` must be a number between `0` and `600000`. It bounds the total time spent polling when `wait_until_funded` is enabled.
+
+`wait_until_funded_interval_ms` must be a number between `1000` and `60000`. It controls the delay between funding polls.

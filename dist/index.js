@@ -34273,6 +34273,7 @@ exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
 exports.parseRetryAfterMs = parseRetryAfterMs;
 exports.fetchAccount = fetchAccount;
+exports.waitForFundedAccount = waitForFundedAccount;
 exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
@@ -34384,6 +34385,41 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     }
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
+const DEFAULT_WAIT_TIMEOUT_MS = 120000;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+/**
+ * Poll Horizon for an account until it becomes funded or the timeout budget
+ * is exhausted. Only Horizon 404 ("not found") responses are treated as
+ * "not yet funded" and trigger another poll — any other error (rate limit
+ * exhaustion, Horizon outage, network failure) is rethrown immediately so
+ * outages don't turn into a silent multi-minute hang.
+ */
+async function waitForFundedAccount(horizonUrl, stellarAddress, options = {}, fetchAccountFn = fetchAccount) {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const start = Date.now();
+    let attempt = 0;
+    for (;;) {
+        attempt += 1;
+        try {
+            return await fetchAccountFn(horizonUrl, stellarAddress, {
+                timeoutMs: options.requestTimeoutMs,
+                maxRetries: options.maxRetries,
+            });
+        }
+        catch (error) {
+            if (!(error instanceof HorizonError) || error.statusCode !== 404) {
+                throw error;
+            }
+            const elapsedMs = Date.now() - start;
+            if (elapsedMs >= timeoutMs) {
+                throw new HorizonError(`Account ${stellarAddress} was still not funded after waiting ${timeoutMs}ms (wait_until_funded timeout).`, 404, false);
+            }
+            options.onPoll?.(attempt, elapsedMs);
+            await sleep(Math.min(pollIntervalMs, timeoutMs - elapsedMs));
+        }
+    }
+}
 function isCreditBalance(balance) {
     return balance.asset_type !== 'native';
 }
@@ -34466,6 +34502,9 @@ async function run() {
         max: 60000,
     });
     const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
+    const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
+    const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
+    const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
     const githubToken = core.getInput('github_token', { required: true });
     logger_1.logger.setDebugMode(debugMode);
     logger_1.logger.debug('Action inputs loaded', {
@@ -34477,6 +34516,9 @@ async function run() {
         debugMode,
         horizonTimeoutMs,
         stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
     });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
@@ -34486,11 +34528,23 @@ async function run() {
         minXlmReserve,
     };
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
+    if (waitUntilFunded) {
+        core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
+    }
     let result;
     try {
-        const account = await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, {
-            timeoutMs: horizonTimeoutMs,
-        });
+        const account = waitUntilFunded
+            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, stellarAddress, {
+                timeoutMs: waitUntilFundedTimeoutMs,
+                pollIntervalMs: waitUntilFundedIntervalMs,
+                requestTimeoutMs: horizonTimeoutMs,
+                onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
+                    component: 'index',
+                    attempt,
+                    elapsedMs,
+                }),
+            })
+            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, { timeoutMs: horizonTimeoutMs });
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
