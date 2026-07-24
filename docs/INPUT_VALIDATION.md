@@ -19,6 +19,8 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
 
 `debug_mode` accepts the same boolean-friendly values and enables verbose action logging.
 
+`sticky_comment` accepts the same boolean-friendly values. When true (default), the action updates its previous issue comment in place instead of creating a new one on every run.
+
 ## Timeout values
 
 `horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.

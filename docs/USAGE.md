@@ -172,6 +172,17 @@ with:
 - `debug_mode: true` enables extra action logs for troubleshooting.
 - `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
 
+## Sticky comments across re-runs
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  sticky_comment: true   # default — update the previous comment instead of posting a new one
+```
+
+Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
+
 ## New output: `comment_url`
 
 When the action runs in an issue context, it sets `comment_url` to the created GitHub comment URL.

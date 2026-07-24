@@ -33,6 +33,20 @@ inputs:
     description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
     required: false
     default: 'true'
+  debug_mode:
+    description: 'Enable extra action logs for troubleshooting'
+    required: false
+    default: 'false'
+  horizon_timeout_ms:
+    description: 'Horizon request timeout in milliseconds (1000-60000)'
+    required: false
+    default: '15000'
+  sticky_comment:
+    description: >-
+      Update TrustBridge's previous comment on the issue instead of posting a
+      new one each run (true), or always post a new comment (false)
+    required: false
+    default: 'true'
   github_token:
     description: 'GitHub token used to post issue comments'
     required: true
@@ -44,6 +58,8 @@ outputs:
     description: 'Current native XLM balance as reported by Horizon'
   account_funded:
     description: 'Whether the account exists and is activated on the Stellar network'
+  comment_url:
+    description: 'URL of the created or updated issue comment, when run in an issue context'
 
 runs:
   using: 'node20'

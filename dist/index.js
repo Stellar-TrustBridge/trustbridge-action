@@ -34128,8 +34128,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRUSTBRIDGE_FOOTER = void 0;
+exports.STICKY_COMMENT_MARKER = exports.TRUSTBRIDGE_FOOTER = void 0;
 exports.formatCommentBody = formatCommentBody;
+exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -34137,12 +34138,18 @@ const checks_1 = __nccwpck_require__(2122);
 const links_1 = __nccwpck_require__(3346);
 const markdown_1 = __nccwpck_require__(3758);
 exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
+/**
+ * Hidden marker embedded in every TrustBridge comment body. Used to find a
+ * prior comment to update in place instead of posting a new one each run.
+ */
+exports.STICKY_COMMENT_MARKER = '<!-- trustbridge-action:sticky-comment -->';
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
 function formatCommentBody(result, config) {
     const stellarLabNetwork = (0, links_1.inferStellarNetwork)(config.horizonUrl);
     const lines = [
+        exports.STICKY_COMMENT_MARKER,
         '## TrustBridge — Stellar Account Check',
         '',
         `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
@@ -34162,22 +34169,61 @@ function formatCommentBody(result, config) {
     lines.push('', '---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
     return lines.join('\n');
 }
-async function postIssueComment(token, body) {
+/**
+ * Find TrustBridge's previous sticky comment on the issue, if any.
+ * Paginates through every comment so the marker is found even on
+ * high-traffic issues with 100+ comments.
+ */
+async function findStickyComment(octokit, owner, repo, issueNumber) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: issueNumber,
+        per_page: 100,
+    });
+    const existing = comments.find((comment) => comment.body?.includes(exports.STICKY_COMMENT_MARKER));
+    return existing?.id;
+}
+async function postIssueComment(token, body, options = {}) {
+    const sticky = options.sticky ?? true;
     const context = github.context;
     const issueNumber = context.payload.issue?.number;
     if (!issueNumber) {
         core.warning('No issue context found — skipping comment. This action posts comments on `issues` events.');
-        return;
+        return undefined;
     }
     const octokit = github.getOctokit(token);
     const { owner, repo } = context.repo;
-    await octokit.rest.issues.createComment({
+    let existingCommentId;
+    if (sticky) {
+        try {
+            existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
+        }
+    }
+    if (existingCommentId) {
+        const response = await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: existingCommentId,
+            body,
+        });
+        const commentUrl = response.data.html_url;
+        core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+        return commentUrl;
+    }
+    const response = await octokit.rest.issues.createComment({
         owner,
         repo,
         issue_number: issueNumber,
         body,
     });
+    const commentUrl = response.data.html_url;
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    return commentUrl;
 }
 
 
@@ -34405,6 +34451,7 @@ const assets_1 = __nccwpck_require__(5462);
 const inputs_1 = __nccwpck_require__(8422);
 const summary_1 = __nccwpck_require__(8855);
 const outputs_1 = __nccwpck_require__(7729);
+const logger_1 = __nccwpck_require__(6999);
 async function run() {
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
@@ -34413,7 +34460,24 @@ async function run() {
     const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
     const stellarAddress = core.getInput('stellar_address_input').trim();
     const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
+    const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
+    const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
+        min: 1000,
+        max: 60000,
+    });
+    const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
     const githubToken = core.getInput('github_token', { required: true });
+    logger_1.logger.setDebugMode(debugMode);
+    logger_1.logger.debug('Action inputs loaded', {
+        component: 'index',
+        horizonUrl,
+        assetCode,
+        assetIssuer,
+        minXlmReserveRaw,
+        debugMode,
+        horizonTimeoutMs,
+        stickyComment,
+    });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
@@ -34424,7 +34488,9 @@ async function run() {
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
     let result;
     try {
-        const account = await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress);
+        const account = await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, {
+            timeoutMs: horizonTimeoutMs,
+        });
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
@@ -34447,13 +34513,18 @@ async function run() {
         stellarAddress,
         horizonUrl,
     });
+    let commentUrl;
     try {
-        await (0, comment_1.postIssueComment)(githubToken, commentBody);
+        commentUrl = await (0, comment_1.postIssueComment)(githubToken, commentBody, { sticky: stickyComment });
+        if (commentUrl) {
+            logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
+        }
     }
     catch (commentError) {
         const message = (0, inputs_1.getErrorMessage)(commentError);
         core.warning(`Failed to post issue comment: ${message}`);
     }
+    (0, outputs_1.setValidationOutputs)(result, commentUrl);
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
         return;
@@ -34481,6 +34552,7 @@ run().catch((error) => {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseBooleanInput = parseBooleanInput;
+exports.parseNumberInput = parseNumberInput;
 exports.getErrorMessage = getErrorMessage;
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
@@ -34494,6 +34566,22 @@ function parseBooleanInput(value, defaultValue) {
         return false;
     }
     return defaultValue;
+}
+function parseNumberInput(value, defaultValue, options = {}) {
+    if (value === undefined || value.trim() === '') {
+        return defaultValue;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed)) {
+        throw new Error(`Expected a numeric input, but received: "${value}"`);
+    }
+    if (options.min !== undefined && parsed < options.min) {
+        throw new Error(`Value must be at least ${options.min}. Received: ${parsed}`);
+    }
+    if (options.max !== undefined && parsed > options.max) {
+        throw new Error(`Value must be at most ${options.max}. Received: ${parsed}`);
+    }
+    return parsed;
 }
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -34526,6 +34614,155 @@ function buildChangeTrustLink(network) {
 function buildLobstrLink() {
     return 'https://lobstr.co/';
 }
+
+
+/***/ }),
+
+/***/ 6999:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Timer = exports.logger = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+class StructuredLogger {
+    constructor(debugMode = false) {
+        this.debugMode = debugMode;
+    }
+    /**
+     * Enable or disable debug output.
+     */
+    setDebugMode(enabled) {
+        this.debugMode = enabled;
+    }
+    /**
+     * Log an informational message.
+     */
+    info(message, context) {
+        core.info(this.formatMessage(message, context));
+    }
+    /**
+     * Log a warning message.
+     */
+    warn(message, context) {
+        core.warning(this.formatMessage(message, context));
+    }
+    /**
+     * Log an error message.
+     */
+    error(message, context, error) {
+        let fullMessage = this.formatMessage(message, context);
+        if (error) {
+            fullMessage += `\n  Error: ${error.message}`;
+            if (error.stack) {
+                fullMessage += `\n  Stack: ${error.stack}`;
+            }
+        }
+        core.error(fullMessage);
+    }
+    /**
+     * Log a debug message (only shown in debug mode).
+     */
+    debug(message, context) {
+        if (this.debugMode) {
+            core.debug(this.formatMessage(`[DEBUG] ${message}`, context));
+        }
+    }
+    /**
+     * Log performance metrics.
+     */
+    logMetric(name, value, unit = 'ms', context) {
+        const message = `METRIC: ${name}=${value}${unit}`;
+        this.info(message, context);
+    }
+    /**
+     * Format a message with context information.
+     */
+    formatMessage(message, context) {
+        if (!context) {
+            return message;
+        }
+        const parts = [message];
+        if (context.component) {
+            parts.push(`[${context.component}]`);
+        }
+        const otherKeys = Object.keys(context).filter((k) => k !== 'component');
+        if (otherKeys.length > 0) {
+            const contextStr = otherKeys
+                .map((k) => `${k}=${context[k]}`)
+                .join(', ');
+            parts.push(`(${contextStr})`);
+        }
+        return parts.join(' ');
+    }
+}
+exports.logger = new StructuredLogger();
+/**
+ * Create a timing helper for performance measurement.
+ */
+class Timer {
+    constructor(name) {
+        this.name = name;
+        this.startTime = Date.now();
+    }
+    /**
+     * Get elapsed time since timer creation.
+     */
+    elapsed() {
+        return Date.now() - this.startTime;
+    }
+    /**
+     * Log the elapsed time and reset the timer.
+     */
+    logAndReset() {
+        const elapsed = this.elapsed();
+        exports.logger.logMetric(this.name, elapsed, 'ms');
+        this.startTime = Date.now();
+        return elapsed;
+    }
+    /**
+     * Return a formatted elapsed time string.
+     */
+    toString() {
+        const elapsed = this.elapsed();
+        return `${elapsed}ms`;
+    }
+}
+exports.Timer = Timer;
 
 
 /***/ }),
@@ -34590,15 +34827,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
 const core = __importStar(__nccwpck_require__(7484));
-function toActionOutputs(result) {
+function toActionOutputs(result, commentUrl) {
     return {
         trustline_exists: String(result.trustlineExists),
         xlm_balance: result.xlmBalance,
         account_funded: String(result.accountFunded),
+        comment_url: commentUrl ?? '',
     };
 }
-function setValidationOutputs(result) {
-    const outputs = toActionOutputs(result);
+function setValidationOutputs(result, commentUrl) {
+    const outputs = toActionOutputs(result, commentUrl);
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
     }

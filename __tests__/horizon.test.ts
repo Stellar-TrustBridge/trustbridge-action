@@ -18,8 +18,8 @@ describe('normalizeHorizonUrl', () => {
 
 describe('parseRetryAfterMs', () => {
   it('parses seconds-based retry headers', () => {
-    const response = { headers: { get: () => '2' } };
-    expect(parseRetryAfterMs(response as any)).toBe(2000);
+    const response = { headers: { get: () => '2' } } as unknown as import('node-fetch').Response;
+    expect(parseRetryAfterMs(response)).toBe(2000);
   });
 });
 

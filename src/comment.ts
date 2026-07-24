@@ -17,6 +17,12 @@ export interface CommentConfig extends CheckConfig {
 
 export const TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 
+/**
+ * Hidden marker embedded in every TrustBridge comment body. Used to find a
+ * prior comment to update in place instead of posting a new one each run.
+ */
+export const STICKY_COMMENT_MARKER = '<!-- trustbridge-action:sticky-comment -->';
+
 function statusIcon(passed: boolean): string {
   return passed ? '✅' : '❌';
 }
@@ -27,6 +33,7 @@ export function formatCommentBody(
 ): string {
   const stellarLabNetwork = inferStellarNetwork(config.horizonUrl);
   const lines: string[] = [
+    STICKY_COMMENT_MARKER,
     '## TrustBridge — Stellar Account Check',
     '',
     `Checked account: ${inlineCode(config.stellarAddress)}`,
@@ -74,10 +81,46 @@ export function formatCommentBody(
   return lines.join('\n');
 }
 
+export interface UpsertCommentOptions {
+  /**
+   * When true (default), find and update TrustBridge's previous comment on
+   * the issue instead of posting a new one every run. Falls back to
+   * creating a new comment when no prior comment is found, or when the
+   * lookup itself fails (e.g. transient GitHub API error).
+   */
+  sticky?: boolean;
+}
+
+type Octokit = ReturnType<typeof github.getOctokit>;
+
+/**
+ * Find TrustBridge's previous sticky comment on the issue, if any.
+ * Paginates through every comment so the marker is found even on
+ * high-traffic issues with 100+ comments.
+ */
+export async function findStickyComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<number | undefined> {
+  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: issueNumber,
+    per_page: 100,
+  });
+
+  const existing = comments.find((comment) => comment.body?.includes(STICKY_COMMENT_MARKER));
+  return existing?.id;
+}
+
 export async function postIssueComment(
   token: string,
   body: string,
+  options: UpsertCommentOptions = {},
 ): Promise<string | undefined> {
+  const sticky = options.sticky ?? true;
   const context = github.context;
   const issueNumber = context.payload.issue?.number;
 
@@ -90,6 +133,31 @@ export async function postIssueComment(
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = context.repo;
+
+  let existingCommentId: number | undefined;
+  if (sticky) {
+    try {
+      existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      core.warning(
+        `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
+      );
+    }
+  }
+
+  if (existingCommentId) {
+    const response = await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: existingCommentId,
+      body,
+    });
+
+    const commentUrl = response.data.html_url;
+    core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+    return commentUrl;
+  }
 
   const response = await octokit.rest.issues.createComment({
     owner,

@@ -17,6 +17,7 @@ Open-source programs and DAOs often gate contributions on Stellar wallet readine
 | Unclear setup instructions | Posts a Markdown comment with ✅/❌ per check and links to Stellar Lab / LOBSTR |
 | Silent CI failures | Configurable `fail_on_missing` to fail or warn |
 | Custom assets / testnet | All Horizon and asset inputs are configurable |
+| Re-runs spam the issue with duplicate comments | `sticky_comment` (default `true`) updates the previous TrustBridge comment in place |
 
 ---
 
@@ -77,6 +78,7 @@ See [docs/USAGE.md](docs/USAGE.md) for advanced patterns (custom assets, testnet
 | `min_xlm_reserve` | No | `1.5` | Minimum native XLM balance required |
 | `debug_mode` | No | `false` | Enable extra action logs for troubleshooting |
 | `horizon_timeout_ms` | No | `15000` | Horizon request timeout in milliseconds |
+| `sticky_comment` | No | `true` | Update TrustBridge's previous issue comment instead of posting a new one each run |
 | `fail_on_missing` | No | `true` | `true` → `core.setFailed()`; `false` → warning only |
 
 Full input semantics and output reference: [docs/USAGE.md](docs/USAGE.md).

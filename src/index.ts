@@ -29,6 +29,7 @@ async function run(): Promise<void> {
     min: 1000,
     max: 60000,
   });
+  const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
   const githubToken = core.getInput('github_token', { required: true });
 
   logger.setDebugMode(debugMode);
@@ -40,6 +41,7 @@ async function run(): Promise<void> {
     minXlmReserveRaw,
     debugMode,
     horizonTimeoutMs,
+    stickyComment,
   });
 
   validateStellarAddress(stellarAddress);
@@ -84,7 +86,7 @@ async function run(): Promise<void> {
 
   let commentUrl: string | undefined;
   try {
-    commentUrl = await postIssueComment(githubToken, commentBody);
+    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
     if (commentUrl) {
       logger.info('Issue comment created', { component: 'index', commentUrl });
     }
