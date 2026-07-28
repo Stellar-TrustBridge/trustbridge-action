@@ -4,18 +4,24 @@ import {
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
+  tlsFailureResult,
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { fetchAccount, HorizonError, HorizonTlsError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
-import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
+import {
+  getErrorMessage,
+  parseBooleanInput,
+  parseNumberInput,
+  parseUnauthorizedTrustlinePolicy,
+} from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { globalMetrics } from './metrics';
-import { validateContractAddress, clearSpans, getSpans } from './validation';
+import { validateContractAddress, validateSsrfSafeUrl, clearSpans, getSpans } from './validation';
 
 async function run(): Promise<void> {
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -63,12 +69,32 @@ async function run(): Promise<void> {
   const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
   const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
 
+  // Unauthorized trustline policy (Issue #72)
+  const unauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy(
+    core.getInput('unauthorized_trustline_policy'),
+  );
+
+  // Clawback warning strict mode (Issue #73)
+  const clawbackStrictMode = parseBooleanInput(core.getInput('clawback_strict_mode'), false);
+
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
+
+  // Never weaken TLS verification by default (Issue #71). TrustBridge does
+  // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
+  // environment has disabled it, surface that loudly rather than silently
+  // trusting an unverified Horizon endpoint.
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    logger.warn(
+      'NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.',
+      { component: 'index' },
+    );
+  }
 
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
     component: 'index',
+    trustbridgeConfigPath,
     horizonUrl,
     horizonUrlFallback,
     horizonCacheTtlMs,
@@ -111,6 +137,24 @@ async function run(): Promise<void> {
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
 
+  // Reject clearly unsafe Horizon/RPC endpoints before ever attempting a
+  // connection (Issue #71): private IPs, loopback, link-local, cloud
+  // metadata endpoints, and file:// are all blocked. HTTPS is required —
+  // plain HTTP Horizon endpoints are not supported in production defaults,
+  // so TLS verification can never be silently bypassed by pointing at an
+  // unencrypted mirror.
+  const horizonUrlInputs: Array<[string, string]> = [['horizon_url', horizonUrl]];
+  if (horizonUrlFallback) horizonUrlInputs.push(['horizon_url_fallback', horizonUrlFallback]);
+  for (const fallbackUrl of fallbackUrls) {
+    horizonUrlInputs.push(['rpc_fallback_url', fallbackUrl]);
+  }
+  for (const [fieldName, urlValue] of horizonUrlInputs) {
+    const urlCheck = validateSsrfSafeUrl(urlValue, fieldName);
+    if (!urlCheck.valid) {
+      throw new Error(`Invalid ${fieldName}: ${urlCheck.errors.join('; ')}`);
+    }
+  }
+
   const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
 
   // Soroban fungible token contracts (SEP-41) use a "C..." contract address
@@ -134,6 +178,8 @@ async function run(): Promise<void> {
     ...normalizedAsset,
     minXlmReserve,
     horizonUrl,
+    unauthorizedTrustlinePolicy,
+    clawbackStrictMode,
   };
 
   core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
@@ -175,7 +221,10 @@ async function run(): Promise<void> {
       : await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
     result = runAccountChecks(account, checkConfig);
   } catch (error) {
-    if (error instanceof HorizonError && error.statusCode === 404) {
+    if (error instanceof HorizonTlsError) {
+      core.error(error.message);
+      result = tlsFailureResult(error.message, checkConfig);
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
     } else if (error instanceof HorizonError) {
       core.error(error.message);
@@ -200,6 +249,7 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    debugMode,
   });
 
   let commentUrl: string | undefined;
