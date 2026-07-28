@@ -1,5 +1,7 @@
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
+import { validateHorizonUrl } from './validation';
+
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -14,6 +16,18 @@ export interface HorizonBalanceCredit {
   asset_issuer: string;
   buying_liabilities: string;
   selling_liabilities: string;
+  /**
+   * Present only when the issuer has AUTHORIZATION_REQUIRED set. Absent
+   * means the issuer does not require per-account authorization.
+   */
+  is_authorized?: boolean;
+  is_authorized_to_maintain_liabilities?: boolean;
+  /**
+   * Per-trustline clawback flag (Horizon protocol 17+). Reflects the
+   * issuer's AUTH_CLAWBACK_ENABLED setting unless overridden on this
+   * specific trustline.
+   */
+  is_clawback_enabled?: boolean;
 }
 
 export interface HorizonBalanceLiquidityPoolShares {
@@ -67,6 +81,58 @@ export class HorizonError extends Error {
   }
 }
 
+/**
+ * Raised when the TLS/certificate handshake to a Horizon endpoint fails
+ * (expired cert, self-signed cert, hostname mismatch, untrusted CA, etc).
+ * Kept distinct from `HorizonError` so callers can surface a clear
+ * "TLS/certificate problem with this endpoint" message instead of
+ * attributing the failure to the account being checked. Not retryable —
+ * retrying against the same misconfigured endpoint cannot succeed.
+ */
+export class HorizonTlsError extends HorizonError {
+  constructor(
+    message: string,
+    public readonly originalCode?: string,
+  ) {
+    super(message, 0, false);
+    this.name = 'HorizonTlsError';
+  }
+}
+
+/**
+ * Node/OpenSSL error codes that indicate a TLS handshake or certificate
+ * verification failure, as opposed to a generic connection/network error.
+ */
+const TLS_ERROR_CODES = new Set<string>([
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'CERT_UNTRUSTED',
+  'CERT_CHAIN_TOO_LONG',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_GET_CRL',
+  'HOSTNAME_MISMATCH',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_TLS_HANDSHAKE_TIMEOUT',
+]);
+
+function tlsErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && TLS_ERROR_CODES.has(code)) return code;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const causeCode = (cause as NodeJS.ErrnoException).code;
+    if (causeCode && TLS_ERROR_CODES.has(causeCode)) return causeCode;
+  }
+  return undefined;
+}
+
 type FetchLike = (
   url: string | import('node-fetch').Request,
   init?: import('node-fetch').RequestInit,
@@ -88,7 +154,38 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_CACHE_TTL_MS = 60_000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/+$/, '');
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const validation = validateHorizonUrl(trimmed, 'horizon_url', { allowHttp: true });
+  if (!validation.valid) {
+    throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+  }
+  const parsed = new URL(trimmed);
+  const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+  return `${parsed.origin}${cleanPath}`;
+}
+
+/**
+ * Produce a representation of a configured Horizon URL that is safe to
+ * post in a public-facing GitHub issue comment. A private Horizon mirror's
+ * hostname can itself be sensitive internal infrastructure information, so
+ * by default only the URL scheme is shown. Pass `revealHost: true` (wired
+ * to the `debug_mode` input) to show the full host — still routed through
+ * `redactHorizonUrl` so any embedded account address stays masked.
+ */
+export function displayHorizonUrl(url: string, revealHost: boolean): string {
+  if (!url) return url;
+  if (revealHost) {
+    return redactHorizonUrl(url);
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//••• (set debug_mode: true to reveal)`;
+  } catch {
+    return '••• (set debug_mode: true to reveal)';
+  }
 }
 
 export function isRetryableStatus(status: number): boolean {
@@ -332,6 +429,28 @@ async function fetchAccountOnce(
     } catch (error) {
       if (error instanceof HorizonError) {
         throw error;
+      }
+
+      const tlsCode = tlsErrorCode(error);
+      if (tlsCode) {
+        const tlsLatencyMs = Date.now() - requestStartedAt;
+        logger.debug('Horizon TLS/certificate verification failed', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          tlsErrorCode: tlsCode,
+          latencyMs: tlsLatencyMs,
+          attempt,
+          final: true,
+        }));
+        // Not retryable: retrying against the same endpoint cannot fix a
+        // bad certificate, so fail fast instead of burning the retry budget.
+        throw new HorizonTlsError(
+          'TLS/certificate verification failed while connecting to the configured Horizon endpoint. ' +
+            'This is a transport-layer problem with the endpoint itself, not with the Stellar account being checked.',
+          tlsCode,
+        );
       }
 
       const isAbort = error instanceof Error && error.name === 'AbortError';
@@ -646,6 +765,15 @@ export async function waitForFundedAccount(
   }
 }
 
+/**
+ * Narrows to a credit trustline balance (`credit_alphanum4` /
+ * `credit_alphanum12`) only. Checks the asset_type allowlist explicitly
+ * rather than `!== 'native'` — liquidity-pool-share balances
+ * (`asset_type: "liquidity_pool_shares"`) carry no `asset_code`/
+ * `asset_issuer` and must never be misclassified as a credit trustline,
+ * since that would let a same-shaped LP entry slip through a naive
+ * trustline match.
+ */
 export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
   return balance.asset_type === 'credit_alphanum4' || balance.asset_type === 'credit_alphanum12';
 }
@@ -666,6 +794,36 @@ export function hasTrustline(
       balance.asset_code === assetCode &&
       balance.asset_issuer === assetIssuer,
   );
+}
+
+/**
+ * Returns the credit trustline balance entry matching `assetCode` +
+ * `assetIssuer`, or `undefined` if no such trustline exists. Unlike
+ * `hasTrustline`, this exposes the full balance object so callers can
+ * inspect per-trustline flags such as `is_authorized` and
+ * `is_clawback_enabled`.
+ */
+export function findTrustlineBalance(
+  account: HorizonAccount,
+  assetCode: string,
+  assetIssuer: string,
+): HorizonBalanceCredit | undefined {
+  return account.balances.find(
+    (balance): balance is HorizonBalanceCredit =>
+      isCreditBalance(balance) &&
+      balance.asset_code === assetCode &&
+      balance.asset_issuer === assetIssuer,
+  );
+}
+
+/**
+ * A trustline is considered authorized unless the issuer has explicitly
+ * marked it unauthorized (`is_authorized === false`). Horizon omits this
+ * field entirely when the issuer's AUTHORIZATION_REQUIRED flag is not set,
+ * so "field absent" must be treated as authorized, not as unknown.
+ */
+export function isTrustlineAuthorized(balance: HorizonBalanceCredit): boolean {
+  return balance.is_authorized !== false;
 }
 
 export function parseHorizonBalance(balance: string): number {
