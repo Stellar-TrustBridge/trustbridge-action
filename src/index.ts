@@ -179,6 +179,7 @@ async function run(): Promise<void> {
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
     component: 'index',
+    trustbridgeConfigPath,
     horizonUrl,
     horizonUrlFallback,
     horizonCacheTtlMs,
