@@ -34391,6 +34391,70 @@ function isTrustBridgeComment(body) {
         body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
+ * Build a hardened metrics JSON string safe for embedding in a GitHub issue
+ * comment.
+ *
+ * "Hardened" means:
+ *   1. Only structural/aggregate fields are included (no raw balances, no
+ *      account addresses, no Horizon URLs).
+ *   2. The JSON is produced via `JSON.stringify` with a replacer so
+ *      unintended fields cannot sneak in via future `MetricsCollector`
+ *      additions.
+ *   3. The output is size-capped at `MAX_METRICS_JSON_BYTES`; if exceeded,
+ *      a truncation notice replaces the body so the comment never exceeds
+ *      GitHub's comment size limit.
+ *
+ * @internal Exported for testing.
+ */
+exports.MAX_METRICS_JSON_BYTES = 4096;
+function buildHardenedMetricsJson(metrics) {
+    const summary = metrics.getSummary();
+    // Strip metric tags entirely — tags may contain contract addresses.
+    const safeSummary = {
+        totalMetrics: summary.totalMetrics,
+        counters: summary.counters,
+        metrics: summary.metrics.map((m) => ({
+            name: m.name,
+            value: m.value,
+            unit: m.unit,
+            timestamp: m.timestamp,
+            // tags deliberately omitted
+        })),
+    };
+    let json;
+    try {
+        json = JSON.stringify(safeSummary, null, 2);
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ error: `metrics serialisation failed: ${message}` });
+    }
+    if (Buffer.byteLength(json, 'utf8') > exports.MAX_METRICS_JSON_BYTES) {
+        const truncated = {
+            totalMetrics: safeSummary.totalMetrics,
+            counters: safeSummary.counters,
+            truncated: true,
+            note: `Metrics body exceeded ${exports.MAX_METRICS_JSON_BYTES} bytes and was omitted.`,
+        };
+        return JSON.stringify(truncated, null, 2);
+    }
+    return json;
+}
+/**
+ * Returns true when a comment body matches any of the TrustBridge
+ * identifiers: the current versioned sticky marker, the legacy marker
+ * (pre-schema-version), or the TrustBridge footer. Matching on any of
+ * these provides defense-in-depth across upgrades and accidental
+ * marker drift.
+ */
+function isTrustBridgeComment(body) {
+    if (!body)
+        return false;
+    return (body.includes(exports.STICKY_COMMENT_MARKER) ||
+        body.includes(exports.STICKY_COMMENT_MARKER_LEGACY) ||
+        body.includes(exports.TRUSTBRIDGE_FOOTER));
+}
+/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
  * Paginates through every comment so the marker is found even on
  * high-traffic issues with 100+ comments.
@@ -34518,7 +34582,17 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_CACHE_TTL_MS = 60000;
 function normalizeHorizonUrl(baseUrl) {
-    return baseUrl.trim().replace(/\/+$/, '');
+    const trimmed = baseUrl.trim();
+    if (!trimmed) {
+        return '';
+    }
+    const validation = (0, validation_1.validateHorizonUrl)(trimmed, 'horizon_url', { allowHttp: true });
+    if (!validation.valid) {
+        throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+    }
+    const parsed = new URL(trimmed);
+    const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.origin}${cleanPath}`;
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
@@ -35065,6 +35139,7 @@ async function run() {
     logger_1.logger.setDebugMode(debugMode);
     logger_1.logger.debug('Action inputs loaded', {
         component: 'index',
+        trustbridgeConfigPath,
         horizonUrl,
         horizonUrlFallback,
         horizonCacheTtlMs,
@@ -35783,6 +35858,7 @@ function inlineCode(value) {
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.normalizeMetricHost = normalizeMetricHost;
 const validation_1 = __nccwpck_require__(4344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -35898,6 +35974,22 @@ class MetricsCollector {
 }
 exports.MetricsCollector = MetricsCollector;
 exports.globalMetrics = new MetricsCollector();
+/**
+ * Normalizes a URL to a clean host key for metrics reporting.
+ * Strips credentials, path traversal artifacts, and ports if default.
+ */
+function normalizeMetricHost(url) {
+    if (!url || typeof url !== 'string') {
+        return 'unknown_host';
+    }
+    try {
+        const parsed = new URL(url.trim());
+        return parsed.hostname || 'unknown_host';
+    }
+    catch {
+        return 'unknown_host';
+    }
+}
 
 
 /***/ }),
