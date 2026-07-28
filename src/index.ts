@@ -9,7 +9,7 @@ import {
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { fetchAccount, HorizonError, HorizonTlsError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
@@ -77,9 +77,21 @@ async function run(): Promise<void> {
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
 
+  // Never weaken TLS verification by default (Issue #71). TrustBridge does
+  // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
+  // environment has disabled it, surface that loudly rather than silently
+  // trusting an unverified Horizon endpoint.
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    logger.warn(
+      'NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.',
+      { component: 'index' },
+    );
+  }
+
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
     component: 'index',
+    trustbridgeConfigPath,
     horizonUrl,
     horizonUrlFallback,
     horizonCacheTtlMs,
@@ -152,6 +164,24 @@ async function run(): Promise<void> {
   validateStellarAddress(resolvedAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
 
+  // Reject clearly unsafe Horizon/RPC endpoints before ever attempting a
+  // connection (Issue #71): private IPs, loopback, link-local, cloud
+  // metadata endpoints, and file:// are all blocked. HTTPS is required —
+  // plain HTTP Horizon endpoints are not supported in production defaults,
+  // so TLS verification can never be silently bypassed by pointing at an
+  // unencrypted mirror.
+  const horizonUrlInputs: Array<[string, string]> = [['horizon_url', horizonUrl]];
+  if (horizonUrlFallback) horizonUrlInputs.push(['horizon_url_fallback', horizonUrlFallback]);
+  for (const fallbackUrl of fallbackUrls) {
+    horizonUrlInputs.push(['rpc_fallback_url', fallbackUrl]);
+  }
+  for (const [fieldName, urlValue] of horizonUrlInputs) {
+    const urlCheck = validateSsrfSafeUrl(urlValue, fieldName);
+    if (!urlCheck.valid) {
+      throw new Error(`Invalid ${fieldName}: ${urlCheck.errors.join('; ')}`);
+    }
+  }
+
   const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
 
   // Soroban fungible token contracts (SEP-41) use a "C..." contract address
@@ -175,6 +205,8 @@ async function run(): Promise<void> {
     ...normalizedAsset,
     minXlmReserve,
     horizonUrl,
+    unauthorizedTrustlinePolicy,
+    clawbackStrictMode,
   };
 
   core.info(`Checking Stellar account ${resolvedAddress} via ${horizonUrl}`);

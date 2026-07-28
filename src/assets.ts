@@ -1,3 +1,5 @@
+import { HorizonBalanceCredit } from './horizon';
+
 const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
 
 export interface AssetConfigInput {
