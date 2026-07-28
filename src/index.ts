@@ -56,8 +56,17 @@ async function run(): Promise<void> {
     max: 3_600_000,
   });
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
+  const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
+  const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
   const githubToken = core.getInput('github_token', { required: true });
   const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
+
+  // SEP-0007 wallet deep links (Issue #44)
+  const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
+  const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+
+  // Clear validation spans from any prior run in the same process (safety).
+  clearSpans();
 
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
@@ -76,7 +85,30 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     rpcFallbackUrl: rpcFallbackUrlRaw,
     useCache,
+    sep0007DeepLinks,
   });
+
+  if (logInputs) {
+    emitInputsLogRecord({
+      horizonUrl,
+      horizonUrlFallback,
+      rpcFallbackUrl: rpcFallbackUrlRaw,
+      assetCode,
+      assetIssuer,
+      minXlmReserve: minXlmReserveRaw,
+      stellarAddress,
+      failOnMissing,
+      debugMode,
+      horizonTimeoutMs,
+      stickyComment,
+      waitUntilFunded,
+      waitUntilFundedTimeoutMs,
+      waitUntilFundedIntervalMs,
+      horizonCacheTtlMs,
+      useCache,
+      logInputs,
+    });
+  }
 
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
@@ -133,8 +165,6 @@ async function run(): Promise<void> {
             timeoutMs: waitUntilFundedTimeoutMs,
             pollIntervalMs: waitUntilFundedIntervalMs,
             requestTimeoutMs: horizonTimeoutMs,
-            fallbackUrls,
-            useCache,
             onPoll: (attempt, elapsedMs) =>
               logger.debug(`Account not yet funded — polling again`, {
                 component: 'index',
@@ -170,6 +200,8 @@ async function run(): Promise<void> {
     waitUntilFunded,
     waitUntilFundedTimeoutMs,
     waitUntilFundedIntervalMs,
+    sep0007DeepLinks,
+    sep0007OriginDomain,
   });
 
   let commentUrl: string | undefined;
@@ -230,6 +262,13 @@ async function run(): Promise<void> {
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
     core.debug(globalMetrics.toJSON());
+
+    // Emit validation spans for observability (Issue #35)
+    const spans = getSpans();
+    if (spans.length > 0) {
+      logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+      core.debug(JSON.stringify(spans, null, 2));
+    }
   }
 
   if (result.valid) {

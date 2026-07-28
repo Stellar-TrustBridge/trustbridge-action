@@ -8,8 +8,15 @@ import {
   ValidationResult,
   estimateTrustlineSetupCost,
 } from './checks';
-import { buildAccountViewerLink, buildChangeTrustLink, buildLobstrLink, inferStellarNetwork } from './links';
+import {
+  buildAccountViewerLink,
+  buildChangeTrustLink,
+  buildLobstrLink,
+  buildSep0007PayLink,
+  inferStellarNetwork,
+} from './links';
 import { inlineCode } from './markdown';
+import { MetricsCollector } from './metrics';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -27,6 +34,16 @@ export interface CommentConfig extends CheckConfig {
   waitUntilFundedTimeoutMs?: number;
   waitUntilFundedIntervalMs?: number;
   stickyComment?: boolean;
+  /** Emit SEP-0007 wallet deep links (web+stellar:pay) in the comment. */
+  sep0007DeepLinks?: boolean;
+  /** Optional origin domain for SEP-0007 URIs (§3.4). */
+  sep0007OriginDomain?: string;
+  /**
+   * When provided, a hardened metrics JSON block is appended to the comment
+   * as a fenced code block. Callers should pass a fresh `MetricsCollector`
+   * snapshot so the comment reflects the run that generated it.
+   */
+  metricsSnapshot?: MetricsCollector;
 }
 
 export const TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
@@ -101,6 +118,25 @@ export function formatCommentBody(
     `- [LOBSTR wallet](${buildLobstrLink()}) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
   );
 
+  // SEP-0007 wallet deep links (Issue #44)
+  if (config.sep0007DeepLinks) {
+    const payLink = buildSep0007PayLink({
+      destination: config.stellarAddress,
+      amount: String(STELLAR_MIN_ACCOUNT_BALANCE_XLM),
+      msg: `Activate Stellar account for ${config.assetCode} trustline`,
+      network: stellarLabNetwork,
+      originDomain: config.sep0007OriginDomain || undefined,
+    });
+    lines.push(
+      '',
+      '### Quick wallet actions (SEP-0007)',
+      '',
+      '_Open these links in a SEP-0007-compatible wallet (LOBSTR, Solar, Albedo) to complete setup._',
+      '',
+      `- [Send ${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM to activate account](${payLink})`,
+    );
+  }
+
   if (result.remediation) {
     lines.push('', '### Remediation', '', result.remediation);
   }
@@ -137,12 +173,85 @@ export function formatCommentBody(
     `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | Whether the **${config.assetCode}** trustline is configured (from \`action.yml\`) |`,
     `| \`xlm_balance\` | \`${result.xlmBalance}\` | Native XLM balance reported by Horizon (from \`action.yml\`) |`,
     `| \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |`,
+  );
+
+  // Hardened metrics JSON export (Issue #33)
+  if (config.metricsSnapshot) {
+    const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
+    lines.push(
+      '',
+      '### Metrics',
+      '',
+      '_Machine-readable run metrics. Values are structural counts only — no account addresses or balances._',
+      '',
+      '```json',
+      metricsJson,
+      '```',
+    );
+  }
+
+  lines.push(
     '',
     '---',
     TRUSTBRIDGE_FOOTER,
   );
 
   return lines.join('\n');
+}
+
+/**
+ * Build a hardened metrics JSON string safe for embedding in a GitHub issue
+ * comment.
+ *
+ * "Hardened" means:
+ *   1. Only structural/aggregate fields are included (no raw balances, no
+ *      account addresses, no Horizon URLs).
+ *   2. The JSON is produced via `JSON.stringify` with a replacer so
+ *      unintended fields cannot sneak in via future `MetricsCollector`
+ *      additions.
+ *   3. The output is size-capped at `MAX_METRICS_JSON_BYTES`; if exceeded,
+ *      a truncation notice replaces the body so the comment never exceeds
+ *      GitHub's comment size limit.
+ *
+ * @internal Exported for testing.
+ */
+export const MAX_METRICS_JSON_BYTES = 4096;
+
+export function buildHardenedMetricsJson(metrics: MetricsCollector): string {
+  const summary = metrics.getSummary();
+
+  // Strip metric tags entirely — tags may contain contract addresses.
+  const safeSummary = {
+    totalMetrics: summary.totalMetrics,
+    counters: summary.counters,
+    metrics: summary.metrics.map((m) => ({
+      name: m.name,
+      value: m.value,
+      unit: m.unit,
+      timestamp: m.timestamp,
+      // tags deliberately omitted
+    })),
+  };
+
+  let json: string;
+  try {
+    json = JSON.stringify(safeSummary, null, 2);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return JSON.stringify({ error: `metrics serialisation failed: ${message}` });
+  }
+
+  if (Buffer.byteLength(json, 'utf8') > MAX_METRICS_JSON_BYTES) {
+    const truncated = {
+      totalMetrics: safeSummary.totalMetrics,
+      counters: safeSummary.counters,
+      truncated: true,
+      note: `Metrics body exceeded ${MAX_METRICS_JSON_BYTES} bytes and was omitted.`,
+    };
+    return JSON.stringify(truncated, null, 2);
+  }
+
+  return json;
 }
 
 export interface UpsertCommentOptions {

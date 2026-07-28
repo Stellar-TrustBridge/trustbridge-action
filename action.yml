@@ -95,6 +95,27 @@ inputs:
     description: 'Cache successful Horizon responses in job memory (true/false)'
     required: false
     default: 'false'
+  log_inputs:
+    description: >-
+      Emit a structured JSON log record of all resolved action inputs at run
+      start (redacted — Stellar addresses, Horizon URLs, and any embedded
+      secrets are masked before the record is written to GitHub Actions log
+      output). Useful for auditing which inputs were active during a run.
+      Defaults to false.
+    required: false
+    default: 'false'
+  trustbridge_config_path:
+    description: >-
+      Path (relative to the repository root, or absolute) to a consumer
+      trustbridge.yml config file that can supply default values for
+      horizon_url, asset_code, asset_issuer, min_xlm_reserve, and other
+      inputs.  Explicit action inputs always override values from the file.
+      The file is validated for SSRF-safe URLs, injection-clean strings, and
+      secret field redaction before any value is used.  Defaults to
+      ".trustbridge.yml" in the repository root.  Leave empty to skip the
+      config file entirely.
+    required: false
+    default: '.trustbridge.yml'
   github_token:
     description: 'GitHub token used to post issue comments'
     required: true
