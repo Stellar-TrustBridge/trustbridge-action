@@ -4,13 +4,19 @@ import {
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
+  tlsFailureResult,
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { fetchAccount, HorizonError, HorizonTlsError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
-import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
+import {
+  getErrorMessage,
+  parseBooleanInput,
+  parseNumberInput,
+  parseUnauthorizedTrustlinePolicy,
+} from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -115,6 +121,17 @@ async function run(): Promise<void> {
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
+
+  // Never weaken TLS verification by default (Issue #71). TrustBridge does
+  // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
+  // environment has disabled it, surface that loudly rather than silently
+  // trusting an unverified Horizon endpoint.
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    logger.warn(
+      'NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.',
+      { component: 'index' },
+    );
+  }
 
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
@@ -241,7 +258,10 @@ async function run(): Promise<void> {
       : await fetchAccount(effectiveHorizonUrl, stellarAddress, horizonOptions);
     result = runAccountChecks(account, checkConfig);
   } catch (error) {
-    if (error instanceof HorizonError && error.statusCode === 404) {
+    if (error instanceof HorizonTlsError) {
+      core.error(error.message);
+      result = tlsFailureResult(error.message, checkConfig);
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
     } else if (error instanceof HorizonError && error.statusCode === 0 && !error.retryable) {
       // Cancelled by job signal — exit cleanly without a misleading comment.
@@ -278,6 +298,7 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    debugMode,
   });
 
   let commentUrl: string | undefined;
