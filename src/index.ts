@@ -5,10 +5,11 @@ import {
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
+  tlsFailureResult,
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { fetchAccount, HorizonError, HorizonTlsError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput, resolveInput } from './inputs';
@@ -72,12 +73,32 @@ async function run(): Promise<void> {
   // #145 — issues:write preflight
   const preflightOnly = parseBooleanInput(getInput('preflight_only'), false);
 
+  // Unauthorized trustline policy (Issue #72)
+  const unauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy(
+    core.getInput('unauthorized_trustline_policy'),
+  );
+
+  // Clawback warning strict mode (Issue #73)
+  const clawbackStrictMode = parseBooleanInput(core.getInput('clawback_strict_mode'), false);
+
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
+
+  // Never weaken TLS verification by default (Issue #71). TrustBridge does
+  // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
+  // environment has disabled it, surface that loudly rather than silently
+  // trusting an unverified Horizon endpoint.
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    logger.warn(
+      'NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.',
+      { component: 'index' },
+    );
+  }
 
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
     component: 'index',
+    trustbridgeConfigPath,
     horizonUrl,
     horizonUrlFallback,
     horizonCacheTtlMs,
@@ -175,6 +196,8 @@ async function run(): Promise<void> {
     ...normalizedAsset,
     minXlmReserve,
     horizonUrl,
+    unauthorizedTrustlinePolicy,
+    clawbackStrictMode,
   };
 
   core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
@@ -254,6 +277,7 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    debugMode,
   });
 
   let commentUrl: string | undefined;

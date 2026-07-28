@@ -22,6 +22,10 @@ Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Usag
 | Rate limited | Horizon 429 | Yes (≤3) | If exhausted: failure result | Posted if reachable | per `fail_on_missing` |
 | Service unavailable | Horizon 503/502/504 | Yes (≤3) | If exhausted: failure result | Posted | per `fail_on_missing` |
 | Timeout | AbortController 15s | Yes (≤3) | If exhausted: `xlm_balance=unknown` | Posted | per `fail_on_missing` |
+| TLS/certificate failure | Handshake/cert error connecting to `horizon_url` | No (not retryable — see below) | `xlm_balance=unknown`, distinct "Horizon TLS / certificate verification" check | Posted, attributes failure to the endpoint not the account | per `fail_on_missing` |
+| Unauthorized trustline | Horizon 200, trustline exists, `is_authorized: false` | No | Per `unauthorized_trustline_policy` — `fail` clears `trustline_exists` | Posted with issuer-authorization remediation/warning | per `fail_on_missing` (when policy is `fail`) |
+| Clawback-enabled trustline | Horizon 200, trustline exists, `is_clawback_enabled: true` | No | Warns by default; fails if `clawback_strict_mode: true` | Posted with clawback warning | per `fail_on_missing` (when strict mode is on) |
+| Unsafe `horizon_url`/`horizon_url_fallback`/`rpc_fallback_url` | SSRF-unsafe target or non-HTTPS scheme | No | Not set (run fails early) | Not posted | `setFailed` |
 | Comment API failure | GitHub 403/422/etc. | No | Still set from checks | Not posted | Check result still applies |
 | No issue context | workflow_dispatch without issue | No | Set normally | Skipped (warning) | per check result |
 
@@ -40,6 +44,25 @@ Examples that fail:
 - Wrong length or invalid base32 characters (`0`, `1`, `8`, `9`, `l`)
 
 **Behavior:** Throws before any Horizon call. The action run fails immediately; no outputs or comments.
+
+### Invalid or malicious Horizon URL (`horizon_url`)
+
+**Rules:**
+
+- Must use `https://` by default (`http://` allowed only if `allowHttp` option is enabled).
+- Must not contain embedded credentials (e.g. `https://user:pass@horizon.stellar.org` is rejected).
+- Must not contain path traversal fragments (e.g. `/../`, `/./`, `%2e%2e`, `%2E%2E`, `\..`).
+- Must not target private IP ranges or metadata endpoints (SSRF protection).
+
+Examples that fail:
+
+- `https://user:pass@horizon.stellar.org`
+- `https://horizon.stellar.org/../admin`
+- `https://horizon.stellar.org/%2e%2e/`
+- `file:///etc/passwd`
+- `http://169.254.169.254/latest/meta-data`
+
+**Behavior:** Disallowed `horizon_url` inputs are rejected early during validation (`validateHorizonUrl`), throwing a `HorizonError` before any network calls are dispatched. Metrics reporting host tags use clean, normalized host keys.
 
 ---
 
@@ -75,6 +98,18 @@ Same retry policy as 429. Public Horizon occasionally returns 503 during mainten
 
 Default **15 seconds** per attempt. Network partitions or slow Horizon nodes trigger abort + retry.
 
+### TLS / certificate verification failure
+
+Raised when the TLS handshake to `horizon_url` itself fails — expired certificate, self-signed certificate, hostname mismatch, or an untrusted CA. Not retried (retrying the same misconfigured endpoint cannot succeed) and, when a fallback URL is configured, the action falls through to it just like any other primary-endpoint failure.
+
+**User message:** A distinct "Horizon TLS / certificate verification" check — never phrased as an account or trustline problem, since the account was never reached. Only the sanitized, single-line error is included; no stack trace or raw internal detail is posted to the comment.
+
+**Common cause:** a private/enterprise Horizon mirror with a self-signed or internally-issued certificate that the Actions runner does not trust. See [Private Horizon mirrors](USAGE.md#private-horizon-mirrors) for setup guidance — TrustBridge never disables certificate verification to work around this.
+
+### Unsafe or non-HTTPS `horizon_url` / `horizon_url_fallback` / `rpc_fallback_url`
+
+Rejected before any connection is attempted if the URL targets a private IP, loopback, link-local address, a cloud metadata endpoint, uses `file://`, or does not use `https://`. The run fails immediately (same as invalid input) — no Horizon call is ever made.
+
 ### Waiting for funding (`wait_until_funded`)
 
 When `wait_until_funded: true`, a 404 no longer resolves immediately to the unfunded result. Instead the action sleeps `wait_until_funded_interval_ms` and retries, up to a `wait_until_funded_timeout_ms` budget. Any non-404 error breaks out of the polling loop immediately and is handled the same as a normal Horizon failure — polling only ever waits on "not found," never on outages or rate limits.
@@ -97,6 +132,14 @@ Messages differ so contributors know whether to add vs fix the asset.
 Native balance is parsed as a string from Horizon (7 decimal places) and compared numerically to `min_xlm_reserve`.
 
 Remediation calculates approximate additional XLM needed.
+
+### Unauthorized trustline (AUTHORIZATION_REQUIRED)
+
+A trustline can exist on Horizon (`is_authorized: false`) without the issuer having authorized it — a false green for a naive "trustline exists" check. Controlled by `unauthorized_trustline_policy` (`warn` default, `fail`, or `ignore`); see [Unauthorized trustline policy](USAGE.md#unauthorized-trustline-policy). Under `fail`, the trustline check does not pass and `trustline_exists` reflects the stricter meaning.
+
+### Clawback-enabled trustline
+
+Horizon reports `is_clawback_enabled: true` per-trustline when the issuer (or the trustline itself) has clawback enabled, meaning the issuer can revoke balances at any time. TrustBridge warns by default; set `clawback_strict_mode: true` to fail instead. See [Clawback-enabled asset warnings](USAGE.md#clawback-enabled-asset-warnings) for the security rationale — vanilla assets without clawback enabled never trigger this.
 
 ---
 
