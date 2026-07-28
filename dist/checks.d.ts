@@ -7,6 +7,7 @@ export interface CheckConfig {
     assetCode: string;
     assetIssuer: string;
     minXlmReserve: number;
+    horizonUrl?: string;
 }
 export interface CheckResultItem {
     passed: boolean;
