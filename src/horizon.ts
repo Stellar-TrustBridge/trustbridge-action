@@ -1,5 +1,7 @@
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
+import { validateHorizonUrl } from './validation';
+
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -14,9 +16,38 @@ export interface HorizonBalanceCredit {
   asset_issuer: string;
   buying_liabilities: string;
   selling_liabilities: string;
+  /**
+   * Present only when the issuer has AUTHORIZATION_REQUIRED set. Absent
+   * means the issuer does not require per-account authorization.
+   */
+  is_authorized?: boolean;
+  is_authorized_to_maintain_liabilities?: boolean;
+  /**
+   * Per-trustline clawback flag (Horizon protocol 17+). Reflects the
+   * issuer's AUTH_CLAWBACK_ENABLED setting unless overridden on this
+   * specific trustline.
+   */
+  is_clawback_enabled?: boolean;
 }
 
-export type HorizonBalance = HorizonBalanceNative | HorizonBalanceCredit;
+/**
+ * Liquidity pool share balances have no `asset_code`/`asset_issuer` — they
+ * are keyed by `liquidity_pool_id` instead. Modeling this as its own
+ * variant (rather than letting it fall through as a generic non-native
+ * balance) keeps `isCreditBalance` from ever mistaking an LP share for a
+ * credit trustline.
+ */
+export interface HorizonBalanceLiquidityPool {
+  balance: string;
+  asset_type: 'liquidity_pool_shares';
+  liquidity_pool_id: string;
+  limit?: string;
+}
+
+export type HorizonBalance =
+  | HorizonBalanceNative
+  | HorizonBalanceCredit
+  | HorizonBalanceLiquidityPool;
 
 export interface HorizonAccount {
   id: string;
@@ -78,7 +109,38 @@ const DEFAULT_RETRY_MAX_DELAY_MS = 60_000;
 const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/+$/, '');
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const validation = validateHorizonUrl(trimmed, 'horizon_url', { allowHttp: true });
+  if (!validation.valid) {
+    throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+  }
+  const parsed = new URL(trimmed);
+  const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+  return `${parsed.origin}${cleanPath}`;
+}
+
+/**
+ * Produce a representation of a configured Horizon URL that is safe to
+ * post in a public-facing GitHub issue comment. A private Horizon mirror's
+ * hostname can itself be sensitive internal infrastructure information, so
+ * by default only the URL scheme is shown. Pass `revealHost: true` (wired
+ * to the `debug_mode` input) to show the full host — still routed through
+ * `redactHorizonUrl` so any embedded account address stays masked.
+ */
+export function displayHorizonUrl(url: string, revealHost: boolean): string {
+  if (!url) return url;
+  if (revealHost) {
+    return redactHorizonUrl(url);
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//••• (set debug_mode: true to reveal)`;
+  } catch {
+    return '••• (set debug_mode: true to reveal)';
+  }
 }
 
 export function isRetryableStatus(status: number): boolean {
@@ -156,7 +218,7 @@ function safeAccountSummary(account: HorizonAccount): {
   return {
     balancesCount: account.balances.length,
     hasNativeBalance: account.balances.some((b) => b.asset_type === 'native'),
-    creditTrustlineCount: account.balances.filter((b) => b.asset_type !== 'native').length,
+    creditTrustlineCount: account.balances.filter(isCreditBalance).length,
     subentryCount: account.subentry_count,
   };
 }
@@ -335,6 +397,28 @@ async function fetchAccountOnce(
     } catch (error) {
       if (error instanceof HorizonError) {
         throw error;
+      }
+
+      const tlsCode = tlsErrorCode(error);
+      if (tlsCode) {
+        const tlsLatencyMs = Date.now() - requestStartedAt;
+        logger.debug('Horizon TLS/certificate verification failed', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          tlsErrorCode: tlsCode,
+          latencyMs: tlsLatencyMs,
+          attempt,
+          final: true,
+        }));
+        // Not retryable: retrying against the same endpoint cannot fix a
+        // bad certificate, so fail fast instead of burning the retry budget.
+        throw new HorizonTlsError(
+          'TLS/certificate verification failed while connecting to the configured Horizon endpoint. ' +
+            'This is a transport-layer problem with the endpoint itself, not with the Stellar account being checked.',
+          tlsCode,
+        );
       }
 
       const isAbort = error instanceof Error && error.name === 'AbortError';
@@ -662,8 +746,17 @@ export async function waitForFundedAccount(
   }
 }
 
+/**
+ * Narrows to a credit trustline balance (`credit_alphanum4` /
+ * `credit_alphanum12`) only. Checks the asset_type allowlist explicitly
+ * rather than `!== 'native'` — liquidity-pool-share balances
+ * (`asset_type: "liquidity_pool_shares"`) carry no `asset_code`/
+ * `asset_issuer` and must never be misclassified as a credit trustline,
+ * since that would let a same-shaped LP entry slip through a naive
+ * trustline match.
+ */
 export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
-  return balance.asset_type !== 'native';
+  return balance.asset_type === 'credit_alphanum4' || balance.asset_type === 'credit_alphanum12';
 }
 
 export function getNativeBalance(account: HorizonAccount): string {
@@ -682,6 +775,36 @@ export function hasTrustline(
       balance.asset_code === assetCode &&
       balance.asset_issuer === assetIssuer,
   );
+}
+
+/**
+ * Returns the credit trustline balance entry matching `assetCode` +
+ * `assetIssuer`, or `undefined` if no such trustline exists. Unlike
+ * `hasTrustline`, this exposes the full balance object so callers can
+ * inspect per-trustline flags such as `is_authorized` and
+ * `is_clawback_enabled`.
+ */
+export function findTrustlineBalance(
+  account: HorizonAccount,
+  assetCode: string,
+  assetIssuer: string,
+): HorizonBalanceCredit | undefined {
+  return account.balances.find(
+    (balance): balance is HorizonBalanceCredit =>
+      isCreditBalance(balance) &&
+      balance.asset_code === assetCode &&
+      balance.asset_issuer === assetIssuer,
+  );
+}
+
+/**
+ * A trustline is considered authorized unless the issuer has explicitly
+ * marked it unauthorized (`is_authorized === false`). Horizon omits this
+ * field entirely when the issuer's AUTHORIZATION_REQUIRED flag is not set,
+ * so "field absent" must be treated as authorized, not as unknown.
+ */
+export function isTrustlineAuthorized(balance: HorizonBalanceCredit): boolean {
+  return balance.is_authorized !== false;
 }
 
 export function parseHorizonBalance(balance: string): number {
