@@ -34500,7 +34500,17 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_CACHE_TTL_MS = 60000;
 function normalizeHorizonUrl(baseUrl) {
-    return baseUrl.trim().replace(/\/+$/, '');
+    const trimmed = baseUrl.trim();
+    if (!trimmed) {
+        return '';
+    }
+    const validation = (0, validation_1.validateHorizonUrl)(trimmed, 'horizon_url', { allowHttp: true });
+    if (!validation.valid) {
+        throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+    }
+    const parsed = new URL(trimmed);
+    const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.origin}${cleanPath}`;
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
@@ -35049,6 +35059,7 @@ async function run() {
     logger_1.logger.setDebugMode(debugMode);
     logger_1.logger.debug('Action inputs loaded', {
         component: 'index',
+        trustbridgeConfigPath,
         horizonUrl,
         horizonUrlFallback,
         horizonCacheTtlMs,
@@ -35775,6 +35786,7 @@ function inlineCode(value) {
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.normalizeMetricHost = normalizeMetricHost;
 const validation_1 = __nccwpck_require__(4344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -35890,6 +35902,22 @@ class MetricsCollector {
 }
 exports.MetricsCollector = MetricsCollector;
 exports.globalMetrics = new MetricsCollector();
+/**
+ * Normalizes a URL to a clean host key for metrics reporting.
+ * Strips credentials, path traversal artifacts, and ports if default.
+ */
+function normalizeMetricHost(url) {
+    if (!url || typeof url !== 'string') {
+        return 'unknown_host';
+    }
+    try {
+        const parsed = new URL(url.trim());
+        return parsed.hostname || 'unknown_host';
+    }
+    catch {
+        return 'unknown_host';
+    }
+}
 
 
 /***/ }),
