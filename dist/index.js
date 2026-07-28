@@ -33910,6 +33910,69 @@ function normalizeAssetConfig(input) {
 
 /***/ }),
 
+/***/ 7377:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Simple in-memory cache for Horizon API responses.
+ * Useful for reducing redundant calls within a single GitHub Actions job.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.defaultCache = exports.SimpleCache = void 0;
+class SimpleCache {
+    constructor() {
+        this.store = new Map();
+    }
+    /**
+     * Get a cached value if it exists and hasn't expired.
+     */
+    get(key) {
+        const entry = this.store.get(key);
+        if (!entry) {
+            return null;
+        }
+        if (Date.now() > entry.expiresAt) {
+            this.store.delete(key);
+            return null;
+        }
+        return entry.data;
+    }
+    /**
+     * Set a value in the cache with an expiration time.
+     * @param key Cache key
+     * @param data Data to cache
+     * @param ttlMs Time to live in milliseconds (default: 60 seconds)
+     */
+    set(key, data, ttlMs = 60000) {
+        this.store.set(key, {
+            data,
+            expiresAt: Date.now() + ttlMs,
+        });
+    }
+    /**
+     * Clear all cached entries.
+     */
+    clear() {
+        this.store.clear();
+    }
+    /**
+     * Get cache statistics for debugging.
+     */
+    getStats() {
+        return {
+            size: this.store.size,
+            entries: Array.from(this.store.keys()),
+        };
+    }
+}
+exports.SimpleCache = SimpleCache;
+exports.defaultCache = new SimpleCache();
+
+
+/***/ }),
+
 /***/ 2122:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -33931,6 +33994,7 @@ exports.buildReserveRequirement = buildReserveRequirement;
 exports.buildValidationGate = buildValidationGate;
 const horizon_1 = __nccwpck_require__(9164);
 const markdown_1 = __nccwpck_require__(3758);
+const links_1 = __nccwpck_require__(3346);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
@@ -33998,9 +34062,10 @@ function runAccountChecks(account, config) {
     const valid = checks.every((c) => c.passed);
     let remediation;
     if (!valid) {
+        const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
         const steps = [];
         if (!trustlineExists) {
-            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
+            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Change Trust operation) or a wallet such as [LOBSTR](${(0, links_1.buildLobstrLink)()}).`);
         }
         if (!xlmReserveMet) {
             steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
@@ -34020,6 +34085,7 @@ function runAccountChecks(account, config) {
 function unfundedAccountResult(stellarAddress, config) {
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
+    const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
     const checks = [
         {
             passed: false,
@@ -34046,7 +34112,7 @@ function unfundedAccountResult(stellarAddress, config) {
         checks,
         remediation: [
             `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
+            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
             `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
         ].join('\n\n'),
     };
@@ -34157,8 +34223,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.STICKY_COMMENT_MARKER = exports.TRUSTBRIDGE_FOOTER = void 0;
+exports.MAX_METRICS_JSON_BYTES = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
+exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
+exports.isTrustBridgeComment = isTrustBridgeComment;
 exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
@@ -34166,12 +34234,27 @@ const github = __importStar(__nccwpck_require__(3228));
 const checks_1 = __nccwpck_require__(2122);
 const links_1 = __nccwpck_require__(3346);
 const markdown_1 = __nccwpck_require__(3758);
+/**
+ * Semantic schema version embedded in every TrustBridge issue comment.
+ * Bump when the comment body structure (sections, markers, remediation
+ * shape, etc.) changes in a way that downstream consumers or future
+ * versions of this action need to detect.
+ */
+exports.COMMENT_SCHEMA_VERSION = '1.0.0';
 exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 /**
- * Hidden marker embedded in every TrustBridge comment body. Used to find a
- * prior comment to update in place instead of posting a new one each run.
+ * Legacy hidden marker (pre-schema-version). Kept for backward
+ * compatibility in `findStickyComment` so comments posted by older
+ * releases of the action are still eligible for upsert.
  */
-exports.STICKY_COMMENT_MARKER = '<!-- trustbridge-action:sticky-comment -->';
+exports.STICKY_COMMENT_MARKER_LEGACY = '<!-- trustbridge-action:sticky-comment -->';
+/**
+ * Hidden marker embedded in every TrustBridge comment body. Includes the
+ * comment schema version so future releases can detect the format of a
+ * prior comment and decide whether to update it in place or post a new
+ * one.
+ */
+exports.STICKY_COMMENT_MARKER = `<!-- trustbridge-action:sticky-comment:schema-v${exports.COMMENT_SCHEMA_VERSION} -->`;
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
@@ -34180,6 +34263,7 @@ function formatCommentBody(result, config) {
     const gate = (0, checks_1.buildValidationGate)(result);
     const lines = [
         exports.STICKY_COMMENT_MARKER,
+        `<!-- trustbridge-action:schema-version:${exports.COMMENT_SCHEMA_VERSION} -->`,
         '## TrustBridge — Stellar Account Check',
         '',
         `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
@@ -34195,16 +34279,107 @@ function formatCommentBody(result, config) {
     lines.push('', '### Validation gate', '', gate.ready
         ? '- Ready to proceed: all checks passed.'
         : `- Blocked by: ${gate.failedLabels.join(', ')}`, `- Passed checks: ${gate.passedChecks}/${gate.totalChecks}`, `- Failed checks: ${gate.failedChecks}`, '', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [LOBSTR wallet](${(0, links_1.buildLobstrLink)()}) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+    // SEP-0007 wallet deep links (Issue #44)
+    if (config.sep0007DeepLinks) {
+        const payLink = (0, links_1.buildSep0007PayLink)({
+            destination: config.stellarAddress,
+            amount: String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM),
+            msg: `Activate Stellar account for ${config.assetCode} trustline`,
+            network: stellarLabNetwork,
+            originDomain: config.sep0007OriginDomain || undefined,
+        });
+        lines.push('', '### Quick wallet actions (SEP-0007)', '', '_Open these links in a SEP-0007-compatible wallet (LOBSTR, Solar, Albedo) to complete setup._', '', `- [Send ${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM to activate account](${payLink})`);
+    }
     if (result.remediation) {
         lines.push('', '### Remediation', '', result.remediation);
     }
-    lines.push('', '---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
+    lines.push('', '### Configuration summary', '', `| Input | Value |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? '_default (true)_' : config.failOnMissing ? '`true` — step fails on missing checks' : '`false` — only warns'} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? '_default (true)_' : config.stickyComment ? '`true` — upserts prior comment' : '`false` — always posts new'} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? '`true`' : '`false` (default)'} |`);
+    if (config.waitUntilFunded) {
+        const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
+        const interval = config.waitUntilFundedIntervalMs ?? 5000;
+        lines.push(`| \`wait_until_funded_timeout_ms\` | \`${timeout}\` |`, `| \`wait_until_funded_interval_ms\` | \`${interval}\` |`);
+    }
+    lines.push('', '### Action outputs reference', '', '_Use these output names in downstream workflow steps via `steps.<id>.outputs.<name>`._', '', `| Output | Value in this run | Description |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | Whether the account exists on the Stellar network (from \`action.yml\`) |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | Whether the **${config.assetCode}** trustline is configured (from \`action.yml\`) |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | Native XLM balance reported by Horizon (from \`action.yml\`) |`, `| \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |`);
+    // Hardened metrics JSON export (Issue #33)
+    if (config.metricsSnapshot) {
+        const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
+        lines.push('', '### Metrics', '', '_Machine-readable run metrics. Values are structural counts only — no account addresses or balances._', '', '```json', metricsJson, '```');
+    }
+    lines.push('', '---', exports.TRUSTBRIDGE_FOOTER);
     return lines.join('\n');
+}
+/**
+ * Build a hardened metrics JSON string safe for embedding in a GitHub issue
+ * comment.
+ *
+ * "Hardened" means:
+ *   1. Only structural/aggregate fields are included (no raw balances, no
+ *      account addresses, no Horizon URLs).
+ *   2. The JSON is produced via `JSON.stringify` with a replacer so
+ *      unintended fields cannot sneak in via future `MetricsCollector`
+ *      additions.
+ *   3. The output is size-capped at `MAX_METRICS_JSON_BYTES`; if exceeded,
+ *      a truncation notice replaces the body so the comment never exceeds
+ *      GitHub's comment size limit.
+ *
+ * @internal Exported for testing.
+ */
+exports.MAX_METRICS_JSON_BYTES = 4096;
+function buildHardenedMetricsJson(metrics) {
+    const summary = metrics.getSummary();
+    // Strip metric tags entirely — tags may contain contract addresses.
+    const safeSummary = {
+        totalMetrics: summary.totalMetrics,
+        counters: summary.counters,
+        metrics: summary.metrics.map((m) => ({
+            name: m.name,
+            value: m.value,
+            unit: m.unit,
+            timestamp: m.timestamp,
+            // tags deliberately omitted
+        })),
+    };
+    let json;
+    try {
+        json = JSON.stringify(safeSummary, null, 2);
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ error: `metrics serialisation failed: ${message}` });
+    }
+    if (Buffer.byteLength(json, 'utf8') > exports.MAX_METRICS_JSON_BYTES) {
+        const truncated = {
+            totalMetrics: safeSummary.totalMetrics,
+            counters: safeSummary.counters,
+            truncated: true,
+            note: `Metrics body exceeded ${exports.MAX_METRICS_JSON_BYTES} bytes and was omitted.`,
+        };
+        return JSON.stringify(truncated, null, 2);
+    }
+    return json;
+}
+/**
+ * Returns true when a comment body matches any of the TrustBridge
+ * identifiers: the current versioned sticky marker, the legacy marker
+ * (pre-schema-version), or the TrustBridge footer. Matching on any of
+ * these provides defense-in-depth across upgrades and accidental
+ * marker drift.
+ */
+function isTrustBridgeComment(body) {
+    if (!body)
+        return false;
+    return (body.includes(exports.STICKY_COMMENT_MARKER) ||
+        body.includes(exports.STICKY_COMMENT_MARKER_LEGACY) ||
+        body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
  * Find TrustBridge's previous sticky comment on the issue, if any.
  * Paginates through every comment so the marker is found even on
  * high-traffic issues with 100+ comments.
+ *
+ * Matches on the current versioned marker, the legacy marker, and the
+ * action footer so comments posted by older releases are still eligible
+ * for upsert.
  */
 async function findStickyComment(octokit, owner, repo, issueNumber) {
     const comments = await octokit.paginate(octokit.rest.issues.listComments, {
@@ -34213,7 +34388,7 @@ async function findStickyComment(octokit, owner, repo, issueNumber) {
         issue_number: issueNumber,
         per_page: 100,
     });
-    const existing = comments.find((comment) => comment.body?.includes(exports.STICKY_COMMENT_MARKER));
+    const existing = comments.find((comment) => isTrustBridgeComment(comment.body));
     return existing?.id;
 }
 async function postIssueComment(token, body, options = {}) {
@@ -34310,6 +34485,9 @@ exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
 exports.parseHorizonBalance = parseHorizonBalance;
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+const validation_1 = __nccwpck_require__(4344);
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
         super(message);
@@ -34321,8 +34499,19 @@ class HorizonError extends Error {
 exports.HorizonError = HorizonError;
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_CACHE_TTL_MS = 60000;
 function normalizeHorizonUrl(baseUrl) {
-    return baseUrl.trim().replace(/\/+$/, '');
+    const trimmed = baseUrl.trim();
+    if (!trimmed) {
+        return '';
+    }
+    const validation = (0, validation_1.validateHorizonUrl)(trimmed, 'horizon_url', { allowHttp: true });
+    if (!validation.valid) {
+        throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+    }
+    const parsed = new URL(trimmed);
+    const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.origin}${cleanPath}`;
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
@@ -34345,27 +34534,79 @@ function parseRetryAfterMs(response) {
 async function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
-    const fetch = (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-    if (!normalizedHorizonUrl) {
-        throw new HorizonError('horizon_url is required.', 0, false);
+function buildCacheKey(normalizedHorizonUrl, stellarAddress) {
+    return `horizon:account:${normalizedHorizonUrl}:${stellarAddress}`;
+}
+function redactCacheKey(key) {
+    return (0, logger_1.redactString)(key);
+}
+function redactCacheStats(stats) {
+    return {
+        size: stats.size,
+        entries: stats.entries.map(redactCacheKey),
+    };
+}
+function safeHorizonContext(base) {
+    const ctx = { ...base };
+    if (base.horizonUrlFallback) {
+        ctx.horizonUrlFallback = (0, logger_1.redactHorizonUrl)(base.horizonUrlFallback);
     }
+    if (base.cacheKey) {
+        ctx.cacheKey = redactCacheKey(base.cacheKey);
+    }
+    return ctx;
+}
+/**
+ * Snapshot of non-sensitive account fields that are safe to include in a
+ * debug log. Never include balance values, sequence numbers, sponsor
+ * counts, or the raw account_id — only aggregate structural data, plus
+ * the redacted address via `stellarAddress` on the surrounding context.
+ */
+function safeAccountSummary(account) {
+    return {
+        balancesCount: account.balances.length,
+        hasNativeBalance: account.balances.some((b) => b.asset_type === 'native'),
+        creditTrustlineCount: account.balances.filter((b) => b.asset_type !== 'native').length,
+        subentryCount: account.subentry_count,
+    };
+}
+async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind) {
+    const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
     const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
+    const safeUrlForLog = (0, logger_1.redactHorizonUrl)(url);
     let attempt = 0;
     let lastError;
     while (attempt <= maxRetries) {
+        const requestStartedAt = Date.now();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
+        logger_1.logger.debug('Horizon fetch start', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl: targetHorizonUrl,
+            endpointKind,
+            attempt,
+            maxAttempts: maxRetries + 1,
+            timeoutMs,
+            url: safeUrlForLog,
+        }));
         try {
             const response = await fetch(url, {
                 method: 'GET',
                 headers: { Accept: 'application/json' },
                 signal: controller.signal,
             });
+            const latencyMs = Date.now() - requestStartedAt;
             if (response.status === 404) {
+                logger_1.logger.debug('Horizon account not found (404)', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    status: 404,
+                    latencyMs,
+                    attempt,
+                }));
                 throw new HorizonError(`Account ${stellarAddress} was not found on Horizon (not funded or activated).`, 404, false);
             }
             if (!response.ok) {
@@ -34379,19 +34620,83 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
                     else if (body.title) {
                         detail = body.title;
                     }
+                    logger_1.logger.debug('Horizon error response parsed', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        errorDetail: (0, logger_1.redactString)(detail),
+                        errorType: body.type ? (0, logger_1.redactString)(body.type) : undefined,
+                        errorTitle: body.title ? (0, logger_1.redactString)(body.title) : undefined,
+                    }));
                 }
                 catch {
-                    // ignore JSON parse errors on error responses
+                    logger_1.logger.debug('Horizon error response missing JSON body', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        statusText: response.statusText,
+                    }));
                 }
                 if (retryable && attempt < maxRetries) {
-                    const retryAfter = parseRetryAfterMs(response) ?? 1000 * 2 ** attempt;
+                    const retryAfterHeader = parseRetryAfterMs(response);
+                    const retryAfter = retryAfterHeader ?? 1000 * 2 ** attempt;
+                    logger_1.logger.debug('Horizon retry scheduled', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        retryAfterMs: retryAfter,
+                        retryAfterFromHeader: retryAfterHeader !== null,
+                        nextAttempt: attempt + 1,
+                    }));
                     await sleep(retryAfter);
                     attempt += 1;
                     continue;
                 }
+                logger_1.logger.debug('Horizon non-retryable HTTP error (exhausted retries)', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    status: response.status,
+                    retryable,
+                    latencyMs,
+                    attempt,
+                    final: true,
+                }));
                 throw new HorizonError(`Horizon request failed (${response.status}): ${detail}`, response.status, retryable);
             }
-            return (await response.json());
+            const parsed = (await response.json());
+            logger_1.logger.debug('Horizon fetch success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                status: response.status,
+                latencyMs,
+                attempt,
+                ...safeAccountSummary(parsed),
+            }));
+            return {
+                account: parsed,
+                statusCode: response.status,
+                latencyMs,
+                attempts: attempt + 1,
+            };
         }
         catch (error) {
             if (error instanceof HorizonError) {
@@ -34403,19 +34708,210 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
                 : error instanceof Error
                     ? error.message
                     : 'Unknown Horizon error';
+            const latencyMs = Date.now() - requestStartedAt;
+            logger_1.logger.debug('Horizon transport error', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                kind: isAbort ? 'timeout' : 'network',
+                latencyMs,
+                attempt,
+                timeoutMs,
+                errorMessage: (0, logger_1.redactString)(message),
+            }));
             lastError = new HorizonError(message, isAbort ? 408 : 0, true);
             if (attempt < maxRetries) {
-                await sleep(1000 * 2 ** attempt);
+                const backoffMs = 1000 * 2 ** attempt;
+                logger_1.logger.debug('Horizon transport retry scheduled', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    kind: isAbort ? 'timeout' : 'network',
+                    latencyMs,
+                    attempt,
+                    retryAfterMs: backoffMs,
+                    nextAttempt: attempt + 1,
+                }));
+                await sleep(backoffMs);
                 attempt += 1;
                 continue;
             }
+            logger_1.logger.debug('Horizon transport error (exhausted retries)', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                kind: isAbort ? 'timeout' : 'network',
+                latencyMs,
+                attempt,
+                final: true,
+            }));
             throw lastError;
         }
         finally {
             clearTimeout(timer);
         }
     }
+    logger_1.logger.debug('Horizon retry loop exited without result (fallback throw)', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl: targetHorizonUrl,
+        endpointKind,
+        maxAttempts: maxRetries + 1,
+    }));
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
+}
+async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
+    const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const cache = options.cache ?? cache_1.defaultCache;
+    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+    const fallbackCandidate = options.horizonUrlFallback || (options.fallbackUrls && options.fallbackUrls[0]);
+    const normalizedFallbackUrl = fallbackCandidate
+        ? normalizeHorizonUrl(fallbackCandidate)
+        : '';
+    if (!normalizedHorizonUrl) {
+        throw new HorizonError('horizon_url is required.', 0, false);
+    }
+    const cachingEnabled = cacheTtlMs > 0;
+    const cacheKey = cachingEnabled
+        ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+        : '';
+    if (cachingEnabled) {
+        const cacheStatsBefore = redactCacheStats(cache.getStats());
+        logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey,
+            cacheTtlMs,
+            cacheSizeBefore: cacheStatsBefore.size,
+            cacheEntryCountBefore: cacheStatsBefore.entries.length,
+        }));
+        const cached = cache.get(cacheKey);
+        if (cached) {
+            logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                ...safeAccountSummary(cached),
+            }));
+            return cached;
+        }
+        logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey,
+            cacheTtlMs,
+        }));
+    }
+    else {
+        logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheTtlMs: 0,
+        }));
+    }
+    let primaryError;
+    try {
+        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary');
+        if (cachingEnabled) {
+            cache.set(cacheKey, result.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'primary',
+                ...safeAccountSummary(result.account),
+            }));
+        }
+        return result.account;
+    }
+    catch (error) {
+        if (error instanceof HorizonError) {
+            primaryError = error;
+            if (error.statusCode === 404) {
+                throw error;
+            }
+        }
+        else {
+            throw error;
+        }
+    }
+    if (!normalizedFallbackUrl) {
+        throw primaryError;
+    }
+    logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheKey: cachingEnabled ? cacheKey : undefined,
+        primaryStatusCode: primaryError?.statusCode,
+        primaryRetryable: primaryError?.retryable,
+        primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+    }));
+    try {
+        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback');
+        if (cachingEnabled) {
+            cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'fallback',
+                ...safeAccountSummary(fallbackResult.account),
+            }));
+        }
+        logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            fallbackAttempts: fallbackResult.attempts,
+            fallbackLatencyMs: fallbackResult.latencyMs,
+        }));
+        return fallbackResult.account;
+    }
+    catch (fallbackError) {
+        if (fallbackError instanceof HorizonError) {
+            logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                primaryStatusCode: primaryError?.statusCode,
+                primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+                fallbackStatusCode: fallbackError.statusCode,
+                fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
+            }));
+        }
+        throw fallbackError;
+    }
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 120000;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -34539,11 +35035,33 @@ async function run() {
     const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
     const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
     const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
+    const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
+    const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+    const fallbackUrls = rpcFallbackUrlRaw
+        ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
+        : horizonUrlFallback
+            ? [horizonUrlFallback]
+            : [];
+    const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_cache_ttl_ms'), 60000, {
+        min: 0,
+        max: 3600000,
+    });
+    const useCache = (0, inputs_1.parseBooleanInput)(core.getInput('use_cache'), false);
+    const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
+    const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
     const githubToken = core.getInput('github_token', { required: true });
+    // SEP-0007 wallet deep links (Issue #44)
+    const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
+    const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+    // Clear validation spans from any prior run in the same process (safety).
+    (0, validation_1.clearSpans)();
     logger_1.logger.setDebugMode(debugMode);
     logger_1.logger.debug('Action inputs loaded', {
         component: 'index',
+        trustbridgeConfigPath,
         horizonUrl,
+        horizonUrlFallback,
+        horizonCacheTtlMs,
         assetCode,
         assetIssuer,
         minXlmReserveRaw,
@@ -34553,7 +35071,31 @@ async function run() {
         waitUntilFunded,
         waitUntilFundedTimeoutMs,
         waitUntilFundedIntervalMs,
+        rpcFallbackUrl: rpcFallbackUrlRaw,
+        useCache,
+        sep0007DeepLinks,
     });
+    if (logInputs) {
+        (0, logger_1.emitInputsLogRecord)({
+            horizonUrl,
+            horizonUrlFallback,
+            rpcFallbackUrl: rpcFallbackUrlRaw,
+            assetCode,
+            assetIssuer,
+            minXlmReserve: minXlmReserveRaw,
+            stellarAddress,
+            failOnMissing,
+            debugMode,
+            horizonTimeoutMs,
+            stickyComment,
+            waitUntilFunded,
+            waitUntilFundedTimeoutMs,
+            waitUntilFundedIntervalMs,
+            horizonCacheTtlMs,
+            useCache,
+            logInputs,
+        });
+    }
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
@@ -34571,12 +35113,20 @@ async function run() {
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve,
+        horizonUrl,
     };
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
     if (waitUntilFunded) {
         core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
     }
     let result;
+    const horizonOptions = {
+        timeoutMs: horizonTimeoutMs,
+        horizonUrlFallback: horizonUrlFallback || undefined,
+        fallbackUrls,
+        cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
+        useCache,
+    };
     try {
         const account = waitUntilFunded
             ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, stellarAddress, {
@@ -34588,8 +35138,8 @@ async function run() {
                     attempt,
                     elapsedMs,
                 }),
-            })
-            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, { timeoutMs: horizonTimeoutMs });
+            }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
+            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, horizonOptions);
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
@@ -34611,6 +35161,13 @@ async function run() {
         ...checkConfig,
         stellarAddress,
         horizonUrl,
+        failOnMissing,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
+        sep0007DeepLinks,
+        sep0007OriginDomain,
     });
     let commentUrl;
     try {
@@ -34627,6 +35184,12 @@ async function run() {
     if (debugMode) {
         logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
         core.debug(metrics_1.globalMetrics.toJSON());
+        // Emit validation spans for observability (Issue #35)
+        const spans = (0, validation_1.getSpans)();
+        if (spans.length > 0) {
+            logger_1.logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+            core.debug(JSON.stringify(spans, null, 2));
+        }
     }
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
@@ -34698,11 +35261,28 @@ function getErrorMessage(error) {
 
 "use strict";
 
+/**
+ * Stellar Laboratory and wallet deep-link helpers.
+ *
+ * ## SEP-0007 wallet deep links
+ *
+ * SEP-0007 defines a URI scheme (`web+stellar:`) that allows web pages and
+ * CI workflows to deep-link into compatible wallets (LOBSTR, Solar, Albedo,
+ * etc.) with a pre-built transaction or operation payload.
+ *
+ * TrustBridge uses SEP-0007 `tx` URIs so that contributors can open a
+ * one-click "add trustline" link directly from the issue comment, without
+ * having to manually construct a Change Trust operation in Stellar Lab.
+ *
+ * Reference: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md
+ */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.inferStellarNetwork = inferStellarNetwork;
 exports.buildAccountViewerLink = buildAccountViewerLink;
 exports.buildChangeTrustLink = buildChangeTrustLink;
 exports.buildLobstrLink = buildLobstrLink;
+exports.buildSep0007TxLink = buildSep0007TxLink;
+exports.buildSep0007PayLink = buildSep0007PayLink;
 function inferStellarNetwork(horizonUrl) {
     return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
 }
@@ -34716,6 +35296,88 @@ function buildChangeTrustLink(network) {
 }
 function buildLobstrLink() {
     return 'https://lobstr.co/';
+}
+/**
+ * Build a SEP-0007 `tx` deep link.
+ *
+ * The returned URI (`web+stellar:tx?...`) can be used as an `href` in
+ * Markdown or HTML so contributors can open it in a SEP-0007-compatible
+ * wallet (LOBSTR, Solar, Albedo, etc.) with the transaction pre-loaded.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007TxLink({
+ *   xdr: 'AAAAAQ...',          // base64 XDR
+ *   msg: 'Add USDC trustline',
+ *   network: 'public',
+ * });
+ * // => "web+stellar:tx?xdr=AAAAAQ...&msg=Add+USDC+trustline&network_passphrase=Public+Global+..."
+ * ```
+ */
+function buildSep0007TxLink(options) {
+    const network = options.network ?? 'public';
+    const passphrase = options.networkPassphrase ??
+        (network === 'testnet'
+            ? 'Test SDF Network ; September 2015'
+            : 'Public Global Stellar Network ; September 2015');
+    const params = new URLSearchParams({ xdr: options.xdr });
+    params.set('network_passphrase', passphrase);
+    if (options.msg) {
+        params.set('msg', options.msg);
+    }
+    if (options.callback) {
+        params.set('callback', options.callback);
+    }
+    if (options.originDomain) {
+        params.set('origin_domain', options.originDomain);
+    }
+    return `web+stellar:tx?${params.toString()}`;
+}
+/**
+ * Build a SEP-0007 `pay` deep link.
+ *
+ * Suitable for linking a contributor to a pre-filled payment screen (e.g.
+ * "send 1 XLM to activate your account") inside the TrustBridge issue
+ * comment.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007PayLink({
+ *   destination: 'GABC...XYZ',
+ *   amount: '1',
+ *   msg: 'Activate Stellar account',
+ * });
+ * // => "web+stellar:pay?destination=GABC...&amount=1&msg=Activate+..."
+ * ```
+ */
+function buildSep0007PayLink(options) {
+    const network = options.network ?? 'public';
+    const passphrase = options.networkPassphrase ??
+        (network === 'testnet'
+            ? 'Test SDF Network ; September 2015'
+            : 'Public Global Stellar Network ; September 2015');
+    const params = new URLSearchParams({ destination: options.destination });
+    params.set('network_passphrase', passphrase);
+    if (options.amount) {
+        params.set('amount', options.amount);
+    }
+    if (options.assetCode) {
+        params.set('asset_code', options.assetCode);
+        if (options.assetIssuer) {
+            params.set('asset_issuer', options.assetIssuer);
+        }
+    }
+    if (options.memo) {
+        params.set('memo', options.memo);
+        params.set('memo_type', options.memoType ?? 'text');
+    }
+    if (options.msg) {
+        params.set('msg', options.msg);
+    }
+    if (options.originDomain) {
+        params.set('origin_domain', options.originDomain);
+    }
+    return `web+stellar:pay?${params.toString()}`;
 }
 
 
@@ -34761,7 +35423,160 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Timer = exports.logger = void 0;
+exports.redactStellarAddress = redactStellarAddress;
+exports.redactString = redactString;
+exports.redactHorizonUrl = redactHorizonUrl;
+exports.redactContext = redactContext;
+exports.buildInputsLogRecord = buildInputsLogRecord;
+exports.emitInputsLogRecord = emitInputsLogRecord;
 const core = __importStar(__nccwpck_require__(7484));
+/**
+ * Well-known context keys whose string values always carry a Stellar
+ * address (G-address or C-address) and must be redacted.
+ */
+const ADDRESS_CONTEXT_KEYS = new Set([
+    'stellarAddress',
+    'assetIssuer',
+    'accountId',
+    'account_id',
+    'contractAddress',
+]);
+/**
+ * Pattern matching Stellar G-addresses (classic) and C-addresses (Soroban
+ * contracts): 56-character StrKey starting with G or C, followed by 55
+ * base32 characters (A-Z, 2-7).
+ */
+const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+/**
+ * Redacts a single Stellar address (G- or C-address) to its first 4 and
+ * last 4 characters, separated by `...`. Non-address strings are returned
+ * unchanged so non-address log values never collide with the redaction
+ * pass.
+ *
+ * Examples:
+ *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
+ *     => 'GA5Z...KZVN'
+ */
+function redactStellarAddress(address) {
+    if (!address)
+        return address;
+    const trimmed = address.trim();
+    if (trimmed.length !== 56)
+        return address;
+    const first = trimmed.charAt(0);
+    if (first !== 'G' && first !== 'C')
+        return address;
+    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
+        // Reset regex state (global flag); bail out if it's not a clean match.
+        STELLAR_ADDRESS_REGEX.lastIndex = 0;
+        return address;
+    }
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+/**
+ * Redacts every Stellar address embedded in an arbitrary free-form
+ * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
+ * Uses the same first-4/last-4 policy as `redactStellarAddress`.
+ */
+function redactString(value) {
+    if (!value)
+        return value;
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+}
+/**
+ * Redacts a Horizon endpoint URL so any embedded account address in the
+ * path (e.g. `/accounts/G...`) is masked and any query-string values
+ * matching an address shape are masked before the URL reaches a log line.
+ * The base hostname / protocol is preserved so operators can still verify
+ * which Horizon instance was called.
+ */
+function redactHorizonUrl(url) {
+    if (!url)
+        return url;
+    const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
+    let masked = url.replace(/\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
+    try {
+        const parsed = new URL(masked);
+        const safeParams = new URLSearchParams();
+        for (const [key, rawValue] of parsed.searchParams.entries()) {
+            safeParams.set(key, redactString(rawValue));
+        }
+        const query = safeParams.toString();
+        parsed.search = query ? `?${query}` : '';
+        masked = parsed.toString();
+        if (!hadTrailingSlash) {
+            masked = masked.replace(/\/(?=\?|#|$)/, '');
+        }
+    }
+    catch {
+        // If the URL is malformed, fall back to regex-only redaction on the
+        // raw string — we never want the redaction step itself to throw and
+        // mask the underlying log event we were trying to emit.
+    }
+    return redactString(masked);
+}
+/**
+ * Redacts a `LogContext` record in place (returns a new object, no
+ * mutation) for safe logging. Policy per key type:
+ *
+ * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
+ *   raw string value.
+ * - Key == `horizonUrl`             → run `redactHorizonUrl`.
+ * - Unknown string values           → scan and mask embedded addresses
+ *   via `redactString` so free-form messages attached to context don't
+ *   leak.
+ * - Non-string values               → passed through as-is (numbers,
+ *   booleans). Objects and arrays are recursed shallowly for the common
+ *   case of nested debug payloads.
+ */
+function redactContext(context) {
+    if (!context)
+        return context;
+    const safe = {};
+    for (const key of Object.keys(context)) {
+        const raw = context[key];
+        if (key === 'component') {
+            safe.component = raw;
+            continue;
+        }
+        if (key === 'horizonUrl' && typeof raw === 'string') {
+            safe.horizonUrl = redactHorizonUrl(raw);
+            continue;
+        }
+        if (ADDRESS_CONTEXT_KEYS.has(key) && typeof raw === 'string') {
+            safe[key] = redactStellarAddress(raw);
+            continue;
+        }
+        safe[key] = redactValue(raw);
+    }
+    return safe;
+}
+function redactValue(raw) {
+    if (typeof raw === 'string')
+        return redactString(raw);
+    if (raw === null || raw === undefined)
+        return raw;
+    if (Array.isArray(raw))
+        return raw.map((item) => redactValue(item));
+    if (typeof raw === 'object') {
+        const safeObj = {};
+        for (const [k, v] of Object.entries(raw)) {
+            if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+                safeObj[k] = redactStellarAddress(v);
+            }
+            else if (k === 'horizonUrl' && typeof v === 'string') {
+                safeObj[k] = redactHorizonUrl(v);
+            }
+            else {
+                safeObj[k] = redactValue(v);
+            }
+        }
+        return safeObj;
+    }
+    return raw;
+}
 class StructuredLogger {
     constructor(debugMode = false) {
         this.debugMode = debugMode;
@@ -34776,23 +35591,23 @@ class StructuredLogger {
      * Log an informational message.
      */
     info(message, context) {
-        core.info(this.formatMessage(message, context));
+        core.info(this.formatMessage(redactString(message), redactContext(context)));
     }
     /**
      * Log a warning message.
      */
     warn(message, context) {
-        core.warning(this.formatMessage(message, context));
+        core.warning(this.formatMessage(redactString(message), redactContext(context)));
     }
     /**
      * Log an error message.
      */
     error(message, context, error) {
-        let fullMessage = this.formatMessage(message, context);
+        let fullMessage = this.formatMessage(redactString(message), redactContext(context));
         if (error) {
-            fullMessage += `\n  Error: ${error.message}`;
+            fullMessage += `\n  Error: ${redactString(error.message)}`;
             if (error.stack) {
-                fullMessage += `\n  Stack: ${error.stack}`;
+                fullMessage += `\n  Stack: ${redactString(error.stack)}`;
             }
         }
         core.error(fullMessage);
@@ -34802,7 +35617,7 @@ class StructuredLogger {
      */
     debug(message, context) {
         if (this.debugMode) {
-            core.debug(this.formatMessage(`[DEBUG] ${message}`, context));
+            core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
         }
     }
     /**
@@ -34814,6 +35629,10 @@ class StructuredLogger {
     }
     /**
      * Format a message with context information.
+     *
+     * Precondition: `message` and every string in `context` have already
+     * been run through their respective redaction helpers. This method is
+     * purely responsible for layout.
      */
     formatMessage(message, context) {
         if (!context) {
@@ -34826,11 +35645,27 @@ class StructuredLogger {
         const otherKeys = Object.keys(context).filter((k) => k !== 'component');
         if (otherKeys.length > 0) {
             const contextStr = otherKeys
-                .map((k) => `${k}=${context[k]}`)
+                .map((k) => `${k}=${stringifyForLog(context[k])}`)
                 .join(', ');
             parts.push(`(${contextStr})`);
         }
         return parts.join(' ');
+    }
+}
+function stringifyForLog(value) {
+    if (value === null)
+        return 'null';
+    if (value === undefined)
+        return 'undefined';
+    if (typeof value === 'string')
+        return value;
+    if (typeof value === 'number' || typeof value === 'boolean')
+        return String(value);
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return '[Unserializable]';
     }
 }
 exports.logger = new StructuredLogger();
@@ -34866,6 +35701,50 @@ class Timer {
     }
 }
 exports.Timer = Timer;
+/**
+ * Build a redacted copy of the resolved action inputs suitable for writing
+ * to structured log output.  All Stellar addresses and Horizon/RPC URLs are
+ * masked before the record is returned; no value is emitted verbatim.
+ *
+ * The returned object is plain JSON-serialisable — every value is a
+ * primitive (string, number, boolean) so `JSON.stringify` produces a
+ * deterministic, machine-readable artifact.
+ */
+function buildInputsLogRecord(inputs) {
+    return {
+        horizonUrl: redactHorizonUrl(inputs.horizonUrl),
+        horizonUrlFallback: inputs.horizonUrlFallback ? redactHorizonUrl(inputs.horizonUrlFallback) : '',
+        rpcFallbackUrl: inputs.rpcFallbackUrl ? redactString(inputs.rpcFallbackUrl) : '',
+        assetCode: inputs.assetCode,
+        assetIssuer: redactStellarAddress(inputs.assetIssuer) || redactString(inputs.assetIssuer),
+        minXlmReserve: inputs.minXlmReserve,
+        stellarAddress: redactStellarAddress(inputs.stellarAddress),
+        failOnMissing: inputs.failOnMissing,
+        debugMode: inputs.debugMode,
+        horizonTimeoutMs: inputs.horizonTimeoutMs,
+        stickyComment: inputs.stickyComment,
+        waitUntilFunded: inputs.waitUntilFunded,
+        waitUntilFundedTimeoutMs: inputs.waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs: inputs.waitUntilFundedIntervalMs,
+        horizonCacheTtlMs: inputs.horizonCacheTtlMs,
+        useCache: inputs.useCache,
+        logInputs: inputs.logInputs,
+    };
+}
+/**
+ * Emit a structured JSON log record of all resolved action inputs to GitHub
+ * Actions log output.  The record is built via `buildInputsLogRecord` so
+ * every address/URL field is already redacted before it is written.
+ *
+ * The record is emitted with `core.info` so it is always visible (not gated
+ * on debug mode) whenever the caller opts in via `log_inputs: true`.
+ *
+ * @param inputs  The raw resolved inputs from `src/index.ts`.
+ */
+function emitInputsLogRecord(inputs) {
+    const redacted = buildInputsLogRecord(inputs);
+    core.info(`[TrustBridge] action inputs: ${JSON.stringify(redacted)}`);
+}
 
 
 /***/ }),
@@ -34898,6 +35777,7 @@ function inlineCode(value) {
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.normalizeMetricHost = normalizeMetricHost;
 const validation_1 = __nccwpck_require__(4344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -35013,6 +35893,22 @@ class MetricsCollector {
 }
 exports.MetricsCollector = MetricsCollector;
 exports.globalMetrics = new MetricsCollector();
+/**
+ * Normalizes a URL to a clean host key for metrics reporting.
+ * Strips credentials, path traversal artifacts, and ports if default.
+ */
+function normalizeMetricHost(url) {
+    if (!url || typeof url !== 'string') {
+        return 'unknown_host';
+    }
+    try {
+        const parsed = new URL(url.trim());
+        return parsed.hostname || 'unknown_host';
+    }
+    catch {
+        return 'unknown_host';
+    }
+}
 
 
 /***/ }),
@@ -35114,38 +36010,135 @@ function formatFailureSummary(result) {
 /**
  * Extended input validation utilities for TrustBridge Action.
  * Provides reusable validators with detailed error messages.
+ *
+ * ## OpenTelemetry-style spans
+ *
+ * Every public validator records a lightweight, structured span via
+ * `recordSpan()`. Spans are purely in-process and carry:
+ *   - `name`       – validator identity (e.g. "validateContractAddress")
+ *   - `attributes` – key/value pairs relevant to the call (no PII values)
+ *   - `status`     – "ok" | "error"
+ *   - `durationMs` – wall-clock time of the validation logic
+ *   - `error`      – error message if status is "error"
+ *
+ * Spans are exported through `getSpans()` / `clearSpans()`. In a GitHub
+ * Actions context they are surfaced as debug log lines when `debug_mode`
+ * is enabled. In tests they can be inspected directly to assert
+ * observability behaviour without mocking `core.debug`.
+ *
+ * This is an intentionally thin, zero-dependency implementation that
+ * mirrors the OpenTelemetry Traces data model (SpanStatus, Attributes)
+ * without pulling in the full OTEL SDK, keeping the action bundle small.
+ * A real OTEL exporter can be plugged in by replacing `recordSpan()`.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SECRET_FIELD_NAMES = void 0;
+exports.getSpans = getSpans;
+exports.clearSpans = clearSpans;
 exports.validateNumericInput = validateNumericInput;
 exports.validateContractAddress = validateContractAddress;
 exports.validateAssetCode = validateAssetCode;
 exports.validateUrl = validateUrl;
 exports.combineResults = combineResults;
+exports.validateSsrfSafeUrl = validateSsrfSafeUrl;
+exports.validateHorizonUrl = validateHorizonUrl;
+exports.sanitizeConfigString = sanitizeConfigString;
+exports.redactSecretFields = redactSecretFields;
+exports.validateTrustbridgeConfig = validateTrustbridgeConfig;
+const _spans = [];
+/**
+ * Return all recorded validation spans (for testing or debug export).
+ * Returns a shallow copy so callers cannot mutate the internal store.
+ */
+function getSpans() {
+    return [..._spans];
+}
+/**
+ * Clear all recorded spans (call in test `afterEach` or on action start).
+ */
+function clearSpans() {
+    _spans.length = 0;
+}
+/**
+ * Record a completed span into the in-process store.
+ * Safe to call from every validator; never throws.
+ */
+function recordSpan(span) {
+    try {
+        _spans.push(span);
+    }
+    catch {
+        // Swallow — observability must not break validation.
+    }
+}
+/**
+ * Internal helper that wraps a synchronous validation callback with span
+ * instrumentation. Captures start time, duration, and status automatically.
+ *
+ * @param name       Span name (validator function name).
+ * @param attributes Attributes to attach (no raw user-supplied values).
+ * @param fn         The validation logic to run.
+ * @returns          The `ValidationResult` produced by `fn`.
+ */
+function withSpan(name, attributes, fn) {
+    const startTimeMs = Date.now();
+    try {
+        const result = fn();
+        const durationMs = Date.now() - startTimeMs;
+        recordSpan({
+            name,
+            attributes: { ...attributes, valid: result.valid, errorCount: result.errors.length },
+            status: result.valid ? 'ok' : 'error',
+            durationMs,
+            startTimeMs,
+            error: result.errors.length > 0 ? result.errors[0] : undefined,
+        });
+        return result;
+    }
+    catch (err) {
+        const durationMs = Date.now() - startTimeMs;
+        const message = err instanceof Error ? err.message : String(err);
+        recordSpan({
+            name,
+            attributes: { ...attributes, thrown: true },
+            status: 'error',
+            durationMs,
+            startTimeMs,
+            error: message,
+        });
+        throw err;
+    }
+}
+// ---------------------------------------------------------------------------
+// Validators (each instrumented with an OTel-style span)
+// ---------------------------------------------------------------------------
 /**
  * Validates a numeric input string with min/max bounds.
  */
 function validateNumericInput(value, fieldName, options = {}) {
-    const errors = [];
-    const warnings = [];
-    const parsed = Number(value);
-    if (Number.isNaN(parsed)) {
-        errors.push(`${fieldName} must be a valid number, got: "${value}"`);
-        return { valid: false, errors, warnings };
-    }
-    if (!options.allowNegative && parsed < 0) {
-        errors.push(`${fieldName} cannot be negative, got: ${parsed}`);
-    }
-    if (options.min !== undefined && parsed < options.min) {
-        errors.push(`${fieldName} must be >= ${options.min}, got: ${parsed}`);
-    }
-    if (options.max !== undefined && parsed > options.max) {
-        errors.push(`${fieldName} must be <= ${options.max}, got: ${parsed}`);
-    }
-    return {
-        valid: errors.length === 0,
-        errors,
-        warnings,
-    };
+    return withSpan('validateNumericInput', { fieldName, hasMin: options.min !== undefined, hasMax: options.max !== undefined }, () => {
+        const errors = [];
+        const warnings = [];
+        const parsed = Number(value);
+        if (Number.isNaN(parsed)) {
+            errors.push(`${fieldName} must be a valid number, got: "${value}"`);
+            return { valid: false, errors, warnings };
+        }
+        if (!options.allowNegative && parsed < 0) {
+            errors.push(`${fieldName} cannot be negative, got: ${parsed}`);
+        }
+        if (options.min !== undefined && parsed < options.min) {
+            errors.push(`${fieldName} must be >= ${options.min}, got: ${parsed}`);
+        }
+        if (options.max !== undefined && parsed > options.max) {
+            errors.push(`${fieldName} must be <= ${options.max}, got: ${parsed}`);
+        }
+        return {
+            valid: errors.length === 0,
+            errors,
+            warnings,
+        };
+    });
 }
 /** Soroban contract address ("C-address") StrKey format: "C" + 55 base32 chars. */
 const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
@@ -35153,79 +36146,95 @@ const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
  * Validates a Soroban contract address ("C-address") against the
  * StrKey structural policy: must be exactly 56 characters, start with
  * "C", and use only the Stellar base32 alphabet (A-Z, 2-7).
+ *
+ * Records an OTel-style span for every call (success and failure).
  */
 function validateContractAddress(address) {
-    const errors = [];
-    const warnings = [];
-    const trimmed = address.trim();
-    if (!trimmed) {
-        errors.push('Contract address cannot be empty');
-        return { valid: false, errors, warnings };
-    }
-    if (!trimmed.startsWith('C')) {
-        errors.push(`Contract address must start with "C", got: "${trimmed}"`);
-    }
-    if (trimmed.length !== 56) {
-        errors.push(`Contract address must be 56 characters, got: ${trimmed.length}`);
-    }
-    if (!CONTRACT_ADDRESS_REGEX.test(trimmed)) {
-        errors.push(`Contract address must match StrKey format "C" + 55 base32 characters (A-Z, 2-7), got: "${trimmed}"`);
-    }
-    return {
-        valid: errors.length === 0,
-        errors,
-        warnings,
-    };
+    return withSpan('validateContractAddress', 
+    // Redact the raw address — only record structural metadata in the span.
+    { inputLength: address.trim().length, startsWithC: address.trim().startsWith('C') }, () => {
+        const errors = [];
+        const warnings = [];
+        const trimmed = address.trim();
+        if (!trimmed) {
+            errors.push('Contract address cannot be empty');
+            return { valid: false, errors, warnings };
+        }
+        if (!trimmed.startsWith('C')) {
+            errors.push(`Contract address must start with "C", got: "${trimmed}"`);
+        }
+        if (trimmed.length !== 56) {
+            errors.push(`Contract address must be 56 characters, got: ${trimmed.length}`);
+        }
+        if (!CONTRACT_ADDRESS_REGEX.test(trimmed)) {
+            errors.push(`Contract address must match StrKey format "C" + 55 base32 characters (A-Z, 2-7), got: "${trimmed}"`);
+        }
+        return {
+            valid: errors.length === 0,
+            errors,
+            warnings,
+        };
+    });
 }
 /**
  * Validates an asset code (e.g., "USDC", "ETH", "BTC").
+ *
+ * Records an OTel-style span for every call.
  */
 function validateAssetCode(code) {
-    const errors = [];
-    const warnings = [];
-    const trimmed = code.trim();
-    if (!trimmed) {
-        errors.push('Asset code cannot be empty');
-        return { valid: false, errors, warnings };
-    }
-    if (trimmed.length > 12) {
-        errors.push(`Asset code must be <= 12 characters, got: ${trimmed.length}`);
-    }
-    if (!/^[A-Za-z0-9]+$/.test(trimmed)) {
-        errors.push(`Asset code must be alphanumeric, got: "${trimmed}"`);
-    }
-    return {
-        valid: errors.length === 0,
-        errors,
-        warnings,
-    };
+    return withSpan('validateAssetCode', { inputLength: code.trim().length }, () => {
+        const errors = [];
+        const warnings = [];
+        const trimmed = code.trim();
+        if (!trimmed) {
+            errors.push('Asset code cannot be empty');
+            return { valid: false, errors, warnings };
+        }
+        if (trimmed.length > 12) {
+            errors.push(`Asset code must be <= 12 characters, got: ${trimmed.length}`);
+        }
+        if (!/^[A-Za-z0-9]+$/.test(trimmed)) {
+            errors.push(`Asset code must be alphanumeric, got: "${trimmed}"`);
+        }
+        return {
+            valid: errors.length === 0,
+            errors,
+            warnings,
+        };
+    });
 }
 /**
  * Validates a URL format and protocol.
+ *
+ * Records an OTel-style span. The URL value itself is not placed in span
+ * attributes to avoid leaking potentially sensitive endpoint paths; only the
+ * protocol and field name are recorded.
  */
 function validateUrl(url, fieldName, options = {}) {
-    const errors = [];
-    const warnings = [];
-    const trimmed = url.trim();
-    if (!trimmed) {
-        errors.push(`${fieldName} cannot be empty`);
-        return { valid: false, errors, warnings };
-    }
-    try {
-        const parsed = new URL(trimmed);
-        const allowedProtos = options.protocols || ['http', 'https'];
-        if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
-            errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
+    return withSpan('validateUrl', { fieldName, allowedProtocols: (options.protocols ?? ['http', 'https']).join(',') }, () => {
+        const errors = [];
+        const warnings = [];
+        const trimmed = url.trim();
+        if (!trimmed) {
+            errors.push(`${fieldName} cannot be empty`);
+            return { valid: false, errors, warnings };
         }
-    }
-    catch {
-        errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
-    }
-    return {
-        valid: errors.length === 0,
-        errors,
-        warnings,
-    };
+        try {
+            const parsed = new URL(trimmed);
+            const allowedProtos = options.protocols || ['http', 'https'];
+            if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
+                errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
+            }
+        }
+        catch {
+            errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+        }
+        return {
+            valid: errors.length === 0,
+            errors,
+            warnings,
+        };
+    });
 }
 /**
  * Combines multiple validation results into a single summary.
@@ -35238,6 +36247,278 @@ function combineResults(...results) {
         errors: allErrors,
         warnings: allWarnings,
     };
+}
+// ---------------------------------------------------------------------------
+// Issue #45 — trustbridge.yml consumer config reader security layer
+// ---------------------------------------------------------------------------
+/**
+ * Private IP ranges and loopback patterns that must never appear in a
+ * consumer-supplied Horizon or RPC URL (SSRF prevention).
+ */
+const SSRF_BLOCKED_PATTERNS = [
+    // IPv4 loopback
+    /^https?:\/\/127\./,
+    // IPv4 link-local
+    /^https?:\/\/169\.254\./,
+    // IPv4 private class-A
+    /^https?:\/\/10\./,
+    // IPv4 private class-B
+    /^https?:\/\/172\.(1[6-9]|2\d|3[01])\./,
+    // IPv4 private class-C
+    /^https?:\/\/192\.168\./,
+    // IPv6 loopback / link-local
+    /^https?:\/\/\[?::1\]?/,
+    /^https?:\/\/\[?fe80:/i,
+    // Bare "localhost"
+    /^https?:\/\/localhost[:/]/i,
+    /^https?:\/\/localhost$/i,
+    // Metadata endpoints (AWS, GCP, Azure)
+    /^https?:\/\/169\.254\.169\.254/,
+    /^https?:\/\/metadata\.google\.internal/i,
+    // file:// protocol
+    /^file:\/\//i,
+];
+/**
+ * Validates a URL for use in consumer-supplied trustbridge.yml config,
+ * blocking SSRF targets (private IPs, loopback, metadata endpoints, file://).
+ *
+ * Enforces https-only by default; pass `{ allowHttp: true }` only for
+ * testnet convenience (never for production).
+ */
+function validateSsrfSafeUrl(url, fieldName, options = {}) {
+    const errors = [];
+    const warnings = [];
+    const trimmed = url.trim();
+    if (!trimmed) {
+        errors.push(`${fieldName} cannot be empty`);
+        return { valid: false, errors, warnings };
+    }
+    // Protocol check
+    const allowedProtocols = options.allowHttp ? ['http', 'https'] : ['https'];
+    try {
+        const parsed = new URL(trimmed);
+        const proto = parsed.protocol.replace(':', '');
+        if (!allowedProtocols.includes(proto)) {
+            errors.push(`${fieldName} must use ${options.allowHttp ? 'http or https' : 'https'}, got: "${proto}"`);
+        }
+    }
+    catch {
+        errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+        return { valid: false, errors, warnings };
+    }
+    // SSRF pattern check
+    for (const pattern of SSRF_BLOCKED_PATTERNS) {
+        if (pattern.test(trimmed)) {
+            errors.push(`${fieldName} targets a blocked address (private IP, loopback, or metadata endpoint): "${trimmed}"`);
+            break;
+        }
+    }
+    return { valid: errors.length === 0, errors, warnings };
+}
+/**
+ * Validates a Horizon URL specifically against embedded credentials,
+ * path traversal (`..`, `.`, `%2e%2e`), unsupported protocols, and SSRF targets.
+ */
+function validateHorizonUrl(url, fieldName = 'horizon_url', options = {}) {
+    return withSpan('validateHorizonUrl', { fieldName, allowHttp: !!options.allowHttp }, () => {
+        const errors = [];
+        const warnings = [];
+        const trimmed = url.trim();
+        if (!trimmed) {
+            errors.push(`${fieldName} cannot be empty`);
+            return { valid: false, errors, warnings };
+        }
+        // Check protocol first
+        const allowedProtocols = options.allowHttp ? ['http', 'https'] : ['https'];
+        try {
+            const parsed = new URL(trimmed);
+            const proto = parsed.protocol.replace(':', '');
+            if (!allowedProtocols.includes(proto)) {
+                errors.push(`${fieldName} must use protocol ${options.allowHttp ? 'http or https' : 'https'}, got: "${proto}"`);
+                return { valid: false, errors, warnings };
+            }
+            if (parsed.username || parsed.password) {
+                errors.push(`${fieldName} must not contain embedded credentials`);
+            }
+        }
+        catch {
+            errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+            return { valid: false, errors, warnings };
+        }
+        // Check raw path traversal before URL constructor normalizes/collapses dot segments
+        const rawPath = trimmed.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+/, '');
+        const lowerRawPath = rawPath.toLowerCase();
+        if (rawPath.includes('..') ||
+            rawPath.includes('\\..') ||
+            lowerRawPath.includes('%2e%2e') ||
+            rawPath.includes('/./') ||
+            rawPath.endsWith('/.')) {
+            errors.push(`${fieldName} contains path traversal or invalid path segments`);
+        }
+        // SSRF check (enforce SSRF blocking for private IP, loopback, metadata)
+        const ssrfResult = validateSsrfSafeUrl(url, fieldName, options);
+        if (!ssrfResult.valid) {
+            errors.push(...ssrfResult.errors);
+        }
+        return {
+            valid: errors.length === 0,
+            errors,
+            warnings,
+        };
+    });
+}
+/**
+ * Characters and patterns that must not appear in consumer-supplied
+ * string fields of a trustbridge.yml file (injection prevention).
+ *
+ * Policy:
+ *   - No shell meta-characters: ; & | ` $ ( ) < > ! \
+ *   - No newlines (CR or LF) — prevents header injection
+ *   - No null bytes
+ */
+const INJECTION_PATTERNS = [
+    /[;&|`$()<>!\\]/,
+    /[\r\n]/,
+];
+/** Returns true when the string contains a null byte (U+0000). */
+function containsNullByte(value) {
+    for (let i = 0; i < value.length; i++) {
+        if (value.charCodeAt(i) === 0)
+            return true;
+    }
+    return false;
+}
+/**
+ * Sanitizes a single string field read from a consumer trustbridge.yml,
+ * returning a ValidationResult.  Callers should reject the entire config
+ * if any field fails.
+ */
+function sanitizeConfigString(value, fieldName) {
+    const errors = [];
+    const warnings = [];
+    if (typeof value !== 'string') {
+        errors.push(`${fieldName} must be a string`);
+        return { valid: false, errors, warnings };
+    }
+    for (const pattern of INJECTION_PATTERNS) {
+        if (pattern.test(value)) {
+            errors.push(`${fieldName} contains a disallowed character or pattern (injection risk): "${value}"`);
+            return { valid: false, errors, warnings };
+        }
+    }
+    if (containsNullByte(value)) {
+        errors.push(`${fieldName} contains a disallowed character or pattern (injection risk): null byte`);
+        return { valid: false, errors, warnings };
+    }
+    return { valid: true, errors, warnings };
+}
+/**
+ * Well-known field names in a trustbridge.yml that may carry secret
+ * material (API keys, tokens, private keys).  Values for these fields are
+ * never logged and are redacted to `***` in any sanitized snapshot.
+ */
+exports.SECRET_FIELD_NAMES = new Set([
+    'github_token',
+    'api_key',
+    'secret',
+    'secret_key',
+    'private_key',
+    'token',
+    'password',
+    'passphrase',
+]);
+/**
+ * Redacts secret fields in a consumer-supplied config object.  Any key
+ * whose name appears in `SECRET_FIELD_NAMES` has its value replaced with
+ * `"***"` in the returned object.  All other keys are returned as-is.
+ *
+ * The original object is never mutated; a shallow copy is returned.
+ */
+function redactSecretFields(config) {
+    const safe = {};
+    for (const [key, value] of Object.entries(config)) {
+        safe[key] = exports.SECRET_FIELD_NAMES.has(key) ? '***' : value;
+    }
+    return safe;
+}
+/**
+ * Validates a parsed trustbridge.yml object against the full security
+ * policy: SSRF-safe URLs, injection-clean strings, and contract-address
+ * format for any C-address issuer.
+ *
+ * Returns a `ValidationResult` whose `errors` list every violation found
+ * so the caller can surface them all at once rather than one-at-a-time.
+ */
+function validateTrustbridgeConfig(raw) {
+    const results = [];
+    // URL fields — SSRF-safe, https or http (http for testnet)
+    for (const urlField of ['horizon_url', 'horizon_url_fallback', 'rpc_fallback_url']) {
+        const val = raw[urlField];
+        if (val !== undefined && val !== null && val !== '') {
+            if (typeof val !== 'string') {
+                results.push({ valid: false, errors: [`${urlField} must be a string`], warnings: [] });
+            }
+            else if (urlField === 'horizon_url' || urlField === 'horizon_url_fallback') {
+                results.push(validateHorizonUrl(val, urlField, { allowHttp: true }));
+            }
+            else {
+                results.push(validateSsrfSafeUrl(val, urlField, { allowHttp: true }));
+            }
+        }
+    }
+    // String fields — injection sanitization
+    for (const strField of ['asset_code', 'asset_issuer', 'min_xlm_reserve']) {
+        const val = raw[strField];
+        if (val !== undefined && val !== null && val !== '') {
+            if (typeof val !== 'string') {
+                results.push({ valid: false, errors: [`${strField} must be a string`], warnings: [] });
+            }
+            else {
+                results.push(sanitizeConfigString(val, strField));
+            }
+        }
+    }
+    // asset_issuer — if present and passes injection check, also validate
+    // format (G-address or C-address)
+    const issuerVal = raw['asset_issuer'];
+    if (typeof issuerVal === 'string' && issuerVal.trim()) {
+        const trimmedIssuer = issuerVal.trim();
+        if (trimmedIssuer.startsWith('C')) {
+            results.push(validateContractAddress(trimmedIssuer));
+        }
+        else if (trimmedIssuer.startsWith('G')) {
+            // Validate G-address: 56 chars, base32 alphabet
+            const G_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
+            if (trimmedIssuer.length !== 56 || !G_ADDRESS_REGEX.test(trimmedIssuer)) {
+                results.push({
+                    valid: false,
+                    errors: [
+                        `asset_issuer must be a valid Stellar G-address (56 chars, G + 55 base32) or C-address, got: "${trimmedIssuer}"`,
+                    ],
+                    warnings: [],
+                });
+            }
+        }
+        else if (!exports.SECRET_FIELD_NAMES.has('asset_issuer')) {
+            // Neither G nor C — invalid format
+            results.push({
+                valid: false,
+                errors: [`asset_issuer must start with "G" or "C", got: "${trimmedIssuer}"`],
+                warnings: [],
+            });
+        }
+    }
+    // fail_on_missing — must be boolean if present
+    if (raw['fail_on_missing'] !== undefined) {
+        if (typeof raw['fail_on_missing'] !== 'boolean') {
+            results.push({
+                valid: false,
+                errors: ['fail_on_missing must be a boolean (true or false)'],
+                warnings: [],
+            });
+        }
+    }
+    return combineResults(...results);
 }
 
 

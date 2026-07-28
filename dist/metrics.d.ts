@@ -68,3 +68,8 @@ export declare class MetricsCollector {
     getAverageMetric(name: string): number | null;
 }
 export declare const globalMetrics: MetricsCollector;
+/**
+ * Normalizes a URL to a clean host key for metrics reporting.
+ * Strips credentials, path traversal artifacts, and ports if default.
+ */
+export declare function normalizeMetricHost(url: string): string;

@@ -133,6 +133,24 @@ inputs:
       (SEP-0007 §3.4). Leave empty to omit the field.
     required: false
     default: ''
+  unauthorized_trustline_policy:
+    description: >-
+      How to treat a trustline that exists but has not been authorized by
+      the issuer (AUTHORIZATION_REQUIRED). "fail" treats it as not
+      satisfying the trustline requirement (stricter readiness outputs);
+      "warn" surfaces a comment warning but still passes the check
+      (default); "ignore" restores pre-#72 behavior with no additional
+      check or warning.
+    required: false
+    default: 'warn'
+  clawback_strict_mode:
+    description: >-
+      When true, a clawback-enabled trustline (issuer can revoke balances
+      at any time) fails validation instead of only warning. Default false
+      (warn only) so vanilla assets without clawback enabled are
+      unaffected.
+    required: false
+    default: 'false'
 
 outputs:
   trustline_exists:
