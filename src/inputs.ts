@@ -41,3 +41,29 @@ export function parseNumberInput(
 export function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export type UnauthorizedTrustlinePolicy = 'fail' | 'warn' | 'ignore';
+
+/**
+ * Parses the `unauthorized_trustline_policy` input, which controls how a
+ * trustline that exists but is not yet authorized by the issuer
+ * (AUTHORIZATION_REQUIRED) is treated:
+ *   - "fail"   — the trustline check does not pass; readiness outputs
+ *                reflect the stricter meaning.
+ *   - "warn"   — the trustline check still passes, but a warning is added
+ *                to the comment. This is the safe default: it surfaces the
+ *                risk without breaking existing green workflows.
+ *   - "ignore" — no additional check or warning (pre-#72 behavior).
+ */
+export function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTrustlinePolicy {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return 'warn';
+  }
+  if (normalized === 'fail' || normalized === 'warn' || normalized === 'ignore') {
+    return normalized;
+  }
+  throw new Error(
+    `unauthorized_trustline_policy must be one of "fail", "warn", or "ignore". Received: "${value}"`,
+  );
+}
