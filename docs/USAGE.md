@@ -225,6 +225,65 @@ When the action runs in an issue context, it sets `comment_url` to the created G
 
 ---
 
+## Private Horizon mirrors
+
+Enterprises running TrustBridge against their own Horizon mirror (instead of the public `https://horizon.stellar.org`) should be aware of the following:
+
+- **HTTPS only.** `horizon_url`, `horizon_url_fallback`, and `rpc_fallback_url` must use `https://`. Plain `http://` endpoints are rejected before any connection is attempted — TrustBridge never weakens or skips TLS certificate verification, and there is no input to disable it.
+- **SSRF-safe targets required.** The same URLs are rejected if they target a private IP range, loopback, link-local address, or a cloud metadata endpoint (`169.254.169.254`, `metadata.google.internal`), or use `file://`. This applies to the direct action inputs, not just values sourced from `.trustbridge.yml` (see [Consumer trustbridge.yml config file](../README.md#consumer-trustbridgeyml-config-file) for that layer's guarantees).
+- **Certificate must be trusted by the runner.** Self-signed, expired, or otherwise untrusted certificates cause the run to fail with a distinct **"Horizon TLS / certificate verification"** check — this is reported separately from account/trustline failures so it is never mistaken for "the contributor's account isn't set up right."
+- **Custom/private CA.** TrustBridge does not ship a custom CA bundle injection input in v1. If your mirror's certificate is signed by an internal CA, add a step before the TrustBridge step that sets `NODE_EXTRA_CA_CERTS` to point at a PEM file containing your CA chain:
+
+  ```yaml
+  - name: Trust internal CA
+    run: echo "NODE_EXTRA_CA_CERTS=$GITHUB_WORKSPACE/internal-ca.pem" >> "$GITHUB_ENV"
+
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      horizon_url: https://horizon.internal.example.com
+      stellar_address_input: ${{ steps.address.outputs.address }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+  ```
+
+  Do **not** set `NODE_TLS_REJECT_UNAUTHORIZED=0` to work around a certificate problem — that disables TLS verification for the whole process. TrustBridge detects and warns loudly in the logs if it finds this set in the environment.
+- **The comment hides your mirror's hostname by default.** Since a private Horizon mirror's hostname can itself be sensitive infrastructure information, the issue comment only shows the URL scheme (e.g. `https://•••`) unless `debug_mode: true` is set, in which case the full host is shown (the account address embedded in any Horizon URL is always masked regardless).
+
+---
+
+## Unauthorized trustline policy
+
+Some issued assets set the issuer's `AUTHORIZATION_REQUIRED` flag, meaning a trustline can exist on an account without the issuer having authorized it yet — payments in that asset will fail until authorization happens, even though the trustline check alone would otherwise look green. Control how TrustBridge treats this with `unauthorized_trustline_policy`:
+
+| Value | Behavior |
+| ----- | -------- |
+| `warn` (default) | Trustline check still passes; the comment adds a warning explaining the account needs issuer authorization. |
+| `fail` | The trustline check does not pass. The `trustline_exists` output reflects this stricter meaning. |
+| `ignore` | No additional check or warning — matches pre-#72 behavior. |
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  unauthorized_trustline_policy: fail
+```
+
+---
+
+## Clawback-enabled asset warnings
+
+If the configured asset's trustline has clawback enabled (the issuer can revoke balances from the account at any time), TrustBridge surfaces a warning in the comment by default. For security-sensitive workflows (e.g. gating bounty payouts), set `clawback_strict_mode: true` to fail the check instead of only warning:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  clawback_strict_mode: true
+```
+
+Vanilla mainnet USDC (and any asset without clawback enabled) never triggers this warning — it is only raised when Horizon reports `is_clawback_enabled: true` on the matched trustline.
+
+---
+
 ## Extracting Stellar addresses from issues
 
 Common patterns:

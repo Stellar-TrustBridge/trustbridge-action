@@ -17,6 +17,7 @@ import {
 } from './links';
 import { buildOnboardingChecklist, inlineCode } from './markdown';
 import { MetricsCollector } from './metrics';
+import { displayHorizonUrl } from './horizon';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -44,6 +45,14 @@ export interface CommentConfig extends CheckConfig {
   sep0007DeepLinks?: boolean;
   /** Optional origin domain for SEP-0007 URIs (§3.4). */
   sep0007OriginDomain?: string;
+  /**
+   * When true, the comment reveals the full `horizon_url` host (still
+   * address-redacted). When false/omitted, only the URL scheme is shown —
+   * a private Horizon mirror's hostname can itself be sensitive
+   * infrastructure information and should not be posted to a (potentially
+   * public) issue by default.
+   */
+  debugMode?: boolean;
   /**
    * When provided, a hardened metrics JSON block is appended to the comment
    * as a fenced code block. Callers should pass a fresh `MetricsCollector`
@@ -85,7 +94,7 @@ export function formatCommentBody(
     '## TrustBridge — Stellar Account Check',
     '',
     `Checked account: ${inlineCode(config.stellarAddress)}`,
-    `Horizon: ${inlineCode(config.horizonUrl)}`,
+    `Horizon: ${inlineCode(displayHorizonUrl(config.horizonUrl, config.debugMode ?? false))}`,
     `Asset: **${config.assetCode}** · Issuer: ${inlineCode(config.assetIssuer)}`,
     '',
     '### Results',
@@ -169,6 +178,8 @@ export function formatCommentBody(
     `| \`sticky_comment\` | ${config.stickyComment === undefined ? '_default (true)_' : config.stickyComment ? '`true` — upserts prior comment' : '`false` — always posts new'} |`,
     `| \`onboarding_checklist\` | ${config.onboardingChecklist === undefined ? '_default (true)_' : config.onboardingChecklist ? '`true` — checklist section included' : '`false` — checklist omitted'} |`,
     `| \`wait_until_funded\` | ${config.waitUntilFunded ? '`true`' : '`false` (default)'} |`,
+    `| \`unauthorized_trustline_policy\` | \`${config.unauthorizedTrustlinePolicy ?? 'warn'}\` |`,
+    `| \`clawback_strict_mode\` | ${config.clawbackStrictMode ? '`true`' : '`false` (default)'} |`,
   );
 
   if (config.waitUntilFunded) {
