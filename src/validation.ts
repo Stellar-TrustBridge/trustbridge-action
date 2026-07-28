@@ -579,6 +579,8 @@ export function validateTrustbridgeConfig(
     if (val !== undefined && val !== null && val !== '') {
       if (typeof val !== 'string') {
         results.push({ valid: false, errors: [`${urlField} must be a string`], warnings: [] });
+      } else if (urlField === 'horizon_url' || urlField === 'horizon_url_fallback') {
+        results.push(validateHorizonUrl(val, urlField, { allowHttp: true }));
       } else {
         results.push(validateSsrfSafeUrl(val, urlField, { allowHttp: true }));
       }

@@ -1,5 +1,7 @@
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
+import { validateHorizonUrl } from './validation';
+
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -67,7 +69,17 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_CACHE_TTL_MS = 60_000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/+$/, '');
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const validation = validateHorizonUrl(trimmed, 'horizon_url', { allowHttp: true });
+  if (!validation.valid) {
+    throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
+  }
+  const parsed = new URL(trimmed);
+  const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+  return `${parsed.origin}${cleanPath}`;
 }
 
 export function isRetryableStatus(status: number): boolean {

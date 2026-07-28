@@ -283,3 +283,20 @@ export async function writeJobSummary(
 }
 
 export const globalMetrics = new MetricsCollector();
+
+/**
+ * Normalizes a URL to a clean host key for metrics reporting.
+ * Strips credentials, path traversal artifacts, and ports if default.
+ */
+export function normalizeMetricHost(url: string): string {
+  if (!url || typeof url !== 'string') {
+    return 'unknown_host';
+  }
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.hostname || 'unknown_host';
+  } catch {
+    return 'unknown_host';
+  }
+}
+
