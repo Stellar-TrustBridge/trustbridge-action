@@ -38,6 +38,25 @@ Examples that fail:
 
 **Behavior:** Throws before any Horizon call. The action run fails immediately; no outputs or comments.
 
+### Invalid or malicious Horizon URL (`horizon_url`)
+
+**Rules:**
+
+- Must use `https://` by default (`http://` allowed only if `allowHttp` option is enabled).
+- Must not contain embedded credentials (e.g. `https://user:pass@horizon.stellar.org` is rejected).
+- Must not contain path traversal fragments (e.g. `/../`, `/./`, `%2e%2e`, `%2E%2E`, `\..`).
+- Must not target private IP ranges or metadata endpoints (SSRF protection).
+
+Examples that fail:
+
+- `https://user:pass@horizon.stellar.org`
+- `https://horizon.stellar.org/../admin`
+- `https://horizon.stellar.org/%2e%2e/`
+- `file:///etc/passwd`
+- `http://169.254.169.254/latest/meta-data`
+
+**Behavior:** Disallowed `horizon_url` inputs are rejected early during validation (`validateHorizonUrl`), throwing a `HorizonError` before any network calls are dispatched. Metrics reporting host tags use clean, normalized host keys.
+
 ---
 
 ## Horizon errors

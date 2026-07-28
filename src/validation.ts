@@ -408,6 +408,77 @@ export function validateSsrfSafeUrl(
 }
 
 /**
+ * Validates a Horizon URL specifically against embedded credentials,
+ * path traversal (`..`, `.`, `%2e%2e`), unsupported protocols, and SSRF targets.
+ */
+export function validateHorizonUrl(
+  url: string,
+  fieldName: string = 'horizon_url',
+  options: { allowHttp?: boolean } = {},
+): ValidationResult {
+  return withSpan(
+    'validateHorizonUrl',
+    { fieldName, allowHttp: !!options.allowHttp },
+    () => {
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      const trimmed = url.trim();
+
+      if (!trimmed) {
+        errors.push(`${fieldName} cannot be empty`);
+        return { valid: false, errors, warnings };
+      }
+
+      // Check protocol first
+      const allowedProtocols = options.allowHttp ? ['http', 'https'] : ['https'];
+      try {
+        const parsed = new URL(trimmed);
+        const proto = parsed.protocol.replace(':', '');
+        if (!allowedProtocols.includes(proto)) {
+          errors.push(
+            `${fieldName} must use protocol ${options.allowHttp ? 'http or https' : 'https'}, got: "${proto}"`,
+          );
+          return { valid: false, errors, warnings };
+        }
+
+        if (parsed.username || parsed.password) {
+          errors.push(`${fieldName} must not contain embedded credentials`);
+        }
+      } catch {
+        errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
+        return { valid: false, errors, warnings };
+      }
+
+      // Check raw path traversal before URL constructor normalizes/collapses dot segments
+      const rawPath = trimmed.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+/, '');
+      const lowerRawPath = rawPath.toLowerCase();
+
+      if (
+        rawPath.includes('..') ||
+        rawPath.includes('\\..') ||
+        lowerRawPath.includes('%2e%2e') ||
+        rawPath.includes('/./') ||
+        rawPath.endsWith('/.')
+      ) {
+        errors.push(`${fieldName} contains path traversal or invalid path segments`);
+      }
+
+      // SSRF check (enforce SSRF blocking for private IP, loopback, metadata)
+      const ssrfResult = validateSsrfSafeUrl(url, fieldName, options);
+      if (!ssrfResult.valid) {
+        errors.push(...ssrfResult.errors);
+      }
+
+      return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+      };
+    },
+  );
+}
+
+/**
  * Characters and patterns that must not appear in consumer-supplied
  * string fields of a trustbridge.yml file (injection prevention).
  *
@@ -535,6 +606,8 @@ export function validateTrustbridgeConfig(
     if (val !== undefined && val !== null && val !== '') {
       if (typeof val !== 'string') {
         results.push({ valid: false, errors: [`${urlField} must be a string`], warnings: [] });
+      } else if (urlField === 'horizon_url' || urlField === 'horizon_url_fallback') {
+        results.push(validateHorizonUrl(val, urlField, { allowHttp: true }));
       } else {
         results.push(validateSsrfSafeUrl(val, urlField, { allowHttp: true }));
       }
