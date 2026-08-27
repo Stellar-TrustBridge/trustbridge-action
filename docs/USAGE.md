@@ -40,6 +40,24 @@ Replace `GCONTRIBUTORADDRESSHERE` with your project's method of obtaining the ad
 
 ---
 
+## Milestone gating
+
+If you only want TrustBridge to run on issues assigned to a specific milestone (e.g. only run Horizon checks when assigned to `Wave 12`), use the `milestone_allowlist` input:
+
+```yaml
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          milestone_allowlist: 'Wave 12,Wave 13'
+```
+
+- When the issue's milestone matches an entry in the list (case-insensitive), the action proceeds normally.
+- When there is no match (or no milestone), the action safely skips execution and emits a summary note without posting a failure comment.
+- If you prefer the step to explicitly fail instead of skipping gracefully, set `milestone_fail_on_skip: true`.
+
+---
+
 ## Manual run — workflow_dispatch
 
 ```yaml

@@ -406,6 +406,20 @@
         "false"
       ],
       "default": "false"
+    },
+    "milestone_allowlist": {
+      "type": "string",
+      "description": "Optional comma-separated list of allowed milestone titles.",
+      "default": ""
+    },
+    "milestone_fail_on_skip": {
+      "type": "string",
+      "description": "Fail the step instead of skipping when milestone does not match.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     }
   }
 }

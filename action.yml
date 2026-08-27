@@ -408,6 +408,21 @@ inputs:
     required: false
     default: 'false'
 
+  milestone_allowlist:
+    description: >-
+      Optional comma-separated list of allowed milestone titles (e.g. 'Wave 12,Wave 13').
+      If set, the action skips execution unless the issue has a matching milestone.
+      Leave empty (default) to disable the milestone gate.
+    required: false
+    default: ''
+
+  milestone_fail_on_skip:
+    description: >-
+      When a milestone does not match the allowlist, fail the step (true) instead
+      of just skipping (false). Default is false.
+    required: false
+    default: 'false'
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
