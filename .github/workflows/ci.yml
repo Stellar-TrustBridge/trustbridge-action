@@ -23,10 +23,10 @@ jobs:
     name: build-and-test (Node ${{ matrix.node }})
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -88,10 +88,10 @@ jobs:
     if: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           cache: npm
@@ -141,10 +141,10 @@ jobs:
       secrets.TEST_STELLAR_ADDRESS != ''
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           cache: npm
@@ -171,13 +171,13 @@ jobs:
           echo "account_funded: ${{ steps.trustbridge.outputs.account_funded }}"
           echo "trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}"
           echo "xlm_balance: ${{ steps.trustbridge.outputs.xlm_balance }}"
-          
+
           # Ensure outputs are not empty
           if [ -z "${{ steps.trustbridge.outputs.account_funded }}" ]; then
             echo "::error::account_funded output is empty"
             exit 1
           fi
-          
+
           if [ -z "${{ steps.trustbridge.outputs.xlm_balance }}" ]; then
             echo "::error::xlm_balance output is empty"
             exit 1
@@ -196,9 +196,9 @@ jobs:
     name: dry-run-smoke
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           cache: npm

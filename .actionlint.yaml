@@ -1,0 +1,19 @@
+# actionlint config — https://github.com/rhysd/actionlint/blob/main/docs/config.md
+#
+# Only add entries here when you hit a genuine false positive. Each entry
+# should have a comment explaining *why* it's safe, so reviewers don't
+# need to go dig through actionlint's issue tracker.
+
+self-hosted-runner:
+  # List any custom runner labels used by self-hosted runners here, e.g.:
+  # labels:
+  #   - my-custom-runner
+
+# Example of narrowing a check instead of disabling it outright:
+# paths:
+#   docs/examples/*.yml:
+#     ignore:
+#       # These are illustrative snippets, not full workflows, so they
+#       # intentionally omit `permissions:` / trigger blocks that
+#       # actionlint expects on a real workflow file.
+#       - "one of \"branches\", \"branches-ignore\", ... is required"

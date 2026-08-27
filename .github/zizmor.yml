@@ -1,0 +1,16 @@
+# zizmor config — https://docs.zizmor.sh/configuration/
+#
+# Prefer narrowing a rule to a specific file/line over disabling it repo-wide.
+# Every suppression here should be justified in a comment; unexplained
+# suppressions are exactly the kind of thing this issue exists to prevent.
+
+rules:
+  # Example: if a reusable workflow intentionally needs elevated
+  # permissions for a documented reason, scope the exception narrowly:
+  #
+  # excessive-permissions:
+  #   ignore:
+  #     - .github/workflows/release.yml:12  # needs contents:write to tag releases, see #123
+
+# unpinned-uses is the big one for this issue — leave it fully enabled.
+# Fix findings by pinning to a commit SHA, not by suppressing the rule.
