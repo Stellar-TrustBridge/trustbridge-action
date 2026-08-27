@@ -179,7 +179,16 @@ inputs:
       and requires `discussions: write` instead of `issues: write` (Issue
       #221). Omit or leave empty when running in a context where comment
       posting is not required (outputs are still set).
-    required: true
+    required: false
+    default: ''
+  github_app_token:
+    description: >-
+      Optional pre-minted GitHub App installation token (e.g. from
+      actions/create-github-app-token) used instead of GITHUB_TOKEN for
+      organization-wide triage workflows or cross-repository comments.
+      When provided, takes precedence over github_token. (Issue #225)
+    required: false
+    default: ''
   assets_json:
     description: >-
       JSON array of additional assets to validate trustlines for, e.g.

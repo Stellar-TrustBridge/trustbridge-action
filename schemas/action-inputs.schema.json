@@ -17,6 +17,11 @@
         "${{ secrets.GITHUB_TOKEN }}"
       ]
     },
+    "github_app_token": {
+      "type": "string",
+      "description": "Optional GitHub App installation token used instead of GITHUB_TOKEN for organization-wide triage or cross-repo comments (Issue #225).",
+      "default": ""
+    },
     "stellar_address_input": {
       "type": "string",
       "description": "Stellar account address (G-address, 56 characters) to validate. Required unless assignee_address_map is set.",

@@ -29,3 +29,13 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
 `wait_until_funded_timeout_ms` must be a number between `0` and `600000`. It bounds the total time spent polling when `wait_until_funded` is enabled.
 
 `wait_until_funded_interval_ms` must be a number between `1000` and `60000`. It controls the delay between funding polls.
+
+## Authentication tokens (Issue #225)
+
+- **`github_token`**: Standard GitHub Actions token (e.g. `${{ secrets.GITHUB_TOKEN }}`) or fine-grained PAT. Requires `issues: write` (or `discussions: write` for discussion events).
+- **`github_app_token`**: Pre-minted GitHub App installation token (e.g. generated via `actions/create-github-app-token`) used for cross-repository or organization-wide triage.
+- **Precedence**: When `github_app_token` is provided, it takes precedence over `github_token`.
+- **Security & Redaction**:
+  - Raw private keys (PEM files) must **never** be passed directly into action inputs or environment variables; instead, use an isolated token minting step (`actions/create-github-app-token`).
+  - Tokens and private keys are registered as GitHub Actions secrets (`core.setSecret`) and stripped by the logger (`[REDACTED]`) to prevent credential leakage into CI logs.
+

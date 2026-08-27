@@ -39169,7 +39169,16 @@ async function run() {
     const allowCrossNetworkFallback = (0, inputs_1.parseBooleanInput)(core.getInput('allow_cross_network_fallback'), false);
     const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
     const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-    const githubToken = core.getInput('github_token', { required: true });
+    const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
+    const rawGithubToken = core.getInput('github_token');
+    const githubToken = (0, inputs_1.resolveGitHubAuthToken)({
+        githubToken: rawGithubToken,
+        githubAppToken,
+    });
+    if (githubAppToken)
+        core.setSecret(githubAppToken);
+    if (rawGithubToken)
+        core.setSecret(rawGithubToken);
     const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
     const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)('unassign_on_not_ready', core.getInput('unassign_on_not_ready')), false);
     // SEP-0007 wallet deep links (Issue #44)
@@ -39974,6 +39983,7 @@ exports.resolveAddressFromAssigneeMap = resolveAddressFromAssigneeMap;
 exports.parseUnauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy;
 exports.resolveInput = resolveInput;
 exports.parsePresetInput = parsePresetInput;
+exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 function parseBooleanInput(value, defaultValue) {
@@ -40170,6 +40180,25 @@ function parsePresetInput(networkInput, presetInput) {
         return network === 'mainnet' ? 'public' : network;
     }
     return '';
+}
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+function resolveGitHubAuthToken(options) {
+    const appToken = options.githubAppToken?.trim();
+    if (appToken && appToken.length > 0) {
+        return appToken;
+    }
+    const token = options.githubToken?.trim();
+    if (token && token.length > 0) {
+        return token;
+    }
+    throw new Error('Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.');
 }
 
 
@@ -40477,6 +40506,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Timer = exports.logger = void 0;
+exports.isSensitiveSecretKey = isSensitiveSecretKey;
 exports.redactStellarAddress = redactStellarAddress;
 exports.redactString = redactString;
 exports.redactHorizonUrl = redactHorizonUrl;
@@ -40501,6 +40531,37 @@ const ADDRESS_CONTEXT_KEYS = new Set([
  * base32 characters (A-Z, 2-7).
  */
 const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+const PEM_PRIVATE_KEY_REGEX = /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
+const SENSITIVE_SECRET_KEYS = new Set([
+    'token',
+    'githubtoken',
+    'github_token',
+    'githubapptoken',
+    'github_app_token',
+    'apptoken',
+    'app_token',
+    'key',
+    'privatekey',
+    'private_key',
+    'appprivatekey',
+    'app_private_key',
+    'secret',
+    'secretkey',
+    'secret_key',
+    'apikey',
+    'api_key',
+    'auth',
+    'authorization',
+    'password',
+]);
+function isSensitiveSecretKey(key) {
+    const lower = key.toLowerCase();
+    const normalized = lower.replace(/[-_]/g, '');
+    return (SENSITIVE_SECRET_KEYS.has(lower) ||
+        normalized.includes('token') ||
+        normalized.includes('secret') ||
+        normalized.includes('privatekey'));
+}
 /**
  * Redacts a single Stellar address (G- or C-address) to its first 4 and
  * last 4 characters, separated by `...`. Non-address strings are returned
@@ -40529,15 +40590,15 @@ function redactStellarAddress(address) {
     return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
+ * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
  * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
  */
 function redactString(value) {
     if (!value)
         return value;
+    let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
     STELLAR_ADDRESS_REGEX.lastIndex = 0;
-    return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+    return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
 /**
  * Redacts a Horizon endpoint URL so any embedded account address in the
@@ -40555,7 +40616,12 @@ function redactHorizonUrl(url) {
         const parsed = new URL(masked);
         const safeParams = new URLSearchParams();
         for (const [key, rawValue] of parsed.searchParams.entries()) {
-            safeParams.set(key, redactString(rawValue));
+            if (isSensitiveSecretKey(key)) {
+                safeParams.set(key, '[REDACTED]');
+            }
+            else {
+                safeParams.set(key, redactString(rawValue));
+            }
         }
         const query = safeParams.toString();
         parsed.search = query ? `?${query}` : '';
@@ -40565,9 +40631,7 @@ function redactHorizonUrl(url) {
         }
     }
     catch {
-        // If the URL is malformed, fall back to regex-only redaction on the
-        // raw string — we never want the redaction step itself to throw and
-        // mask the underlying log event we were trying to emit.
+        // If URL parsing fails (e.g. malformed URL), fall back to string redaction
     }
     return redactString(masked);
 }
@@ -40575,15 +40639,12 @@ function redactHorizonUrl(url) {
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
+ * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ *   and PEM keys via `redactString`.
  */
 function redactContext(context) {
     if (!context)
@@ -40591,6 +40652,10 @@ function redactContext(context) {
     const safe = {};
     for (const key of Object.keys(context)) {
         const raw = context[key];
+        if (isSensitiveSecretKey(key)) {
+            safe[key] = '[REDACTED]';
+            continue;
+        }
         if (key === 'component') {
             safe.component = raw;
             continue;
@@ -40617,7 +40682,10 @@ function redactValue(raw) {
     if (typeof raw === 'object') {
         const safeObj = {};
         for (const [k, v] of Object.entries(raw)) {
-            if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+            if (isSensitiveSecretKey(k)) {
+                safeObj[k] = '[REDACTED]';
+            }
+            else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
                 safeObj[k] = redactStellarAddress(v);
             }
             else if (k === 'horizonUrl' && typeof v === 'string') {

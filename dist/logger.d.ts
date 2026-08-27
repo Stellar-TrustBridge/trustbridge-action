@@ -13,6 +13,7 @@ export interface LogContext {
     horizonUrl?: string;
     [key: string]: unknown;
 }
+export declare function isSensitiveSecretKey(key: string): boolean;
 /**
  * Redacts a single Stellar address (G- or C-address) to its first 4 and
  * last 4 characters, separated by `...`. Non-address strings are returned
@@ -25,9 +26,8 @@ export interface LogContext {
  */
 export declare function redactStellarAddress(address: string): string;
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
+ * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
  * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
  */
 export declare function redactString(value: string): string;
 /**
@@ -42,15 +42,12 @@ export declare function redactHorizonUrl(url: string): string;
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
+ * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ *   and PEM keys via `redactString`.
  */
 export declare function redactContext(context: LogContext | undefined): LogContext | undefined;
 declare class StructuredLogger {

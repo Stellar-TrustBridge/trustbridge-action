@@ -39,6 +39,7 @@ import {
   parseNumberInput,
   parsePresetInput,
   resolveAddressFromAssigneeMap,
+  resolveGitHubAuthToken,
   resolveInput,
 } from './inputs';
 import { formatFailureSummary } from './summary';
@@ -379,7 +380,14 @@ async function run(): Promise<void> {
   );
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-  const githubToken = core.getInput('github_token', { required: true });
+  const githubAppToken = resolveInput('github_app_token', core.getInput('github_app_token'));
+  const rawGithubToken = core.getInput('github_token');
+  const githubToken = resolveGitHubAuthToken({
+    githubToken: rawGithubToken,
+    githubAppToken,
+  });
+  if (githubAppToken) core.setSecret(githubAppToken);
+  if (rawGithubToken) core.setSecret(rawGithubToken);
   const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
   const unassignOnNotReady = parseBooleanInput(
     resolveInput('unassign_on_not_ready', core.getInput('unassign_on_not_ready')),

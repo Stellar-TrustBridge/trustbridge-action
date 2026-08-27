@@ -105,9 +105,44 @@ jobs:
 | Issue / PR comments (REST) | `issues: write` |
 | Discussion comments (GraphQL) | `discussions: write` |
 
-A token that only has `issues: write` cannot post discussion comments — the GraphQL mutation fails with a 403-style error. TrustBridge logs this as a non-fatal warning (checks still run, outputs are still set). The action **never falls back to the issues API for a discussion event**, so it cannot accidentally comment on the wrong issue.
-
 > **Note:** the repository must have the **Discussions** feature enabled. Discussion polls, and converting a discussion → issue mid-flight, are intentionally out of scope.
+
+---
+
+## GitHub App authentication for org-wide triage (Issue #225)
+
+When running TrustBridge across an entire organization or in centralized triage repositories, `GITHUB_TOKEN` is constrained to the repository executing the workflow. You can authenticate using a **GitHub App installation token** via the `github_app_token` input.
+
+```yaml
+name: Verify Stellar wallet via GitHub App
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.TRUSTBRIDGE_APP_ID }}
+          private-key: ${{ secrets.TRUSTBRIDGE_APP_PRIVATE_KEY }}
+
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_app_token: ${{ steps.app-token.outputs.token }}
+```
+
+### Security & Tradeoff: Pre-minted token vs. embedding PEM private keys
+- **Pre-minted token preferred**: TrustBridge intentionally accepts a pre-minted installation token (`github_app_token`) rather than requiring raw PEM private keys and `app_id` to be embedded inside this action.
+- **Principle of Least Privilege**: Generating short-lived installation tokens (typically expiring in 1 hour) via dedicated actions like `actions/create-github-app-token` isolates cryptographic signing credentials and avoids persisting long-lived private keys inside downstream action runtimes.
+- **Credential redaction**: Any token or key value passed to TrustBridge is registered with GitHub Actions secret masking (`core.setSecret`) and stripped by the logger (`[REDACTED]`) to prevent accidental disclosure.
+- **Enterprise compatibility**: Works automatically on GitHub Enterprise Server (`baseUrl` is derived from GitHub runner context `apiUrl`).
+- **Same comment APIs**: Whether using `github_token` or `github_app_token`, all sticky comment lookups, GraphQL discussions, and upsert features operate identically.
 
 ---
 

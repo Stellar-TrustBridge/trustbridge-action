@@ -52,3 +52,16 @@ export declare function resolveInput(inputName: string, withValue: string, env?:
  * Empty string means "no preset".
  */
 export declare function parsePresetInput(networkInput?: string, presetInput?: string): string;
+export interface GitHubAuthTokenOptions {
+    githubToken?: string;
+    githubAppToken?: string;
+}
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+export declare function resolveGitHubAuthToken(options: GitHubAuthTokenOptions): string;

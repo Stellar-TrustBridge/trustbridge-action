@@ -15,6 +15,8 @@ import {
   redactStellarAddress,
   redactHorizonUrl,
   redactString,
+  redactContext,
+  isSensitiveSecretKey,
   ActionInputsLogRecord,
 } from '../src/logger';
 
@@ -269,3 +271,55 @@ describe('emitInputsLogRecord', () => {
     expect(parsed.horizonTimeoutMs).toBe(20000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #225 — Token and Private Key Redaction Tests
+// ---------------------------------------------------------------------------
+describe('Issue #225 — Token and Private Key Redaction', () => {
+  it('identifies sensitive secret keys', () => {
+    expect(isSensitiveSecretKey('github_token')).toBe(true);
+    expect(isSensitiveSecretKey('github_app_token')).toBe(true);
+    expect(isSensitiveSecretKey('app_private_key')).toBe(true);
+    expect(isSensitiveSecretKey('privateKey')).toBe(true);
+    expect(isSensitiveSecretKey('secret')).toBe(true);
+    expect(isSensitiveSecretKey('apiKey')).toBe(true);
+    expect(isSensitiveSecretKey('assetCode')).toBe(false);
+  });
+
+  it('redacts PEM private keys embedded in free-form strings', () => {
+    const raw = 'Error loading key: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY----- occurred';
+    const redacted = redactString(raw);
+    expect(redacted).not.toContain('MIIEowIBAAKCAQEA0');
+    expect(redacted).toContain('[REDACTED_PRIVATE_KEY]');
+  });
+
+  it('redacts sensitive token keys in LogContext to [REDACTED]', () => {
+    const context = {
+      component: 'AuthHelper',
+      github_token: 'ghp_secretToken12345',
+      github_app_token: 'ghs_installationToken67890',
+      app_private_key: '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----',
+      user: 'alice',
+    };
+
+    const redacted = redactContext(context);
+    expect(redacted?.github_token).toBe('[REDACTED]');
+    expect(redacted?.github_app_token).toBe('[REDACTED]');
+    expect(redacted?.app_private_key).toBe('[REDACTED]');
+    expect(redacted?.user).toBe('alice');
+  });
+
+  it('redacts tokens embedded in nested context objects', () => {
+    const context = {
+      credentials: {
+        token: 'secret-token-val',
+        user: 'alice',
+      },
+    };
+
+    const redacted = redactContext(context);
+    expect((redacted?.credentials as Record<string, unknown>).token).toBe('[REDACTED]');
+    expect((redacted?.credentials as Record<string, unknown>).user).toBe('alice');
+  });
+});
+
