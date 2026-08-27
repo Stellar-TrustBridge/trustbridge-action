@@ -35582,7 +35582,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
@@ -35902,25 +35902,99 @@ function isTrustBridgeComment(body) {
         body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
+ * Maximum number of comment pages (100 comments per page) to search for sticky
+ * comments on high-traffic issues or discussions before capping.
+ * Capping at 10 pages (1,000 comments) prevents rate limit exhaustion and
+ * infinite pagination on busy threads. (Issue #226)
+ */
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
+/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
- * Paginates through every comment so the marker is found even on
- * high-traffic issues with 100+ comments.
+ *
+ * Uses GraphQL pagination (100 comments per page, up to MAX_STICKY_COMMENT_SEARCH_PAGES = 10 pages)
+ * to locate the marker efficiently even on busy Wave issues with hundreds of comments.
+ * Falls back to REST pagination if GraphQL is unavailable or fails.
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-async function findStickyComment(octokit, owner, repo, issueNumber) {
-    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-        owner,
-        repo,
-        issue_number: issueNumber,
-        per_page: 100,
-    });
-    // Use the last matching comment so that if multiple TrustBridge comments
-    // exist (e.g. sticky was toggled off then on), we upsert the most recent one.
-    const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
-    return matches.length > 0 ? matches[matches.length - 1].id : undefined;
+async function findStickyComment(octokit, owner, repo, issueNumber, options = {}) {
+    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
+    // Primary: GraphQL pagination (efficiently retrieves only databaseId + body)
+    if (typeof octokit.graphql === 'function') {
+        try {
+            const query = `
+        query FindTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) {
+              comments(first: 100, after: $cursor) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+          }
+        }
+      `;
+            let cursor = null;
+            let lastMatchId;
+            let pageCount = 0;
+            let graphqlHandled = false;
+            while (pageCount < maxPages) {
+                pageCount++;
+                const data = (await octokit.graphql(query, {
+                    owner,
+                    repo,
+                    issueNumber,
+                    cursor,
+                }));
+                const comments = data?.repository?.issue?.comments;
+                if (!comments || !Array.isArray(comments.nodes)) {
+                    break;
+                }
+                graphqlHandled = true;
+                for (const comment of comments.nodes) {
+                    if (isTrustBridgeComment(comment.body)) {
+                        // databaseId is the numeric REST issue comment id
+                        lastMatchId = comment.databaseId;
+                    }
+                }
+                if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
+                    break;
+                }
+                cursor = comments.pageInfo.endCursor;
+            }
+            if (lastMatchId !== undefined) {
+                return lastMatchId;
+            }
+            if (graphqlHandled) {
+                return undefined;
+            }
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            core.debug(`GraphQL sticky comment search failed, falling back to REST: ${message}`);
+        }
+    }
+    // Fallback: REST pagination with page cap
+    if (typeof octokit.paginate === 'function' && octokit.rest?.issues?.listComments) {
+        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+            owner,
+            repo,
+            issue_number: issueNumber,
+            per_page: 100,
+        });
+        const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
+        return matches.length > 0 ? matches[matches.length - 1].id : undefined;
+    }
+    return undefined;
 }
 async function postIssueComment(token, body, options = {}) {
     const sticky = options.sticky ?? true;
@@ -36044,7 +36118,8 @@ function resolveDiscussionNodeId(payload) {
  * the action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-async function findStickyDiscussionComment(octokit, discussionId) {
+async function findStickyDiscussionComment(octokit, discussionId, options = {}) {
+    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
     const query = `
     query FindTrustBridgeDiscussionComment($discussionId: ID!, $cursor: String) {
       node(id: $discussionId) {
@@ -36065,7 +36140,9 @@ async function findStickyDiscussionComment(octokit, discussionId) {
   `;
     let cursor = null;
     let lastMatch;
-    do {
+    let pageCount = 0;
+    while (pageCount < maxPages) {
+        pageCount++;
         const data = (await octokit.graphql(query, { discussionId, cursor }));
         const comments = data?.node?.comments;
         if (!comments) {
@@ -36080,11 +36157,11 @@ async function findStickyDiscussionComment(octokit, discussionId) {
                 lastMatch = comment;
             }
         }
-        if (!comments.pageInfo.hasNextPage) {
+        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
             break;
         }
         cursor = comments.pageInfo.endCursor;
-    } while (cursor);
+    }
     return lastMatch;
 }
 /**

@@ -178,15 +178,28 @@ type Octokit = ReturnType<typeof github.getOctokit>;
  */
 export declare function isTrustBridgeComment(body: string | undefined | null): boolean;
 /**
+ * Maximum number of comment pages (100 comments per page) to search for sticky
+ * comments on high-traffic issues or discussions before capping.
+ * Capping at 10 pages (1,000 comments) prevents rate limit exhaustion and
+ * infinite pagination on busy threads. (Issue #226)
+ */
+export declare const MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
+export interface FindStickyCommentOptions {
+    /** Maximum number of comment pages (100 comments per page) to search before stopping. Defaults to 10. */
+    maxPages?: number;
+}
+/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
- * Paginates through every comment so the marker is found even on
- * high-traffic issues with 100+ comments.
+ *
+ * Uses GraphQL pagination (100 comments per page, up to MAX_STICKY_COMMENT_SEARCH_PAGES = 10 pages)
+ * to locate the marker efficiently even on busy Wave issues with hundreds of comments.
+ * Falls back to REST pagination if GraphQL is unavailable or fails.
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-export declare function findStickyComment(octokit: Octokit, owner: string, repo: string, issueNumber: number): Promise<number | undefined>;
+export declare function findStickyComment(octokit: Octokit, owner: string, repo: string, issueNumber: number, options?: FindStickyCommentOptions): Promise<number | undefined>;
 export declare function postIssueComment(token: string, body: string, options?: UpsertCommentOptions): Promise<string | undefined>;
 /**
  * Extract the GitHub Discussion node id from an event payload, if present.
@@ -219,7 +232,7 @@ interface DiscussionCommentNode {
  * the action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-export declare function findStickyDiscussionComment(octokit: Octokit, discussionId: string): Promise<DiscussionCommentNode | undefined>;
+export declare function findStickyDiscussionComment(octokit: Octokit, discussionId: string, options?: FindStickyCommentOptions): Promise<DiscussionCommentNode | undefined>;
 /**
  * Post (or sticky-upsert) a TrustBridge comment on a GitHub Discussion via
  * the GraphQL API.

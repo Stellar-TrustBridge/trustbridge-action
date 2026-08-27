@@ -6,6 +6,7 @@ import {
   STICKY_COMMENT_MARKER,
   STICKY_COMMENT_MARKER_LEGACY,
   TRUSTBRIDGE_FOOTER,
+  MAX_STICKY_COMMENT_SEARCH_PAGES,
   COMMENT_SIZE_LIMIT_BYTES,
   COMMENT_TRUNCATION_NOTICE_BYTES,
   findStickyComment,
@@ -264,8 +265,87 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
 
 
 describe('findStickyComment', () => {
-  it('returns the id of the comment containing the marker', async () => {
+  function issueGraphqlResponse(
+    nodes: Array<{ id: string; databaseId: number; body: string }>,
+    pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  ) {
+    return {
+      repository: {
+        issue: {
+          comments: { nodes, pageInfo },
+        },
+      },
+    };
+  }
+
+  it('returns the databaseId of the comment containing the marker via GraphQL pagination across multiple pages', async () => {
     const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_1', databaseId: 101, body: 'unrelated comment 1' },
+            { id: 'IC_2', databaseId: 102, body: 'unrelated comment 2' },
+          ],
+          { hasNextPage: true, endCursor: 'page-1-end' },
+        ),
+      )
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_3', databaseId: 103, body: 'unrelated comment 3' },
+            { id: 'IC_4', databaseId: 104, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(104);
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: null }),
+    );
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: 'page-1-end' }),
+    );
+  });
+
+  it('honors maxPages cap in GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    // Simulate infinite pages
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse(
+        [{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }],
+        { hasNextPage: true, endCursor: 'next-page' },
+      ),
+    );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+      { maxPages: 3 },
+    );
+
+    expect(id).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to REST pagination if GraphQL fails', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
     octokit.paginate.mockResolvedValue([
       { id: 1, body: 'unrelated comment' },
       { id: 2, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
@@ -285,8 +365,9 @@ describe('findStickyComment', () => {
     );
   });
 
-  it('returns undefined when no comment has the marker', async () => {
+  it('returns undefined when no comment has the marker via REST fallback', async () => {
     const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL error'));
     octokit.paginate.mockResolvedValue([{ id: 1, body: 'unrelated comment' }]);
 
     const id = await findStickyComment(
@@ -501,6 +582,25 @@ describe('findStickyDiscussionComment', () => {
 
     expect(result).toBeUndefined();
     expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors maxPages cap in discussion GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      discussionGraphqlResponse(
+        [{ id: 'DC_1', body: 'unrelated' }],
+        { hasNextPage: true, endCursor: 'next-cursor' },
+      ),
+    );
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+      { maxPages: 2 },
+    );
+
+    expect(result).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
   });
 });
 

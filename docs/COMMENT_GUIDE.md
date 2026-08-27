@@ -4,11 +4,17 @@ TrustBridge comments are designed to be actionable for contributors and auditabl
 
 ## Sticky comment upsert
 
-By default (`sticky_comment: true`), TrustBridge does not post a new comment on every run. Each comment body embeds a hidden marker (`<!-- trustbridge-action:sticky-comment -->`). On subsequent runs, the action:
+By default (`sticky_comment: true`), TrustBridge does not post a new comment on every run. Each comment body embeds a hidden marker (`<!-- trustbridge-action:sticky-comment -->` or `<!-- trustbridge-action:sticky-comment:v1 -->`). On subsequent runs, the action:
 
-1. Lists the issue's comments (paginated, so it still finds the marker on issues with 100+ comments).
-2. Looks for a comment containing the marker.
+1. Queries the issue's comments using GraphQL pagination (100 comments per page, up to a documented cap of **10 pages / 1,000 comments** via `MAX_STICKY_COMMENT_SEARCH_PAGES`).
+2. Looks for a comment containing the stable HTML marker or TrustBridge footer.
 3. Updates that comment in place if found; otherwise creates a new one.
+
+### Pagination and rate limit protections (Issue #226)
+- **GraphQL efficiency**: Uses targeted GraphQL queries requesting only the comment ID and body to minimize network payload on high-traffic threads.
+- **Page cap**: Paginates up to a maximum cap of 10 pages (1,000 comments). This bounds API usage, avoids secondary rate limits, and prevents infinite pagination loops on extremely busy Wave issues.
+- **Marker stability**: HTML comment markers remain stable across releases so comments posted by older action versions continue to be updated in place.
+- **REST fallback**: If the GraphQL API is unavailable or returns an error, TrustBridge gracefully falls back to REST pagination (also capped).
 
 This keeps re-runs (e.g. after a contributor funds their wallet) from spamming the issue with duplicate check results — the same comment simply flips from ❌ to ✅.
 
