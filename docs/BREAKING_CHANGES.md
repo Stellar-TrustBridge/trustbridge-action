@@ -12,25 +12,79 @@ TrustBridge Action follows **Semantic Versioning** ([semver.org](https://semver.
 
 | Version segment | Incremented when |
 |-----------------|-----------------|
-| **MAJOR** (`v2`) | A breaking change is introduced — consumers must update their workflow files |
-| **MINOR** (`v1.1`) | New optional inputs, new outputs, or safe behaviour additions |
+| **MAJOR** (`v2.0.0`) | A breaking change is introduced — consumers must update their workflow files |
+| **MINOR** (`v1.1.0`) | New optional inputs, new outputs, or safe behaviour additions |
 | **PATCH** (`v1.0.1`) | Bug fixes, documentation corrections, dependency updates with no behaviour change |
 
-### Major tag (`@v`) expectations
+### Immutable release tag contract
 
-Consumers are expected to pin to a major tag (e.g. `@v1`) rather than a full SHA or patch tag. This follows [GitHub's official guidance for Action versioning](https://docs.github.com/en/actions/creating-actions/releasing-and-maintaining-actions).
+Consumers should pin either an immutable full SemVer tag or, for the strongest change control, a commit SHA:
 
 ```yaml
-# Recommended — automatically receives minor/patch improvements
-uses: Stellar-TrustBridge/trustbridge-action@v1
-
-# Pinned to a specific release — safest for regulated or audit-required workflows
+# Immutable release — receives no changes unless the workflow reference is edited
 uses: Stellar-TrustBridge/trustbridge-action@v1.2.3
+
+# Maximum immutability — pin the reviewed commit SHA
+uses: Stellar-TrustBridge/trustbridge-action@0123456789abcdef0123456789abcdef01234567
 ```
 
-**Moving the major tag.** Maintainers move the `@v1` tag to the latest patch on that major line after every release (see [docs/RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)). The `@v1` tag is **never** moved to a new major release — `v2` will receive its own distinct tag.
+Major aliases such as `@v1` are **not published or moved**. They silently change code for every consumer when reassigned, which conflicts with this repository's release-integrity policy.
 
-**Semver bot automation.** Automated major-tag bumping via a release bot is out of scope for the current release process and is documented only as a future consideration.
+The release policy is:
+
+1. Release tags must match `vMAJOR.MINOR.PATCH` with numeric segments, for example `v1.2.3`.
+2. Once pushed, a release tag must never be moved, deleted, or reused—even when the release is faulty.
+3. Rollbacks are forward-only: restore the last known-good behavior in source and publish it under the next patch version.
+4. Never force-push `main` or any tag.
+5. If a legacy moving major tag is ever discovered, freeze it at its current commit, document the exception, and migrate consumers to a full version or commit SHA. Do not move it again.
+
+**Adoption status.** At the time this policy was adopted, the repository had no published Git tags or GitHub Releases. The previous documentation described moving `v1`, but that practice had not yet been established.
+
+### Enforcement and limitations
+
+The release workflow provides defense in depth:
+
+- It rejects tag pushes that are not full SemVer, including `v1` and `v1.2`.
+- It refuses to publish when a GitHub Release already exists for the same tag.
+- A manual `workflow_dispatch` run validates the build but does not publish release assets.
+
+A workflow starts after GitHub accepts a tag update, so it cannot by itself prevent a maintainer from moving or deleting a Git reference. Repository administrators should add a GitHub ruleset targeting `refs/tags/v*` that blocks tag updates and deletions and restricts tag creation to release maintainers. The workflow guard remains useful for clear failures and for preventing a reused tag from producing replacement release assets.
+
+### Rollback recipe
+
+Assume `v1.2.3` is faulty and `v1.2.2` is the last known-good release.
+
+1. **Contain the incident.** Keep `v1.2.3` unchanged. Tell affected consumers to pin `@v1.2.2` or its reviewed commit SHA while the correction is prepared.
+2. **Revert through a normal PR.** Create a branch from current `main`; do not rewrite `main`:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   git switch -c rollback/v1.2.3
+   git revert --no-commit <bad-commit-sha>
+   npm ci
+   npm run lint
+   npm test
+   npm run build
+   git add .
+   git commit -m "revert: restore behavior from v1.2.2"
+   git push -u origin rollback/v1.2.3
+   ```
+
+   Open and merge the rollback PR only after CI passes. If several commits caused the regression, revert each explicitly and review the combined diff.
+3. **Publish a new patch.** After the rollback PR merges, tag the reviewed `main` commit with the next unused version:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   NEW_TAG=v1.2.4
+   test -z "$(git ls-remote --tags origin "refs/tags/${NEW_TAG}")"
+   git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}: rollback v1.2.3"
+   git push origin "${NEW_TAG}"
+   ```
+
+   Never use `--force`, delete `v1.2.3`, or retarget it to the recovery commit.
+4. **Verify and communicate.** Confirm the release workflow passes, publish release notes identifying the superseded version, and direct consumers to `@v1.2.4` (or its commit SHA).
 
 ---
 
