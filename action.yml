@@ -179,8 +179,7 @@ inputs:
       and requires `discussions: write` instead of `issues: write` (Issue
       #221). Omit or leave empty when running in a context where comment
       posting is not required (outputs are still set).
-    required: false
-    default: ''
+    required: true
   github_app_token:
     description: >-
       Optional pre-minted GitHub App installation token (e.g. from

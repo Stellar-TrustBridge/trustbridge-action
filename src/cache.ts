@@ -219,12 +219,15 @@ export class SimpleCache {
   /**
    * Get cache statistics for debugging.
    */
-  getStats(): { size: number; entries: string[]; backendEnabled: boolean } {
-    return {
+  getStats(): { size: number; entries: string[]; backendEnabled?: boolean } {
+    const stats: { size: number; entries: string[]; backendEnabled?: boolean } = {
       size: this.store.size,
       entries: Array.from(this.store.keys()),
-      backendEnabled: this.useBackend,
     };
+    if (this.useBackend) {
+      stats.backendEnabled = true;
+    }
+    return stats;
   }
 }
 

@@ -34572,11 +34572,14 @@ class SimpleCache {
      * Get cache statistics for debugging.
      */
     getStats() {
-        return {
+        const stats = {
             size: this.store.size,
             entries: Array.from(this.store.keys()),
-            backendEnabled: this.useBackend,
         };
+        if (this.useBackend) {
+            stats.backendEnabled = true;
+        }
+        return stats;
     }
 }
 exports.SimpleCache = SimpleCache;
