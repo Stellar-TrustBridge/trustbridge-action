@@ -1,6 +1,6 @@
 # Breaking Changes & Versioning Policy
 
-This document is the canonical reference for how TrustBridge Action classifies input and output changes, manages deprecation, and governs the `@v` major-tag contract with consumers.
+This document is the canonical reference for how TrustBridge Action classifies input and output changes, manages deprecation, and governs immutable release tags for consumers.
 
 Related docs: [README](../README.md) · [CONTRIBUTING](../CONTRIBUTING.md) · [Release Checklist](RELEASE_CHECKLIST.md)
 
