@@ -42,7 +42,7 @@ jobs:
         run: test -f dist/index.js
 
       - name: Generate SLSA provenance for dist/index.js
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest@v4
         with:
           subject-path: dist/index.js
