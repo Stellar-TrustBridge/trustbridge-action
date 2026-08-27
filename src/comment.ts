@@ -20,7 +20,13 @@ import {
 } from './links';
 import { buildOnboardingChecklist, inlineCode } from './markdown';
 import { MetricsCollector } from './metrics';
-import { formatSnoozeMarker, parseSnoozeMarker, evaluateSnoozeState } from './snooze';
+import {
+  formatSnoozeMarker,
+  parseSnoozeMarker,
+  evaluateSnoozeState,
+  evaluateCombinedSnoozeState,
+  CommentReaction,
+} from './snooze';
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
@@ -718,12 +724,13 @@ export async function postIssueComment(
 
   let existingCommentId: number | undefined;
   let existingCommentBody: string | undefined;
+  let existingCommentReactions: CommentReaction[] = [];
   
   if (sticky) {
     try {
       existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
       
-      // Fetch the comment body to check snooze status (Issue #155)
+      // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
       if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
         try {
           const commentResponse = await octokit.rest.issues.getComment({
@@ -735,29 +742,50 @@ export async function postIssueComment(
         } catch (error) {
           core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
         }
+
+        try {
+          if (octokit.rest?.reactions?.listForIssueComment) {
+            const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+              owner,
+              repo,
+              comment_id: existingCommentId,
+              per_page: 100,
+            });
+            if (Array.isArray(reactionsResponse?.data)) {
+              existingCommentReactions = reactionsResponse.data as unknown as CommentReaction[];
+            }
+          }
+        } catch (error) {
+          core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       core.warning(
         `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
-    );
+      );
     }
   }
 
-  // Check snooze state (Issue #155)
-  if (existingCommentBody && snoozeWindowMs > 0 && !forceComment) {
+  // Check snooze state (Issue #155, Issue #227)
+  if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
     const lastMarker = parseSnoozeMarker(existingCommentBody);
     
     // Determine if current check is passing by looking at body content
     // The snooze marker we just added to body indicates 'pass' or 'fail'
     const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
     
-    const snoozeState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const snoozeState = evaluateCombinedSnoozeState(
+      currentPassed,
+      lastMarker,
+      existingCommentReactions,
+      snoozeWindowMs,
+    );
     
     if (snoozeState.isSnoozed) {
       core.info(
         `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
-    );
+      );
       return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
     }
   }
@@ -834,6 +862,9 @@ export interface UpsertDiscussionCommentOptions extends UpsertCommentOptions {
 interface DiscussionCommentNode {
   id: string;
   body: string;
+  reactions?: {
+    nodes?: CommentReaction[];
+  };
 }
 
 interface DiscussionCommentsPage {
@@ -873,6 +904,15 @@ export async function findStickyDiscussionComment(
             nodes {
               id
               body
+              reactions(first: 100) {
+                nodes {
+                  content
+                  createdAt
+                  user {
+                    login
+                  }
+                }
+              }
             }
             pageInfo {
               hasNextPage
@@ -970,11 +1010,16 @@ export async function postDiscussionComment(
     }
   }
 
-  // Check snooze state (Issue #155) — mirrors the issue-comment path.
+  // Check snooze state (Issue #155, Issue #227) — mirrors the issue-comment path.
   if (existingComment && snoozeWindowMs > 0 && !forceComment) {
     const lastMarker = parseSnoozeMarker(existingComment.body);
     const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-    const snoozeState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const snoozeState = evaluateCombinedSnoozeState(
+      currentPassed,
+      lastMarker,
+      existingComment.reactions?.nodes,
+      snoozeWindowMs,
+    );
 
     if (snoozeState.isSnoozed) {
       core.info(

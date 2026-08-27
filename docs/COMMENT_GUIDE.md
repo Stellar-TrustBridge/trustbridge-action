@@ -22,6 +22,18 @@ If the comment lookup itself fails (rate limit, permission issue, transient API 
 
 Set `sticky_comment: false` to always post a new comment (e.g. if you want a full audit trail of every check in the issue timeline).
 
+## Reaction-based snooze (:zzz:) (Issue #227)
+
+Maintainers can snooze noisy failure notifications directly from the GitHub UI by reacting to TrustBridge's sticky comment with the **`:zzz:`** (or `eyes` / `💤`) emoji.
+
+### How reaction snooze works:
+- **UI control**: Maintainers can click the reaction button on the bot comment and add `:zzz:` or `eyes`. TrustBridge detects this reaction and suppresses subsequent failure comments on that issue for `snooze_window_minutes` (default 30 min).
+- **Expiry honored**: The reaction timestamp is parsed; once `snooze_window_minutes` elapses from when the reaction was added, the snooze expires and reminder comments resume.
+- **Specific emoji only**: Only designated snooze emojis (`:zzz:`, `zzz`, `eyes`, `💤`) trigger snooze. Random reactions (such as `👍`, `❤️`, `🎉`, `🚀`) are ignored.
+- **Bot reactions ignored**: Reactions added by automated bot accounts (`type: Bot` or `*[bot]`) are ignored.
+- **Auto-unsnooze on fix**: As soon as the contributor resolves the issue and checks pass (`ready: true`), TrustBridge immediately updates the comment from ❌ to ✅ regardless of snooze state.
+- **Bypass with force_comment**: Maintainers can bypass reaction snooze anytime using `force_comment: true`.
+
 ## What the comment includes
 
 - The checked Stellar account.

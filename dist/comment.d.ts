@@ -1,6 +1,7 @@
 import * as github from '@actions/github';
 import { CheckConfig, ValidationResult } from './checks';
 import { MetricsCollector } from './metrics';
+import { CommentReaction } from './snooze';
 import { DiagnosticsConfig } from './diagnostics';
 import { Locale } from './i18n';
 import { ValidationDelta } from './delta';
@@ -222,6 +223,9 @@ export interface UpsertDiscussionCommentOptions extends UpsertCommentOptions {
 interface DiscussionCommentNode {
     id: string;
     body: string;
+    reactions?: {
+        nodes?: CommentReaction[];
+    };
 }
 /**
  * Find TrustBridge's previous sticky comment on a discussion, if any.

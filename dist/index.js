@@ -36019,10 +36019,11 @@ async function postIssueComment(token, body, options = {}) {
     const { owner, repo } = context.repo;
     let existingCommentId;
     let existingCommentBody;
+    let existingCommentReactions = [];
     if (sticky) {
         try {
             existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-            // Fetch the comment body to check snooze status (Issue #155)
+            // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
             if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
                 try {
                     const commentResponse = await octokit.rest.issues.getComment({
@@ -36035,6 +36036,22 @@ async function postIssueComment(token, body, options = {}) {
                 catch (error) {
                     core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
                 }
+                try {
+                    if (octokit.rest?.reactions?.listForIssueComment) {
+                        const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+                            owner,
+                            repo,
+                            comment_id: existingCommentId,
+                            per_page: 100,
+                        });
+                        if (Array.isArray(reactionsResponse?.data)) {
+                            existingCommentReactions = reactionsResponse.data;
+                        }
+                    }
+                }
+                catch (error) {
+                    core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+                }
             }
         }
         catch (error) {
@@ -36042,13 +36059,13 @@ async function postIssueComment(token, body, options = {}) {
             core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
         }
     }
-    // Check snooze state (Issue #155)
-    if (existingCommentBody && snoozeWindowMs > 0 && !forceComment) {
+    // Check snooze state (Issue #155, Issue #227)
+    if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
         const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
         // Determine if current check is passing by looking at body content
         // The snooze marker we just added to body indicates 'pass' or 'fail'
         const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-        const snoozeState = (0, snooze_1.evaluateSnoozeState)(currentPassed, lastMarker, snoozeWindowMs);
+        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
             core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
             return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
@@ -36128,6 +36145,15 @@ async function findStickyDiscussionComment(octokit, discussionId, options = {}) 
             nodes {
               id
               body
+              reactions(first: 100) {
+                nodes {
+                  content
+                  createdAt
+                  user {
+                    login
+                  }
+                }
+              }
             }
             pageInfo {
               hasNextPage
@@ -36203,11 +36229,11 @@ async function postDiscussionComment(token, body, options = {}) {
             core.warning(`Could not look up existing TrustBridge discussion comment, falling back to a new comment: ${message}`);
         }
     }
-    // Check snooze state (Issue #155) — mirrors the issue-comment path.
+    // Check snooze state (Issue #155, Issue #227) — mirrors the issue-comment path.
     if (existingComment && snoozeWindowMs > 0 && !forceComment) {
         const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingComment.body);
         const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-        const snoozeState = (0, snooze_1.evaluateSnoozeState)(currentPassed, lastMarker, snoozeWindowMs);
+        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingComment.reactions?.nodes, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
             core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`);
             return undefined;
@@ -42933,10 +42959,13 @@ function validateSarifSchema(sarif) {
  * so maintainers can force an immediate comment post if needed.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.SNOOZE_REACTIONS = exports.SNOOZE_MARKER_PATTERN = void 0;
 exports.parseSnoozeMarker = parseSnoozeMarker;
 exports.formatSnoozeMarker = formatSnoozeMarker;
 exports.evaluateSnoozeState = evaluateSnoozeState;
+exports.isSnoozeReaction = isSnoozeReaction;
+exports.evaluateReactionSnooze = evaluateReactionSnooze;
+exports.evaluateCombinedSnoozeState = evaluateCombinedSnoozeState;
 /**
  * Hidden marker format in comment body:
  * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
@@ -43013,6 +43042,88 @@ function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
         lastStatus: lastMarker.status,
         lastTimestamp: lastMarker.timestamp,
         elapsedMs,
+    };
+}
+/**
+ * Supported reaction emojis/identifiers that trigger a snooze:
+ * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
+ * - 'eyes' / ':eyes:' — maintainer reviewing/monitoring reaction
+ *
+ * Random reactions (such as '+1', '👍', 'heart', 'rocket', 'laugh') do NOT snooze.
+ */
+exports.SNOOZE_REACTIONS = ['zzz', ':zzz:', 'eyes', ':eyes:', '💤'];
+/**
+ * Checks whether a reaction content string corresponds to a valid snooze trigger emoji.
+ */
+function isSnoozeReaction(content) {
+    if (!content)
+        return false;
+    const normalized = content.trim().toLowerCase();
+    return (normalized === 'zzz' ||
+        normalized === ':zzz:' ||
+        normalized === 'eyes' ||
+        normalized === ':eyes:' ||
+        normalized === '💤' ||
+        normalized === ':zzz' ||
+        normalized.startsWith('zzz'));
+}
+/**
+ * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ */
+function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = Date.now()) {
+    if (currentPassed || !reactions || reactions.length === 0) {
+        return { isSnoozed: false };
+    }
+    // Filter out bot reactions and non-snooze emojis
+    const eligibleReactions = reactions.filter((r) => {
+        const isBot = r.user?.type === 'Bot' ||
+            (r.user?.login ? r.user.login.endsWith('[bot]') : false);
+        return !isBot && isSnoozeReaction(r.content);
+    });
+    if (eligibleReactions.length === 0) {
+        return { isSnoozed: false };
+    }
+    // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
+    const timestamps = eligibleReactions
+        .map((r) => {
+        const raw = r.created_at || r.createdAt;
+        const parsed = raw ? new Date(raw).getTime() : now;
+        return isNaN(parsed) ? now : parsed;
+    })
+        .sort((a, b) => b - a);
+    const latestTimestamp = timestamps[0];
+    const elapsedMs = now - latestTimestamp;
+    const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
+    return {
+        isSnoozed: withinWindow,
+        lastTimestamp: latestTimestamp,
+        elapsedMs,
+    };
+}
+/**
+ * Evaluates snooze state combining both hidden body marker and UI reactions.
+ *
+ * An issue comment is snoozed if:
+ * 1. Current check fails (not passed), AND
+ * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ */
+function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, now = Date.now()) {
+    if (currentPassed) {
+        return { isSnoozed: false };
+    }
+    const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
+    if (reactionState.isSnoozed) {
+        return reactionState;
+    }
+    if (markerState.isSnoozed) {
+        return markerState;
+    }
+    return {
+        isSnoozed: false,
+        lastStatus: markerState.lastStatus,
+        lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
+        elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,
     };
 }
 

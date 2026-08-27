@@ -257,6 +257,10 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
         listComments: jest.fn(),
         createComment: jest.fn(),
         updateComment: jest.fn(),
+        getComment: jest.fn(),
+      },
+      reactions: {
+        listForIssueComment: jest.fn(),
       },
     },
     ...overrides,
@@ -473,6 +477,57 @@ describe('postIssueComment', () => {
     expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-3');
     expect(octokit.rest.issues.createComment).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('suppresses comment update when maintainer added :zzz: reaction within snooze window', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({
+      data: [
+        {
+          content: ':zzz:',
+          created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ],
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(url).toBe('https://github.com/test-owner/test-repo/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('bypasses reaction snooze when forceComment is true', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+      forceComment: true,
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
   });
 });
 
