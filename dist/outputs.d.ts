@@ -27,6 +27,8 @@ export interface ActionOutputs {
     asset_code: string;
     asset_issuer: string;
     checks_json: string;
+    badge_markdown: string;
+    badge_url: string;
     timings_json: string;
     timing_input_parse_ms: string;
     timing_horizon_fetch_ms: string;

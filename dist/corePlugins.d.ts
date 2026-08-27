@@ -91,3 +91,8 @@ export declare const homeDomainPlugin: CheckPlugin;
  * ```
  */
 export declare const corePlugins: CheckPlugin[];
+/**
+ * Register all core plugins with the default registry.
+ * Called once at action startup before any user plugins are loaded.
+ */
+export declare function registerCorePlugins(): void;

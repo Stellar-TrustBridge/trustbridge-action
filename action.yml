@@ -399,12 +399,12 @@ inputs:
     required: false
     default: ''
 
-  auto_wallet_labels:
+  unassign_on_not_ready:
     description: >-
-      Automatically apply a wallet state label to the issue
-      (wallet: funded | wallet: unfunded | wallet: trustline-missing |
-      wallet: reserve-low | wallet: horizon-error). Requires
-      issues: write permission. Default false. (Issue #200)
+      Automatically unassign the GitHub assignee(s) when readiness checks fail
+      (ready is false). Defaults to false (opt-in policy). Requires `issues: write`
+      permission. Permission or API errors are logged as warnings and do not fail the run.
+      Does not unassign during Horizon network/connectivity outages. (Issue #228)
     required: false
     default: 'false'
 

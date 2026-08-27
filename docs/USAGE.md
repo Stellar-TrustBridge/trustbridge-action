@@ -406,6 +406,25 @@ with:
 
 The checklist section uses GitHub Markdown task-list checkboxes that reflect live Horizon validation (`accountFunded`, `trustlineExists`, `xlmReserveMet`) and links to [TROUBLESHOOTING.md](TROUBLESHOOTING.md) FAQ anchors. Set `onboarding_checklist: false` to omit it.
 
+## Auto-unassign on not-ready (Issue #228)
+
+Maintainers can opt into automatically unassigning the issue assignee if their Stellar wallet readiness checks fail:
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  unassign_on_not_ready: true   # default false (opt-in policy)
+```
+
+### Policy behavior
+- **Opt-in only**: Default is `false`. When disabled, assignees are never modified.
+- **Trigger**: Runs only when `ready: false` (one or more readiness checks fail).
+- **Outage protection**: Does not unassign contributors on transient Horizon network/outage errors (`HORIZON_ERROR`, `HORIZON_TIMEOUT`, `TLS_ERROR`).
+- **Bot filtering**: Bot assignees (`type: Bot` or ending in `[bot]`) are ignored.
+- **Permissions**: Requires `issues: write` permission on `github_token`. If permission is missing or an API error occurs, a non-fatal warning is logged and the workflow proceeds without crashing.
+- **Workflow dispatch safety**: Safely skips when there is no issue context (e.g. manual dispatch without an issue).
+
 ## Waiting for the account to be funded
 
 ```yaml
@@ -1403,6 +1422,7 @@ An explicit `with:` value always wins. The env var is only consulted when the `w
 | `TRUSTBRIDGE_USE_CACHE` | `use_cache` | |
 | `TRUSTBRIDGE_LOG_INPUTS` | `log_inputs` | |
 | `TRUSTBRIDGE_PREFLIGHT_ONLY` | `preflight_only` | |
+| `TRUSTBRIDGE_UNASSIGN_ON_NOT_READY` | `unassign_on_not_ready` | `true`/`false` |
 
 **Not supported** (intentionally excluded): `github_token`, `stellar_address_input`. These must always be supplied via explicit `with:` inputs. Never place token values in environment variables where they may be printed to job logs.
 

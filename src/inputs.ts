@@ -227,6 +227,7 @@ export const TRUSTBRIDGE_ENV_MAP: Record<string, string> = {
   TRUSTBRIDGE_USE_CACHE: 'use_cache',
   TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
   TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
+  TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
 };
 
 /**

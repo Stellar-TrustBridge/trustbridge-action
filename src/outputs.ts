@@ -64,6 +64,7 @@ export function toActionOutputs(
 ): ActionOutputs {
   const timings = extras.timings ?? {};
   const validatedAt = extras.validatedAt ?? new Date().toISOString();
+  const { markdown: badgeMarkdown, url: badgeUrl } = generateBadgeSnippets(result);
   return {
     trustline_exists: String(result.trustlineExists),
     xlm_balance: result.xlmBalance,

@@ -139,17 +139,17 @@ export async function loadPlugin(
 
   // Step 4: dynamically import the module
   // Use file:// URL to ensure cross-platform compatibility
-  let moduleExport: unknown;
+  let moduleExport: Record<string, unknown> | undefined;
   try {
     const fileUrl = new URL(`file://${absolutePath}`).href;
     // On Windows, file:// URLs need special handling; node's import() handles this
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
-    moduleExport = await import(fileUrl);
+    moduleExport = (await import(fileUrl)) as Record<string, unknown>;
     if (debugMode) {
       logger.debug(`Module imported successfully`, {
         component: 'pluginLoader',
         pluginPath,
-        exportKeys: Object.keys(moduleExport),
+        exportKeys: moduleExport ? Object.keys(moduleExport) : [],
       });
     }
   } catch (error) {
@@ -165,11 +165,11 @@ export async function loadPlugin(
   // Try: default export, then named 'plugin' export, then first exported object with `id` and `run`
   let plugin: unknown;
 
-  if (typeof moduleExport?.default === 'object' && moduleExport.default !== null) {
+  if (moduleExport && typeof moduleExport.default === 'object' && moduleExport.default !== null) {
     plugin = moduleExport.default;
-  } else if (typeof moduleExport?.plugin === 'object' && moduleExport.plugin !== null) {
+  } else if (moduleExport && typeof moduleExport.plugin === 'object' && moduleExport.plugin !== null) {
     plugin = moduleExport.plugin;
-  } else {
+  } else if (moduleExport) {
     // Look for any export that has the plugin shape
     const candidateKeys = Object.keys(moduleExport).filter(
       (k) => typeof moduleExport[k] === 'object' && moduleExport[k] !== null,

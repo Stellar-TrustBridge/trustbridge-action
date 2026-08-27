@@ -155,7 +155,7 @@ export class SimpleCache {
    * Asynchronously restore cache from persistent backend on startup.
    * Should be called once at action start before any get() calls.
    */
-  async restoreAsync(key: string): Promise<T | null> {
+  async restoreAsync<T>(key: string): Promise<T | null> {
     if (!this.backend) {
       return null;
     }

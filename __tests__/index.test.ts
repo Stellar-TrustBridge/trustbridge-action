@@ -26,13 +26,14 @@ import * as path from 'path';
 // Import the modules under test (NOT index.ts itself — it auto-runs)
 // ---------------------------------------------------------------------------
 
-import { buildValidationGate, unfundedAccountResult, horizonFailureResult } from '../src/checks';
+import { buildValidationGate, unfundedAccountResult, horizonFailureResult, ValidationResult } from '../src/checks';
 import type { CheckConfig } from '../src/checks';
 import { validateContractAddress } from '../src/validation';
 import { buildSep0007PayLink } from '../src/links';
 import { parseBooleanInput } from '../src/inputs';
 import { formatCommentBody } from '../src/comment';
 import { toActionOutputs } from '../src/outputs';
+import { handleAutoUnassign } from '../src/index';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -624,3 +625,198 @@ describe('Wave #30 — workflow YAML structural checks', () => {
     expect(content).toContain('dashboard_webhook_url');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #228 — Auto-unassign on not-ready
+// ---------------------------------------------------------------------------
+
+describe('Issue #228 — handleAutoUnassign', () => {
+  const baseResult: ValidationResult = {
+    valid: false,
+    reasonCode: 'TRUSTLINE_MISSING',
+    accountFunded: true,
+    trustlineExists: false,
+    xlmBalance: '10.0',
+    xlmReserveMet: true,
+    assetBalance: '0',
+    assetBalanceMet: false,
+    checks: [
+      { label: 'Trustline exists', passed: false, detail: 'Trustline not found' },
+    ],
+  };
+
+  function makeMockOctokit() {
+    return {
+      rest: {
+        issues: {
+          removeAssignees: jest.fn().mockResolvedValue({}),
+        },
+      },
+    };
+  }
+
+  it('does nothing when unassignOnNotReady is false (default off)', async () => {
+    const octokit = makeMockOctokit();
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: { issue: { number: 123, assignees: [{ login: 'alice', type: 'User' }] } },
+      result: baseResult,
+      unassignOnNotReady: false,
+    });
+
+    expect(result).toBeUndefined();
+    expect(octokit.rest.issues.removeAssignees).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when result.valid is true (checks passed)', async () => {
+    const octokit = makeMockOctokit();
+    const passingResult: ValidationResult = { ...baseResult, valid: true, reasonCode: 'SUCCESS' };
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: { issue: { number: 123, assignees: [{ login: 'alice', type: 'User' }] } },
+      result: passingResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toBeUndefined();
+    expect(octokit.rest.issues.removeAssignees).not.toHaveBeenCalled();
+  });
+
+  it('unassigns assignee from issues.assigned payload when not ready', async () => {
+    const octokit = makeMockOctokit();
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: {
+        assignee: { login: 'alice', type: 'User' },
+        issue: { number: 123, assignees: [{ login: 'alice', type: 'User' }] },
+      },
+      result: baseResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toEqual(['alice']);
+    expect(octokit.rest.issues.removeAssignees).toHaveBeenCalledWith({
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issue_number: 123,
+      assignees: ['alice'],
+    });
+  });
+
+  it('unassigns all non-bot assignees when event assignee is absent', async () => {
+    const octokit = makeMockOctokit();
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: {
+        issue: {
+          number: 123,
+          assignees: [
+            { login: 'alice', type: 'User' },
+            { login: 'bob', type: 'User' },
+            { login: 'dependabot[bot]', type: 'Bot' },
+          ],
+        },
+      },
+      result: baseResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toEqual(['alice', 'bob']);
+    expect(octokit.rest.issues.removeAssignees).toHaveBeenCalledWith({
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issue_number: 123,
+      assignees: ['alice', 'bob'],
+    });
+  });
+
+  it('skips unassigning on Horizon outage reason codes', async () => {
+    const outageCodes = ['HORIZON_ERROR', 'HORIZON_TIMEOUT', 'TLS_ERROR'];
+    for (const code of outageCodes) {
+      const octokit = makeMockOctokit();
+      const outageResult: ValidationResult = { ...baseResult, reasonCode: code };
+      const result = await handleAutoUnassign({
+        octokit,
+        owner: 'test-owner',
+        repo: 'test-repo',
+        issueNumber: 123,
+        payload: { issue: { number: 123, assignees: [{ login: 'alice', type: 'User' }] } },
+        result: outageResult,
+        unassignOnNotReady: true,
+      });
+
+      expect(result).toBeUndefined();
+      expect(octokit.rest.issues.removeAssignees).not.toHaveBeenCalled();
+    }
+  });
+
+  it('skips bot assignees cleanly', async () => {
+    const octokit = makeMockOctokit();
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: {
+        assignee: { login: 'github-actions[bot]', type: 'Bot' },
+        issue: { number: 123, assignees: [{ login: 'github-actions[bot]', type: 'Bot' }] },
+      },
+      result: baseResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toBeUndefined();
+    expect(octokit.rest.issues.removeAssignees).not.toHaveBeenCalled();
+  });
+
+  it('catches and warns on GitHub API permission/network errors without throwing', async () => {
+    const octokit = {
+      rest: {
+        issues: {
+          removeAssignees: jest.fn().mockRejectedValue(new Error('Resource not accessible by integration (403)')),
+        },
+      },
+    };
+
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      issueNumber: 123,
+      payload: { issue: { number: 123, assignees: [{ login: 'alice', type: 'User' }] } },
+      result: baseResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toBeUndefined();
+    expect(octokit.rest.issues.removeAssignees).toHaveBeenCalled();
+  });
+
+  it('skips unassign when there is no issue context (workflow_dispatch)', async () => {
+    const octokit = makeMockOctokit();
+    const result = await handleAutoUnassign({
+      octokit,
+      owner: 'test-owner',
+      repo: 'test-repo',
+      payload: {},
+      result: baseResult,
+      unassignOnNotReady: true,
+    });
+
+    expect(result).toBeUndefined();
+    expect(octokit.rest.issues.removeAssignees).not.toHaveBeenCalled();
+  });
+});
+

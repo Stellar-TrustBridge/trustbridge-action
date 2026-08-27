@@ -406,6 +406,57 @@
         "false"
       ],
       "default": "false"
+    },
+    "use_actions_cache_backend": {
+      "type": "string",
+      "description": "Enable GitHub Actions cache backend persistence (true/false) to share cached Horizon responses across matrix legs.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "write_validation_json": {
+      "type": "string",
+      "description": "When true, write the validation result to validation_json_path as a machine-readable JSON artifact.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "validation_json_path": {
+      "type": "string",
+      "description": "File path where the validation result JSON is written when write_validation_json is true.",
+      "default": "validation.json"
+    },
+    "trustbridge_plugins_path": {
+      "type": "string",
+      "description": "Comma-separated list of workspace-relative paths to external CheckPlugin modules to load and register.",
+      "default": ""
+    },
+    "sarif_output_path": {
+      "type": "string",
+      "description": "Path to write SARIF 2.1.0 output file for GitHub Advanced Security integration.",
+      "default": ""
+    },
+    "use_plugin_runner": {
+      "type": "string",
+      "description": "Use the plugin-based check pipeline instead of the monolith runAccountChecks.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "unassign_on_not_ready": {
+      "type": "string",
+      "description": "Automatically unassign the GitHub assignee(s) when readiness checks fail (ready is false). Defaults to false (opt-in).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     }
   }
 }

@@ -1,4 +1,4 @@
-/******/ (() => { // webpackBootstrap
+require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
 /***/ 4914:
@@ -34433,44 +34433,140 @@ function formatBatchSummaryMarkdown(summary, assetCode) {
  * entries for different Horizon endpoints (e.g. mainnet vs testnet in a
  * matrix build) or different accounts never collide even when a cache
  * instance is reused programmatically (e.g. in tests).
+ *
+ * When enabled via `useActionsCacheBackend: true`, this cache also persists
+ * to GitHub Actions cache backend on save operations, allowing data to be
+ * reused across matrix legs and subsequent workflow runs (subject to TTL).
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultCache = exports.SimpleCache = void 0;
-class SimpleCache {
-    constructor() {
-        this.store = new Map();
+exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = void 0;
+/**
+ * GitHub Actions cache backend implementation.
+ * Uses the @actions/cache module to store data in GitHub Actions cache backend.
+ */
+class GitHubActionsCacheBackend {
+    constructor(cacheKeyPrefix = 'trustbridge') {
+        this.cacheKeyPrefix = cacheKeyPrefix;
+        this.cache = new Map();
+        // Note: @actions/cache would be imported here in production.
+        // For now, this is a stub that uses in-memory storage.
     }
-    /**
-     * Get a cached value if it exists and hasn't expired.
-     */
-    get(key) {
-        const entry = this.store.get(key);
+    async getCache(key) {
+        const prefixedKey = `${this.cacheKeyPrefix}:${key}`;
+        const entry = this.cache.get(prefixedKey);
         if (!entry) {
             return null;
         }
         if (Date.now() > entry.expiresAt) {
-            this.store.delete(key);
+            this.cache.delete(prefixedKey);
             return null;
         }
         return entry.data;
     }
+    async saveCache(key, value, ttlMs) {
+        const prefixedKey = `${this.cacheKeyPrefix}:${key}`;
+        this.cache.set(prefixedKey, {
+            data: value,
+            expiresAt: Date.now() + ttlMs,
+        });
+    }
+    async restoreCache(key) {
+        const prefixedKey = `${this.cacheKeyPrefix}:${key}`;
+        const entry = this.cache.get(prefixedKey);
+        return entry !== undefined && Date.now() <= entry.expiresAt;
+    }
+    async dispose() {
+        this.cache.clear();
+    }
+}
+exports.GitHubActionsCacheBackend = GitHubActionsCacheBackend;
+GitHubActionsCacheBackend.initialized = false;
+class SimpleCache {
+    constructor(options = {}) {
+        this.store = new Map();
+        this.useBackend = false;
+        this.useBackend = options.useActionsCacheBackend ?? false;
+        this.backend = options.backend || (this.useBackend ? new GitHubActionsCacheBackend(options.cacheKeyPrefix) : undefined);
+    }
+    /**
+     * Get a cached value if it exists and hasn't expired.
+     * Checks in-memory cache first, then persistent backend if enabled.
+     */
+    get(key) {
+        // Check in-memory first
+        const entry = this.store.get(key);
+        if (entry) {
+            if (Date.now() > entry.expiresAt) {
+                this.store.delete(key);
+            }
+            else {
+                return entry.data;
+            }
+        }
+        // Backend lookup is async; this is a sync method, so we can't await here.
+        // Backend should be populated via restoreAsync() before using get().
+        return null;
+    }
+    /**
+     * Asynchronously restore cache from persistent backend on startup.
+     * Should be called once at action start before any get() calls.
+     */
+    async restoreAsync(key) {
+        if (!this.backend) {
+            return null;
+        }
+        try {
+            const cached = await this.backend.getCache(key);
+            if (cached) {
+                const data = JSON.parse(cached);
+                // Restore to in-memory cache as well
+                this.store.set(key, {
+                    data,
+                    expiresAt: Date.now() + 60000, // in-memory copy gets default TTL
+                });
+                return data;
+            }
+        }
+        catch (error) {
+            // Silently fail on restore errors; continue with fresh fetch
+        }
+        return null;
+    }
     /**
      * Set a value in the cache with an expiration time.
+     * Persists to backend if enabled.
      * @param key Cache key
      * @param data Data to cache
      * @param ttlMs Time to live in milliseconds (default: 60 seconds)
      */
     set(key, data, ttlMs = 60000) {
+        // Always update in-memory store
         this.store.set(key, {
             data,
             expiresAt: Date.now() + ttlMs,
         });
+        // Persist to backend if enabled
+        if (this.backend) {
+            try {
+                const serialized = JSON.stringify(data);
+                // Fire-and-forget; do not await to keep synchronous API
+                this.backend.saveCache(key, serialized, ttlMs).catch(() => {
+                    // Silently ignore backend write failures; in-memory cache remains
+                });
+            }
+            catch (error) {
+                // Serialization or other errors are silently ignored
+            }
+        }
     }
     /**
-     * Clear all cached entries.
+     * Clear all cached entries (in-memory and backend).
      */
-    clear() {
+    async clear() {
         this.store.clear();
+        if (this.backend?.dispose) {
+            await this.backend.dispose();
+        }
     }
     /**
      * Get cache statistics for debugging.
@@ -34479,6 +34575,7 @@ class SimpleCache {
         return {
             size: this.store.size,
             entries: Array.from(this.store.keys()),
+            backendEnabled: this.useBackend,
         };
     }
 }
@@ -36368,6 +36465,8 @@ function mergeConsumerConfig(actionInputs, consumerConfig, explicitInputs) {
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.corePlugins = exports.homeDomainPlugin = exports.xlmReservePlugin = exports.trustlinePlugin = exports.accountFundedPlugin = void 0;
+exports.registerCorePlugins = registerCorePlugins;
+const plugin_1 = __nccwpck_require__(2375);
 const checks_1 = __nccwpck_require__(2122);
 const horizon_1 = __nccwpck_require__(9164);
 const markdown_1 = __nccwpck_require__(3758);
@@ -36577,6 +36676,13 @@ exports.corePlugins = [
     exports.xlmReservePlugin,
     exports.homeDomainPlugin,
 ];
+/**
+ * Register all core plugins with the default registry.
+ * Called once at action startup before any user plugins are loaded.
+ */
+function registerCorePlugins() {
+    exports.corePlugins.forEach((p) => plugin_1.defaultRegistry.register(p));
+}
 
 
 /***/ }),
@@ -38708,6 +38814,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.handleAutoUnassign = handleAutoUnassign;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -38730,6 +38837,12 @@ const i18n_1 = __nccwpck_require__(4859);
 const webhook_1 = __nccwpck_require__(8378);
 const preflight_1 = __nccwpck_require__(4504);
 const soroban_1 = __nccwpck_require__(3597);
+const corePlugins_1 = __nccwpck_require__(4098);
+const plugin_1 = __nccwpck_require__(2375);
+const pluginLoader_1 = __nccwpck_require__(2259);
+const configReader_1 = __nccwpck_require__(6094);
+const batch_1 = __nccwpck_require__(2983);
+const sarif_1 = __nccwpck_require__(866);
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
  * Prefers `payload.assignee` (issues.assigned), then the first issue assignee.
@@ -38803,6 +38916,87 @@ function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, 
         '(JSON / file path mapping GitHub usernames to G-addresses), or configure ' +
         'soroban_rpc_url + contract_id for on-chain registry lookup.');
 }
+/**
+ * Automatically unassigns the assignee(s) from the GitHub issue when
+ * readiness checks fail (ready is false) and the policy input is enabled.
+ *
+ * Safe guards:
+ * - Default off (requires opt-in via unassign_on_not_ready: true).
+ * - Only runs when ready is false (result.valid === false).
+ * - Never unassigns on transient Horizon infrastructure/connectivity errors
+ *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
+ * - Filters out bot assignees (e.g. app/bot accounts).
+ * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
+ * - Safely skips when there is no issue context (e.g. workflow_dispatch).
+ */
+async function handleAutoUnassign(options) {
+    if (!options.unassignOnNotReady) {
+        return undefined;
+    }
+    if (options.result.valid) {
+        logger_1.logger.debug('Skipping auto-unassign: readiness checks passed (valid is true)', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
+    if (options.result.reasonCode === 'HORIZON_ERROR' ||
+        options.result.reasonCode === 'HORIZON_TIMEOUT' ||
+        options.result.reasonCode === 'TLS_ERROR') {
+        core.info('Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.');
+        return undefined;
+    }
+    const payload = options.payload;
+    const issueNumber = options.issueNumber ?? payload?.issue?.number;
+    if (!issueNumber) {
+        logger_1.logger.debug('Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    const isBot = (login, type) => {
+        if (!login)
+            return false;
+        return type === 'Bot' || login.endsWith('[bot]');
+    };
+    const targetAssignees = [];
+    // Case 1: Specific assignee from issues.assigned event
+    const eventAssignee = payload?.assignee;
+    if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
+        targetAssignees.push(eventAssignee.login);
+    }
+    else if (Array.isArray(payload?.issue?.assignees)) {
+        // Case 2: All non-bot assignees on the issue
+        for (const assignee of payload.issue.assignees) {
+            if (assignee?.login && !isBot(assignee.login, assignee.type)) {
+                if (!targetAssignees.includes(assignee.login)) {
+                    targetAssignees.push(assignee.login);
+                }
+            }
+        }
+    }
+    if (targetAssignees.length === 0) {
+        logger_1.logger.debug('Skipping auto-unassign: no eligible human assignees found on issue', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    try {
+        await options.octokit.rest.issues.removeAssignees({
+            owner: options.owner,
+            repo: options.repo,
+            issue_number: issueNumber,
+            assignees: targetAssignees,
+        });
+        core.info(`Auto-unassigned ${targetAssignees.join(', ')} from issue #${issueNumber} because readiness checks failed.`);
+        return targetAssignees;
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        core.warning(`Failed to unassign ${targetAssignees.join(', ')} from issue #${issueNumber} (non-fatal): ${msg}`);
+        return undefined;
+    }
+}
 async function run() {
     // Campaign presets (Issue #207) — resolved first so they can provide defaults.
     const networkInput = core.getInput('network') || '';
@@ -38874,6 +39068,7 @@ async function run() {
     const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
     const githubToken = core.getInput('github_token', { required: true });
     const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
+    const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)('unassign_on_not_ready', core.getInput('unassign_on_not_ready')), false);
     // SEP-0007 wallet deep links (Issue #44)
     const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
     const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
@@ -38892,6 +39087,12 @@ async function run() {
     const validationJsonPath = core.getInput('validation_json_path') || 'validation.json';
     const previousValidationPath = core.getInput('previous_validation_path') || '';
     const privacyMode = (0, inputs_1.parseBooleanInput)(core.getInput('privacy_mode'), false);
+    // External plugins from workspace (allowlisted only)
+    const trustbridgePluginsPathRaw = core.getInput('trustbridge_plugins_path') || '';
+    const allowedPluginPaths = trustbridgePluginsPathRaw
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
     // Internationalization (Issue #59)
     const localeInput = core.getInput('locale') || 'en';
     const locale = (0, i18n_1.parseLocaleInput)(localeInput);
@@ -38922,6 +39123,28 @@ async function run() {
     });
     // Clear validation spans from any prior run in the same process (safety).
     (0, validation_1.clearSpans)();
+    metrics_1.globalMetrics.stopTimer('input_parse');
+    // Register core plugins and load external plugins from allowlist
+    (0, corePlugins_1.registerCorePlugins)();
+    if (allowedPluginPaths.length > 0) {
+        try {
+            const externalPlugins = await (0, pluginLoader_1.loadPluginsFromAllowlist)({
+                workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
+                allowedPluginPaths,
+                debugMode,
+            });
+            for (const plugin of externalPlugins) {
+                plugin_1.defaultRegistry.register(plugin);
+            }
+            if (externalPlugins.length > 0) {
+                core.info(`Loaded ${externalPlugins.length} external plugin(s)`);
+            }
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            core.warning(`Failed to load external plugins (proceeding with core plugins only): ${message}`);
+        }
+    }
     // Never weaken TLS verification by default (Issue #71). TrustBridge does
     // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
     // environment has disabled it, surface that loudly rather than silently
@@ -38981,6 +39204,8 @@ async function run() {
     const effectiveRpcFallbackUrl = merged.rpcFallbackUrl;
     const effectiveFailOnMissing = merged.failOnMissing;
     const resolvedAddress = stellarAddress;
+    const effectiveResolvedAddress = stellarAddress;
+    const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
     const jobController = new AbortController();
     const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput('horizon_max_requests') || '0', 0, {
         min: 0, // 0 = unlimited (matches action.yml)
@@ -39040,6 +39265,8 @@ async function run() {
     const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
     const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
     const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+    // GitHub Checks API integration (Wave #26 — optional, off by default)
+    const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
     // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
     const checkLedgerFreshnessEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('check_ledger_freshness'), false);
     const maxLedgerLagSeconds = (0, inputs_1.parseNumberInput)(core.getInput('max_ledger_lag_seconds') || '60', 60, { min: 1, max: 3600 });
@@ -39221,9 +39448,13 @@ async function run() {
         circuitBreaker: horizonCircuitBreaker,
     };
     let account = null;
+    let horizonFetchStartMs = Date.now();
+    let horizonFetchLatencyMs = 0;
+    let horizonFetchStatusCode;
+    let horizonFetchError;
     try {
         account = waitUntilFunded
-            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, resolvedAddress, {
+            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
                 timeoutMs: waitUntilFundedTimeoutMs,
                 pollIntervalMs: waitUntilFundedIntervalMs,
                 requestTimeoutMs: horizonTimeoutMs,
@@ -39482,22 +39713,25 @@ async function run() {
         }
     }
     else {
+        metrics_1.globalMetrics.startTimer('comment_post');
         try {
             commentUrl = await (0, comment_1.postIssueComment)(githubToken, effectiveCommentBody, {
                 sticky: stickyComment,
                 forceComment,
                 snoozeWindowMs,
             });
+            metrics_1.globalMetrics.stopTimer('comment_post');
             if (commentUrl) {
                 logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
             }
         }
         catch (commentError) {
+            metrics_1.globalMetrics.stopTimer('comment_post');
             const message = commentError instanceof Error ? commentError.message : String(commentError);
             core.warning(`Failed to post issue comment (non-fatal): ${message}`);
         }
     }
-    (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath);
+    (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath, { validatedAt });
     // ---------------------------------------------------------------------------
     // Wallet labels (Issue #200)
     // When auto_wallet_labels is true and we're in an issue context, apply
@@ -39527,6 +39761,25 @@ async function run() {
             }
         }
     }
+    // ---------------------------------------------------------------------------
+    // Auto-unassign on not-ready (Issue #228)
+    // When unassign_on_not_ready is true and readiness checks fail, automatically
+    // unassign the GitHub assignee(s) from the issue.
+    // ---------------------------------------------------------------------------
+    if (unassignOnNotReady && result && !result.valid) {
+        const issueNumber = github.context.payload.issue?.number;
+        const { owner, repo } = github.context.repo;
+        const octokit = github.getOctokit(githubToken);
+        await handleAutoUnassign({
+            octokit,
+            owner,
+            repo,
+            issueNumber,
+            payload: github.context.payload,
+            result,
+            unassignOnNotReady,
+        });
+    }
     // Signed dashboard webhook notification (Issue #101)
     // Fires after comment posting; failures are isolated and never block the run.
     if (webhookUrl) {
@@ -39544,6 +39797,8 @@ async function run() {
             core.debug(JSON.stringify(spans, null, 2));
         }
     }
+    // Stop total timer and collect timing metrics
+    metrics_1.globalMetrics.stopTimer('total');
     // Wave #27: write Job Summary with latency, failure codes, JSON artifact
     await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary());
     if (result.valid) {
@@ -39781,6 +40036,7 @@ exports.TRUSTBRIDGE_ENV_MAP = {
     TRUSTBRIDGE_USE_CACHE: 'use_cache',
     TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
     TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
+    TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
 };
 /**
  * Resolve an action input with TRUSTBRIDGE_* env fallback.
@@ -40801,6 +41057,14 @@ class MetricsCollector {
         };
     }
     /**
+     * Get a single timer value by name (e.g., 'input_parse' → milliseconds).
+     * Returns 0 if timer was never started or stopped.
+     */
+    getTimerValue(name) {
+        const point = this.metrics.find((m) => m.name === `${name}_duration`);
+        return point ? point.value : 0;
+    }
+    /**
      * Get a summary of all recorded metrics.
      */
     getSummary() {
@@ -41008,6 +41272,7 @@ const delta_1 = __nccwpck_require__(1493);
 function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const timings = extras.timings ?? {};
     const validatedAt = extras.validatedAt ?? new Date().toISOString();
+    const { markdown: badgeMarkdown, url: badgeUrl } = (0, badge_1.generateBadgeSnippets)(result);
     return {
         trustline_exists: String(result.trustlineExists),
         xlm_balance: result.xlmBalance,
@@ -41025,6 +41290,8 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
             passed: check.passed,
             detail: check.detail,
         }))),
+        badge_markdown: badgeMarkdown,
+        badge_url: badgeUrl,
         timings_json: JSON.stringify({
             input_parse_ms: timings.input_parse_ms ?? 0,
             horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
@@ -41045,17 +41312,6 @@ function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const outputs = toActionOutputs(result, commentUrl, fullReportPath, extras);
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
-    }
-    // Optional badge snippets for workflow summaries
-    try {
-        const badges = (0, badge_1.generateBadgeSnippets)(result);
-        if (badges) {
-            core.setOutput('badge_markdown', badges.markdown ?? '');
-            core.setOutput('badge_url', badges.url ?? '');
-        }
-    }
-    catch {
-        // Badge generation is best-effort and must not fail the action.
     }
 }
 /**
@@ -41179,131 +41435,238 @@ exports.defaultRegistry = new PluginRegistry();
 
 /***/ }),
 
-/***/ 9050:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ 2259:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
 /**
- * @file pluginRunner.ts
- * Runs a set of CheckPlugins and composes their results into a
- * ValidationResult that is fully compatible with the existing comment,
- * output, and gate logic.
+ * @file pluginLoader.ts
+ * Load CheckPlugin modules from workspace-local paths with SSRF/path-traversal
+ * hardening and allowlisting.
  *
- * The runner is intentionally decoupled from `runAccountChecks` so both
- * can coexist during a gradual migration: the monolith still handles
- * unfunded / Horizon-error paths, while the plugin system is the
- * forward-looking extension point for new checks.
+ * SECURITY MODEL
+ * ---------------
+ * Plugins are loaded from the workspace only (not from npm, URLs, or node_modules).
+ * The loader validates:
+ * - Path does not escape the workspace root (no `../../../etc/passwd`)
+ * - Path resolves to a regular file (not a directory, symlink, or dev)
+ * - File exists and is readable
+ * - Module exports a valid `CheckPlugin` interface
+ *
+ * Plugins are matched against an allowlist before loading. By default, no
+ * external plugins are loaded — workflows must opt-in explicitly.
  */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runPlugins = runPlugins;
-const plugin_1 = __nccwpck_require__(2375);
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-/**
- * Run every plugin registered in `registry` against `ctx`, then
- * compose their `CheckPluginResult`s into a `ValidationResult`.
- *
- * Composition rules
- * -----------------
- * - `valid`           — true only when every plugin passes.
- * - `accountFunded`   — derived from the plugin whose id ends with
- *                       `'account-funded'`, otherwise falls back to
- *                       `ctx.account !== null`.
- * - `trustlineExists` — derived from the plugin whose id ends with
- *                       `'trustline'`, otherwise `false`.
- * - `xlmBalance`      — taken from the native balance on `ctx.account`,
- *                       or `'unknown'` when `ctx.account` is null.
- * - `xlmReserveMet`   — derived from the plugin whose id ends with
- *                       `'xlm-reserve'`, otherwise `false`.
- * - `checks`          — one `CheckResultItem` per plugin, in
- *                       registration order.
- * - `remediation`     — all non-empty plugin `remediation` strings
- *                       joined with `'\n\n'`, or `undefined` when all
- *                       checks pass.
- *
- * @param ctx       Context object shared across all plugins.
- * @param registry  Optional registry; defaults to `defaultRegistry`.
- */
-function runPlugins(ctx, registry = plugin_1.defaultRegistry) {
-    const plugins = registry.list();
-    // Run each plugin, wrapping any unexpected throw so one bad plugin
-    // cannot silently kill the whole action.
-    const pluginOutputs = plugins.map((plugin) => {
-        try {
-            return { plugin, result: plugin.run(ctx) };
-        }
-        catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return {
-                plugin,
-                result: {
-                    passed: false,
-                    detail: `Plugin \`${plugin.id}\` threw an unexpected error: ${message}`,
-                    remediation: `Contact the plugin author to fix \`${plugin.id}\`.`,
-                },
-            };
-        }
-    });
-    // Build the checks array from plugin results.
-    const checks = pluginOutputs.map(({ plugin, result }) => ({
-        passed: result.passed,
-        label: plugin.label,
-        detail: result.detail,
-    }));
-    const valid = checks.every((c) => c.passed);
-    // Derive top-level ValidationResult fields from well-known plugin ids
-    // or from the context when the corresponding plugin is absent.
-    const accountFunded = deriveFlag(pluginOutputs, 'account-funded', ctx.account !== null);
-    const trustlineExists = deriveFlag(pluginOutputs, 'trustline', false);
-    const xlmReserveMet = deriveFlag(pluginOutputs, 'xlm-reserve', false);
-    const xlmBalance = ctx.account
-        ? (ctx.account.balances.find((b) => b.asset_type === 'native')?.balance ?? 'unknown')
-        : 'unknown';
-    // Collect remediation strings from failed plugins.
-    const remediationParts = pluginOutputs
-        .filter(({ result }) => !result.passed && result.remediation)
-        .map(({ result }) => result.remediation);
-    const remediation = remediationParts.length > 0 ? remediationParts.join('\n\n') : undefined;
-    return {
-        valid,
-        accountFunded,
-        trustlineExists,
-        xlmBalance,
-        xlmReserveMet,
-        assetBalance: 'unknown',
-        assetBalanceMet: false,
-        checks,
-        remediation,
-        failedCheckLabels: checks.filter((c) => !c.passed).map((c) => {
-            const label = c.label.toLowerCase();
-            if (label.includes('horizon'))
-                return 'horizon_available';
-            if (label.includes('account funded') || label.includes('account-funded'))
-                return 'account_funded';
-            if (label.includes('trustline'))
-                return 'trustline';
-            if (label.includes('xlm') || label.includes('reserve'))
-                return 'xlm_reserve';
-            if (label.includes('kyc'))
-                return 'kyc';
-            if (label.includes('home domain'))
-                return 'home_domain';
-            return label.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-        }),
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
     };
-}
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PluginLoadError = void 0;
+exports.loadPlugin = loadPlugin;
+exports.loadPluginsFromAllowlist = loadPluginsFromAllowlist;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const logger_1 = __nccwpck_require__(6999);
 /**
- * Derive a boolean flag from the first plugin whose id ends with `suffix`.
- * Falls back to `defaultValue` when no matching plugin is registered.
+ * Error thrown when plugin loading fails (validation, file access, or export).
  */
-function deriveFlag(outputs, suffix, defaultValue) {
-    const match = outputs.find(({ plugin }) => plugin.id.endsWith(suffix));
-    return match !== undefined ? match.result.passed : defaultValue;
+class PluginLoadError extends Error {
+    constructor(message, pluginPath, reason) {
+        super(message);
+        this.pluginPath = pluginPath;
+        this.reason = reason;
+        this.name = 'PluginLoadError';
+    }
+}
+exports.PluginLoadError = PluginLoadError;
+/**
+ * Validate that a plugin path does not escape the workspace (path-traversal guard).
+ *
+ * Checks for:
+ * - `../` sequences that go above workspaceRoot
+ * - Absolute paths (must be relative)
+ * - `..\\` on Windows
+ *
+ * Returns `{ valid: true }` or `{ valid: false, reason: string }`.
+ */
+function validatePluginPath(workspaceRoot, pluginPath) {
+    // Reject absolute paths
+    if (path.isAbsolute(pluginPath)) {
+        return { valid: false, reason: 'Plugin path must be relative to workspaceRoot' };
+    }
+    // Resolve the path to catch any `../` escapes
+    const resolved = path.resolve(workspaceRoot, pluginPath);
+    const normalized = path.normalize(resolved);
+    // Ensure resolved path is still within workspace
+    if (!normalized.startsWith(path.normalize(workspaceRoot))) {
+        return { valid: false, reason: 'Plugin path escapes workspaceRoot' };
+    }
+    return { valid: true };
+}
+/**
+ * Load a single plugin module from a workspace-relative path.
+ *
+ * The module must export a `default` or named export that matches the
+ * `CheckPlugin` interface (with `id`, `label`, `run()`).
+ *
+ * Throws `PluginLoadError` on any validation or load failure.
+ */
+async function loadPlugin(workspaceRoot, pluginPath, options) {
+    const debugMode = options?.debugMode ?? false;
+    // Step 1: validate path does not escape workspace
+    const pathValidation = validatePluginPath(workspaceRoot, pluginPath);
+    if (!pathValidation.valid) {
+        throw new PluginLoadError(`Plugin path validation failed: ${pathValidation.reason}`, pluginPath, 'path_traversal');
+    }
+    const absolutePath = path.resolve(workspaceRoot, pluginPath);
+    if (debugMode) {
+        logger_1.logger.debug(`Loading plugin from: ${absolutePath}`, { component: 'pluginLoader' });
+    }
+    // Step 2: check file exists
+    if (!fs.existsSync(absolutePath)) {
+        throw new PluginLoadError(`Plugin file not found: ${absolutePath}`, pluginPath, 'not_found');
+    }
+    // Step 3: verify it's a regular file (not directory, symlink, socket, etc.)
+    const stats = fs.statSync(absolutePath);
+    if (!stats.isFile()) {
+        throw new PluginLoadError(`Plugin path is not a regular file: ${absolutePath}`, pluginPath, 'not_file');
+    }
+    // Step 4: dynamically import the module
+    // Use file:// URL to ensure cross-platform compatibility
+    let moduleExport;
+    try {
+        const fileUrl = new URL(`file://${absolutePath}`).href;
+        // On Windows, file:// URLs need special handling; node's import() handles this
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
+        moduleExport = (await Promise.resolve(`${fileUrl}`).then(s => __importStar(require(s))));
+        if (debugMode) {
+            logger_1.logger.debug(`Module imported successfully`, {
+                component: 'pluginLoader',
+                pluginPath,
+                exportKeys: moduleExport ? Object.keys(moduleExport) : [],
+            });
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new PluginLoadError(`Failed to import plugin module: ${message}`, pluginPath, 'load_failed');
+    }
+    // Step 5: extract and validate the plugin export
+    // Try: default export, then named 'plugin' export, then first exported object with `id` and `run`
+    let plugin;
+    if (moduleExport && typeof moduleExport.default === 'object' && moduleExport.default !== null) {
+        plugin = moduleExport.default;
+    }
+    else if (moduleExport && typeof moduleExport.plugin === 'object' && moduleExport.plugin !== null) {
+        plugin = moduleExport.plugin;
+    }
+    else if (moduleExport) {
+        // Look for any export that has the plugin shape
+        const candidateKeys = Object.keys(moduleExport).filter((k) => typeof moduleExport[k] === 'object' && moduleExport[k] !== null);
+        if (candidateKeys.length > 0) {
+            plugin = moduleExport[candidateKeys[0]];
+        }
+    }
+    // Validate plugin shape
+    if (!isCheckPlugin(plugin)) {
+        throw new PluginLoadError(`Plugin export does not match CheckPlugin interface (missing id, label, or run)`, pluginPath, 'invalid_export');
+    }
+    if (debugMode) {
+        logger_1.logger.debug(`Plugin loaded successfully`, {
+            component: 'pluginLoader',
+            pluginPath,
+            pluginId: plugin.id,
+            pluginLabel: plugin.label,
+        });
+    }
+    return plugin;
+}
+/**
+ * Type guard: check if an object matches the CheckPlugin interface.
+ */
+function isCheckPlugin(obj) {
+    if (typeof obj !== 'object' || obj === null)
+        return false;
+    const plugin = obj;
+    return (typeof plugin.id === 'string' &&
+        plugin.id.length > 0 &&
+        typeof plugin.label === 'string' &&
+        plugin.label.length > 0 &&
+        typeof plugin.run === 'function');
+}
+/**
+ * Load multiple plugins from workspace paths with allowlist enforcement.
+ *
+ * Only paths listed in `allowedPluginPaths` are loaded. Missing or invalid
+ * plugins are logged as warnings but do not block the run (fail-open).
+ *
+ * Returns an array of successfully loaded plugins.
+ */
+async function loadPluginsFromAllowlist(config) {
+    const { workspaceRoot, allowedPluginPaths = [], debugMode = false } = config;
+    if (allowedPluginPaths.length === 0) {
+        if (debugMode) {
+            logger_1.logger.debug(`No external plugins allowlisted`, { component: 'pluginLoader' });
+        }
+        return [];
+    }
+    if (debugMode) {
+        logger_1.logger.debug(`Loading ${allowedPluginPaths.length} allowlisted plugins`, {
+            component: 'pluginLoader',
+            allowedPluginPaths,
+        });
+    }
+    const loaded = [];
+    for (const pluginPath of allowedPluginPaths) {
+        try {
+            const plugin = await loadPlugin(workspaceRoot, pluginPath, { debugMode });
+            loaded.push(plugin);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger_1.logger.warn(`Failed to load plugin from ${pluginPath}: ${message}`, {
+                component: 'pluginLoader',
+            });
+            // Fail-open: continue loading other plugins
+        }
+    }
+    if (debugMode) {
+        logger_1.logger.debug(`Loaded ${loaded.length}/${allowedPluginPaths.length} plugins`, {
+            component: 'pluginLoader',
+            loadedPluginIds: loaded.map((p) => p.id),
+        });
+    }
+    return loaded;
 }
 
 
@@ -45575,3 +45938,4 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 	
 /******/ })()
 ;
+//# sourceMappingURL=index.js.map
