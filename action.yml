@@ -461,6 +461,31 @@ inputs:
     required: false
     default: ''
 
+  claimable_balance_policy:
+    description: >-
+      How to treat claimable balances when determining funded status (Issue #260):
+      "ignore" (default) — funded means Horizon account exists; claimable balances do not affect funded/ready and no extra Horizon request is made;
+      "count" — when account is 404, also checks claimable_balances claimant endpoint and surfaces claimable presence in the comment (informational, does not auto-claim).
+      Empty claimables are treated as no hint in either mode. Default "ignore" matches today’s behavior.
+    required: false
+    default: 'ignore'
+
+  sep0010_challenge_xdr:
+    description: >-
+      Optional base64 XDR of a SEP-0010 challenge transaction to display in the comment (Issue #252).
+      When set, the comment includes a truncated challenge snippet for Freighter signing. Prefer `sep0010_dashboard_url` to avoid leaking nonces.
+      Does not block `ready` unless your workflow explicitly gates on it.
+    required: false
+    default: ''
+
+  sep0010_dashboard_url:
+    description: >-
+      Optional HTTPS dashboard URL where Freighter SEP-0010 proof can be verified (Issue #252).
+      When set, the comment shows a “Verify with Freighter on dashboard” link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
+      Must be https and not a private/loopback host. Does not block `ready` unless documented.
+    required: false
+    default: ''
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
@@ -498,6 +523,12 @@ outputs:
     description: 'Markdown-formatted badge snippet (e.g. for README embeds) linking to TrustBridge repo'
   badge_url:
     description: 'Shields.io badge URL reflecting validation state (pass/fail/pending)'
+
+  # ── Split balance outputs (Issue #246) ─────────────────────────────────────
+  asset_balance:
+    description: 'Current configured asset (e.g. USDC) balance as reported by Horizon (7-decimal string, 0 if no trustline, unknown on Horizon error)'
+  native_balance:
+    description: 'Native XLM balance alias of xlm_balance (7-decimal Horizon string)'
 
   # ── Timing breakdown outputs (Issue #93) ──────────────────────────────────
   timings_json:

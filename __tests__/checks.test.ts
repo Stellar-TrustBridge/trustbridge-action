@@ -1071,3 +1071,58 @@ describe('FailureReasonCode mapping (Issue #67)', () => {
     expect(result.reasonCode).toBe('TLS_ERROR');
   });
 });
+
+describe('claimable-balance-aware funded definition (Issue #260)', () => {
+  it('ignores claimables by default (policy ignore): funded account with claimables still funded true, no claimable check row', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER, buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '5.0000000', asset_type: 'claimable_balance_id', claimable_balance_id: 'abc', buying_liabilities: '0', selling_liabilities: '0' } as unknown as import('../src/horizon').HorizonBalance,
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'ignore' });
+    expect(result.accountFunded).toBe(true);
+    expect(result.hasClaimableBalances).toBe(true);
+    expect(result.claimableBalanceCount).toBe(1);
+    // No claimable check row when ignore
+    expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
+  });
+
+  it('count policy: unfunded with 2 claimables surfaces hint and remediation, empty claimables no hint', () => {
+    const configCount = { ...defaultConfig, claimableBalancePolicy: 'count' as const, horizonUrl: 'https://horizon.stellar.org' };
+    const resultWith = unfundedAccountResult(TEST_ADDRESS, configCount, undefined, 2);
+    expect(resultWith.checks.some((c) => c.label === 'Claimable balances')).toBe(true);
+    expect(resultWith.checks.find((c) => c.label === 'Account funded')!.detail).toContain('claimable balance');
+    expect(resultWith.remediation).toContain('claimable balance');
+    expect(resultWith.hasClaimableBalances).toBe(true);
+    expect(resultWith.claimableBalanceCount).toBe(2);
+    expect(resultWith.accountFunded).toBe(false); // still unfunded
+
+    const resultEmpty = unfundedAccountResult(TEST_ADDRESS, configCount, undefined, 0);
+    expect(resultEmpty.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
+    expect(resultEmpty.checks.find((c) => c.label === 'Account funded')!.detail).not.toContain('claimable');
+    expect(resultEmpty.hasClaimableBalances).toBe(false);
+  });
+
+  it('ignore policy: unfunded with claimables still no hint (default behavior preserved)', () => {
+    const configIgnore = { ...defaultConfig, claimableBalancePolicy: 'ignore' as const };
+    const result = unfundedAccountResult(TEST_ADDRESS, configIgnore, undefined, 5);
+    expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
+    expect(result.checks.find((c) => c.label === 'Account funded')!.detail).not.toContain('claimable');
+  });
+
+  it('count policy: funded account with claimables adds informational claimable check but valid unchanged', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER, buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '1.0000000', asset_type: 'claimable_balance_id', claimable_balance_id: 'id1', buying_liabilities: '0', selling_liabilities: '0' } as unknown as import('../src/horizon').HorizonBalance,
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'count' });
+    expect(result.valid).toBe(true);
+    expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(true);
+    expect(result.hasClaimableBalances).toBe(true);
+  });
+});

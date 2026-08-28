@@ -15,6 +15,7 @@ import {
   buildChangeTrustLink,
   buildLobstrLink,
   buildSep0007PayLink,
+  buildSep0010ChallengeSnippet,
   inferStellarNetwork,
   buildFaqLinkForCheck,
 } from './links';
@@ -94,6 +95,15 @@ export interface CommentConfig extends CheckConfig {
    * section is appended to the comment showing newly-passed/failed checks.
    */
   delta?: ValidationDelta | null;
+  /**
+   * SEP-0010 challenge proof (Issue #252). Optional — when either field is set,
+   * a "Proof of wallet control" snippet is appended to the comment. Does not
+   * block `ready` unless the caller explicitly gates on it. Prefer
+   * `sep0010DashboardUrl` over raw `sep0010ChallengeXdr` to avoid leaking
+   * nonces in public issues.
+   */
+  sep0010ChallengeXdr?: string;
+  sep0010DashboardUrl?: string;
 }
 
 export const TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
@@ -212,10 +222,25 @@ export function formatCommentBody(
     '',
     `### ${strings.balancesHeading}`,
     '',
-    `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`,
+    `- **Native XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`,
     result.reserveRequirement
-      ? `- **Minimum required:** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-      : `- **Minimum required:** \`${config.minXlmReserve} XLM\``,
+      ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
+      : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``,
+    // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
+    (() => {
+      const asset = config.assetCode;
+      const bal = result.assetBalance ?? '0';
+      const trustline = result.trustlineExists;
+      if (bal === 'unknown') {
+        return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? 'exists' : 'missing'})`;
+      }
+      if (!trustline) {
+        return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
+      }
+      // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
+      const limitNote = result.trustlineLimit ? ` (limit \`${result.trustlineLimit} ${asset}\`)` : '';
+      return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
+    })(),
     '',
     `### ${strings.setupCostHeading}`,
     '',
@@ -247,6 +272,25 @@ export function formatCommentBody(
       '',
       `- [${strings.sendXlmToActivate.replace('{amount}', String(STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`,
   );
+  }
+
+  // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready
+  // Prefer dashboard proof link over raw XDR to avoid leaking nonces in public issues.
+  const sep0010Snippet = buildSep0010ChallengeSnippet({
+    challengeXdr: config.sep0010ChallengeXdr,
+    dashboardUrl: config.sep0010DashboardUrl,
+    network: stellarLabNetwork,
+    stellarAddress: config.stellarAddress,
+  });
+  if (sep0010Snippet) {
+    lines.push(
+      '',
+      '### Proof of wallet control (SEP-0010)',
+      '',
+      sep0010Snippet,
+      '',
+      '_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._',
+    );
   }
 
   // Sponsorship info explainer (Issue #141)
@@ -317,6 +361,8 @@ export function formatCommentBody(
     `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`,
     `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace('{assetCode}', config.assetCode)} |`,
     `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`,
+    `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`,
+    `| \`asset_balance\` | \`${result.assetBalance ?? '0'}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`,
     `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`,
   );
 

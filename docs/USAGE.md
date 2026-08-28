@@ -306,8 +306,29 @@ with:
 
 - **Failover behavior:** When the primary Horizon URL fails after exponential retries due to a retryable error (HTTP 5xx, 429 rate limits, or network timeout), TrustBridge transparently attempts the secondary Horizon URL before declaring failure.
 - **Definitive 404s skipped:** If Horizon returns a 404 (account missing / not funded), failover is skipped immediately because 404 is a non-retryable account state, not a transport outage.
-- **Cross-network guard:** Failover between different networks (e.g. mainnet to testnet) is disabled by default (`allow_cross_network_failover: false`) to avoid silent network context shifts.
+- **Cross-network guard:** Failover between different networks (e.g. mainnet to testnet) is disabled by default (`allow_cross_network_fallback: false` / `allow_cross_network_failover: false`) to avoid silent network context shifts. Set `allow_cross_network_fallback: true` to opt into cross-network fallback anyway.
 - **Observability:** Issue comments and debug logs reflect whether the primary or secondary Horizon base URL served the response.
+
+### Cross-network mismatch detection (Issue #266)
+
+When Horizon returns 404 for the configured `horizon_url`, TrustBridge deterministically probes the **canonical opposite network** (`https://horizon.stellar.org` ↔ `https://horizon-testnet.stellar.org`) with a 5s timeout to see if the same `G…` address is funded elsewhere:
+
+- `404` on public + `200` on testnet (or reverse) → comment shows a clear mismatch: “was not found on **public** but **is active on testnet** (https://horizon-testnet.stellar.org) — ensure `horizon_url` points at the correct network.” Remediation suggests either funding on the configured network or updating `horizon_url` to the opposite canonical URL.
+- `404` on both networks → genuinely unfunded, no mismatch hint.
+- Opposite returns `503/429/500` or network error/timeout → no hint (avoids false positives when the other Horizon is temporarily unavailable).
+- The opposite URL is SSRF-validated; an invalid URL never gets probed.
+
+This probe is **bounded and allowlisted** — only the two canonical Horizons are ever checked. Arbitrary `horizon_url_fallback` / `secondary_horizon_url` values are **never** probed here; falling back to a user-supplied URL on a different network is gated by `allow_cross_network_fallback` in `src/horizon.ts` (never cross-network unless you opt in). That keeps behavior deterministic and prevents an extra network probe from being treated as a fallback.
+
+```yaml
+with:
+  horizon_url: https://horizon.stellar.org   # configured as public
+  # fallback on a different network is disabled by default:
+  secondary_horizon_url: https://horizon-testnet.stellar.org
+  allow_cross_network_fallback: false  # default — mismatch hint still shown, but fallback not used
+```
+
+Both directions are tested (public→testnet and testnet→public).
 
 ---
 
@@ -611,6 +632,70 @@ Sponsorship outputs are useful for understanding reserve requirements and sponso
 ```
 
 When an account is **sponsored** (`num_sponsored > 0`), reserve requirements are covered by the sponsoring account. The TrustBridge comment will automatically note this and provide links to Stellar sponsorship documentation for clarity.
+
+### Claimable balances and funded definition (Issue #260)
+
+By default, **funded** means Horizon `GET /accounts/{id}` returned `200`. Claimable balances are **ignored**:
+
+- An address that has `0` native XLM but has claimable balances on Horizon still shows *“not found / unfunded”* and gets the unfunded remediation (fund + trustline). No extra Horizon request is made, so there is no extra request budget impact. Empty claimables (`0`) are treated as “no hint” in either mode.
+
+To surface claimable balances without changing the `ready` gate, set `claimable_balance_policy: count`:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  claimable_balance_policy: count   # default is "ignore"
+```
+
+Then, when the account is `404` but Horizon reports claimable balances for the claimant, the comment adds: *“It has N claimable balance(s) — these must be claimed after funding”* and the remediation includes the `claimable_balances?claimant=` Horizon link. The check is informational — `account_funded` stays `false` and `ready` is not set true unless you explicitly gate on it. The extra `GET /claimable_balances?claimant=…&limit=5` request is bounded to 5s and is only made when `count` is set.
+
+Policy is tested for both `ignore` (default, no hint) and `count` (hint when >0, no hint when 0).
+
+### SEP-0010 challenge proof (Issue #252)
+
+Proving wallet control beats “please add a trustline” copy-paste. Comments already have SEP-0007 links for funding. You can optionally include a SEP-0010 challenge proof:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  # Prefer a dashboard Freighter proof link (no nonce in the issue):
+  sep0010_dashboard_url: https://your-dashboard.example/verify?address=G...
+  # Or, if you must, a raw challenge XDR (truncated in the comment, do not reuse nonce):
+  # sep0010_challenge_xdr: AAAA...
+```
+
+- When `sep0010_dashboard_url` (https, not private/loopback) is set, the comment shows *“Proof of wallet control (SEP-0010) — [Open dashboard proof](url)”* with network context. This is the preferred mode.
+- When only `sep0010_challenge_xdr` is set, the comment shows a truncated `24…8` XDR snippet with signing instructions and a link to SEP-0010. Raw nonces are truncated in the comment and never logged; do not reuse a challenge.
+- If both are set, the dashboard link wins (no raw XDR rendered).
+- The snippet is informational and **does not block `ready`** unless your workflow explicitly gates on it. It is size-capped; if the total comment exceeds GitHub’s 65k limit, the remediation truncation keeps the snippet.
+
+See `docs/COMMENT_GUIDE.md` for snapshot examples and comment-size guidance.
+
+### Split native XLM vs trustline balance (Issue #246)
+
+Maintainers can now tell “has USDC but no XLM” from the inverse. The comment’s `### Balances` section and outputs now distinguish native vs asset:
+
+**Comment:**
+```md
+### Balances
+- **Native XLM balance:** `10.0000000 XLM`
+- **Minimum required (XLM reserve):** `1.5 XLM` (protocol minimum `1.5 XLM` from 1 subentries/sponsorship, configured floor `1.5 XLM`)
+- **USDC trustline balance:** `100.0000000 USDC` (limit `1000.0000000 USDC`) — or `0 USDC — no trustline`
+```
+
+- `Native XLM balance` is the raw Horizon native balance string (7 decimals, `0` / `_unknown_` on error paths).
+- `USDC trustline balance` is the asset balance for the configured `asset_code`/`asset_issuer` (7 decimals). When the trustline is missing, it shows `0 … — no trustline`; when Horizon is unreachable, `_unknown_`; when `0` balance trustline exists, `0.0000000`.
+- Limits are shown when available (Issue #140).
+
+**Outputs (non-breaking additions):**
+| Output | Description |
+|--------|-------------|
+| `asset_balance` | Configured asset balance (7-decimal Horizon string, `0` if no trustline, `unknown` on error) |
+| `native_balance` | Alias of `xlm_balance` (native XLM, 7 decimals) |
+
+`xlm_balance`, `trustline_exists`, `account_funded`, `checks_json`, `comment_url` etc. are unchanged. Balance parsing follows `docs/DECIMAL_PRECISION.md` — 7-decimal stroops, `BigInt` for maximum precision.
 
 ---
 

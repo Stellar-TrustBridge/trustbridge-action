@@ -42,6 +42,10 @@ export interface ActionOutputs {
   asset_code: string;
   asset_issuer: string;
   checks_json: string;
+  // Split balances (Issue #246) — native vs trustline
+  // All balance strings are 7-decimal Horizon strings ("0", "unknown", or "1.0000000")
+  asset_balance: string;
+  native_balance: string;
   // Badge outputs for README/dashboard embeds
   badge_markdown: string;
   badge_url: string;
@@ -84,6 +88,9 @@ export function toActionOutputs(
         detail: check.detail,
       })),
     ),
+    // Split balances — native vs asset (Issue #246). 7-decimal strings; legacy xlm_balance retained
+    asset_balance: result.assetBalance ?? '0',
+    native_balance: result.xlmBalance,
     badge_markdown: badgeMarkdown,
     badge_url: badgeUrl,
     timings_json: JSON.stringify({

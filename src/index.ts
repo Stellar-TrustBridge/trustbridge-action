@@ -777,6 +777,14 @@ async function run(): Promise<void> {
     );
   }
 
+  // Claimable-balance policy (Issue #260) — default ignore
+  const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
+  const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' as const : 'ignore' as const;
+
+  // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
+  const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
+  const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
+
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
     minXlmReserve: Number(minXlmReserve),
@@ -788,6 +796,7 @@ async function run(): Promise<void> {
     checkLedgerFreshness: checkLedgerFreshnessEnabled,
     maxLedgerLagSeconds,
     ledgerFreshnessFailOnStale,
+    claimableBalancePolicy,
   };
 
   // ---------------------------------------------------------------------------
@@ -968,10 +977,8 @@ async function run(): Promise<void> {
     if (error instanceof HorizonError && error.statusCode === 404) {
       horizonFetchStatusCode = 404;
       horizonFetchError = error.message;
-      // #144: attempt cross-network detection before building the result so
-      // the comment surfaces a clear mismatch error when the address is active
-      // on the opposite network. Fire-and-forget with a short timeout so a
-      // slow alt-network Horizon never blocks the primary run.
+      // #144/#266: deterministic cross-network detection — probes canonical opposite
+      // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
       const mismatchHint = await detectNetworkMismatch(horizonUrl, stellarAddress).catch(
         () => undefined,
       );
@@ -981,7 +988,21 @@ async function run(): Promise<void> {
           `but horizon_url points at ${mismatchHint.configuredNetwork}.`,
         );
       }
-      result = unfundedAccountResult(stellarAddress, checkConfig, mismatchHint);
+      // #260: claimable-balance-aware funded definition — when policy is 'count',
+      // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+      let claimableCount: number | undefined;
+      if (claimableBalancePolicy === 'count') {
+        try {
+          const { fetchClaimableBalanceCount } = await import('./horizon');
+          claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+          if (claimableCount > 0) {
+            core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+          }
+        } catch {
+          claimableCount = 0;
+        }
+      }
+      result = unfundedAccountResult(stellarAddress, checkConfig, mismatchHint, claimableCount);
     } else if (error instanceof HorizonError) {
       horizonFetchStatusCode = error.statusCode;
       horizonFetchError = error.message;
@@ -1193,6 +1214,8 @@ async function run(): Promise<void> {
     onboardingChecklist,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    sep0010ChallengeXdr,
+    sep0010DashboardUrl,
     locale,
     debugMode,
     docsBaseUrl: core.getInput('docs_base_url') || undefined,

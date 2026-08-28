@@ -149,3 +149,67 @@ describe('inferStellarNetwork', () => {
     expect(inferStellarNetwork('https://horizon.stellar.org')).toBe('public');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SEP-0010 challenge snippet (Issue #252)
+// ---------------------------------------------------------------------------
+
+import {
+  buildSep0010ChallengeSnippet,
+  isValidDashboardUrl,
+} from '../src/links';
+
+describe('buildSep0010ChallengeSnippet', () => {
+  it('returns undefined when neither dashboard nor XDR provided', () => {
+    expect(buildSep0010ChallengeSnippet({})).toBeUndefined();
+    expect(buildSep0010ChallengeSnippet({ dashboardUrl: '', challengeXdr: '' })).toBeUndefined();
+  });
+
+  it('prefers dashboard link over raw XDR and does not leak XDR', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://dashboard.example/verify?address=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      challengeXdr: 'AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      network: 'public',
+      stellarAddress: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    });
+    expect(snippet).toContain('dashboard.example');
+    expect(snippet).toContain('SEP-0010');
+    expect(snippet).not.toContain('AAAAAQ'); // raw XDR not rendered when dashboard wins
+  });
+
+  it('renders truncated XDR when only challengeXdr is set', () => {
+    const longXdr = 'AAAAAQ' + 'B'.repeat(200) + 'CCCCCCCC';
+    const snippet = buildSep0010ChallengeSnippet({ challengeXdr: longXdr, network: 'testnet' });
+    expect(snippet).toContain('…');
+    expect(snippet).not.toContain(longXdr);
+    expect(snippet).toContain('testnet');
+  });
+
+  it('rejects private/loopback dashboard URLs (SSRF guard)', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://127.0.0.1/verify',
+      challengeXdr: 'AAAAAQ',
+    });
+    expect(snippet).toBeUndefined(); // invalid dashboard falls back to no snippet (or would need XDR fallback but we return undefined to avoid broken link)
+  });
+
+  it('does not block ready — informational only', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://dashboard.example/verify',
+    });
+    expect(snippet).toContain('does not block');
+  });
+});
+
+describe('isValidDashboardUrl', () => {
+  it('accepts https public URLs', () => {
+    expect(isValidDashboardUrl('https://dashboard.example/verify')).toBe(true);
+  });
+
+  it('rejects http, private IPs, metadata, and non-https', () => {
+    expect(isValidDashboardUrl('http://dashboard.example/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://127.0.0.1/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://192.168.1.1/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://metadata.google.internal/verify')).toBe(false);
+  });
+});

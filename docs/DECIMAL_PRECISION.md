@@ -166,10 +166,38 @@ and expect the result to be correct without first removing the decimal point.
 ## Credit-asset balance format
 
 Credit-asset balances (e.g. USDC) follow the same 7-decimal-place string
-format as native XLM. The action only checks for **trustline existence**; it
-does not expose the credit-asset balance as an output or compare it
-numerically. If your release script needs to inspect a credit-asset balance,
-fetch it from Horizon directly and apply the same safe-parsing rules above.
+format as native XLM. Since Issue #246 the action **exposes** the configured asset’s balance as `asset_balance` (and in the comment’s `### Balances` section alongside `xlm_balance`/`native_balance`) so you can distinguish “has USDC but no XLM” from the inverse:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.addr.outputs.value }}
+    asset_code: USDC
+    asset_issuer: GA5Z...
+- run: |
+    echo "Native: ${{ steps.bridge.outputs.native_balance }} XLM"
+    echo "USDC: ${{ steps.bridge.outputs.asset_balance }} USDC"
+    echo "Trustline: ${{ steps.bridge.outputs.trustline_exists }}"
+```
+
+- **Missing trustline** → `asset_balance` is `"0"` and the comment shows `— no trustline configured`.
+- **Trustline with 0 balance** → `asset_balance` is `"0.0000000"` and the comment shows `` `0.0000000 USDC` `` (distinct from missing).
+- **Horizon error** → `asset_balance` is `"unknown"` (same as `xlm_balance`).
+
+The same safe-parsing rules (parseFloat for thresholds <10M, stroops/BigInt for payment math) apply to `asset_balance`. If your release script needs to inspect a credit-asset balance, use `asset_balance` directly — you no longer need to fetch from Horizon separately.
+
+### Split display (Issue #246)
+
+The comment now renders both balances:
+
+```md
+### Balances
+- **Native XLM balance:** `10.0000000 XLM`
+- **Minimum required (XLM reserve):** `1.5 XLM` (...)
+- **USDC trustline balance:** `100.0000000 USDC` (limit `1000.0000000 USDC`)
+```
+
+This split is covered by snapshot tests (`__tests__/comment.test.ts`) and output tests (`__tests__/outputs.test.ts`). Rounding is never changed — Horizon strings are preserved verbatim (7 decimals).
 
 ---
 
