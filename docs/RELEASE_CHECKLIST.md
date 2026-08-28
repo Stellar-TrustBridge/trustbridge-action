@@ -12,8 +12,27 @@ Related docs: [Breaking Changes](BREAKING_CHANGES.md) · [License Report](LICENS
 - Run the build so `dist/` matches `src/` (`npm run build`). CI fails the build if `dist/` drifts from a fresh `npm run build` (see `.github/workflows/ci.yml`), but re-run it locally before tagging to be sure.
 - Confirm `action.yml` inputs and README inputs stay aligned.
 - Confirm the release workflow still passes on the tag you plan to ship. The repo-level release job is a dry run gate for `v*` tags and should stay green before moving a major tag.
+- **SLSA provenance**: for a `v*` tag, confirm the `Generate SLSA provenance for dist/index.js` step succeeds. A manual `workflow_dispatch` run intentionally validates the build without publishing release provenance.
+- Confirm the provenance step receives only `subject-path: dist/index.js`; do not pass secrets or secret-derived values to the attestation action.
 - Keep an eye on XLM fee buffer guidance in the docs if the validation defaults change; the release checklist should point maintainers back to the current remediation copy.
 - **License report**: verify the release workflow attached `licenses-report.json` and `licenses-report.md` to the GitHub Release assets. If a new runtime dependency was added since the last release, check its SPDX identifier against the compatibility table in [docs/LICENSE_REPORT.md](LICENSE_REPORT.md) before publishing.
+
+## Verify build provenance
+
+The tag-triggered release workflow publishes a signed SLSA provenance attestation for the freshly built `dist/index.js` to GitHub's attestations API. Verify the exact bundle from the release tag before moving a major tag:
+
+```bash
+TAG=v1.0.1
+git clone --depth 1 --branch "$TAG" https://github.com/Stellar-TrustBridge/trustbridge-action.git
+cd trustbridge-action
+
+gh attestation verify dist/index.js \
+  --repo Stellar-TrustBridge/trustbridge-action \
+  --signer-workflow Stellar-TrustBridge/trustbridge-action/.github/workflows/release.yml \
+  --source-ref "refs/tags/$TAG"
+```
+
+Replace `v1.0.1` with the release tag. A successful result proves that the bundle digest matches a SLSA provenance statement signed by the repository's release workflow for that tag. If verification fails, do not publish or move the major tag; inspect the release run and rebuild from a clean tag.
 
 ## Scheduled re-validation
 
