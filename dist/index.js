@@ -34572,11 +34572,15 @@ class SimpleCache {
      * Get cache statistics for debugging.
      */
     getStats() {
-        return {
+        const stats = {
             size: this.store.size,
             entries: Array.from(this.store.keys()),
             backendEnabled: this.useBackend,
         };
+        if (this.useBackend) {
+            stats.backendEnabled = true;
+        }
+        return stats;
     }
 }
 exports.SimpleCache = SimpleCache;
@@ -35582,7 +35586,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
@@ -35902,25 +35906,99 @@ function isTrustBridgeComment(body) {
         body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
+ * Maximum number of comment pages (100 comments per page) to search for sticky
+ * comments on high-traffic issues or discussions before capping.
+ * Capping at 10 pages (1,000 comments) prevents rate limit exhaustion and
+ * infinite pagination on busy threads. (Issue #226)
+ */
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
+/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
- * Paginates through every comment so the marker is found even on
- * high-traffic issues with 100+ comments.
+ *
+ * Uses GraphQL pagination (100 comments per page, up to MAX_STICKY_COMMENT_SEARCH_PAGES = 10 pages)
+ * to locate the marker efficiently even on busy Wave issues with hundreds of comments.
+ * Falls back to REST pagination if GraphQL is unavailable or fails.
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-async function findStickyComment(octokit, owner, repo, issueNumber) {
-    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-        owner,
-        repo,
-        issue_number: issueNumber,
-        per_page: 100,
-    });
-    // Use the last matching comment so that if multiple TrustBridge comments
-    // exist (e.g. sticky was toggled off then on), we upsert the most recent one.
-    const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
-    return matches.length > 0 ? matches[matches.length - 1].id : undefined;
+async function findStickyComment(octokit, owner, repo, issueNumber, options = {}) {
+    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
+    // Primary: GraphQL pagination (efficiently retrieves only databaseId + body)
+    if (typeof octokit.graphql === 'function') {
+        try {
+            const query = `
+        query FindTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) {
+              comments(first: 100, after: $cursor) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+          }
+        }
+      `;
+            let cursor = null;
+            let lastMatchId;
+            let pageCount = 0;
+            let graphqlHandled = false;
+            while (pageCount < maxPages) {
+                pageCount++;
+                const data = (await octokit.graphql(query, {
+                    owner,
+                    repo,
+                    issueNumber,
+                    cursor,
+                }));
+                const comments = data?.repository?.issue?.comments;
+                if (!comments || !Array.isArray(comments.nodes)) {
+                    break;
+                }
+                graphqlHandled = true;
+                for (const comment of comments.nodes) {
+                    if (isTrustBridgeComment(comment.body)) {
+                        // databaseId is the numeric REST issue comment id
+                        lastMatchId = comment.databaseId;
+                    }
+                }
+                if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
+                    break;
+                }
+                cursor = comments.pageInfo.endCursor;
+            }
+            if (lastMatchId !== undefined) {
+                return lastMatchId;
+            }
+            if (graphqlHandled) {
+                return undefined;
+            }
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            core.debug(`GraphQL sticky comment search failed, falling back to REST: ${message}`);
+        }
+    }
+    // Fallback: REST pagination with page cap
+    if (typeof octokit.paginate === 'function' && octokit.rest?.issues?.listComments) {
+        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+            owner,
+            repo,
+            issue_number: issueNumber,
+            per_page: 100,
+        });
+        const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
+        return matches.length > 0 ? matches[matches.length - 1].id : undefined;
+    }
+    return undefined;
 }
 async function postIssueComment(token, body, options = {}) {
     const sticky = options.sticky ?? true;
@@ -35945,10 +36023,11 @@ async function postIssueComment(token, body, options = {}) {
     const { owner, repo } = context.repo;
     let existingCommentId;
     let existingCommentBody;
+    let existingCommentReactions = [];
     if (sticky) {
         try {
             existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-            // Fetch the comment body to check snooze status (Issue #155)
+            // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
             if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
                 try {
                     const commentResponse = await octokit.rest.issues.getComment({
@@ -35961,6 +36040,22 @@ async function postIssueComment(token, body, options = {}) {
                 catch (error) {
                     core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
                 }
+                try {
+                    if (octokit.rest?.reactions?.listForIssueComment) {
+                        const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+                            owner,
+                            repo,
+                            comment_id: existingCommentId,
+                            per_page: 100,
+                        });
+                        if (Array.isArray(reactionsResponse?.data)) {
+                            existingCommentReactions = reactionsResponse.data;
+                        }
+                    }
+                }
+                catch (error) {
+                    core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+                }
             }
         }
         catch (error) {
@@ -35968,13 +36063,13 @@ async function postIssueComment(token, body, options = {}) {
             core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
         }
     }
-    // Check snooze state (Issue #155)
-    if (existingCommentBody && snoozeWindowMs > 0 && !forceComment) {
+    // Check snooze state (Issue #155, Issue #227)
+    if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
         const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
         // Determine if current check is passing by looking at body content
         // The snooze marker we just added to body indicates 'pass' or 'fail'
         const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-        const snoozeState = (0, snooze_1.evaluateSnoozeState)(currentPassed, lastMarker, snoozeWindowMs);
+        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
             core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
             return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
@@ -36044,7 +36139,8 @@ function resolveDiscussionNodeId(payload) {
  * the action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-async function findStickyDiscussionComment(octokit, discussionId) {
+async function findStickyDiscussionComment(octokit, discussionId, options = {}) {
+    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
     const query = `
     query FindTrustBridgeDiscussionComment($discussionId: ID!, $cursor: String) {
       node(id: $discussionId) {
@@ -36053,6 +36149,15 @@ async function findStickyDiscussionComment(octokit, discussionId) {
             nodes {
               id
               body
+              reactions(first: 100) {
+                nodes {
+                  content
+                  createdAt
+                  user {
+                    login
+                  }
+                }
+              }
             }
             pageInfo {
               hasNextPage
@@ -36065,7 +36170,9 @@ async function findStickyDiscussionComment(octokit, discussionId) {
   `;
     let cursor = null;
     let lastMatch;
-    do {
+    let pageCount = 0;
+    while (pageCount < maxPages) {
+        pageCount++;
         const data = (await octokit.graphql(query, { discussionId, cursor }));
         const comments = data?.node?.comments;
         if (!comments) {
@@ -36080,11 +36187,11 @@ async function findStickyDiscussionComment(octokit, discussionId) {
                 lastMatch = comment;
             }
         }
-        if (!comments.pageInfo.hasNextPage) {
+        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
             break;
         }
         cursor = comments.pageInfo.endCursor;
-    } while (cursor);
+    }
     return lastMatch;
 }
 /**
@@ -36126,11 +36233,11 @@ async function postDiscussionComment(token, body, options = {}) {
             core.warning(`Could not look up existing TrustBridge discussion comment, falling back to a new comment: ${message}`);
         }
     }
-    // Check snooze state (Issue #155) — mirrors the issue-comment path.
+    // Check snooze state (Issue #155, Issue #227) — mirrors the issue-comment path.
     if (existingComment && snoozeWindowMs > 0 && !forceComment) {
         const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingComment.body);
         const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-        const snoozeState = (0, snooze_1.evaluateSnoozeState)(currentPassed, lastMarker, snoozeWindowMs);
+        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingComment.reactions?.nodes, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
             core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`);
             return undefined;
@@ -38816,6 +38923,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.handleAutoUnassign = handleAutoUnassign;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -38838,10 +38946,9 @@ const i18n_1 = __nccwpck_require__(4859);
 const webhook_1 = __nccwpck_require__(8378);
 const preflight_1 = __nccwpck_require__(4504);
 const soroban_1 = __nccwpck_require__(3597);
-const projects_1 = __nccwpck_require__(7233);
 const corePlugins_1 = __nccwpck_require__(4098);
-const pluginLoader_1 = __nccwpck_require__(2259);
 const plugin_1 = __nccwpck_require__(2375);
+const pluginLoader_1 = __nccwpck_require__(2259);
 const configReader_1 = __nccwpck_require__(6094);
 const batch_1 = __nccwpck_require__(2983);
 const sarif_1 = __nccwpck_require__(866);
@@ -38918,6 +39025,87 @@ function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, 
         '(JSON / file path mapping GitHub usernames to G-addresses), or configure ' +
         'soroban_rpc_url + contract_id for on-chain registry lookup.');
 }
+/**
+ * Automatically unassigns the assignee(s) from the GitHub issue when
+ * readiness checks fail (ready is false) and the policy input is enabled.
+ *
+ * Safe guards:
+ * - Default off (requires opt-in via unassign_on_not_ready: true).
+ * - Only runs when ready is false (result.valid === false).
+ * - Never unassigns on transient Horizon infrastructure/connectivity errors
+ *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
+ * - Filters out bot assignees (e.g. app/bot accounts).
+ * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
+ * - Safely skips when there is no issue context (e.g. workflow_dispatch).
+ */
+async function handleAutoUnassign(options) {
+    if (!options.unassignOnNotReady) {
+        return undefined;
+    }
+    if (options.result.valid) {
+        logger_1.logger.debug('Skipping auto-unassign: readiness checks passed (valid is true)', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
+    if (options.result.reasonCode === 'HORIZON_ERROR' ||
+        options.result.reasonCode === 'HORIZON_TIMEOUT' ||
+        options.result.reasonCode === 'TLS_ERROR') {
+        core.info('Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.');
+        return undefined;
+    }
+    const payload = options.payload;
+    const issueNumber = options.issueNumber ?? payload?.issue?.number;
+    if (!issueNumber) {
+        logger_1.logger.debug('Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    const isBot = (login, type) => {
+        if (!login)
+            return false;
+        return type === 'Bot' || login.endsWith('[bot]');
+    };
+    const targetAssignees = [];
+    // Case 1: Specific assignee from issues.assigned event
+    const eventAssignee = payload?.assignee;
+    if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
+        targetAssignees.push(eventAssignee.login);
+    }
+    else if (Array.isArray(payload?.issue?.assignees)) {
+        // Case 2: All non-bot assignees on the issue
+        for (const assignee of payload.issue.assignees) {
+            if (assignee?.login && !isBot(assignee.login, assignee.type)) {
+                if (!targetAssignees.includes(assignee.login)) {
+                    targetAssignees.push(assignee.login);
+                }
+            }
+        }
+    }
+    if (targetAssignees.length === 0) {
+        logger_1.logger.debug('Skipping auto-unassign: no eligible human assignees found on issue', {
+            component: 'index',
+        });
+        return undefined;
+    }
+    try {
+        await options.octokit.rest.issues.removeAssignees({
+            owner: options.owner,
+            repo: options.repo,
+            issue_number: issueNumber,
+            assignees: targetAssignees,
+        });
+        core.info(`Auto-unassigned ${targetAssignees.join(', ')} from issue #${issueNumber} because readiness checks failed.`);
+        return targetAssignees;
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        core.warning(`Failed to unassign ${targetAssignees.join(', ')} from issue #${issueNumber} (non-fatal): ${msg}`);
+        return undefined;
+    }
+}
 async function run() {
     // Campaign presets (Issue #207) — resolved first so they can provide defaults.
     const networkInput = core.getInput('network') || '';
@@ -38987,8 +39175,18 @@ async function run() {
     const allowCrossNetworkFallback = (0, inputs_1.parseBooleanInput)(core.getInput('allow_cross_network_fallback'), false);
     const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
     const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-    const githubToken = core.getInput('github_token', { required: true });
+    const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
+    const rawGithubToken = core.getInput('github_token');
+    const githubToken = (0, inputs_1.resolveGitHubAuthToken)({
+        githubToken: rawGithubToken,
+        githubAppToken,
+    });
+    if (githubAppToken)
+        core.setSecret(githubAppToken);
+    if (rawGithubToken)
+        core.setSecret(rawGithubToken);
     const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
+    const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)('unassign_on_not_ready', core.getInput('unassign_on_not_ready')), false);
     // SEP-0007 wallet deep links (Issue #44)
     const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
     const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
@@ -39135,7 +39333,8 @@ async function run() {
     const effectiveRpcFallbackUrl = merged.rpcFallbackUrl;
     const effectiveFailOnMissing = merged.failOnMissing;
     const resolvedAddress = stellarAddress;
-    const effectiveResolvedAddress = resolvedAddress;
+    const effectiveResolvedAddress = stellarAddress;
+    const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
     const jobController = new AbortController();
     const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput('horizon_max_requests') || '0', 0, {
         min: 0, // 0 = unlimited (matches action.yml)
@@ -39394,10 +39593,10 @@ async function run() {
         circuitBreaker: horizonCircuitBreaker,
     };
     let account = null;
+    let horizonFetchStartMs = Date.now();
     let horizonFetchLatencyMs = 0;
-    let horizonFetchStatusCode = 0;
+    let horizonFetchStatusCode;
     let horizonFetchError;
-    const horizonFetchStartMs = Date.now();
     try {
         account = waitUntilFunded
             ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
@@ -39711,54 +39910,23 @@ async function run() {
         }
     }
     // ---------------------------------------------------------------------------
-    // GitHub Projects v2 status updates (Issue #222)
-    // When project_id is configured and status pass/fail values are provided,
-    // update the issue/PR item's status in the Project board.
+    // Auto-unassign on not-ready (Issue #228)
+    // When unassign_on_not_ready is true and readiness checks fail, automatically
+    // unassign the GitHub assignee(s) from the issue.
     // ---------------------------------------------------------------------------
-    if (projectId) {
-        const targetProjectStatus = result.valid ? projectStatusPass : projectStatusFail;
-        if (targetProjectStatus) {
-            let contentNodeId = github.context.payload.issue?.node_id ||
-                github.context.payload.pull_request?.node_id ||
-                github.context.payload.discussion?.node_id;
-            if (!contentNodeId && github.context.payload.issue?.number) {
-                try {
-                    const projectOctokit = github.getOctokit(projectToken);
-                    const { owner, repo } = github.context.repo;
-                    const issueQuery = `
-            query getIssueNodeId($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  id
-                }
-              }
-            }
-          `;
-                    const res = await projectOctokit.graphql(issueQuery, {
-                        owner,
-                        repo,
-                        number: github.context.payload.issue.number,
-                    });
-                    contentNodeId = res?.repository?.issue?.id;
-                }
-                catch (queryErr) {
-                    const msg = queryErr instanceof Error ? queryErr.message : String(queryErr);
-                    logger_1.logger.warn(`Could not resolve issue node_id for Projects v2: ${msg}`, {
-                        component: 'projects',
-                    });
-                }
-            }
-            if (contentNodeId) {
-                const projectOctokit = github.getOctokit(projectToken);
-                await (0, projects_1.updateProjectV2Status)({
-                    octokit: projectOctokit,
-                    projectId,
-                    contentNodeId,
-                    statusFieldName: projectStatusField,
-                    targetStatusValue: targetProjectStatus,
-                });
-            }
-        }
+    if (unassignOnNotReady && result && !result.valid) {
+        const issueNumber = github.context.payload.issue?.number;
+        const { owner, repo } = github.context.repo;
+        const octokit = github.getOctokit(githubToken);
+        await handleAutoUnassign({
+            octokit,
+            owner,
+            repo,
+            issueNumber,
+            payload: github.context.payload,
+            result,
+            unassignOnNotReady,
+        });
     }
     // Signed dashboard webhook notification (Issue #101)
     // Fires after comment posting; failures are isolated and never block the run.
@@ -39857,6 +40025,7 @@ exports.resolveAddressFromAssigneeMap = resolveAddressFromAssigneeMap;
 exports.parseUnauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy;
 exports.resolveInput = resolveInput;
 exports.parsePresetInput = parsePresetInput;
+exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 function parseBooleanInput(value, defaultValue) {
@@ -40022,6 +40191,7 @@ exports.TRUSTBRIDGE_ENV_MAP = {
     TRUSTBRIDGE_USE_CACHE: 'use_cache',
     TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
     TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
+    TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
 };
 /**
  * Resolve an action input with TRUSTBRIDGE_* env fallback.
@@ -40052,6 +40222,25 @@ function parsePresetInput(networkInput, presetInput) {
         return network === 'mainnet' ? 'public' : network;
     }
     return '';
+}
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+function resolveGitHubAuthToken(options) {
+    const appToken = options.githubAppToken?.trim();
+    if (appToken && appToken.length > 0) {
+        return appToken;
+    }
+    const token = options.githubToken?.trim();
+    if (token && token.length > 0) {
+        return token;
+    }
+    throw new Error('Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.');
 }
 
 
@@ -40359,6 +40548,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Timer = exports.logger = void 0;
+exports.isSensitiveSecretKey = isSensitiveSecretKey;
 exports.redactStellarAddress = redactStellarAddress;
 exports.redactString = redactString;
 exports.redactHorizonUrl = redactHorizonUrl;
@@ -40383,6 +40573,37 @@ const ADDRESS_CONTEXT_KEYS = new Set([
  * base32 characters (A-Z, 2-7).
  */
 const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+const PEM_PRIVATE_KEY_REGEX = /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
+const SENSITIVE_SECRET_KEYS = new Set([
+    'token',
+    'githubtoken',
+    'github_token',
+    'githubapptoken',
+    'github_app_token',
+    'apptoken',
+    'app_token',
+    'key',
+    'privatekey',
+    'private_key',
+    'appprivatekey',
+    'app_private_key',
+    'secret',
+    'secretkey',
+    'secret_key',
+    'apikey',
+    'api_key',
+    'auth',
+    'authorization',
+    'password',
+]);
+function isSensitiveSecretKey(key) {
+    const lower = key.toLowerCase();
+    const normalized = lower.replace(/[-_]/g, '');
+    return (SENSITIVE_SECRET_KEYS.has(lower) ||
+        normalized.includes('token') ||
+        normalized.includes('secret') ||
+        normalized.includes('privatekey'));
+}
 /**
  * Redacts a single Stellar address (G- or C-address) to its first 4 and
  * last 4 characters, separated by `...`. Non-address strings are returned
@@ -40411,15 +40632,15 @@ function redactStellarAddress(address) {
     return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
+ * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
  * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
  */
 function redactString(value) {
     if (!value)
         return value;
+    let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
     STELLAR_ADDRESS_REGEX.lastIndex = 0;
-    return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+    return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
 /**
  * Redacts a Horizon endpoint URL so any embedded account address in the
@@ -40437,7 +40658,12 @@ function redactHorizonUrl(url) {
         const parsed = new URL(masked);
         const safeParams = new URLSearchParams();
         for (const [key, rawValue] of parsed.searchParams.entries()) {
-            safeParams.set(key, redactString(rawValue));
+            if (isSensitiveSecretKey(key)) {
+                safeParams.set(key, '[REDACTED]');
+            }
+            else {
+                safeParams.set(key, redactString(rawValue));
+            }
         }
         const query = safeParams.toString();
         parsed.search = query ? `?${query}` : '';
@@ -40447,9 +40673,7 @@ function redactHorizonUrl(url) {
         }
     }
     catch {
-        // If the URL is malformed, fall back to regex-only redaction on the
-        // raw string — we never want the redaction step itself to throw and
-        // mask the underlying log event we were trying to emit.
+        // If URL parsing fails (e.g. malformed URL), fall back to string redaction
     }
     return redactString(masked);
 }
@@ -40457,15 +40681,12 @@ function redactHorizonUrl(url) {
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
+ * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ *   and PEM keys via `redactString`.
  */
 function redactContext(context) {
     if (!context)
@@ -40473,6 +40694,10 @@ function redactContext(context) {
     const safe = {};
     for (const key of Object.keys(context)) {
         const raw = context[key];
+        if (isSensitiveSecretKey(key)) {
+            safe[key] = '[REDACTED]';
+            continue;
+        }
         if (key === 'component') {
             safe.component = raw;
             continue;
@@ -40499,7 +40724,10 @@ function redactValue(raw) {
     if (typeof raw === 'object') {
         const safeObj = {};
         for (const [k, v] of Object.entries(raw)) {
-            if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+            if (isSensitiveSecretKey(k)) {
+                safeObj[k] = '[REDACTED]';
+            }
+            else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
                 safeObj[k] = redactStellarAddress(v);
             }
             else if (k === 'horizonUrl' && typeof v === 'string') {
@@ -41555,12 +41783,12 @@ async function loadPlugin(workspaceRoot, pluginPath, options) {
         const fileUrl = new URL(`file://${absolutePath}`).href;
         // On Windows, file:// URLs need special handling; node's import() handles this
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
-        moduleExport = await Promise.resolve(`${fileUrl}`).then(s => __importStar(require(s)));
+        moduleExport = (await Promise.resolve(`${fileUrl}`).then(s => __importStar(require(s))));
         if (debugMode) {
             logger_1.logger.debug(`Module imported successfully`, {
                 component: 'pluginLoader',
                 pluginPath,
-                exportKeys: Object.keys(moduleExport),
+                exportKeys: moduleExport ? Object.keys(moduleExport) : [],
             });
         }
     }
@@ -41571,13 +41799,13 @@ async function loadPlugin(workspaceRoot, pluginPath, options) {
     // Step 5: extract and validate the plugin export
     // Try: default export, then named 'plugin' export, then first exported object with `id` and `run`
     let plugin;
-    if (typeof moduleExport?.default === 'object' && moduleExport.default !== null) {
+    if (moduleExport && typeof moduleExport.default === 'object' && moduleExport.default !== null) {
         plugin = moduleExport.default;
     }
-    else if (typeof moduleExport?.plugin === 'object' && moduleExport.plugin !== null) {
+    else if (moduleExport && typeof moduleExport.plugin === 'object' && moduleExport.plugin !== null) {
         plugin = moduleExport.plugin;
     }
-    else {
+    else if (moduleExport) {
         // Look for any export that has the plugin shape
         const candidateKeys = Object.keys(moduleExport).filter((k) => typeof moduleExport[k] === 'object' && moduleExport[k] !== null);
         if (candidateKeys.length > 0) {
@@ -43050,10 +43278,13 @@ function validateSarifSchema(sarif) {
  * so maintainers can force an immediate comment post if needed.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.SNOOZE_REACTIONS = exports.SNOOZE_MARKER_PATTERN = void 0;
 exports.parseSnoozeMarker = parseSnoozeMarker;
 exports.formatSnoozeMarker = formatSnoozeMarker;
 exports.evaluateSnoozeState = evaluateSnoozeState;
+exports.isSnoozeReaction = isSnoozeReaction;
+exports.evaluateReactionSnooze = evaluateReactionSnooze;
+exports.evaluateCombinedSnoozeState = evaluateCombinedSnoozeState;
 /**
  * Hidden marker format in comment body:
  * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
@@ -43130,6 +43361,88 @@ function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
         lastStatus: lastMarker.status,
         lastTimestamp: lastMarker.timestamp,
         elapsedMs,
+    };
+}
+/**
+ * Supported reaction emojis/identifiers that trigger a snooze:
+ * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
+ * - 'eyes' / ':eyes:' — maintainer reviewing/monitoring reaction
+ *
+ * Random reactions (such as '+1', '👍', 'heart', 'rocket', 'laugh') do NOT snooze.
+ */
+exports.SNOOZE_REACTIONS = ['zzz', ':zzz:', 'eyes', ':eyes:', '💤'];
+/**
+ * Checks whether a reaction content string corresponds to a valid snooze trigger emoji.
+ */
+function isSnoozeReaction(content) {
+    if (!content)
+        return false;
+    const normalized = content.trim().toLowerCase();
+    return (normalized === 'zzz' ||
+        normalized === ':zzz:' ||
+        normalized === 'eyes' ||
+        normalized === ':eyes:' ||
+        normalized === '💤' ||
+        normalized === ':zzz' ||
+        normalized.startsWith('zzz'));
+}
+/**
+ * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ */
+function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = Date.now()) {
+    if (currentPassed || !reactions || reactions.length === 0) {
+        return { isSnoozed: false };
+    }
+    // Filter out bot reactions and non-snooze emojis
+    const eligibleReactions = reactions.filter((r) => {
+        const isBot = r.user?.type === 'Bot' ||
+            (r.user?.login ? r.user.login.endsWith('[bot]') : false);
+        return !isBot && isSnoozeReaction(r.content);
+    });
+    if (eligibleReactions.length === 0) {
+        return { isSnoozed: false };
+    }
+    // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
+    const timestamps = eligibleReactions
+        .map((r) => {
+        const raw = r.created_at || r.createdAt;
+        const parsed = raw ? new Date(raw).getTime() : now;
+        return isNaN(parsed) ? now : parsed;
+    })
+        .sort((a, b) => b - a);
+    const latestTimestamp = timestamps[0];
+    const elapsedMs = now - latestTimestamp;
+    const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
+    return {
+        isSnoozed: withinWindow,
+        lastTimestamp: latestTimestamp,
+        elapsedMs,
+    };
+}
+/**
+ * Evaluates snooze state combining both hidden body marker and UI reactions.
+ *
+ * An issue comment is snoozed if:
+ * 1. Current check fails (not passed), AND
+ * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ */
+function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, now = Date.now()) {
+    if (currentPassed) {
+        return { isSnoozed: false };
+    }
+    const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
+    if (reactionState.isSnoozed) {
+        return reactionState;
+    }
+    if (markerState.isSnoozed) {
+        return markerState;
+    }
+    return {
+        isSnoozed: false,
+        lastStatus: markerState.lastStatus,
+        lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
+        elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,
     };
 }
 

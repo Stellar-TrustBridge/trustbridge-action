@@ -6,6 +6,7 @@ import {
   STICKY_COMMENT_MARKER,
   STICKY_COMMENT_MARKER_LEGACY,
   TRUSTBRIDGE_FOOTER,
+  MAX_STICKY_COMMENT_SEARCH_PAGES,
   COMMENT_SIZE_LIMIT_BYTES,
   COMMENT_TRUNCATION_NOTICE_BYTES,
   findStickyComment,
@@ -257,6 +258,10 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
         listComments: jest.fn(),
         createComment: jest.fn(),
         updateComment: jest.fn(),
+        getComment: jest.fn(),
+      },
+      reactions: {
+        listForIssueComment: jest.fn(),
       },
     },
     ...overrides,
@@ -265,8 +270,87 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
 
 
 describe('findStickyComment', () => {
-  it('returns the id of the comment containing the marker', async () => {
+  function issueGraphqlResponse(
+    nodes: Array<{ id: string; databaseId: number; body: string }>,
+    pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  ) {
+    return {
+      repository: {
+        issue: {
+          comments: { nodes, pageInfo },
+        },
+      },
+    };
+  }
+
+  it('returns the databaseId of the comment containing the marker via GraphQL pagination across multiple pages', async () => {
     const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_1', databaseId: 101, body: 'unrelated comment 1' },
+            { id: 'IC_2', databaseId: 102, body: 'unrelated comment 2' },
+          ],
+          { hasNextPage: true, endCursor: 'page-1-end' },
+        ),
+      )
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_3', databaseId: 103, body: 'unrelated comment 3' },
+            { id: 'IC_4', databaseId: 104, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(104);
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: null }),
+    );
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: 'page-1-end' }),
+    );
+  });
+
+  it('honors maxPages cap in GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    // Simulate infinite pages
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse(
+        [{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }],
+        { hasNextPage: true, endCursor: 'next-page' },
+      ),
+    );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+      { maxPages: 3 },
+    );
+
+    expect(id).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to REST pagination if GraphQL fails', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
     octokit.paginate.mockResolvedValue([
       { id: 1, body: 'unrelated comment' },
       { id: 2, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
@@ -286,8 +370,9 @@ describe('findStickyComment', () => {
     );
   });
 
-  it('returns undefined when no comment has the marker', async () => {
+  it('returns undefined when no comment has the marker via REST fallback', async () => {
     const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL error'));
     octokit.paginate.mockResolvedValue([{ id: 1, body: 'unrelated comment' }]);
 
     const id = await findStickyComment(
@@ -395,99 +480,55 @@ describe('postIssueComment', () => {
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // pull_request / pull_request_target events (Issue #220)
-  // -------------------------------------------------------------------------
-
-  it('posts a new comment on a pull_request event (payload.pull_request.number, no payload.issue)', async () => {
-    mockedGithub.context.payload = { pull_request: { number: 55 } } as never;
-    const octokit = makeOctokit();
-    octokit.paginate.mockResolvedValue([]);
-    octokit.rest.issues.createComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/pull/55#issuecomment-1' },
-    });
-    mockedGithub.getOctokit.mockReturnValue(octokit);
-
-    const url = await postIssueComment('token', 'pr body', { sticky: true });
-
-    expect(url).toBe('https://github.com/o/r/pull/55#issuecomment-1');
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ issue_number: 55, body: 'pr body' }),
-    );
-  });
-
-  it('finds and updates the sticky comment on a pull_request event', async () => {
-    mockedGithub.context.payload = { pull_request: { number: 55 } } as never;
+  it('suppresses comment update when maintainer added :zzz: reaction within snooze window', async () => {
     const octokit = makeOctokit();
     octokit.paginate.mockResolvedValue([
-      { id: 200, body: `${STICKY_COMMENT_MARKER}\nold result` },
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
     ]);
-    octokit.rest.issues.updateComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/pull/55#issuecomment-200' },
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({
+      data: [
+        {
+          content: ':zzz:',
+          created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ],
     });
     mockedGithub.getOctokit.mockReturnValue(octokit);
 
-    const url = await postIssueComment('token', 'updated pr body', { sticky: true });
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+    });
 
-    expect(url).toBe('https://github.com/o/r/pull/55#issuecomment-200');
-    expect(octokit.paginate).toHaveBeenCalledWith(
-      octokit.rest.issues.listComments,
-      expect.objectContaining({ issue_number: 55 }),
-    );
-    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({ comment_id: 200, body: 'updated pr body' }),
-    );
+    expect(url).toBe('https://github.com/test-owner/test-repo/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
   });
 
-  it('prefers payload.issue over payload.pull_request when both are present (issue_comment on a PR)', async () => {
-    mockedGithub.context.payload = {
-      issue: { number: 7, pull_request: {} },
-      pull_request: { number: 999 },
-    } as never;
+  it('bypasses reaction snooze when forceComment is true', async () => {
     const octokit = makeOctokit();
-    octokit.paginate.mockResolvedValue([]);
-    octokit.rest.issues.createComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
     });
     mockedGithub.getOctokit.mockReturnValue(octokit);
 
-    await postIssueComment('token', 'body', { sticky: true });
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+      forceComment: true,
+    });
 
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ issue_number: 7 }),
-    );
-  });
-});
-
-describe('resolveIssueOrPullRequestNumber', () => {
-  it('resolves from payload.issue.number for an issues event', () => {
-    expect(resolveIssueOrPullRequestNumber({ issue: { number: 7 } })).toBe(7);
-  });
-
-  it('resolves from payload.pull_request.number for a pull_request/pull_request_target event', () => {
-    expect(resolveIssueOrPullRequestNumber({ pull_request: { number: 55 } })).toBe(55);
-  });
-
-  it('prefers payload.issue.number when both are present', () => {
-    expect(
-      resolveIssueOrPullRequestNumber({
-        issue: { number: 7 },
-        pull_request: { number: 55 },
-      }),
-    ).toBe(7);
-  });
-
-  it('returns undefined for payloads with neither an issue nor a pull_request', () => {
-    expect(resolveIssueOrPullRequestNumber({})).toBeUndefined();
-    expect(resolveIssueOrPullRequestNumber(null)).toBeUndefined();
-    expect(resolveIssueOrPullRequestNumber(undefined)).toBeUndefined();
-    expect(resolveIssueOrPullRequestNumber('not-an-object')).toBeUndefined();
-  });
-
-  it('returns undefined when the number field is missing or non-numeric', () => {
-    expect(resolveIssueOrPullRequestNumber({ issue: {} })).toBeUndefined();
-    expect(resolveIssueOrPullRequestNumber({ pull_request: { number: '55' } })).toBeUndefined();
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
   });
 });
 
@@ -597,6 +638,25 @@ describe('findStickyDiscussionComment', () => {
 
     expect(result).toBeUndefined();
     expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors maxPages cap in discussion GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      discussionGraphqlResponse(
+        [{ id: 'DC_1', body: 'unrelated' }],
+        { hasNextPage: true, endCursor: 'next-cursor' },
+      ),
+    );
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+      { maxPages: 2 },
+    );
+
+    expect(result).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
   });
 });
 

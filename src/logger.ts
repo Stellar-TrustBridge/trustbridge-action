@@ -36,6 +36,43 @@ const ADDRESS_CONTEXT_KEYS = new Set<string>([
  */
 const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
 
+const PEM_PRIVATE_KEY_REGEX =
+  /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
+
+const SENSITIVE_SECRET_KEYS = new Set<string>([
+  'token',
+  'githubtoken',
+  'github_token',
+  'githubapptoken',
+  'github_app_token',
+  'apptoken',
+  'app_token',
+  'key',
+  'privatekey',
+  'private_key',
+  'appprivatekey',
+  'app_private_key',
+  'secret',
+  'secretkey',
+  'secret_key',
+  'apikey',
+  'api_key',
+  'auth',
+  'authorization',
+  'password',
+]);
+
+export function isSensitiveSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  const normalized = lower.replace(/[-_]/g, '');
+  return (
+    SENSITIVE_SECRET_KEYS.has(lower) ||
+    normalized.includes('token') ||
+    normalized.includes('secret') ||
+    normalized.includes('privatekey')
+  );
+}
+
 /**
  * Redacts a single Stellar address (G- or C-address) to its first 4 and
  * last 4 characters, separated by `...`. Non-address strings are returned
@@ -62,14 +99,14 @@ export function redactStellarAddress(address: string): string {
 }
 
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
+ * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
  * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
  */
 export function redactString(value: string): string {
   if (!value) return value;
+  let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
   STELLAR_ADDRESS_REGEX.lastIndex = 0;
-  return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+  return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
 
 /**
@@ -90,7 +127,11 @@ export function redactHorizonUrl(url: string): string {
     const parsed = new URL(masked);
     const safeParams = new URLSearchParams();
     for (const [key, rawValue] of parsed.searchParams.entries()) {
-      safeParams.set(key, redactString(rawValue));
+      if (isSensitiveSecretKey(key)) {
+        safeParams.set(key, '[REDACTED]');
+      } else {
+        safeParams.set(key, redactString(rawValue));
+      }
     }
     const query = safeParams.toString();
     parsed.search = query ? `?${query}` : '';
@@ -99,9 +140,7 @@ export function redactHorizonUrl(url: string): string {
       masked = masked.replace(/\/(?=\?|#|$)/, '');
     }
   } catch {
-    // If the URL is malformed, fall back to regex-only redaction on the
-    // raw string — we never want the redaction step itself to throw and
-    // mask the underlying log event we were trying to emit.
+    // If URL parsing fails (e.g. malformed URL), fall back to string redaction
   }
   return redactString(masked);
 }
@@ -110,21 +149,22 @@ export function redactHorizonUrl(url: string): string {
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
+ * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ *   and PEM keys via `redactString`.
  */
 export function redactContext(context: LogContext | undefined): LogContext | undefined {
   if (!context) return context;
   const safe: LogContext = {};
   for (const key of Object.keys(context)) {
     const raw = context[key];
+    if (isSensitiveSecretKey(key)) {
+      safe[key] = '[REDACTED]';
+      continue;
+    }
     if (key === 'component') {
       safe.component = raw as string | undefined;
       continue;
@@ -149,7 +189,9 @@ function redactValue(raw: unknown): unknown {
   if (typeof raw === 'object') {
     const safeObj: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+      if (isSensitiveSecretKey(k)) {
+        safeObj[k] = '[REDACTED]';
+      } else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
         safeObj[k] = redactStellarAddress(v);
       } else if (k === 'horizonUrl' && typeof v === 'string') {
         safeObj[k] = redactHorizonUrl(v);

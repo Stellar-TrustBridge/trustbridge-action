@@ -1,4 +1,10 @@
-import { getErrorMessage, parseBooleanInput, parseNumberInput, parsePresetInput } from '../src/inputs';
+import {
+  getErrorMessage,
+  parseBooleanInput,
+  parseNumberInput,
+  parsePresetInput,
+  resolveGitHubAuthToken,
+} from '../src/inputs';
 
 describe('parseBooleanInput', () => {
   it.each(['true', 'TRUE', '1', 'yes', ' Yes '])(
@@ -70,6 +76,40 @@ describe('parsePresetInput', () => {
 
   it('returns empty string when both are empty', () => {
     expect(parsePresetInput('', '')).toBe('');
+  });
+});
+
+describe('resolveGitHubAuthToken (Issue #225)', () => {
+  it('prefers github_app_token over github_token when both are provided', () => {
+    const token = resolveGitHubAuthToken({
+      githubToken: 'ghp_userToken',
+      githubAppToken: 'ghs_appInstallationToken',
+    });
+    expect(token).toBe('ghs_appInstallationToken');
+  });
+
+  it('uses github_token when github_app_token is not provided', () => {
+    const token = resolveGitHubAuthToken({
+      githubToken: 'ghp_userToken',
+    });
+    expect(token).toBe('ghp_userToken');
+  });
+
+  it('uses github_app_token when github_token is empty string', () => {
+    const token = resolveGitHubAuthToken({
+      githubToken: '',
+      githubAppToken: 'ghs_appInstallationToken',
+    });
+    expect(token).toBe('ghs_appInstallationToken');
+  });
+
+  it('throws a descriptive error when neither token is provided', () => {
+    expect(() => resolveGitHubAuthToken({})).toThrow(
+      'Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.',
+    );
+    expect(() => resolveGitHubAuthToken({ githubToken: '   ', githubAppToken: '' })).toThrow(
+      'Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.',
+    );
   });
 });
 

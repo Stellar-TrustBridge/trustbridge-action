@@ -12,11 +12,20 @@ import {
   validateStellarAddress,
   HomeDomainCheckMode,
   LedgerFreshnessCheckResult,
+  ValidationResult,
 } from './checks';
 import { fetchAccount, HorizonError, waitForFundedAccount, applyWalletLabels } from './horizon';
 import type { HorizonAccount, HorizonBalance } from './horizon';
 import { checkLedgerFreshness } from './freshness';
-import { formatCommentBody, postIssueComment, resolveDiscussionNodeId, postDiscussionComment, COMMENT_SIZE_LIMIT_BYTES, buildTruncatedCommentBody, writeFullReport } from './comment';
+import {
+  formatCommentBody,
+  postIssueComment,
+  postDiscussionComment,
+  resolveDiscussionNodeId,
+  COMMENT_SIZE_LIMIT_BYTES,
+  buildTruncatedCommentBody,
+  writeFullReport,
+} from './comment';
 import {
   normalizeAssetConfig,
   parseAssetsJson,
@@ -30,6 +39,8 @@ import {
   parseNumberInput,
   parsePresetInput,
   resolveAddressFromAssigneeMap,
+  resolveGitHubAuthToken,
+  resolveInput,
 } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, writeValidationJson } from './outputs';
@@ -47,8 +58,8 @@ import { sendWebhookNotification } from './webhook';
 import { runIssuesPreflight } from './preflight';
 import { lookupAddressFromContract, ContractLookupError } from './soroban';
 import { registerCorePlugins } from './corePlugins';
-import { loadPluginsFromAllowlist } from './pluginLoader';
 import { defaultRegistry } from './plugin';
+import { loadPluginsFromAllowlist } from './pluginLoader';
 import { readTrustbridgeConfig, mergeConsumerConfig } from './configReader';
 import {
   parseBatchAddresses,
@@ -57,7 +68,7 @@ import {
   formatBatchSummaryMarkdown,
 } from './batch';
 import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
-import type { DiagnosticsConfig } from './diagnostics';
+import { DiagnosticsConfig } from './diagnostics';
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -148,6 +159,134 @@ function resolveStellarAddressInput(
       '(JSON / file path mapping GitHub usernames to G-addresses), or configure ' +
       'soroban_rpc_url + contract_id for on-chain registry lookup.',
   );
+}
+
+/**
+ * Options for `handleAutoUnassign` (Issue #228).
+ */
+export interface AutoUnassignOptions {
+  octokit: {
+    rest: {
+      issues: {
+        removeAssignees: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          assignees: string[];
+        }) => Promise<unknown>;
+      };
+    };
+  };
+  owner: string;
+  repo: string;
+  issueNumber?: number;
+  payload: unknown;
+  result: ValidationResult;
+  unassignOnNotReady: boolean;
+}
+
+/**
+ * Automatically unassigns the assignee(s) from the GitHub issue when
+ * readiness checks fail (ready is false) and the policy input is enabled.
+ *
+ * Safe guards:
+ * - Default off (requires opt-in via unassign_on_not_ready: true).
+ * - Only runs when ready is false (result.valid === false).
+ * - Never unassigns on transient Horizon infrastructure/connectivity errors
+ *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
+ * - Filters out bot assignees (e.g. app/bot accounts).
+ * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
+ * - Safely skips when there is no issue context (e.g. workflow_dispatch).
+ */
+export async function handleAutoUnassign(
+  options: AutoUnassignOptions,
+): Promise<string[] | undefined> {
+  if (!options.unassignOnNotReady) {
+    return undefined;
+  }
+
+  if (options.result.valid) {
+    logger.debug('Skipping auto-unassign: readiness checks passed (valid is true)', {
+      component: 'index',
+    });
+    return undefined;
+  }
+
+  // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
+  if (
+    options.result.reasonCode === 'HORIZON_ERROR' ||
+    options.result.reasonCode === 'HORIZON_TIMEOUT' ||
+    options.result.reasonCode === 'TLS_ERROR'
+  ) {
+    core.info(
+      'Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.',
+    );
+    return undefined;
+  }
+
+  const payload = options.payload as {
+    assignee?: { login?: string; type?: string };
+    issue?: { number?: number; assignees?: Array<{ login?: string; type?: string }> };
+  } | null | undefined;
+
+  const issueNumber = options.issueNumber ?? payload?.issue?.number;
+  if (!issueNumber) {
+    logger.debug(
+      'Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)',
+      {
+        component: 'index',
+      },
+    );
+    return undefined;
+  }
+
+  const isBot = (login?: string, type?: string): boolean => {
+    if (!login) return false;
+    return type === 'Bot' || login.endsWith('[bot]');
+  };
+
+  const targetAssignees: string[] = [];
+
+  // Case 1: Specific assignee from issues.assigned event
+  const eventAssignee = payload?.assignee;
+  if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
+    targetAssignees.push(eventAssignee.login);
+  } else if (Array.isArray(payload?.issue?.assignees)) {
+    // Case 2: All non-bot assignees on the issue
+    for (const assignee of payload.issue.assignees) {
+      if (assignee?.login && !isBot(assignee.login, assignee.type)) {
+        if (!targetAssignees.includes(assignee.login)) {
+          targetAssignees.push(assignee.login);
+        }
+      }
+    }
+  }
+
+  if (targetAssignees.length === 0) {
+    logger.debug('Skipping auto-unassign: no eligible human assignees found on issue', {
+      component: 'index',
+    });
+    return undefined;
+  }
+
+  try {
+    await options.octokit.rest.issues.removeAssignees({
+      owner: options.owner,
+      repo: options.repo,
+      issue_number: issueNumber,
+      assignees: targetAssignees,
+    });
+    core.info(
+      `Auto-unassigned ${targetAssignees.join(', ')} from issue #${issueNumber} because readiness checks failed.`,
+    );
+    return targetAssignees;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Failed to unassign ${targetAssignees.join(', ')} from issue #${issueNumber} (non-fatal): ${msg}`,
+    );
+    return undefined;
+  }
 }
 
 async function run(): Promise<void> {
@@ -292,8 +431,19 @@ async function run(): Promise<void> {
   );
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-  const githubToken = core.getInput('github_token', { required: true });
+  const githubAppToken = resolveInput('github_app_token', core.getInput('github_app_token'));
+  const rawGithubToken = core.getInput('github_token');
+  const githubToken = resolveGitHubAuthToken({
+    githubToken: rawGithubToken,
+    githubAppToken,
+  });
+  if (githubAppToken) core.setSecret(githubAppToken);
+  if (rawGithubToken) core.setSecret(rawGithubToken);
   const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
+  const unassignOnNotReady = parseBooleanInput(
+    resolveInput('unassign_on_not_ready', core.getInput('unassign_on_not_ready')),
+    false,
+  );
 
   // SEP-0007 wallet deep links (Issue #44)
   const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
@@ -483,7 +633,7 @@ async function run(): Promise<void> {
   const effectiveRpcFallbackUrl = merged.rpcFallbackUrl as string;
   const effectiveFailOnMissing = merged.failOnMissing as boolean;
   const resolvedAddress = stellarAddress;
-  const effectiveResolvedAddress = resolvedAddress;
+  const effectiveResolvedAddress = stellarAddress;
   const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
   const jobController = new AbortController();
   const horizonMaxRequests = parseNumberInput(
@@ -783,11 +933,10 @@ async function run(): Promise<void> {
   };
 
   let account: HorizonAccount | null = null;
+  let horizonFetchStartMs = Date.now();
+  let horizonFetchLatencyMs = 0;
   let horizonFetchStatusCode: number | undefined;
-  let horizonFetchLatencyMs: number | undefined;
   let horizonFetchError: string | undefined;
-  const horizonFetchStartMs = Date.now();
-  globalMetrics.startTimer('horizon_fetch');
 
   try {
     account = waitUntilFunded
@@ -1149,58 +1298,23 @@ async function run(): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // GitHub Projects v2 status updates (Issue #222)
-  // When project_id is configured and status pass/fail values are provided,
-  // update the issue/PR item's status in the Project board.
+  // Auto-unassign on not-ready (Issue #228)
+  // When unassign_on_not_ready is true and readiness checks fail, automatically
+  // unassign the GitHub assignee(s) from the issue.
   // ---------------------------------------------------------------------------
-  if (projectId) {
-    const targetProjectStatus = result.valid ? projectStatusPass : projectStatusFail;
-    if (targetProjectStatus) {
-      let contentNodeId =
-        (github.context.payload.issue as any)?.node_id ||
-        (github.context.payload.pull_request as any)?.node_id ||
-        (github.context.payload.discussion as any)?.node_id;
-
-      if (!contentNodeId && github.context.payload.issue?.number) {
-        try {
-          const projectOctokit = github.getOctokit(projectToken);
-          const { owner, repo } = github.context.repo;
-          const issueQuery = `
-            query getIssueNodeId($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  id
-                }
-              }
-            }
-          `;
-          const res = await projectOctokit.graphql<{
-            repository?: { issue?: { id: string } };
-          }>(issueQuery, {
-            owner,
-            repo,
-            number: github.context.payload.issue.number,
-          });
-          contentNodeId = res?.repository?.issue?.id;
-        } catch (queryErr) {
-          const msg = queryErr instanceof Error ? queryErr.message : String(queryErr);
-          logger.warn(`Could not resolve issue node_id for Projects v2: ${msg}`, {
-            component: 'projects',
-          });
-        }
-      }
-
-      if (contentNodeId) {
-        const projectOctokit = github.getOctokit(projectToken);
-        await updateProjectV2Status({
-          octokit: projectOctokit,
-          projectId,
-          contentNodeId,
-          statusFieldName: projectStatusField,
-          targetStatusValue: targetProjectStatus,
-        });
-      }
-    }
+  if (unassignOnNotReady && result && !result.valid) {
+    const issueNumber = github.context.payload.issue?.number;
+    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(githubToken);
+    await handleAutoUnassign({
+      octokit,
+      owner,
+      repo,
+      issueNumber,
+      payload: github.context.payload,
+      result,
+      unassignOnNotReady,
+    });
   }
 
   // Signed dashboard webhook notification (Issue #101)

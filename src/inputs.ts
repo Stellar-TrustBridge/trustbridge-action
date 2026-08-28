@@ -227,6 +227,7 @@ export const TRUSTBRIDGE_ENV_MAP: Record<string, string> = {
   TRUSTBRIDGE_USE_CACHE: 'use_cache',
   TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
   TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
+  TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
 };
 
 /**
@@ -268,3 +269,31 @@ export function parsePresetInput(networkInput?: string, presetInput?: string): s
   }
   return '';
 }
+
+export interface GitHubAuthTokenOptions {
+  githubToken?: string;
+  githubAppToken?: string;
+}
+
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+export function resolveGitHubAuthToken(options: GitHubAuthTokenOptions): string {
+  const appToken = options.githubAppToken?.trim();
+  if (appToken && appToken.length > 0) {
+    return appToken;
+  }
+  const token = options.githubToken?.trim();
+  if (token && token.length > 0) {
+    return token;
+  }
+  throw new Error(
+    'Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.',
+  );
+}
+

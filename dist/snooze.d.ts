@@ -69,3 +69,36 @@ export declare function formatSnoozeMarker(status: 'pass' | 'fail', timestamp?: 
  *   - **Post** (reminder after timeout; reset timer).
  */
 export declare function evaluateSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, snoozeWindowMs: number): SnoozeState;
+/**
+ * Supported reaction emojis/identifiers that trigger a snooze:
+ * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
+ * - 'eyes' / ':eyes:' — maintainer reviewing/monitoring reaction
+ *
+ * Random reactions (such as '+1', '👍', 'heart', 'rocket', 'laugh') do NOT snooze.
+ */
+export declare const SNOOZE_REACTIONS: readonly ["zzz", ":zzz:", "eyes", ":eyes:", "💤"];
+export interface CommentReaction {
+    content: string;
+    created_at?: string;
+    createdAt?: string;
+    user?: {
+        login?: string;
+        type?: string;
+    } | null;
+}
+/**
+ * Checks whether a reaction content string corresponds to a valid snooze trigger emoji.
+ */
+export declare function isSnoozeReaction(content: string | undefined | null): boolean;
+/**
+ * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ */
+export declare function evaluateReactionSnooze(currentPassed: boolean, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number): SnoozeState;
+/**
+ * Evaluates snooze state combining both hidden body marker and UI reactions.
+ *
+ * An issue comment is snoozed if:
+ * 1. Current check fails (not passed), AND
+ * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ */
+export declare function evaluateCombinedSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number): SnoozeState;

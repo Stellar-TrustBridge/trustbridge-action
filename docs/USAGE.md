@@ -166,9 +166,44 @@ jobs:
 | Issue / PR comments (REST) | `issues: write` (add `pull-requests: write` too for PR triggers, per [Pull request wallet checks](#pull-request-wallet-checks-issue-220)) |
 | Discussion comments (GraphQL) | `discussions: write` |
 
-A token that only has `issues: write` cannot post discussion comments — the GraphQL mutation fails with a 403-style error. TrustBridge logs this as a non-fatal warning (checks still run, outputs are still set). The action **never falls back to the issues API for a discussion event**, so it cannot accidentally comment on the wrong issue.
-
 > **Note:** the repository must have the **Discussions** feature enabled. Discussion polls, and converting a discussion → issue mid-flight, are intentionally out of scope.
+
+---
+
+## GitHub App authentication for org-wide triage (Issue #225)
+
+When running TrustBridge across an entire organization or in centralized triage repositories, `GITHUB_TOKEN` is constrained to the repository executing the workflow. You can authenticate using a **GitHub App installation token** via the `github_app_token` input.
+
+```yaml
+name: Verify Stellar wallet via GitHub App
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.TRUSTBRIDGE_APP_ID }}
+          private-key: ${{ secrets.TRUSTBRIDGE_APP_PRIVATE_KEY }}
+
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_app_token: ${{ steps.app-token.outputs.token }}
+```
+
+### Security & Tradeoff: Pre-minted token vs. embedding PEM private keys
+- **Pre-minted token preferred**: TrustBridge intentionally accepts a pre-minted installation token (`github_app_token`) rather than requiring raw PEM private keys and `app_id` to be embedded inside this action.
+- **Principle of Least Privilege**: Generating short-lived installation tokens (typically expiring in 1 hour) via dedicated actions like `actions/create-github-app-token` isolates cryptographic signing credentials and avoids persisting long-lived private keys inside downstream action runtimes.
+- **Credential redaction**: Any token or key value passed to TrustBridge is registered with GitHub Actions secret masking (`core.setSecret`) and stripped by the logger (`[REDACTED]`) to prevent accidental disclosure.
+- **Enterprise compatibility**: Works automatically on GitHub Enterprise Server (`baseUrl` is derived from GitHub runner context `apiUrl`).
+- **Same comment APIs**: Whether using `github_token` or `github_app_token`, all sticky comment lookups, GraphQL discussions, and upsert features operate identically.
 
 ---
 
@@ -466,6 +501,25 @@ with:
 ```
 
 The checklist section uses GitHub Markdown task-list checkboxes that reflect live Horizon validation (`accountFunded`, `trustlineExists`, `xlmReserveMet`) and links to [TROUBLESHOOTING.md](TROUBLESHOOTING.md) FAQ anchors. Set `onboarding_checklist: false` to omit it.
+
+## Auto-unassign on not-ready (Issue #228)
+
+Maintainers can opt into automatically unassigning the issue assignee if their Stellar wallet readiness checks fail:
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  unassign_on_not_ready: true   # default false (opt-in policy)
+```
+
+### Policy behavior
+- **Opt-in only**: Default is `false`. When disabled, assignees are never modified.
+- **Trigger**: Runs only when `ready: false` (one or more readiness checks fail).
+- **Outage protection**: Does not unassign contributors on transient Horizon network/outage errors (`HORIZON_ERROR`, `HORIZON_TIMEOUT`, `TLS_ERROR`).
+- **Bot filtering**: Bot assignees (`type: Bot` or ending in `[bot]`) are ignored.
+- **Permissions**: Requires `issues: write` permission on `github_token`. If permission is missing or an API error occurs, a non-fatal warning is logged and the workflow proceeds without crashing.
+- **Workflow dispatch safety**: Safely skips when there is no issue context (e.g. manual dispatch without an issue).
 
 ## Waiting for the account to be funded
 
@@ -1464,6 +1518,7 @@ An explicit `with:` value always wins. The env var is only consulted when the `w
 | `TRUSTBRIDGE_USE_CACHE` | `use_cache` | |
 | `TRUSTBRIDGE_LOG_INPUTS` | `log_inputs` | |
 | `TRUSTBRIDGE_PREFLIGHT_ONLY` | `preflight_only` | |
+| `TRUSTBRIDGE_UNASSIGN_ON_NOT_READY` | `unassign_on_not_ready` | `true`/`false` |
 
 **Not supported** (intentionally excluded): `github_token`, `stellar_address_input`. These must always be supplied via explicit `with:` inputs. Never place token values in environment variables where they may be printed to job logs.
 

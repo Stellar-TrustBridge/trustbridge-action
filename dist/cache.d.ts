@@ -107,7 +107,7 @@ export declare class SimpleCache {
     getStats(): {
         size: number;
         entries: string[];
-        backendEnabled: boolean;
+        backendEnabled?: boolean;
     };
 }
 export declare const defaultCache: SimpleCache;

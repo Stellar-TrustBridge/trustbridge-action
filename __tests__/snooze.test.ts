@@ -3,8 +3,12 @@ import {
   parseSnoozeMarker,
   formatSnoozeMarker,
   evaluateSnoozeState,
+  isSnoozeReaction,
+  evaluateReactionSnooze,
+  evaluateCombinedSnoozeState,
   SnoozeMarker,
   SnoozeState,
+  CommentReaction,
 } from '../src/snooze';
 
 describe('SNOOZE_MARKER_PATTERN', () => {
@@ -188,3 +192,160 @@ describe('evaluateSnoozeState', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #227 — Reaction-based snooze (:zzz:)
+// ---------------------------------------------------------------------------
+
+describe('Issue #227 — Reaction-based snooze', () => {
+  describe('isSnoozeReaction', () => {
+    it('identifies valid snooze emojis', () => {
+      expect(isSnoozeReaction('zzz')).toBe(true);
+      expect(isSnoozeReaction(':zzz:')).toBe(true);
+      expect(isSnoozeReaction('ZZZ')).toBe(true);
+      expect(isSnoozeReaction('eyes')).toBe(true);
+      expect(isSnoozeReaction(':eyes:')).toBe(true);
+      expect(isSnoozeReaction('💤')).toBe(true);
+    });
+
+    it('rejects non-snooze reactions', () => {
+      expect(isSnoozeReaction('+1')).toBe(false);
+      expect(isSnoozeReaction('-1')).toBe(false);
+      expect(isSnoozeReaction('👍')).toBe(false);
+      expect(isSnoozeReaction('heart')).toBe(false);
+      expect(isSnoozeReaction('rocket')).toBe(false);
+      expect(isSnoozeReaction('laugh')).toBe(false);
+      expect(isSnoozeReaction('')).toBe(false);
+      expect(isSnoozeReaction(undefined)).toBe(false);
+    });
+  });
+
+  describe('evaluateReactionSnooze', () => {
+    const now = Date.now();
+    const snoozeWindowMs = 30 * 60 * 1000; // 30 mins
+
+    it('snoozes when maintainer reacted with :zzz: within window', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(true);
+      expect(state.elapsedMs).toBe(5 * 60 * 1000);
+    });
+
+    it('snoozes when maintainer reacted with eyes within window', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: 'eyes',
+          createdAt: new Date(now - 10 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(true);
+    });
+
+    it('does not snooze when reaction timestamp is outside window (expiry honored)', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 45 * 60 * 1000).toISOString(), // 45m ago > 30m
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(false);
+      expect(state.elapsedMs).toBe(45 * 60 * 1000);
+    });
+
+    it('does not snooze on random emojis like +1 or thumbs up', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: '+1',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'contributor', type: 'User' },
+        },
+        {
+          content: 'heart',
+          created_at: new Date(now - 2 * 60 * 1000).toISOString(),
+          user: { login: 'contributor', type: 'User' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(false);
+    });
+
+    it('ignores bot reactions', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'dependabot[bot]', type: 'Bot' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(false);
+    });
+
+    it('never snoozes when current check passes (auto-unsnooze on fix)', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateReactionSnooze(true, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(false);
+    });
+  });
+
+  describe('evaluateCombinedSnoozeState', () => {
+    const now = Date.now();
+    const snoozeWindowMs = 30 * 60 * 1000;
+
+    it('snoozes when UI reaction is active even without a prior failure marker', () => {
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateCombinedSnoozeState(false, undefined, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(true);
+    });
+
+    it('snoozes when body marker is active even without UI reactions', () => {
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 5 * 60 * 1000 };
+      const state = evaluateCombinedSnoozeState(false, priorMarker, [], snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(true);
+    });
+
+    it('unsnoozes immediately when check passes', () => {
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 5 * 60 * 1000 };
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+
+      const state = evaluateCombinedSnoozeState(true, priorMarker, reactions, snoozeWindowMs, now);
+      expect(state.isSnoozed).toBe(false);
+    });
+  });
+});
+

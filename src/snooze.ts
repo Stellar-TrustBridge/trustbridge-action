@@ -134,3 +134,121 @@ export function evaluateSnoozeState(
     elapsedMs,
   };
 }
+
+/**
+ * Supported reaction emojis/identifiers that trigger a snooze:
+ * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
+ * - 'eyes' / ':eyes:' — maintainer reviewing/monitoring reaction
+ *
+ * Random reactions (such as '+1', '👍', 'heart', 'rocket', 'laugh') do NOT snooze.
+ */
+export const SNOOZE_REACTIONS = ['zzz', ':zzz:', 'eyes', ':eyes:', '💤'] as const;
+
+export interface CommentReaction {
+  content: string;
+  created_at?: string;
+  createdAt?: string;
+  user?: {
+    login?: string;
+    type?: string;
+  } | null;
+}
+
+/**
+ * Checks whether a reaction content string corresponds to a valid snooze trigger emoji.
+ */
+export function isSnoozeReaction(content: string | undefined | null): boolean {
+  if (!content) return false;
+  const normalized = content.trim().toLowerCase();
+  return (
+    normalized === 'zzz' ||
+    normalized === ':zzz:' ||
+    normalized === 'eyes' ||
+    normalized === ':eyes:' ||
+    normalized === '💤' ||
+    normalized === ':zzz' ||
+    normalized.startsWith('zzz')
+  );
+}
+
+/**
+ * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ */
+export function evaluateReactionSnooze(
+  currentPassed: boolean,
+  reactions: CommentReaction[] | undefined | null,
+  snoozeWindowMs: number,
+  now: number = Date.now(),
+): SnoozeState {
+  if (currentPassed || !reactions || reactions.length === 0) {
+    return { isSnoozed: false };
+  }
+
+  // Filter out bot reactions and non-snooze emojis
+  const eligibleReactions = reactions.filter((r) => {
+    const isBot =
+      r.user?.type === 'Bot' ||
+      (r.user?.login ? r.user.login.endsWith('[bot]') : false);
+    return !isBot && isSnoozeReaction(r.content);
+  });
+
+  if (eligibleReactions.length === 0) {
+    return { isSnoozed: false };
+  }
+
+  // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
+  const timestamps = eligibleReactions
+    .map((r) => {
+      const raw = r.created_at || r.createdAt;
+      const parsed = raw ? new Date(raw).getTime() : now;
+      return isNaN(parsed) ? now : parsed;
+    })
+    .sort((a, b) => b - a);
+
+  const latestTimestamp = timestamps[0];
+  const elapsedMs = now - latestTimestamp;
+  const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
+
+  return {
+    isSnoozed: withinWindow,
+    lastTimestamp: latestTimestamp,
+    elapsedMs,
+  };
+}
+
+/**
+ * Evaluates snooze state combining both hidden body marker and UI reactions.
+ *
+ * An issue comment is snoozed if:
+ * 1. Current check fails (not passed), AND
+ * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ */
+export function evaluateCombinedSnoozeState(
+  currentPassed: boolean,
+  lastMarker: SnoozeMarker | undefined,
+  reactions: CommentReaction[] | undefined | null,
+  snoozeWindowMs: number,
+  now: number = Date.now(),
+): SnoozeState {
+  if (currentPassed) {
+    return { isSnoozed: false };
+  }
+
+  const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+  const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
+
+  if (reactionState.isSnoozed) {
+    return reactionState;
+  }
+  if (markerState.isSnoozed) {
+    return markerState;
+  }
+
+  return {
+    isSnoozed: false,
+    lastStatus: markerState.lastStatus,
+    lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
+    elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,
+  };
+}
+

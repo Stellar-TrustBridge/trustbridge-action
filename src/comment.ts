@@ -20,7 +20,13 @@ import {
 } from './links';
 import { buildOnboardingChecklist, inlineCode } from './markdown';
 import { MetricsCollector } from './metrics';
-import { formatSnoozeMarker, parseSnoozeMarker, evaluateSnoozeState } from './snooze';
+import {
+  formatSnoozeMarker,
+  parseSnoozeMarker,
+  evaluateSnoozeState,
+  evaluateCombinedSnoozeState,
+  CommentReaction,
+} from './snooze';
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
@@ -591,9 +597,41 @@ export function isTrustBridgeComment(body: string | undefined | null): boolean {
 }
 
 /**
+ * Maximum number of comment pages (100 comments per page) to search for sticky
+ * comments on high-traffic issues or discussions before capping.
+ * Capping at 10 pages (1,000 comments) prevents rate limit exhaustion and
+ * infinite pagination on busy threads. (Issue #226)
+ */
+export const MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
+
+export interface FindStickyCommentOptions {
+  /** Maximum number of comment pages (100 comments per page) to search before stopping. Defaults to 10. */
+  maxPages?: number;
+}
+
+interface IssueCommentGraphqlNode {
+  id: string;
+  databaseId?: number;
+  body: string;
+}
+
+interface IssueCommentsGraphqlPage {
+  repository?: {
+    issue?: {
+      comments?: {
+        nodes: IssueCommentGraphqlNode[];
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    };
+  } | null;
+}
+
+/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
- * Paginates through every comment so the marker is found even on
- * high-traffic issues with 100+ comments.
+ *
+ * Uses GraphQL pagination (100 comments per page, up to MAX_STICKY_COMMENT_SEARCH_PAGES = 10 pages)
+ * to locate the marker efficiently even on busy Wave issues with hundreds of comments.
+ * Falls back to REST pagination if GraphQL is unavailable or fails.
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
@@ -604,18 +642,92 @@ export async function findStickyComment(
   owner: string,
   repo: string,
   issueNumber: number,
+  options: FindStickyCommentOptions = {},
 ): Promise<number | undefined> {
-  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number: issueNumber,
-    per_page: 100,
-  });
+  const maxPages = options.maxPages ?? MAX_STICKY_COMMENT_SEARCH_PAGES;
 
-  // Use the last matching comment so that if multiple TrustBridge comments
-  // exist (e.g. sticky was toggled off then on), we upsert the most recent one.
-  const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
-  return matches.length > 0 ? matches[matches.length - 1]!.id : undefined;
+  // Primary: GraphQL pagination (efficiently retrieves only databaseId + body)
+  if (typeof octokit.graphql === 'function') {
+    try {
+      const query = `
+        query FindTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) {
+              comments(first: 100, after: $cursor) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      let cursor: string | null = null;
+      let lastMatchId: number | undefined;
+      let pageCount = 0;
+      let graphqlHandled = false;
+
+      while (pageCount < maxPages) {
+        pageCount++;
+        const data = (await octokit.graphql(query, {
+          owner,
+          repo,
+          issueNumber,
+          cursor,
+        })) as IssueCommentsGraphqlPage;
+
+        const comments = data?.repository?.issue?.comments;
+        if (!comments || !Array.isArray(comments.nodes)) {
+          break;
+        }
+
+        graphqlHandled = true;
+
+        for (const comment of comments.nodes) {
+          if (isTrustBridgeComment(comment.body)) {
+            // databaseId is the numeric REST issue comment id
+            lastMatchId = comment.databaseId;
+          }
+        }
+
+        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
+          break;
+        }
+        cursor = comments.pageInfo.endCursor;
+      }
+
+      if (lastMatchId !== undefined) {
+        return lastMatchId;
+      }
+      if (graphqlHandled) {
+        return undefined;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      core.debug(`GraphQL sticky comment search failed, falling back to REST: ${message}`);
+    }
+  }
+
+  // Fallback: REST pagination with page cap
+  if (typeof octokit.paginate === 'function' && octokit.rest?.issues?.listComments) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100,
+    });
+    const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
+    return matches.length > 0 ? matches[matches.length - 1]!.id : undefined;
+  }
+
+  return undefined;
 }
 
 export async function postIssueComment(
@@ -652,12 +764,13 @@ export async function postIssueComment(
 
   let existingCommentId: number | undefined;
   let existingCommentBody: string | undefined;
+  let existingCommentReactions: CommentReaction[] = [];
   
   if (sticky) {
     try {
       existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
       
-      // Fetch the comment body to check snooze status (Issue #155)
+      // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
       if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
         try {
           const commentResponse = await octokit.rest.issues.getComment({
@@ -669,29 +782,50 @@ export async function postIssueComment(
         } catch (error) {
           core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
         }
+
+        try {
+          if (octokit.rest?.reactions?.listForIssueComment) {
+            const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+              owner,
+              repo,
+              comment_id: existingCommentId,
+              per_page: 100,
+            });
+            if (Array.isArray(reactionsResponse?.data)) {
+              existingCommentReactions = reactionsResponse.data as unknown as CommentReaction[];
+            }
+          }
+        } catch (error) {
+          core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       core.warning(
         `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
-    );
+      );
     }
   }
 
-  // Check snooze state (Issue #155)
-  if (existingCommentBody && snoozeWindowMs > 0 && !forceComment) {
+  // Check snooze state (Issue #155, Issue #227)
+  if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
     const lastMarker = parseSnoozeMarker(existingCommentBody);
     
     // Determine if current check is passing by looking at body content
     // The snooze marker we just added to body indicates 'pass' or 'fail'
     const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
     
-    const snoozeState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const snoozeState = evaluateCombinedSnoozeState(
+      currentPassed,
+      lastMarker,
+      existingCommentReactions,
+      snoozeWindowMs,
+    );
     
     if (snoozeState.isSnoozed) {
       core.info(
         `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
-    );
+      );
       return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
     }
   }
@@ -768,6 +902,9 @@ export interface UpsertDiscussionCommentOptions extends UpsertCommentOptions {
 interface DiscussionCommentNode {
   id: string;
   body: string;
+  reactions?: {
+    nodes?: CommentReaction[];
+  };
 }
 
 interface DiscussionCommentsPage {
@@ -796,7 +933,9 @@ interface DiscussionCommentMutationResult {
 export async function findStickyDiscussionComment(
   octokit: Octokit,
   discussionId: string,
+  options: FindStickyCommentOptions = {},
 ): Promise<DiscussionCommentNode | undefined> {
+  const maxPages = options.maxPages ?? MAX_STICKY_COMMENT_SEARCH_PAGES;
   const query = `
     query FindTrustBridgeDiscussionComment($discussionId: ID!, $cursor: String) {
       node(id: $discussionId) {
@@ -805,6 +944,15 @@ export async function findStickyDiscussionComment(
             nodes {
               id
               body
+              reactions(first: 100) {
+                nodes {
+                  content
+                  createdAt
+                  user {
+                    login
+                  }
+                }
+              }
             }
             pageInfo {
               hasNextPage
@@ -818,8 +966,10 @@ export async function findStickyDiscussionComment(
 
   let cursor: string | null = null;
   let lastMatch: DiscussionCommentNode | undefined;
+  let pageCount = 0;
 
-  do {
+  while (pageCount < maxPages) {
+    pageCount++;
     const data = (await octokit.graphql(
       query,
       { discussionId, cursor },
@@ -840,11 +990,11 @@ export async function findStickyDiscussionComment(
       }
     }
 
-    if (!comments.pageInfo.hasNextPage) {
+    if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
       break;
     }
     cursor = comments.pageInfo.endCursor;
-  } while (cursor);
+  }
 
   return lastMatch;
 }
@@ -900,11 +1050,16 @@ export async function postDiscussionComment(
     }
   }
 
-  // Check snooze state (Issue #155) — mirrors the issue-comment path.
+  // Check snooze state (Issue #155, Issue #227) — mirrors the issue-comment path.
   if (existingComment && snoozeWindowMs > 0 && !forceComment) {
     const lastMarker = parseSnoozeMarker(existingComment.body);
     const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-    const snoozeState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
+    const snoozeState = evaluateCombinedSnoozeState(
+      currentPassed,
+      lastMarker,
+      existingComment.reactions?.nodes,
+      snoozeWindowMs,
+    );
 
     if (snoozeState.isSnoozed) {
       core.info(
