@@ -20,6 +20,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enforce immutable release tag policy
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use the immutable full SemVer form vMAJOR.MINOR.PATCH. Major aliases such as v1 are forbidden."
+            exit 1
+          fi
+
+          set +e
+          release_lookup="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>&1)"
+          lookup_status=$?
+          set -e
+
+          if [[ ${lookup_status} -eq 0 ]]; then
+            echo "::error::Release ${tag} already exists. Published tags are immutable; create the next patch version instead."
+            exit 1
+          fi
+
+          if [[ "${release_lookup}" != *"HTTP 404"* ]]; then
+            echo "::error::Unable to confirm that ${tag} is new: ${release_lookup}"
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -54,7 +82,7 @@ jobs:
           cat trustbridge-sbom.json | head -20
 
       - name: Upload SBOM to Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
           files: trustbridge-sbom.json
