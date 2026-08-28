@@ -1,0 +1,41 @@
+# Example: Requiring TrustBridge as a branch protection status check (Issue #223)
+#
+# This workflow runs on pull requests and merge queues, validating contributor wallet
+# readiness and serving as a required status check before merging.
+#
+# To require this check in GitHub repository settings:
+#   Settings -> Branches -> Branch protection rules -> Add rule -> "Require status checks to pass before merging"
+#   Search for and select: "verify-wallet / TrustBridge Status Check"
+
+name: Pull Request Wallet Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  merge_group:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate manually'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  verify-wallet:
+    name: verify-wallet
+    # Pin to a tagged release for supply-chain safety
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@v1
+    secrets: inherit
+    with:
+      # Address can be passed directly, or resolved from assignee_address_map / issue body
+      stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      fail_on_missing: true
+      sticky_comment: true

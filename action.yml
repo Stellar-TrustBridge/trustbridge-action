@@ -253,6 +253,20 @@ inputs:
       Default 5000 (5 seconds). (Issue #101)
     required: false
     default: '5000'
+  webhook_auth_mode:
+    description: >-
+      Authentication mechanism for dashboard webhook notifications: "hmac" (default)
+      using HMAC-SHA256 signature with webhook_secret, or "oidc" to mint a GitHub OIDC
+      ID token and send as `Authorization: Bearer <token>`. Requires `id-token: write`
+      permission when set to "oidc". (Issue #224)
+    required: false
+    default: 'hmac'
+  webhook_oidc_audience:
+    description: >-
+      Expected audience for GitHub OIDC token when webhook_auth_mode is "oidc".
+      Default "trustbridge-dashboard". (Issue #224)
+    required: false
+    default: 'trustbridge-dashboard'
   docs_base_url:
     description: >-
       Optional base URL for FAQ/docs deep links embedded in failing check
@@ -408,20 +422,36 @@ inputs:
     required: false
     default: 'false'
 
-  milestone_allowlist:
+  project_id:
     description: >-
-      Optional comma-separated list of allowed milestone titles (e.g. 'Wave 12,Wave 13').
-      If set, the action skips execution unless the issue has a matching milestone.
-      Leave empty (default) to disable the milestone gate.
+      Optional GitHub Projects v2 ID (node ID e.g. PVT_...) to update item status
+      when validation passes or fails. (Issue #222)
     required: false
     default: ''
 
-  milestone_fail_on_skip:
+  project_status_field:
     description: >-
-      When a milestone does not match the allowlist, fail the step (true) instead
-      of just skipping (false). Default is false.
+      Name of the status field in the GitHub Projects v2 board. Default "Status". (Issue #222)
     required: false
-    default: 'false'
+    default: 'Status'
+
+  project_status_pass:
+    description: >-
+      Value/option to set on the project status field when validation passes. (Issue #222)
+    required: false
+    default: ''
+
+  project_status_fail:
+    description: >-
+      Value/option to set on the project status field when validation fails. (Issue #222)
+    required: false
+    default: ''
+
+  project_token:
+    description: >-
+      Optional GitHub token with `project` or `write:org` scope if different from github_token. (Issue #222)
+    required: false
+    default: ''
 
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────

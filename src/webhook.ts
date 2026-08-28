@@ -48,17 +48,31 @@ import type { ValidationResult } from './checks';
 // Types
 // ---------------------------------------------------------------------------
 
+export type WebhookAuthMode = 'hmac' | 'oidc';
+
 export interface WebhookConfig {
   /** Full HTTPS URL of the receiver endpoint. */
   webhookUrl: string;
   /**
-   * Shared HMAC-SHA256 secret. When empty the webhook is sent **unsigned**
+   * Shared HMAC-SHA256 secret. When empty and authMode is 'hmac', the webhook is sent **unsigned**
    * (X-TrustBridge-Signature header is omitted). Callers should always set
-   * this for production use.
+   * this for production HMAC use.
    */
-  webhookSecret: string;
+  webhookSecret?: string;
   /** Request timeout in milliseconds. Default 5 000. */
   timeoutMs?: number;
+  /**
+   * Authentication mode: 'hmac' (default) or 'oidc'.
+   */
+  authMode?: WebhookAuthMode;
+  /**
+   * OIDC audience for the minted GitHub ID token. Defaults to 'trustbridge-dashboard'.
+   */
+  oidcAudience?: string;
+  /**
+   * Pre-minted OIDC token if already obtained, or passed for testing.
+   */
+  oidcToken?: string;
 }
 
 export interface WebhookPayload {
@@ -171,7 +185,11 @@ export async function deliverWebhook(
     'User-Agent': 'trustbridge-action/1',
   };
 
-  if (config.webhookSecret) {
+  if (config.authMode === 'oidc' || config.oidcToken) {
+    if (config.oidcToken) {
+      headers['Authorization'] = `Bearer ${config.oidcToken}`;
+    }
+  } else if (config.webhookSecret) {
     headers['X-TrustBridge-Signature'] = computeWebhookSignature(body, config.webhookSecret);
   }
 
@@ -219,12 +237,29 @@ export async function sendWebhookNotification(
   // Redact the URL for log output so any embedded credentials are masked.
   const safeUrl = redactHorizonUrl(config.webhookUrl);
 
+  let effectiveConfig = { ...config };
+  if (config.authMode === 'oidc' && !config.oidcToken) {
+    const audience = config.oidcAudience || 'trustbridge-dashboard';
+    try {
+      const token = await core.getIDToken(audience);
+      if (token) {
+        core.setSecret(token);
+        effectiveConfig.oidcToken = token;
+      }
+    } catch (oidcError) {
+      const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+      core.warning(
+        `[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`,
+      );
+    }
+  }
+
   const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
-  const delivery = await deliverWebhook(payload, config);
+  const delivery = await deliverWebhook(payload, effectiveConfig);
 
   if (delivery.sent) {
     core.info(
-      `[TrustBridge] Webhook delivered to ${safeUrl} — HTTP ${delivery.statusCode ?? 'unknown'}.`,
+      `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
     );
   } else {
     core.warning(

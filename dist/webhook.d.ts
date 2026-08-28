@@ -39,17 +39,30 @@
  * ```
  */
 import type { ValidationResult } from './checks';
+export type WebhookAuthMode = 'hmac' | 'oidc';
 export interface WebhookConfig {
     /** Full HTTPS URL of the receiver endpoint. */
     webhookUrl: string;
     /**
-     * Shared HMAC-SHA256 secret. When empty the webhook is sent **unsigned**
+     * Shared HMAC-SHA256 secret. When empty and authMode is 'hmac', the webhook is sent **unsigned**
      * (X-TrustBridge-Signature header is omitted). Callers should always set
-     * this for production use.
+     * this for production HMAC use.
      */
-    webhookSecret: string;
+    webhookSecret?: string;
     /** Request timeout in milliseconds. Default 5 000. */
     timeoutMs?: number;
+    /**
+     * Authentication mode: 'hmac' (default) or 'oidc'.
+     */
+    authMode?: WebhookAuthMode;
+    /**
+     * OIDC audience for the minted GitHub ID token. Defaults to 'trustbridge-dashboard'.
+     */
+    oidcAudience?: string;
+    /**
+     * Pre-minted OIDC token if already obtained, or passed for testing.
+     */
+    oidcToken?: string;
 }
 export interface WebhookPayload {
     schema_version: '1';

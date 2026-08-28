@@ -177,6 +177,7 @@ export interface FetchAccountOptions {
    */
   signal?: AbortSignal;
   horizonMaxRequests?: number;
+  retryBaseDelayMs?: number;
   retryMaxDelayMs?: number;
   retryMaxTotalWaitMs?: number;
   rateBudgetTracker?: RateBudgetTracker;
@@ -207,8 +208,9 @@ export interface FetchAccountOptions {
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const DEFAULT_RETRY_MAX_DELAY_MS = 60_000;
+const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
 const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
@@ -396,6 +398,7 @@ async function fetchAccountOnce(
   parentSignal?: AbortSignal,
   rateBudgetTracker?: RateBudgetTracker,
   circuitBreaker?: CircuitBreaker,
+  retryBaseDelayMs: number = DEFAULT_RETRY_BASE_DELAY_MS,
 ): Promise<FetchOnceResult> {
   const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
@@ -520,7 +523,7 @@ async function fetchAccountOnce(
           if (retryAfterHeader !== null) {
             retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
           } else {
-            retryAfter = Math.min(1000 * 2 ** attempt, retryMaxDelayMs);
+            retryAfter = Math.min(retryBaseDelayMs * (2 ** attempt), retryMaxDelayMs);
           }
 
           if (totalWaitMs + retryAfter > retryMaxTotalWaitMs) {
@@ -668,9 +671,9 @@ async function fetchAccountOnce(
       lastError = new HorizonError(message, isAbort ? 408 : 0, true);
 
       if (attempt < maxRetries) {
-        const backoffMs = 1000 * 2 ** attempt;
+        const backoffMs = Math.min(retryBaseDelayMs * (2 ** attempt), retryMaxDelayMs);
         
-        if (backoffMs > retryMaxDelayMs || totalWaitMs + backoffMs > retryMaxTotalWaitMs) {
+        if (totalWaitMs + backoffMs > retryMaxTotalWaitMs) {
           throw lastError;
         }
         
@@ -734,6 +737,7 @@ export async function fetchAccount(
     options.fetchFn ?? (await import('node-fetch')).default;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
   const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
@@ -831,6 +835,7 @@ export async function fetchAccount(
       signal,
       rateBudgetTracker,
       circuitBreaker,
+      retryBaseDelayMs,
     );
 
     result.account._servedByUrl = normalizedHorizonUrl;
@@ -918,6 +923,7 @@ export async function fetchAccount(
       signal,
       rateBudgetTracker,
       circuitBreaker,
+      retryBaseDelayMs,
     );
 
     fallbackResult.account._servedByUrl = normalizedFallbackUrl;

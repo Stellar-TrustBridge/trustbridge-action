@@ -36,14 +36,11 @@ jobs:
 
   trustbridge:
     needs: resolve-address
-    # Replace `Stellar-TrustBridge/trustbridge-action` with your org's
-    # shared-workflows repo if trustbridge-reusable.yml lives elsewhere, and
-    # pin to a release tag/SHA the same way you would for the action itself.
-    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@main
+    # Pin to a tagged release or SHA for supply-chain safety
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@v1
     # `secrets: inherit` forwards every secret available to this caller
     # workflow (including GITHUB_TOKEN) to the called workflow under the
     # same names — the reusable workflow reads it as `secrets.github_token`.
-    # Use an explicit `secrets:` block instead if you only want to pass one.
     secrets: inherit
     with:
       stellar_address_input: ${{ needs.resolve-address.outputs.address }}

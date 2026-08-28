@@ -330,6 +330,8 @@ export interface ActionInputsLogRecord {
   horizonCacheTtlMs: number;
   useCache: boolean;
   horizonMaxRequests: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
   retryMaxDelayMs: number;
   logInputs: boolean;
   allowCrossNetworkFallback?: boolean;
@@ -364,6 +366,8 @@ export function buildInputsLogRecord(inputs: ActionInputsLogRecord): ActionInput
     horizonCacheTtlMs: inputs.horizonCacheTtlMs,
     useCache: inputs.useCache,
     horizonMaxRequests: inputs.horizonMaxRequests,
+    maxRetries: inputs.maxRetries,
+    retryBaseDelayMs: inputs.retryBaseDelayMs,
     retryMaxDelayMs: inputs.retryMaxDelayMs,
     logInputs: inputs.logInputs,
     allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,

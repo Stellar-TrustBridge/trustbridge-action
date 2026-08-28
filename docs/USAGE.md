@@ -1824,6 +1824,194 @@ All outputs are **strings** (GitHub Actions limitation). Consume them as:
 
 ---
 
+## GitHub Projects v2 status updates (Issue #222)
+
+Maintainer project boards frequently track bounty issues or contributor tasks. TrustBridge can automatically update an issue or pull request's status field on a GitHub Projects v2 board based on the validation result.
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      # If using default GITHUB_TOKEN for organization-level projects, ensure project permissions:
+      # project: write (for GitHub App/PAT)
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          project_id: 'PVT_kwDOAB1234567890'
+          project_status_field: 'Status'
+          project_status_pass: 'Ready to Pay'
+          project_status_fail: 'Needs Wallet'
+          # If your GITHUB_TOKEN lacks organization project scopes, pass a PAT:
+          project_token: ${{ secrets.PROJECTS_PAT || secrets.GITHUB_TOKEN }}
+```
+
+### Inputs
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `project_id` | string | `""` | Optional ProjectV2 Node ID (e.g. `PVT_...`). When empty, project updates are skipped. |
+| `project_status_field` | string | `"Status"` | The name of the project field to update (supports Single-Select and Text fields). |
+| `project_status_pass` | string | `""` | Value/option name to set when all validation checks pass. |
+| `project_status_fail` | string | `""` | Value/option name to set when validation checks fail. |
+| `project_token` | string | `""` | Optional token with `project` or `write:org` permissions if different from `github_token`. |
+
+### Behavior & Error Handling
+
+- **Opt-in only:** When `project_id` is omitted or empty, no GraphQL project operations run.
+- **Automatic Item Enrollment:** If the issue is not yet an item on the project board, TrustBridge will automatically add it before updating the status field.
+- **Fail-open:** Missing permissions or Project API errors emit clear warnings (e.g. reminding maintainers about the required `project` scope) and will **never** fail the workflow step or wallet validation checks.
+
+---
+
+## OIDC Federation for Dashboard Webhooks (Issue #224)
+
+By default, dashboard webhook notifications use HMAC-SHA256 signatures with a long-lived shared secret (`webhook_secret`). To eliminate the risk of leaked secrets in fork workflows and repository settings, TrustBridge supports **OpenID Connect (OIDC) federation** with `trustbridge-dashboard`.
+
+When `webhook_auth_mode: oidc` is configured, TrustBridge requests a short-lived OIDC ID token directly from GitHub's OIDC provider (with `id-token: write` permission) and sends it in the HTTP `Authorization: Bearer <token>` header.
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      id-token: write  # required for OIDC federation
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: 'https://dashboard.stellar-trustbridge.org/api/v1/webhook'
+          webhook_auth_mode: 'oidc'
+          webhook_oidc_audience: 'trustbridge-dashboard'  # default audience
+```
+
+### OIDC Claims & Dashboard Verification Contract
+
+The minted GitHub OIDC token contains standard JWT claims that the receiver validates:
+- `iss`: `https://token.actions.githubusercontent.com`
+- `aud`: Configured audience (default `trustbridge-dashboard`)
+- `repository`: Current GitHub repository (`owner/repo`)
+- `repository_owner`: Repository owner login
+- `workflow`: Workflow name
+- `actor`: Initiating GitHub user or bot
+
+**Security Guarantees:**
+- **Zero long-lived secrets:** No shared webhook secret needs to be stored or rotated in GitHub Secrets.
+- **Never logged:** The action registers the minted OIDC token with `core.setSecret()` to prevent accidental exposure in runner logs.
+- **HMAC remains default:** Workflows without `webhook_auth_mode: oidc` continue using HMAC-SHA256 signing transparently.
+- **Fail-open delivery:** OIDC token errors or network timeouts log non-fatal warnings and never block comment posting or validation results.
+
+---
+
+## Reusable Workflow & Required Status Checks (Issue #223)
+
+To simplify adoption across multiple repositories and prevent permission misconfigurations, TrustBridge provides a blessed reusable workflow at `.github/workflows/trustbridge-reusable.yml`.
+
+Organizations can invoke this reusable workflow with `workflow_call` and configure it as a **required status check** in GitHub Branch Protection rules.
+
+### Reusable Workflow Caller Example
+
+Create a workflow file in your repository (e.g. `.github/workflows/wallet-check.yml`):
+
+```yaml
+name: Contributor Wallet Validation Gate
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  verify-wallet:
+    name: verify-wallet
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@v1
+    secrets: inherit
+    with:
+      stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      fail_on_missing: true
+```
+
+### Configuring as a Required Status Check
+
+1. In your GitHub repository, navigate to **Settings** → **Branches** (or **Rules** → **Rulesets**).
+2. Under **Branch protection rules**, select or add a rule for your target branch (e.g. `main`).
+3. Enable **Require status checks to pass before merging**.
+4. In the search box, search for the status check name:
+   `verify-wallet / TrustBridge Status Check` (or `<job-id> / TrustBridge Status Check`).
+5. Select the check and save changes.
+
+### Security and Best Practices
+
+- **Minimal Permissions:** The reusable workflow requests only `contents: read`, `issues: write`, `pull-requests: read`, and `id-token: write`.
+- **Pinned Version:** Always pin the reusable workflow to a major version tag (e.g. `@v1`) or a specific commit SHA.
+- **Pass-through Secrets:** Using `secrets: inherit` automatically forwards `GITHUB_TOKEN` to post/update sticky issue comments without hardcoding personal access tokens.
+- **Merge Queue Support:** Works seamlessly with `merge_group` trigger events.
+
+---
+
+## Horizon Retry & Exponential Backoff Configuration (Issue #203)
+
+TrustBridge includes full plumbing for configurable retry attempts and exponential backoff parameters on Horizon API requests (including 429 rate limits, 502/503/504 gateway errors, and transient network timeouts).
+
+### Inputs
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_retries` | number | `3` | Maximum number of retry attempts for retryable Horizon responses (0 to 20). |
+| `retry_base_delay_ms` | number | `1000` | Initial base delay in milliseconds for exponential backoff (`base * 2^attempt`). |
+| `retry_max_delay_ms` | number | `30000` | Maximum cap in milliseconds for any single backoff delay. |
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          max_retries: 5
+          retry_base_delay_ms: 500
+          retry_max_delay_ms: 15000
+```
+
+### Behavior & Guarantees
+
+- **Respects `Retry-After`:** When Horizon returns HTTP 429 with a `Retry-After` header, TrustBridge uses the header value (capped at `retry_max_delay_ms`).
+- **Zero Retries Supported:** Setting `max_retries: 0` disables retries and fails immediately on the first error.
+- **Failover Compatibility:** Works seamlessly with `horizon_url_fallback` and `rpc_fallback_url`.
+
+---
+
 ## Validation & Testing
 
 TrustBridge runs a comprehensive test suite covering all features:

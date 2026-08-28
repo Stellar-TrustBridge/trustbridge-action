@@ -108,6 +108,7 @@ export interface FetchAccountOptions {
      */
     signal?: AbortSignal;
     horizonMaxRequests?: number;
+    retryBaseDelayMs?: number;
     retryMaxDelayMs?: number;
     retryMaxTotalWaitMs?: number;
     rateBudgetTracker?: RateBudgetTracker;

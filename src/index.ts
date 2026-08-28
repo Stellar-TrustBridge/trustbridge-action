@@ -334,6 +334,9 @@ async function run(): Promise<void> {
   const localeInput = core.getInput('locale') || 'en';
   const locale = parseLocaleInput(localeInput);
 
+  // Batch validation (Issue #199)
+  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+
   // Full-report artifact path (used when comment exceeds size limit)
   const reportOutputPath = core.getInput('report_output_path') || 'trustbridge-report.md';
 
@@ -365,6 +368,16 @@ async function run(): Promise<void> {
     min: 100,
     max: 30000,
   });
+  const webhookAuthModeRaw = (core.getInput('webhook_auth_mode') || 'hmac').trim().toLowerCase();
+  const webhookAuthMode: 'hmac' | 'oidc' = webhookAuthModeRaw === 'oidc' ? 'oidc' : 'hmac';
+  const webhookOidcAudience = core.getInput('webhook_oidc_audience') || 'trustbridge-dashboard';
+
+  // GitHub Projects v2 integration (Issue #222)
+  const projectId = core.getInput('project_id') || '';
+  const projectStatusField = core.getInput('project_status_field') || 'Status';
+  const projectStatusPass = core.getInput('project_status_pass') || '';
+  const projectStatusFail = core.getInput('project_status_fail') || '';
+  const projectToken = core.getInput('project_token') || githubToken;
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
@@ -481,6 +494,14 @@ async function run(): Promise<void> {
       max: 10000,
     },
   );
+  const maxRetries = parseNumberInput(core.getInput('max_retries') || '3', 3, {
+    min: 0,
+    max: 20,
+  });
+  const retryBaseDelayMs = parseNumberInput(core.getInput('retry_base_delay_ms') || '1000', 1000, {
+    min: 0,
+    max: 60_000,
+  });
   const retryMaxDelayMs = parseNumberInput(core.getInput('retry_max_delay_ms') || '30000', 30000, {
     min: 0,
     max: 600_000,
@@ -570,6 +591,8 @@ async function run(): Promise<void> {
       horizonCacheTtlMs,
       useCache,
       horizonMaxRequests,
+      maxRetries,
+      retryBaseDelayMs,
       retryMaxDelayMs,
       allowCrossNetworkFallback,
       logInputs,
@@ -635,6 +658,9 @@ async function run(): Promise<void> {
     const batchResults = await runBatchValidation(batchAddresses, batchCheckConfig, effectiveHorizonUrl, {
       fetchOptions: {
         timeoutMs: horizonTimeoutMs,
+        maxRetries,
+        retryBaseDelayMs,
+        retryMaxDelayMs,
       },
     });
 
@@ -743,6 +769,9 @@ async function run(): Promise<void> {
 
   const horizonOptions = {
     timeoutMs: horizonTimeoutMs,
+    maxRetries,
+    retryBaseDelayMs,
+    retryMaxDelayMs,
     horizonUrlFallback: horizonUrlFallback || undefined,
     fallbackUrls,
     cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
@@ -990,6 +1019,9 @@ async function run(): Promise<void> {
         useCache,
         cacheTtlMs: horizonCacheTtlMs,
         allowCrossNetworkFallback,
+        maxRetries,
+        retryBaseDelayMs,
+        retryMaxDelayMs,
         debugMode,
       },
       runInfo: {
@@ -1116,6 +1148,61 @@ async function run(): Promise<void> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // GitHub Projects v2 status updates (Issue #222)
+  // When project_id is configured and status pass/fail values are provided,
+  // update the issue/PR item's status in the Project board.
+  // ---------------------------------------------------------------------------
+  if (projectId) {
+    const targetProjectStatus = result.valid ? projectStatusPass : projectStatusFail;
+    if (targetProjectStatus) {
+      let contentNodeId =
+        (github.context.payload.issue as any)?.node_id ||
+        (github.context.payload.pull_request as any)?.node_id ||
+        (github.context.payload.discussion as any)?.node_id;
+
+      if (!contentNodeId && github.context.payload.issue?.number) {
+        try {
+          const projectOctokit = github.getOctokit(projectToken);
+          const { owner, repo } = github.context.repo;
+          const issueQuery = `
+            query getIssueNodeId($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                  id
+                }
+              }
+            }
+          `;
+          const res = await projectOctokit.graphql<{
+            repository?: { issue?: { id: string } };
+          }>(issueQuery, {
+            owner,
+            repo,
+            number: github.context.payload.issue.number,
+          });
+          contentNodeId = res?.repository?.issue?.id;
+        } catch (queryErr) {
+          const msg = queryErr instanceof Error ? queryErr.message : String(queryErr);
+          logger.warn(`Could not resolve issue node_id for Projects v2: ${msg}`, {
+            component: 'projects',
+          });
+        }
+      }
+
+      if (contentNodeId) {
+        const projectOctokit = github.getOctokit(projectToken);
+        await updateProjectV2Status({
+          octokit: projectOctokit,
+          projectId,
+          contentNodeId,
+          statusFieldName: projectStatusField,
+          targetStatusValue: targetProjectStatus,
+        });
+      }
+    }
+  }
+
   // Signed dashboard webhook notification (Issue #101)
   // Fires after comment posting; failures are isolated and never block the run.
   if (webhookUrl) {
@@ -1124,7 +1211,13 @@ async function run(): Promise<void> {
     await sendWebhookNotification(
       result,
       effectiveResolvedAddress,
-      { webhookUrl, webhookSecret, timeoutMs: webhookTimeoutMs },
+      {
+        webhookUrl,
+        webhookSecret,
+        timeoutMs: webhookTimeoutMs,
+        authMode: webhookAuthMode,
+        oidcAudience: webhookOidcAudience,
+      },
       `${owner}/${repo}`,
       issueNumber,
     );

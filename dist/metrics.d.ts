@@ -166,6 +166,11 @@ export declare class MetricsCollector {
      */
     getTimingBreakdown(): TimingBreakdown;
     /**
+     * Get a single timer value by name (e.g., 'input_parse' → milliseconds).
+     * Returns 0 if timer was never started or stopped.
+     */
+    getTimerValue(name: string): number;
+    /**
      * Get a summary of all recorded metrics.
      */
     getSummary(): {

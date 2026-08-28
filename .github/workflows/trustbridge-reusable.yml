@@ -1,0 +1,271 @@
+# Reusable workflow for TrustBridge Action (Issue #223)
+#
+# Provides a standardized, secure, and turnkey status check for GitHub repositories.
+# Designed to be invoked via `workflow_call` and configured as a required status
+# check in branch protection / rulesets.
+#
+# See docs/USAGE.md for setup instructions and branch protection guidance.
+
+name: TrustBridge Reusable Check
+
+on:
+  workflow_call:
+    inputs:
+      stellar_address_input:
+        description: 'Stellar account address (G-address) to validate'
+        required: false
+        type: string
+        default: ''
+      assignee_address_map:
+        description: 'JSON map or workspace file path mapping GitHub usernames to Stellar G-addresses'
+        required: false
+        type: string
+        default: ''
+      horizon_url:
+        description: 'Stellar Horizon API base URL'
+        required: false
+        type: string
+        default: 'https://horizon.stellar.org'
+      horizon_url_fallback:
+        description: 'Optional fallback Horizon API base URL'
+        required: false
+        type: string
+        default: ''
+      rpc_fallback_url:
+        description: 'Optional secondary/fallback Horizon or RPC URL(s), comma-separated'
+        required: false
+        type: string
+        default: ''
+      asset_code:
+        description: 'Asset code to check trustline for'
+        required: false
+        type: string
+        default: 'USDC'
+      asset_issuer:
+        description: 'Asset issuer Stellar address (G-address) or Soroban contract (C-address)'
+        required: false
+        type: string
+        default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+      min_xlm_reserve:
+        description: 'Minimum native XLM balance required'
+        required: false
+        type: string
+        default: '1.5'
+      min_trustline_limit:
+        description: 'Minimum trustline limit required for the configured asset'
+        required: false
+        type: string
+        default: ''
+      fail_on_missing:
+        description: 'Fail the workflow step when checks do not pass'
+        required: false
+        type: boolean
+        default: true
+      debug_mode:
+        description: 'Enable extra action logs for troubleshooting'
+        required: false
+        type: boolean
+        default: false
+      sticky_comment:
+        description: 'Update previous TrustBridge comment instead of posting a new one'
+        required: false
+        type: boolean
+        default: true
+      comment_mode:
+        description: 'Comment posting mode: post (default), dry-run, or off'
+        required: false
+        type: string
+        default: 'post'
+      wait_until_funded:
+        description: 'Poll Horizon until the account becomes funded'
+        required: false
+        type: boolean
+        default: false
+      wait_until_funded_timeout_ms:
+        description: 'Maximum total time to poll for funding, in milliseconds'
+        required: false
+        type: number
+        default: 120000
+      wait_until_funded_interval_ms:
+        description: 'Delay between funded-account polling attempts, in milliseconds'
+        required: false
+        type: number
+        default: 5000
+      horizon_timeout_ms:
+        description: 'Horizon request timeout in milliseconds'
+        required: false
+        type: number
+        default: 15000
+      horizon_cache_ttl_ms:
+        description: 'In-memory Horizon account cache TTL in milliseconds'
+        required: false
+        type: number
+        default: 60000
+      use_cache:
+        description: 'Cache successful Horizon responses in job memory'
+        required: false
+        type: boolean
+        default: false
+      trustbridge_config_path:
+        description: 'Path to a consumer trustbridge.yml config file'
+        required: false
+        type: string
+        default: '.trustbridge.yml'
+      log_inputs:
+        description: 'Emit a redacted structured JSON log record of resolved inputs'
+        required: false
+        type: boolean
+        default: false
+      sep0007_deep_links:
+        description: 'Emit SEP-0007 wallet deep links in the issue comment'
+        required: false
+        type: boolean
+        default: false
+      sep0007_origin_domain:
+        description: 'Optional origin domain embedded in SEP-0007 URIs'
+        required: false
+        type: string
+        default: ''
+      auto_wallet_labels:
+        description: 'Automatically apply wallet state labels to issues'
+        required: false
+        type: boolean
+        default: false
+      project_id:
+        description: 'Optional GitHub Projects v2 ID to update status'
+        required: false
+        type: string
+        default: ''
+      project_status_field:
+        description: 'Name of the status field in Projects v2 board'
+        required: false
+        type: string
+        default: 'Status'
+      project_status_pass:
+        description: 'Status value to set when validation passes'
+        required: false
+        type: string
+        default: ''
+      project_status_fail:
+        description: 'Status value to set when validation fails'
+        required: false
+        type: string
+        default: ''
+      webhook_url:
+        description: 'Optional HTTPS URL to POST notification'
+        required: false
+        type: string
+        default: ''
+      webhook_auth_mode:
+        description: 'Webhook auth mode: hmac (default) or oidc'
+        required: false
+        type: string
+        default: 'hmac'
+      webhook_oidc_audience:
+        description: 'OIDC token audience when webhook_auth_mode is oidc'
+        required: false
+        type: string
+        default: 'trustbridge-dashboard'
+
+    secrets:
+      github_token:
+        description: 'GitHub token with required permissions (defaults to caller context)'
+        required: false
+      project_token:
+        description: 'Optional token with project scope for Projects v2 updates'
+        required: false
+      webhook_secret:
+        description: 'Shared HMAC secret for webhook payload signing'
+        required: false
+
+    outputs:
+      ready:
+        description: 'Whether all validation checks passed (true/false)'
+        value: ${{ jobs.trustbridge-check.outputs.ready }}
+      trustline_exists:
+        description: 'Whether the account has a trustline for the configured asset'
+        value: ${{ jobs.trustbridge-check.outputs.trustline_exists }}
+      xlm_balance:
+        description: 'Current native XLM balance as reported by Horizon'
+        value: ${{ jobs.trustbridge-check.outputs.xlm_balance }}
+      account_funded:
+        description: 'Whether the account exists and is activated on the Stellar network'
+        value: ${{ jobs.trustbridge-check.outputs.account_funded }}
+      comment_url:
+        description: 'URL of the created or updated issue comment'
+        value: ${{ jobs.trustbridge-check.outputs.comment_url }}
+      reason_code:
+        description: 'Machine-readable result code'
+        value: ${{ jobs.trustbridge-check.outputs.reason_code }}
+      validated_at:
+        description: 'ISO-8601 timestamp when checks were performed'
+        value: ${{ jobs.trustbridge-check.outputs.validated_at }}
+      checks_json:
+        description: 'JSON array of check results'
+        value: ${{ jobs.trustbridge-check.outputs.checks_json }}
+      badge_markdown:
+        description: 'Markdown-formatted readiness badge'
+        value: ${{ jobs.trustbridge-check.outputs.badge_markdown }}
+      badge_url:
+        description: 'Shields.io readiness badge URL'
+        value: ${{ jobs.trustbridge-check.outputs.badge_url }}
+
+jobs:
+  trustbridge-check:
+    name: TrustBridge Status Check
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      pull-requests: read
+      id-token: write
+    outputs:
+      ready: ${{ steps.trustbridge.outputs.ready }}
+      trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}
+      xlm_balance: ${{ steps.trustbridge.outputs.xlm_balance }}
+      account_funded: ${{ steps.trustbridge.outputs.account_funded }}
+      comment_url: ${{ steps.trustbridge.outputs.comment_url }}
+      reason_code: ${{ steps.trustbridge.outputs.reason_code }}
+      validated_at: ${{ steps.trustbridge.outputs.validated_at }}
+      checks_json: ${{ steps.trustbridge.outputs.checks_json }}
+      badge_markdown: ${{ steps.trustbridge.outputs.badge_markdown }}
+      badge_url: ${{ steps.trustbridge.outputs.badge_url }}
+    steps:
+      - name: Run TrustBridge Action
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ inputs.stellar_address_input }}
+          assignee_address_map: ${{ inputs.assignee_address_map }}
+          github_token: ${{ secrets.github_token || github.token }}
+          horizon_url: ${{ inputs.horizon_url }}
+          horizon_url_fallback: ${{ inputs.horizon_url_fallback }}
+          rpc_fallback_url: ${{ inputs.rpc_fallback_url }}
+          asset_code: ${{ inputs.asset_code }}
+          asset_issuer: ${{ inputs.asset_issuer }}
+          min_xlm_reserve: ${{ inputs.min_xlm_reserve }}
+          min_trustline_limit: ${{ inputs.min_trustline_limit }}
+          fail_on_missing: ${{ inputs.fail_on_missing }}
+          debug_mode: ${{ inputs.debug_mode }}
+          sticky_comment: ${{ inputs.sticky_comment }}
+          comment_mode: ${{ inputs.comment_mode }}
+          wait_until_funded: ${{ inputs.wait_until_funded }}
+          wait_until_funded_timeout_ms: ${{ inputs.wait_until_funded_timeout_ms }}
+          wait_until_funded_interval_ms: ${{ inputs.wait_until_funded_interval_ms }}
+          horizon_timeout_ms: ${{ inputs.horizon_timeout_ms }}
+          horizon_cache_ttl_ms: ${{ inputs.horizon_cache_ttl_ms }}
+          use_cache: ${{ inputs.use_cache }}
+          trustbridge_config_path: ${{ inputs.trustbridge_config_path }}
+          log_inputs: ${{ inputs.log_inputs }}
+          sep0007_deep_links: ${{ inputs.sep0007_deep_links }}
+          sep0007_origin_domain: ${{ inputs.sep0007_origin_domain }}
+          auto_wallet_labels: ${{ inputs.auto_wallet_labels }}
+          project_id: ${{ inputs.project_id }}
+          project_status_field: ${{ inputs.project_status_field }}
+          project_status_pass: ${{ inputs.project_status_pass }}
+          project_status_fail: ${{ inputs.project_status_fail }}
+          project_token: ${{ secrets.project_token }}
+          webhook_url: ${{ inputs.webhook_url }}
+          webhook_secret: ${{ secrets.webhook_secret }}
+          webhook_auth_mode: ${{ inputs.webhook_auth_mode }}
+          webhook_oidc_audience: ${{ inputs.webhook_oidc_audience }}

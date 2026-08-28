@@ -137,6 +137,8 @@ export interface ActionInputsLogRecord {
     horizonCacheTtlMs: number;
     useCache: boolean;
     horizonMaxRequests: number;
+    maxRetries?: number;
+    retryBaseDelayMs?: number;
     retryMaxDelayMs: number;
     logInputs: boolean;
     allowCrossNetworkFallback?: boolean;
