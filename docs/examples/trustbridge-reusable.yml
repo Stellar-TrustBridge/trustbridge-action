@@ -150,7 +150,7 @@ jobs:
     steps:
       - name: TrustBridge check
         id: trustbridge
-        uses: Stellar-TrustBridge/trustbridge-action@v1
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           stellar_address_input: ${{ inputs.stellar_address_input }}
           github_token: ${{ secrets.github_token || github.token }}

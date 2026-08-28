@@ -33,9 +33,16 @@ jobs:
     steps:
       - name: Check labels
         id: labels
+        # Label names require triage/write access to set, so this is lower
+        # risk than a workflow_dispatch input or issue body — but routing
+        # through env: costs nothing and keeps every example in this repo
+        # consistent about never interpolating a context value directly
+        # into a shell string.
+        env:
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
         run: |
           # Extract label names from the issue event context (comma-separated string).
-          LABELS="${{ github.event.issue.labels.*.name }}"
+          LABELS="${ISSUE_LABELS}"
 
           # Check if specific labels are present.
           if [[ "$LABELS" == *"bounty"* ]]; then
@@ -71,7 +78,7 @@ jobs:
       contents: read
     steps:
       - name: TrustBridge — bounty (high reserve)
-        uses: Stellar-TrustBridge/trustbridge-action@v1
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           stellar_address_input: ${{ needs.check-gate-labels.outputs.address }}
@@ -93,7 +100,7 @@ jobs:
       contents: read
     steps:
       - name: TrustBridge — grant (standard reserve)
-        uses: Stellar-TrustBridge/trustbridge-action@v1
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           stellar_address_input: ${{ needs.check-gate-labels.outputs.address }}

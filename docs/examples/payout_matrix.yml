@@ -79,8 +79,16 @@ jobs:
     steps:
       - name: Parse contributor address
         id: addr
+        # contributor_addresses is a workflow_dispatch input, so it's
+        # passed through env: rather than interpolated directly into the
+        # shell string below. A raw ${{ }} substitution happens before the
+        # shell runs, so a value containing a single quote could break out
+        # of the 'ADDRESSES=...' literal and inject arbitrary commands;
+        # env: keeps it as an inert string regardless of its contents.
+        env:
+          CONTRIBUTOR_ADDRESSES: ${{ github.event.inputs.contributor_addresses }}
         run: |
-          ADDRESSES='${{ github.event.inputs.contributor_addresses }}'
+          ADDRESSES="${CONTRIBUTOR_ADDRESSES}"
           IDX=${{ matrix.address_index }}
           ADDRESS=$(echo "$ADDRESSES" | jq -r ".[$IDX]")
           if [ -z "$ADDRESS" ] || [ "$ADDRESS" = "null" ]; then
@@ -91,7 +99,7 @@ jobs:
 
       - name: TrustBridge check (${{ matrix.asset_code }})
         id: trustbridge
-        uses: Stellar-TrustBridge/trustbridge-action@v1
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           # Required: stellar_address_input must always be explicit
           stellar_address_input: ${{ steps.addr.outputs.value }}

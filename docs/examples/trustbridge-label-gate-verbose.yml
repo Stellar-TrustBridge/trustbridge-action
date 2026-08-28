@@ -24,8 +24,15 @@ jobs:
   trustbridge-gated:
     runs-on: ubuntu-latest
     permissions:
-      issues: read   # read labels for gate
-      issues: write  # post skip comment and validation results
+      # `issues: write` implies read access, so a single entry covers both
+      # "read labels for gate" and "post skip comment and validation
+      # results". The original had `issues:` listed twice with different
+      # values, which is a duplicate YAML mapping key — some parsers
+      # (including actionlint's) will flag or error on this outright, and
+      # where it's silently accepted, behavior depends on which duplicate
+      # a given parser keeps, which is exactly the kind of ambiguity you
+      # don't want in a permissions block.
+      issues: write
       contents: read # optional; only if using trustbridge_config_path
     steps:
       - name: Resolve Stellar address
@@ -39,7 +46,9 @@ jobs:
 
       - name: TrustBridge with label gate
         id: gate
-        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@main
+        # See the pinning note in trustbridge-label-gate.yml — replace
+        # 07b97d28d482a18d277285f980dd5d7206673eb5 with the commit SHA of the release tag to track.
+        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           stellar_address_input: ${{ steps.addr.outputs.value }}

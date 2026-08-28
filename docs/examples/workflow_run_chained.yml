@@ -59,7 +59,7 @@
 #
 #       - name: Extract Stellar address from issue body
 #         id: extract
-#         uses: actions/github-script@v7
+#         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
 #         with:
 #           script: |
 #             const body = context.payload.issue?.body ?? '';
@@ -99,7 +99,7 @@ jobs:
       #
       # See the upstream example above for how to produce this artifact.
       - name: Download address artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: trustbridge-inputs
           # Download from the run that triggered this workflow_run event
@@ -125,7 +125,20 @@ jobs:
       # Workaround: set GITHUB_REF and the synthetic issue event so that
       # @actions/github picks up the correct issue number.
       - name: Inject issue context for comment posting
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        # SECURITY: the original spliced ${{ steps.inputs.outputs.issue }}
+        # directly into the script's JS source as a string literal
+        # (`parseInt('${{ ... }}', 10)`). That substitution happens before
+        # Node ever sees the script — GitHub Actions renders it as text
+        # first — so a value containing a single quote and JS code (e.g.
+        # from a tampered artifact) would close the string and execute
+        # arbitrary JavaScript with this job's issues:write token. That's
+        # the same class of bug as unsanitized shell interpolation, just
+        # one runtime up. Passing it through env: and reading
+        # process.env.ISSUE_NUMBER inside the script keeps it as an inert
+        # string no matter what it contains.
+        env:
+          ISSUE_NUMBER: ${{ steps.inputs.outputs.issue }}
         with:
           script: |
             // Write a synthetic issue event so @actions/github resolves the
@@ -134,13 +147,13 @@ jobs:
             const fs = require('fs');
             const eventPath = process.env.GITHUB_EVENT_PATH;
             const original = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
-            original.issue = { number: parseInt('${{ steps.inputs.outputs.issue }}', 10) };
+            original.issue = { number: parseInt(process.env.ISSUE_NUMBER, 10) };
             fs.writeFileSync(eventPath, JSON.stringify(original));
 
       # ── Step 4: Run TrustBridge ─────────────────────────────────────────────
       - name: TrustBridge check
         id: trustbridge
-        uses: Stellar-TrustBridge/trustbridge-action@v1
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           stellar_address_input: ${{ steps.inputs.outputs.address }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
