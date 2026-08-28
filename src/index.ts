@@ -151,6 +151,57 @@ function resolveStellarAddressInput(
 }
 
 async function run(): Promise<void> {
+  // Milestone gating (Issue #230)
+  const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
+  const milestoneFailOnSkip = parseBooleanInput(core.getInput('milestone_fail_on_skip'), false);
+
+  if (milestoneAllowlistRaw.trim()) {
+    const allowedMilestones = milestoneAllowlistRaw
+      .split(',')
+      .map((m) => m.trim().toLowerCase())
+      .filter(Boolean);
+    const payload = github.context.payload;
+    const isIssueContext = payload.issue !== undefined;
+    const isPullRequest = payload.pull_request !== undefined;
+
+    let currentMilestone = '';
+    let currentMilestoneRaw = '';
+    if (isIssueContext && payload.issue?.milestone) {
+      currentMilestoneRaw = payload.issue.milestone.title || '';
+    } else if (isPullRequest && payload.pull_request?.milestone) {
+      currentMilestoneRaw = payload.pull_request.milestone.title || '';
+    }
+    currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+
+    if (allowedMilestones.length > 0) {
+      let skipReason = '';
+      if (!currentMilestone) {
+        skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
+      } else if (!allowedMilestones.includes(currentMilestone)) {
+        skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+      }
+
+      if (skipReason) {
+        const fullMessage = `${skipReason} Skipping validation.`;
+        if (milestoneFailOnSkip) {
+          core.setFailed(fullMessage);
+        } else {
+          core.info(fullMessage);
+        }
+
+        core.setOutput('ready', 'false');
+        core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+        core.setOutput('checks_json', '[]');
+
+        core.summary.addHeading('Milestone Gate Skipped', 3);
+        core.summary.addRaw(fullMessage);
+        await core.summary.write();
+
+        return;
+      }
+    }
+  }
+
   // Campaign presets (Issue #207) — resolved first so they can provide defaults.
   const networkInput = core.getInput('network') || '';
   const presetInput = core.getInput('preset') || '';
