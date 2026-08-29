@@ -31,7 +31,7 @@ Running a nightly (or pre-payout) sweep ensures no stale wallets reach the payou
 
 ---
 
-## Permissions
+## Permissions & Secrets
 
 ```yaml
 permissions:
@@ -39,72 +39,33 @@ permissions:
   contents: read  # standard — checkout-less action runs
 ```
 
-> **Note:** These are job-level permissions. If your repository has organisation-level rules that further restrict the token, you may need a scoped PAT stored as `TRUSTBRIDGE_TOKEN` and referenced via `secrets.TRUSTBRIDGE_TOKEN` instead of `secrets.GITHUB_TOKEN`.
+### Secrets configuration
 
-### Minimum token scopes (PAT alternative)
+| Secret | Purpose | When to use |
+| --- | --- | --- |
+| `secrets.GITHUB_TOKEN` | Default workflow token with `issues: write` and `contents: read` | Standard repository setup on default branch |
+| `secrets.TRUSTBRIDGE_TOKEN` | Scoped Personal Access Token (PAT) with `repo` scope | When org-level token restrictions block comment creation |
+| `secrets.GITHUB_APP_TOKEN` | Pre-minted GitHub App installation token | For high-volume org triage with 15,000 req/hr rate limits |
 
-| Scope | Reason |
-| --- | --- |
-| `repo` → `issues` | Read issue bodies; write comments |
-| `repo` → `actions` | Dispatch revalidation workflow runs |
+### Fork safety
 
----
-
-## Issue querying
-
-The example workflow uses the **GitHub CLI** (`gh issue list`) which is pre-installed on `ubuntu-latest` runners. It filters by label, state, and the presence of at least one assignee:
-
-```bash
-gh issue list \
-  --repo "owner/repo" \
-  --label "bounty" \
-  --state open \
-  --limit 50 \
-  --json number,title,assignees,body
-```
-
-### Pagination and batch size
-
-`gh issue list` paginates automatically up to `--limit`. The default batch size in the workflow is **50 issues per run**. For larger backlogs:
-
-- Increase `REVALIDATION_BATCH_SIZE` — each additional issue adds ~3 API calls.
-- Add a `sleep 1` between dispatches (already included in the example) to distribute load.
-- For > 200 issues, split the run into multiple jobs with offset queries or use a PAT with higher rate limits.
-
-### Rate limits
-
-| Token type | Limit |
-| --- | --- |
-| `GITHUB_TOKEN` | 5 000 req / hour |
-| Fine-grained PAT | 5 000 req / hour (same quota pool) |
-| GitHub App installation token | 15 000 req / hour (recommended for large orgs) |
-
-The workflow emits a `::warning::` annotation if no addresses are parsed, which is often the first symptom of rate-limiting hitting the issue-list call.
-
----
-
-## Issue template format
-
-The address-extraction step uses the following pattern by default:
-
-```
-Stellar address: G<56 chars>
-```
-
-Example issue body field:
-
-```markdown
-### Contributor wallet
-Stellar address: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW
-```
-
-To change the extraction pattern, edit the `jq` expression in step 2 of the workflow:
+Scheduled cron workflows run on all forks by default. To prevent failed runs or unwanted API requests on contributor forks, protect your cron job with:
 
 ```yaml
-($issue.body // "" | capture("(?i)your custom pattern:\\s*(?<addr>G[A-Z2-7]{55})") // null)
+if: !github.event.repository.fork
 ```
 
-Validation of the extracted address (length, character set, checksum) is performed by `trustbridge-action` itself, not by the extraction step.
+---
+
+## Comment mode & safety (`comment_mode`)
+
+TrustBridge provides a dedicated `comment_mode` setting to control comment side-effects during automated runs:
+
+| Mode | Behavior | Use case |
+| --- | --- | --- |
+| `dry-run` | Validates accounts and sets all step outputs (`ready`, `reason_code`, `checks_json`) without calling the GitHub comment API | Audit-only cron sweeps, balance checks, pre-payout verification |
+| `post` (default) | Creates or updates the sticky comment on the target issue | Live contributor notification workflows |
+| `off` | Skips comment formatting entirely | CI performance / headless checks |
 
 ---
 
@@ -113,6 +74,7 @@ Validation of the extracted address (length, character set, checksum) is perform
 | Input | Recommended cron value | Reason |
 | --- | --- | --- |
 | `fail_on_missing` | `false` | Keeps the cron job green; ❌ appears in the issue comment, not as a CI badge failure |
+| `comment_mode` | `dry-run` (or `post`) | `dry-run` is safest for audit sweeps; `post` updates sticky comment on issue |
 | `sticky_comment` | `true` (default) | Updates the existing TrustBridge comment instead of posting a new one per run |
 | `debug_mode` | `false` | Reduces log noise; enable only for targeted investigation |
 | `horizon_cache_ttl_ms` | `0` or `60000` | Set to `0` to always fetch live data; set to `60000` to reduce Horizon calls when the same address appears on multiple issues |
@@ -129,7 +91,7 @@ A cron job failing because one contributor's wallet drifted would break your CI 
 
 ## Inline variant (no secondary workflow file)
 
-If you cannot or do not want to dispatch a second workflow, you can call `trustbridge-action` directly inside the cron job. The tradeoff is that cron jobs do not have an issue context, so the action **cannot post comments**. Use this variant only for auditing (balance/trustline checks) combined with the maintainer alert step.
+If you cannot or do not want to dispatch a second workflow, you can call `trustbridge-action` directly inside the cron job. When running in a cron job without issue context, set `comment_mode: dry-run` so checks run cleanly and outputs are populated for downstream maintainer alerts:
 
 ```yaml
 - name: Re-validate wallet (inline)
@@ -138,13 +100,13 @@ If you cannot or do not want to dispatch a second workflow, you can call `trustb
     stellar_address_input: ${{ env.CURRENT_ADDRESS }}
     github_token: ${{ secrets.GITHUB_TOKEN }}
     fail_on_missing: false      # required for cron
-    sticky_comment: true        # no-op without issue context, but harmless
+    comment_mode: dry-run       # safe for headless cron runs
     asset_code: ${{ env.ASSET_CODE }}
     asset_issuer: ${{ env.ASSET_ISSUER }}
     min_xlm_reserve: ${{ env.MIN_XLM_RESERVE }}
 ```
 
-Then inspect the step outputs (`trustline_exists`, `account_funded`, `xlm_balance`) to build your alert payload.
+Then inspect the step outputs (`ready`, `reason_code`, `trustline_exists`, `account_funded`, `xlm_balance`) to build your alert payload.
 
 ---
 
