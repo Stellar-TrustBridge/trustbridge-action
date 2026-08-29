@@ -1352,8 +1352,13 @@ steps:
 | `en` | English (default) | Check labels, remediation, setup cost all in English |
 | `es` | Spanish | "Verificación de Cuenta Stellar", "Cuenta financiada", etc. |
 | `pt` | Portuguese | "Verificação de Conta Stellar", "Conta financiada", etc. |
+| `ja` | Japanese | "Stellarアカウントチェック", "結果", "残高", etc. |
+| `fr` | French | "Vérification du Compte Stellar", "Résultats", etc. |
+| `de` | German | "Stellar-Kontoprüfung", "Ergebnisse", "Guthaben", etc. |
 
 If an unsupported or invalid locale is provided, the action falls back to English (`en`).
+
+> **CJK note (Japanese):** Japanese characters are full-width in terminal character counters, but GitHub renders Markdown in HTML with proportional fonts — no manual padding is required. All Japanese strings are kept concise to avoid layout issues in narrow viewports.
 
 ### Example: LATAM campaign
 
@@ -1376,6 +1381,75 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           locale: 'es'  # Comment in Spanish
           fail_on_missing: false  # Warn only; don't fail workflow
+```
+
+### Example: Japanese Wave campaign
+
+```yaml
+name: Stellar ウォレット確認
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'ja'  # コメントを日本語で
+          fail_on_missing: false
+```
+
+### Example: French Wave campaign
+
+```yaml
+name: Vérification du portefeuille Stellar
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'fr'  # Commentaire en français
+          fail_on_missing: false
+```
+
+### Example: German Wave campaign
+
+```yaml
+name: Stellar-Wallet-Prüfung
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'de'  # Kommentar auf Deutsch
+          fail_on_missing: false
 ```
 
 ---

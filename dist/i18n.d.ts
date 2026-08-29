@@ -5,7 +5,7 @@
  * Strings that appear in Markdown issue comments are externalized here,
  * making it easy for consumers to add new locales or adjust copy.
  */
-export type Locale = 'en' | 'es' | 'pt';
+export type Locale = 'en' | 'es' | 'pt' | 'ja' | 'fr' | 'de';
 export interface CommentStrings {
     heading: string;
     checkedAccount: string;

@@ -437,8 +437,8 @@ inputs:
   locale:
     description: >-
       Language for issue comments. Supported values: en (English, default),
-      es (Spanish), pt (Portuguese). Invalid or unsupported locales fall
-      back to English. (Issue #202)
+      es (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
+      Invalid or unsupported locales fall back to English. (Issue #202, #313)
     required: false
     default: 'en'
 
