@@ -30,14 +30,17 @@ const ADDRESS_CONTEXT_KEYS = new Set<string>([
 ]);
 
 /**
- * Pattern matching Stellar G-addresses (classic) and C-addresses (Soroban
- * contracts): 56-character StrKey starting with G or C, followed by 55
- * base32 characters (A-Z, 2-7).
+ * Pattern matching Stellar account identifiers that may appear in logs:
+ * classic G-addresses, C-addresses (Soroban contracts), and muxed M-addresses.
+ * All are 56 characters long and begin with G, C, or M.
  */
-const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+const STELLAR_ADDRESS_REGEX = /\b([GCM][A-Z2-7]{55})\b/g;
 
 const PEM_PRIVATE_KEY_REGEX =
   /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
+
+const SECRET_ASSIGNMENT_REGEX =
+  /((?:[A-Za-z0-9_-]*?(?:token|secret|signature|hmac|key|auth|authorization)[A-Za-z0-9_-]*?)\s*(?:=|:)\s*)(?!-----BEGIN)([^\s,;]+)/gi;
 
 const SENSITIVE_SECRET_KEYS = new Set<string>([
   'token',
@@ -69,7 +72,11 @@ export function isSensitiveSecretKey(key: string): boolean {
     SENSITIVE_SECRET_KEYS.has(lower) ||
     normalized.includes('token') ||
     normalized.includes('secret') ||
-    normalized.includes('privatekey')
+    normalized.includes('privatekey') ||
+    normalized.includes('signature') ||
+    normalized.includes('hmac') ||
+    normalized.includes('authorization') ||
+    normalized.includes('auth')
   );
 }
 
@@ -88,7 +95,7 @@ export function redactStellarAddress(address: string): string {
   const trimmed = address.trim();
   if (trimmed.length !== 56) return address;
   const first = trimmed.charAt(0);
-  if (first !== 'G' && first !== 'C') return address;
+  if (first !== 'G' && first !== 'C' && first !== 'M') return address;
   if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
     // Reset regex state (global flag); bail out if it's not a clean match.
     STELLAR_ADDRESS_REGEX.lastIndex = 0;
@@ -105,6 +112,12 @@ export function redactStellarAddress(address: string): string {
 export function redactString(value: string): string {
   if (!value) return value;
   let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
+  masked = masked.replace(SECRET_ASSIGNMENT_REGEX, (_match, prefix: string, rawValue: string) => {
+    if (rawValue.startsWith('-----') || rawValue.startsWith('[REDACTED')) {
+      return `${prefix}${rawValue}`;
+    }
+    return `${prefix}[REDACTED]`;
+  });
   STELLAR_ADDRESS_REGEX.lastIndex = 0;
   return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
@@ -120,7 +133,7 @@ export function redactHorizonUrl(url: string): string {
   if (!url) return url;
   const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
   let masked = url.replace(
-    /\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g,
+    /\/accounts\/([GCM][A-Z2-7]{55})([^A-Z2-7]|$)/g,
     (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`,
   );
   try {
@@ -408,9 +421,9 @@ export function buildInputsLogRecord(inputs: ActionInputsLogRecord): ActionInput
     horizonCacheTtlMs: inputs.horizonCacheTtlMs,
     useCache: inputs.useCache,
     horizonMaxRequests: inputs.horizonMaxRequests,
-    maxRetries: inputs.maxRetries,
-    retryBaseDelayMs: inputs.retryBaseDelayMs,
-    retryMaxDelayMs: inputs.retryMaxDelayMs,
+    maxRetries: inputs.maxRetries ?? 3,
+    retryBaseDelayMs: inputs.retryBaseDelayMs ?? 1000,
+    retryMaxDelayMs: inputs.retryMaxDelayMs ?? 30000,
     logInputs: inputs.logInputs,
     allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,
   };
