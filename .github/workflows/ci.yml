@@ -71,6 +71,30 @@ jobs:
             exit 1
           fi
 
+  # ── GPL / copyleft license policy gate (Issue #334) ────────────────────
+  # Scans runtime (production) dependencies for GPL, AGPL, SSPL, BUSL, or
+  # UNLICENSED licenses that are incompatible with TrustBridge's MIT license.
+  # Fails the build if any runtime dep introduces a blocked license.
+  # See docs/LICENSE_REPORT.md § "License policy gate" for exception process.
+  license-policy:
+    runs-on: ubuntu-latest
+    name: license-policy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check runtime dependency licenses
+        run: npm run license:check
+
   # ── Opt-in mock Horizon smoke tests ─────────────────────────────────────
   # This job runs the smoke test suite against a local WireMock container.
   # It is DISABLED in the default CI pipeline (if: false) to keep standard

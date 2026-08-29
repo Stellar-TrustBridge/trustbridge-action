@@ -12,7 +12,9 @@
     "lint": "eslint src __tests__ --ext .ts",
     "prepare": "npm run build",
     "mock:start": "docker compose -f mock/horizon/docker-compose.yml up -d --wait",
-    "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down"
+    "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down",
+    "license:check": "node scripts/check-licenses.js",
+    "license:report": "license-checker --production --json --out licenses-report.json --excludePrivatePackages"
   },
   "repository": {
     "type": "git",
