@@ -34575,7 +34575,6 @@ class SimpleCache {
         const stats = {
             size: this.store.size,
             entries: Array.from(this.store.keys()),
-            backendEnabled: this.useBackend,
         };
         if (this.useBackend) {
             stats.backendEnabled = true;
@@ -34676,7 +34675,9 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
  * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
- * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md).
+ * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
+ * fetch is added later, it must use a redirect-limited, HTTPS-only, SSRF-safe
+ * wrapper that re-validates every redirect hop before following it.
  *
  * @param issuerAccount  The Horizon account for the asset issuer (not the
  *                       recipient wallet). May be `null` when Horizon did
@@ -35591,6 +35592,7 @@ exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
 exports.writeFullReport = writeFullReport;
+exports.resolveIssueOrPullRequestNumber = resolveIssueOrPullRequestNumber;
 exports.isTrustBridgeComment = isTrustBridgeComment;
 exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
@@ -35892,6 +35894,40 @@ function writeFullReport(fullBody, outputPath) {
     }
 }
 /**
+ * Resolve the issue or pull-request number a comment should be posted to.
+ *
+ * `pull_request` (and `pull_request_target`) events carry the number under
+ * `payload.pull_request.number`, not `payload.issue.number` — `payload.issue`
+ * is only populated for `issues`/`issue_comment` events. GitHub treats every
+ * PR as an issue under the hood, so the REST issues API (`createComment`,
+ * `updateComment`, `listComments`) works identically for both once the
+ * correct number is resolved (Issue #220).
+ *
+ * Only the numeric identifier is read from the payload here — never the PR
+ * title/body — so this cannot leak untrusted fork-PR content into anything
+ * built from the result (e.g. Horizon request URLs).
+ *
+ * Checks `issue` first so that `issue_comment` events on a PR (which set
+ * *both* `payload.issue` and `payload.issue.pull_request`) keep resolving
+ * the same way they always have.
+ *
+ * @internal Exported for testing.
+ */
+function resolveIssueOrPullRequestNumber(payload) {
+    if (payload && typeof payload === 'object') {
+        const typedPayload = payload;
+        const issueNumber = typedPayload.issue?.number;
+        if (typeof issueNumber === 'number') {
+            return issueNumber;
+        }
+        const prNumber = typedPayload.pull_request?.number;
+        if (typeof prNumber === 'number') {
+            return prNumber;
+        }
+    }
+    return undefined;
+}
+/**
  * Returns true when a comment body matches any of the TrustBridge
  * identifiers: the current versioned sticky marker, the legacy marker
  * (pre-schema-version), or the TrustBridge footer. Matching on any of
@@ -36007,10 +36043,12 @@ async function postIssueComment(token, body, options = {}) {
     const context = github.context;
     // Prefer an explicitly-supplied issue number (e.g. from workflow_dispatch
     // input) over the event context payload so manual benchmark runs can
-    // target a specific issue.
-    const issueNumber = options.issueNumber ?? context.payload.issue?.number;
+    // target a specific issue. Otherwise resolve from either an `issues` event
+    // (`payload.issue.number`) or a `pull_request`/`pull_request_target` event
+    // (`payload.pull_request.number`) — see resolveIssueOrPullRequestNumber (Issue #220).
+    const issueNumber = options.issueNumber ?? resolveIssueOrPullRequestNumber(context.payload);
     if (!issueNumber) {
-        core.warning('No issue context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues` event.');
+        core.warning('No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.');
         return undefined;
     }
     // `github.getOctokit` defaults to `https://api.github.com` unless a
@@ -39107,6 +39145,52 @@ async function handleAutoUnassign(options) {
     }
 }
 async function run() {
+    // Milestone gating (Issue #230)
+    const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
+    const milestoneFailOnSkip = (0, inputs_1.parseBooleanInput)(core.getInput('milestone_fail_on_skip'), false);
+    if (milestoneAllowlistRaw.trim()) {
+        const allowedMilestones = milestoneAllowlistRaw
+            .split(',')
+            .map((m) => m.trim().toLowerCase())
+            .filter(Boolean);
+        const payload = github.context.payload;
+        const isIssueContext = payload.issue !== undefined;
+        const isPullRequest = payload.pull_request !== undefined;
+        let currentMilestone = '';
+        let currentMilestoneRaw = '';
+        if (isIssueContext && payload.issue?.milestone) {
+            currentMilestoneRaw = payload.issue.milestone.title || '';
+        }
+        else if (isPullRequest && payload.pull_request?.milestone) {
+            currentMilestoneRaw = payload.pull_request.milestone.title || '';
+        }
+        currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+        if (allowedMilestones.length > 0) {
+            let skipReason = '';
+            if (!currentMilestone) {
+                skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
+            }
+            else if (!allowedMilestones.includes(currentMilestone)) {
+                skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+            }
+            if (skipReason) {
+                const fullMessage = `${skipReason} Skipping validation.`;
+                if (milestoneFailOnSkip) {
+                    core.setFailed(fullMessage);
+                }
+                else {
+                    core.info(fullMessage);
+                }
+                core.setOutput('ready', 'false');
+                core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+                core.setOutput('checks_json', '[]');
+                core.summary.addHeading('Milestone Gate Skipped', 3);
+                core.summary.addRaw(fullMessage);
+                await core.summary.write();
+                return;
+            }
+        }
+    }
     // Campaign presets (Issue #207) — resolved first so they can provide defaults.
     const networkInput = core.getInput('network') || '';
     const presetInput = core.getInput('preset') || '';
@@ -39334,7 +39418,6 @@ async function run() {
     const effectiveFailOnMissing = merged.failOnMissing;
     const resolvedAddress = stellarAddress;
     const effectiveResolvedAddress = stellarAddress;
-    const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
     const jobController = new AbortController();
     const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput('horizon_max_requests') || '0', 0, {
         min: 0, // 0 = unlimited (matches action.yml)
@@ -39613,6 +39696,7 @@ async function run() {
             : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
         horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
         horizonFetchStatusCode = 200;
+        metrics_1.globalMetrics.stopTimer('horizon_fetch');
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
@@ -41896,38 +41980,47 @@ async function loadPluginsFromAllowlist(config) {
  * src/preflight.ts
  *
  * #145 — issues:write preflight check
+ * #220 — extended to `pull_request` / `pull_request_target` events
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
- * issue comments **before** any expensive Horizon calls are made.  Failing
+ * issue/PR comments **before** any expensive Horizon calls are made.  Failing
  * fast here gives workflow authors a clear, actionable error instead of a
  * generic GitHub 403 that appears only after Horizon work has completed.
  *
  * ## Preflight sequence
  *
- * 1. **Issue context check** — verify `context.payload.issue.number` exists.
- *    Comment posting is only possible in an issue context; `workflow_dispatch`
- *    and other events skip comment posting and therefore skip the preflight.
+ * 1. **Issue/PR context check** — verify an issue or PR number can be
+ *    resolved from the event payload (`payload.issue.number` for `issues`
+ *    events, `payload.pull_request.number` for `pull_request`/
+ *    `pull_request_target`). Comment posting is only possible in one of
+ *    these contexts; `workflow_dispatch` and other events skip comment
+ *    posting and therefore skip the preflight.
  * 2. **Permission probe** — call `GET /repos/{owner}/{repo}/issues/{number}/comments`
  *    with `per_page=1`.  A 403/401 response means the token lacks `issues: read`
  *    and certainly cannot write.  This is less aggressive than a dry-run
  *    `createComment` because it is read-only and will not clutter the issue.
- *    A 404 on the issue itself is surfaced separately (closed/deleted issue).
+ *    A 404 on the issue/PR itself is surfaced separately (closed/deleted).
+ *    Note: this probe only proves *read* access — a `pull_request` (not
+ *    `pull_request_target`) run on a **fork** PR gets a read-only
+ *    `GITHUB_TOKEN` by default, so the probe can pass here and the later
+ *    `createComment`/`updateComment` call can still 403. That failure is
+ *    caught separately and logged as a non-fatal warning by the caller.
  *
  * ## Failure modes
  *
  * | Situation | Code | `PreflightResult.skip` | Horizon called? |
  * |-----------|------|----------------------|-----------------|
- * | Non-issue event (no issue context) | — | `true` | Yes (outputs still set) |
+ * | No issue/PR context | — | `true` | Yes (outputs still set) |
  * | Token lacks issues:read/write | 403/401 | `false` | No (run fails) |
- * | Issue not found (404) | 404 | `false` | No (run fails) |
+ * | Issue/PR not found (404) | 404 | `false` | No (run fails) |
  * | Transient error (5xx) | 5xx | `false` | No (run fails fast) |
  * | Permission check passes | 200 | `false` | Yes |
  *
  * ## Design notes
  *
- * - When there is no issue context the preflight returns `{ skip: true }` so
- *   the caller can proceed without posting a comment (same behaviour as today
- *   for `workflow_dispatch`).
+ * - When there is no issue/PR context the preflight returns `{ skip: true }`
+ *   so the caller can proceed without posting a comment (same behaviour as
+ *   today for `workflow_dispatch`).
  * - `preflight_only` input: when `true`, the action runs the preflight and
  *   exits immediately without calling Horizon.  Useful for diagnosing
  *   permission issues in new repositories without spending API quota.
@@ -41969,6 +42062,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PreflightError = void 0;
 exports.runIssuesPreflight = runIssuesPreflight;
 const github = __importStar(__nccwpck_require__(3228));
+const comment_1 = __nccwpck_require__(2246);
 /**
  * Run the issues:write preflight sequence.
  *
@@ -41984,15 +42078,16 @@ const github = __importStar(__nccwpck_require__(3228));
 async function runIssuesPreflight(token, options = {}) {
     const requireIssueContext = options.requireIssueContext === true;
     const context = github.context;
-    const issueNumber = context.payload.issue?.number;
-    // ── 1. Issue context check ────────────────────────────────────────────────
+    const issueNumber = (0, comment_1.resolveIssueOrPullRequestNumber)(context.payload);
+    // ── 1. Issue/PR context check ─────────────────────────────────────────────
     if (!issueNumber) {
         if (requireIssueContext) {
-            throw new Error('issues:write preflight requires an issue context (issues event) but none was found.');
+            throw new Error('issues:write preflight requires an issue or pull-request context ' +
+                '(issues, pull_request, or pull_request_target event) but none was found.');
         }
         return {
             skip: true,
-            message: 'No issue context found — comment posting will be skipped. ' +
+            message: 'No issue or pull request context found — comment posting will be skipped. ' +
                 'This is normal for workflow_dispatch and push events. ' +
                 'TrustBridge checks will still run and outputs will be set.',
         };
@@ -42016,15 +42111,25 @@ async function runIssuesPreflight(token, options = {}) {
                 'For GITHUB_TOKEN, verify the workflow has `permissions: issues: write`.', 401);
         }
         if (status === 403) {
+            const isForkPullRequest = context.eventName === 'pull_request' &&
+                Boolean(context.payload
+                    .pull_request?.head?.repo?.fork);
+            const forkHint = isForkPullRequest
+                ? '\n\nThis looks like a `pull_request` run on a fork PR: `GITHUB_TOKEN` is read-only ' +
+                    'by default in that case, which explains a passing read probe but a failing write. ' +
+                    'Switch the workflow trigger to `pull_request_target` (with care — see the GitHub docs ' +
+                    'on the security implications) if you need to comment on fork PRs.'
+                : '';
             throw new PreflightError('GitHub token lacks `issues: write` permission (403). ' +
                 'Add `permissions: issues: write` to your workflow job, for example:\n\n' +
                 '```yaml\npermissions:\n  issues: write\n  contents: read\n```\n\n' +
                 'If you are using a PAT, ensure it has the `repo` scope (public repos) ' +
-                'or `repo` + `issues` scopes (private repos).', 403);
+                'or `repo` + `issues` scopes (private repos).' +
+                forkHint, 403);
         }
         if (status === 404) {
-            throw new PreflightError(`Issue #${issueNumber} was not found (404). ` +
-                'The issue may have been deleted, or the repository name in the event payload is incorrect.', 404);
+            throw new PreflightError(`Issue or pull request #${issueNumber} was not found (404). ` +
+                'It may have been deleted, or the repository name in the event payload is incorrect.', 404);
         }
         // Transient / unexpected errors — fail fast rather than proceeding
         const message = error instanceof Error ? error.message : String(error);
@@ -42033,7 +42138,7 @@ async function runIssuesPreflight(token, options = {}) {
     }
     return {
         skip: false,
-        message: `issues:write preflight passed — issue #${issueNumber} is accessible.`,
+        message: `issues:write preflight passed — issue/PR #${issueNumber} is accessible.`,
         issueNumber,
     };
 }
@@ -42063,213 +42168,6 @@ function extractHttpStatus(error) {
         return error.status;
     }
     return undefined;
-}
-
-
-/***/ }),
-
-/***/ 7233:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateProjectV2Status = updateProjectV2Status;
-const core = __importStar(__nccwpck_require__(7484));
-const logger_1 = __nccwpck_require__(6999);
-/**
- * Update the status field of an item in a GitHub Projects v2 board.
- *
- * Opt-in only: when projectId or targetStatusValue is empty, does nothing.
- * Automatically adds the issue/PR to the project if not already present (idempotent).
- * Handles missing token scopes or rate limits with descriptive warnings without failing the workflow.
- */
-async function updateProjectV2Status(options) {
-    const { octokit, projectId, contentNodeId, targetStatusValue } = options;
-    const statusFieldName = (options.statusFieldName || 'Status').trim();
-    if (!projectId || !projectId.trim()) {
-        return { updated: false };
-    }
-    if (!targetStatusValue || !targetStatusValue.trim()) {
-        return { updated: false };
-    }
-    if (!contentNodeId || !contentNodeId.trim()) {
-        core.warning('[Projects v2] Cannot update project item status: contentNodeId is missing.');
-        return { updated: false, error: 'Missing contentNodeId' };
-    }
-    const cleanProjectId = projectId.trim();
-    const cleanTargetValue = targetStatusValue.trim();
-    try {
-        // 1. Fetch project fields
-        const fieldsQuery = `
-      query getProjectFields($projectId: ID!) {
-        node(id: $projectId) {
-          ... on ProjectV2 {
-            id
-            fields(first: 50) {
-              nodes {
-                ... on ProjectV2SingleSelectField {
-                  id
-                  name
-                  options {
-                    id
-                    name
-                  }
-                }
-                ... on ProjectV2Field {
-                  id
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    `;
-        const projectResponse = await octokit.graphql(fieldsQuery, {
-            projectId: cleanProjectId,
-        });
-        const projectNode = projectResponse?.node;
-        if (!projectNode || !projectNode.fields?.nodes) {
-            const msg = `Project v2 with ID "${cleanProjectId}" not found or lacks readable fields. Check token scope and project_id.`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        const fieldNodes = projectNode.fields.nodes;
-        const targetField = fieldNodes.find((f) => f.name.trim().toLowerCase() === statusFieldName.toLowerCase());
-        if (!targetField) {
-            const availableFields = fieldNodes.map((f) => `"${f.name}"`).join(', ');
-            const msg = `Status field "${statusFieldName}" not found in Project v2. Available fields: ${availableFields}`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        // 2. Add or find item in project (idempotent)
-        const addItemMutation = `
-      mutation addProjectItem($projectId: ID!, $contentId: ID!) {
-        addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-          item {
-            id
-          }
-        }
-      }
-    `;
-        const addResponse = await octokit.graphql(addItemMutation, {
-            projectId: cleanProjectId,
-            contentId: contentNodeId,
-        });
-        const itemId = addResponse?.addProjectV2ItemById?.item?.id;
-        if (!itemId) {
-            const msg = `Could not add or locate content ${contentNodeId} in Project v2.`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        // 3. Update field value
-        if (targetField.options && targetField.options.length > 0) {
-            // Single-select field
-            const matchingOption = targetField.options.find((opt) => opt.name.trim().toLowerCase() === cleanTargetValue.toLowerCase());
-            if (!matchingOption) {
-                const availableOptions = targetField.options.map((opt) => `"${opt.name}"`).join(', ');
-                const msg = `Option "${cleanTargetValue}" not found for single-select field "${targetField.name}". Available options: ${availableOptions}`;
-                core.warning(`[Projects v2] ${msg}`);
-                return { updated: false, error: msg };
-            }
-            const updateMutation = `
-        mutation updateSingleSelectValue($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-          updateProjectV2ItemFieldValue(input: {
-            projectId: $projectId
-            itemId: $itemId
-            fieldId: $fieldId
-            value: {
-              singleSelectOptionId: $optionId
-            }
-          }) {
-            projectV2Item {
-              id
-            }
-          }
-        }
-      `;
-            await octokit.graphql(updateMutation, {
-                projectId: cleanProjectId,
-                itemId,
-                fieldId: targetField.id,
-                optionId: matchingOption.id,
-            });
-        }
-        else {
-            // Text field
-            const updateMutation = `
-        mutation updateTextValue($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
-          updateProjectV2ItemFieldValue(input: {
-            projectId: $projectId
-            itemId: $itemId
-            fieldId: $fieldId
-            value: {
-              text: $text
-            }
-          }) {
-            projectV2Item {
-              id
-            }
-          }
-        }
-      `;
-            await octokit.graphql(updateMutation, {
-                projectId: cleanProjectId,
-                itemId,
-                fieldId: targetField.id,
-                text: cleanTargetValue,
-            });
-        }
-        core.info(`[Projects v2] Updated item ${itemId} field "${targetField.name}" to "${cleanTargetValue}" in project ${cleanProjectId}.`);
-        return { updated: true, itemId };
-    }
-    catch (error) {
-        const rawMsg = error instanceof Error ? error.message : String(error);
-        let userMsg = rawMsg;
-        if (rawMsg.includes('Resource not accessible') ||
-            rawMsg.includes('FORBIDDEN') ||
-            rawMsg.includes('scope') ||
-            rawMsg.includes('Could not resolve to a node')) {
-            userMsg = `${rawMsg}. Ensure the token has the 'project' scope (or write:org / fine-grained Projects read & write permissions).`;
-        }
-        logger_1.logger.warn(`Projects v2 status update error: ${userMsg}`, { component: 'projects' });
-        core.warning(`[Projects v2] Failed to update project status (non-fatal): ${userMsg}`);
-        return { updated: false, error: userMsg };
-    }
 }
 
 

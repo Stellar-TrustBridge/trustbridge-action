@@ -635,7 +635,6 @@ async function run(): Promise<void> {
   const effectiveFailOnMissing = merged.failOnMissing as boolean;
   const resolvedAddress = stellarAddress;
   const effectiveResolvedAddress = stellarAddress;
-  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
   const jobController = new AbortController();
   const horizonMaxRequests = parseNumberInput(
     core.getInput('horizon_max_requests') || '0',
