@@ -270,6 +270,40 @@ with:
 
 ---
 
+## Asset authorization and clawback flags (Issue #247)
+
+Stellar assets can have issuer and trustline flags that affect whether a payment can actually be received:
+- **`AUTHORIZATION_REQUIRED` (`is_authorized: false`)**: The issuer requires explicit approval before trustlines can hold or receive funds. Even if a trustline exists on-chain, payments fail if the issuer has not authorized it via `SetTrustLineFlags` (or legacy `AllowTrust`).
+- **`AUTH_CLAWBACK_ENABLED` (`is_clawback_enabled: true`)**: The issuer retains the right to claw back funds (CAP-0035).
+
+### Configuring authorization policy (`unauthorized_trustline_policy`)
+
+| Setting | Behavior |
+|---|---|
+| `warn` (default) | Trustline check passes with an informational warning note that issuer authorization is required. |
+| `fail` | Trustline check fails, setting `ready = false` and `reason_code = TRUSTLINE_UNAUTHORIZED`. Payout workflows can gate on this. |
+| `ignore` | Ignores the authorization flag entirely. |
+
+### Configuring clawback enforcement (`clawback_strict_mode`)
+
+| Setting | Behavior |
+|---|---|
+| `false` (default) | Surfaces an informational status note (`USDC clawback status`) in the comment indicating clawback is enabled (CAP-0035). |
+| `true` | Fails the run with `reason_code = CLAWBACK_BLOCKED` and remediation steps if clawback is enabled. |
+
+> **Vanilla USDC:** Standard mainnet USDC does not require authorization or enable clawback on normal trustlines, so it passes cleanly without false failures. Older Horizon versions without flag fields safely default to authorized.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: G...
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    unauthorized_trustline_policy: fail
+    clawback_strict_mode: true
+```
+
+---
+
 ## Testnet campaign presets
 
 Run dry Waves or onboard contributors on Stellar testnet using first-class campaign presets (`network: testnet` or `preset: testnet`):
@@ -1041,6 +1075,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `ACCOUNT_NOT_FUNDED` | Account was not found on Horizon (404 / unfunded). |
 | `TRUSTLINE_MISSING` | Account exists but is missing a trustline for the specified asset. |
 | `TRUSTLINE_UNAUTHORIZED` | Trustline exists but is not authorized by the issuer. |
+| `CLAWBACK_BLOCKED` | Asset has clawback enabled and was blocked by `clawback_strict_mode: true`. |
 | `TRUSTLINE_LIMIT_TOO_LOW` | Trustline limit is below `min_trustline_limit`. |
 | `RESERVE_TOO_LOW` | XLM balance does not meet the reserve requirement floor or protocol minimum. |
 | `HORIZON_TIMEOUT` | Horizon API request timed out before returning a response. |

@@ -39,6 +39,7 @@ import {
   parseBooleanInput,
   parseNumberInput,
   parsePresetInput,
+  parseUnauthorizedTrustlinePolicy,
   resolveAddressFromAssigneeMap,
   resolveGitHubAuthToken,
   resolveInput,
@@ -499,6 +500,12 @@ async function run(): Promise<void> {
   const forceComment = parseBooleanInput(core.getInput('force_comment'), false);
   const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
 
+  // Asset authorization & clawback policies (Issue #247)
+  const unauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy(
+    core.getInput('unauthorized_trustline_policy') || 'warn',
+  );
+  const clawbackStrictMode = parseBooleanInput(core.getInput('clawback_strict_mode'), false);
+
   // Wave #30 — comment posting mode: post | dry-run | off
   const VALID_COMMENT_MODES = new Set(['post', 'dry-run', 'off']);
   const commentModeRaw = (core.getInput('comment_mode') || 'post').trim().toLowerCase();
@@ -811,6 +818,8 @@ async function run(): Promise<void> {
     maxLedgerLagSeconds,
     ledgerFreshnessFailOnStale,
     claimableBalancePolicy,
+    unauthorizedTrustlinePolicy,
+    clawbackStrictMode,
   };
 
   // ---------------------------------------------------------------------------
