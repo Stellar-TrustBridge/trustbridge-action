@@ -32,8 +32,9 @@ _Complete these steps in order. Boxes update automatically from live Horizon che
 
 ### Balances
 
-- **XLM balance:** \`5.0000000 XLM\`
-- **Minimum required:** \`1.5 XLM\`
+- **Native XLM balance:** \`5.0000000 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`0 USDC\` — no trustline configured
 
 ### Setup cost estimate
 
@@ -69,6 +70,8 @@ _Use these output names in downstream workflow steps via \`steps.<id>.outputs.<n
 | \`account_funded\` | \`true\` | Whether the account exists on the Stellar network (from \`action.yml\`) |
 | \`trustline_exists\` | \`false\` | Whether the **USDC** trustline is configured (from \`action.yml\`) |
 | \`xlm_balance\` | \`5.0000000\` | Native XLM balance reported by Horizon (from \`action.yml\`) |
+| \`native_balance\` | \`5.0000000\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
 | \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |
 
 ---
@@ -107,8 +110,9 @@ _Complete these steps in order. Boxes update automatically from live Horizon che
 
 ### Balances
 
-- **XLM balance:** \`10.5000000 XLM\`
-- **Minimum required:** \`1.5 XLM\`
+- **Native XLM balance:** \`10.5000000 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`50.0 USDC\`
 
 ### Setup cost estimate
 
@@ -140,6 +144,8 @@ _Use these output names in downstream workflow steps via \`steps.<id>.outputs.<n
 | \`account_funded\` | \`true\` | Whether the account exists on the Stellar network (from \`action.yml\`) |
 | \`trustline_exists\` | \`true\` | Whether the **USDC** trustline is configured (from \`action.yml\`) |
 | \`xlm_balance\` | \`10.5000000\` | Native XLM balance reported by Horizon (from \`action.yml\`) |
+| \`native_balance\` | \`10.5000000\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`50.0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
 | \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |
 
 ---
@@ -178,8 +184,9 @@ _Complete these steps in order. Boxes update automatically from live Horizon che
 
 ### Balances
 
-- **XLM balance:** \`0 XLM\`
-- **Minimum required:** \`1.5 XLM\`
+- **Native XLM balance:** \`0 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`0 USDC\` — no trustline configured
 
 ### Setup cost estimate
 
@@ -215,6 +222,8 @@ _Use these output names in downstream workflow steps via \`steps.<id>.outputs.<n
 | \`account_funded\` | \`false\` | Whether the account exists on the Stellar network (from \`action.yml\`) |
 | \`trustline_exists\` | \`false\` | Whether the **USDC** trustline is configured (from \`action.yml\`) |
 | \`xlm_balance\` | \`0\` | Native XLM balance reported by Horizon (from \`action.yml\`) |
+| \`native_balance\` | \`0\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
 | \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |
 
 ---

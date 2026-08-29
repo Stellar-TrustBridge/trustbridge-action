@@ -247,6 +247,136 @@ describe('formatCommentBody', () => {
     expect(body).toContain('- [ ] **Add USDC trustline**');
     expect(body).toContain('- [x] **Verify XLM balance**');
   });
+
+  it('includes SEP-0010 dashboard link when sep0010DashboardUrl is set (prefers dashboard over XDR)', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        checks: [{ passed: false, label: 'Account funded', detail: 'not found' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0010DashboardUrl: 'https://dashboard.example/verify?address=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        sep0010ChallengeXdr: 'AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', // should be ignored when dashboard set
+      },
+    );
+    expect(body).toContain('Proof of wallet control (SEP-0010)');
+    expect(body).toContain('dashboard.example');
+    expect(body).not.toContain('AAAAAQ'); // raw XDR not rendered when dashboard wins
+    // Does not block ready gate (still shows blocked by Account funded)
+    expect(body).toContain('Blocked by');
+  });
+
+  it('includes truncated SEP-0010 XDR snippet when only challengeXdr is set (no nonce leak)', () => {
+    const longXdr = 'AAAAAQ' + 'B'.repeat(100) + 'CCCC';
+    const body = formatCommentBody(
+      {
+        valid: true,
+        accountFunded: true,
+        trustlineExists: true,
+        xlmBalance: '10.0000000',
+        xlmReserveMet: true,
+        checks: [{ passed: true, label: 'Account funded', detail: 'ok' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0010ChallengeXdr: longXdr,
+      },
+    );
+    expect(body).toContain('Proof of wallet control (SEP-0010)');
+    expect(body).toContain('…'); // truncated
+    expect(body).not.toContain(longXdr); // full XDR not leaked
+  });
+
+  it('does not include SEP-0010 section when neither dashboard nor XDR set', () => {
+    const body = formatCommentBody(
+      {
+        valid: true,
+        accountFunded: true,
+        trustlineExists: true,
+        xlmBalance: '10.0000000',
+        xlmReserveMet: true,
+        checks: [{ passed: true, label: 'Account funded', detail: 'ok' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+      },
+    );
+    expect(body).not.toContain('Proof of wallet control');
+  });
+
+  it('splits native XLM vs trustline balance (Issue #246) — has USDC but low XLM vs inverse', () => {
+    const hasUsdcButLowXlm: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: true,
+      xlmBalance: '0.5000000',
+      xlmReserveMet: false,
+      assetBalance: '100.0000000',
+      assetBalanceMet: true,
+      trustlineLimit: '1000.0000000',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: true, label: 'USDC trustline', detail: 'ok' },
+        { passed: false, label: 'XLM reserve', detail: 'low' },
+      ],
+    };
+    const body1 = formatCommentBody(hasUsdcButLowXlm, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body1).toContain('**Native XLM balance:** `0.5000000 XLM`');
+    expect(body1).toContain('**USDC trustline balance:** `100.0000000 USDC`');
+
+    const hasXlmButNoTrustline: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: false,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: false, label: 'USDC trustline', detail: 'missing' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+      ],
+    };
+    const body2 = formatCommentBody(hasXlmButNoTrustline, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body2).toContain('**Native XLM balance:** `10.0000000 XLM`');
+    expect(body2).toContain('**USDC trustline balance:** `0 USDC` — no trustline');
+  });
+
+  it('handles 0 balance trustline vs missing trustline distinctly (7 decimals)', () => {
+    const zeroBalance: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: true,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0.0000000',
+      trustlineLimit: '500.0000000',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: true, label: 'USDC trustline', detail: 'ok' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+      ],
+    };
+    const body = formatCommentBody(zeroBalance, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body).toContain('`0.0000000 USDC`');
+  });
 });
 
 function makeOctokit(overrides: Record<string, jest.Mock> = {}) {

@@ -326,3 +326,107 @@ export function buildSep0007PayLink(options: Sep0007PayOptions): string {
 
   return `web+stellar:pay?${params.toString()}`;
 }
+
+// ---------------------------------------------------------------------------
+// SEP-0010 challenge snippet helpers (Issue #252)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for building a SEP-0010 challenge verification snippet.
+ *
+ * SEP-0010 defines a challenge transaction that a wallet signs to prove
+ * control of a Stellar account. TrustBridge does not verify the signature
+ * inside the action — that is out of scope — but it can surface an
+ * optional challenge snippet or dashboard Freighter proof link in the
+ * remediation comment so reviewers know the contributor proved wallet control.
+ *
+ * Prefer `dashboardUrl` (link to a dashboard where Freighter signage is
+ * verified) over raw `challengeXdr` to avoid leaking nonces in public issues.
+ * When a raw challenge XDR is supplied it is truncated in logs and should
+ * not be reused.
+ */
+export interface Sep0010ChallengeOptions {
+  /** Base64 XDR of the SEP-0010 challenge transaction (optional). */
+  challengeXdr?: string;
+  /** Dashboard URL where Freighter proof can be verified (optional, preferred). */
+  dashboardUrl?: string;
+  /** Stellar network for context (affects messaging). Defaults to public. */
+  network?: StellarNetwork;
+  /** Stellar G-address being verified (for link text). */
+  stellarAddress?: string;
+}
+
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ */
+export function isValidDashboardUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    if (parsed.username || parsed.password) return false;
+    // Block private/loopback/metadata hosts (same list as Horizon SSRF)
+    const blocked = [
+      /^127\./,
+      /^10\./,
+      /^192\.168\./,
+      /^172\.(1[6-9]|2\d|3[01])\./,
+      /^169\.254\./,
+      /^localhost$/i,
+    ];
+    const host = parsed.hostname;
+    for (const pat of blocked) {
+      if (pat.test(host)) return false;
+    }
+    if (host === 'metadata.google.internal') return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+export function buildSep0010ChallengeSnippet(options: Sep0010ChallengeOptions): string | undefined {
+  const network = options.network ?? 'public';
+  const hasDashboard = !!options.dashboardUrl && options.dashboardUrl.trim().length > 0;
+  const hasChallenge = !!options.challengeXdr && options.challengeXdr.trim().length > 0;
+
+  if (!hasDashboard && !hasChallenge) {
+    return undefined;
+  }
+
+  if (hasDashboard && isValidDashboardUrl(options.dashboardUrl!)) {
+    const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
+    return (
+      `**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +
+      `[Open dashboard proof](${options.dashboardUrl}) — network **${network}**. ` +
+      `_Challenge verification happens off-action; this link is informational and does not block \`ready\`._`
+    );
+  }
+
+  if (hasChallenge) {
+    const xdr = options.challengeXdr!.trim();
+    // Truncate XDR for display to avoid leaking full nonce and to keep comment size small
+    const display = xdr.length > 32 ? `${xdr.slice(0, 24)}…${xdr.slice(-8)}` : xdr;
+    const networkNote = network === 'testnet' ? ' (testnet)' : '';
+    return (
+      `**SEP-0010 challenge${networkNote}:** prove wallet control by signing this challenge with Freighter and posting the signed XDR to your dashboard. ` +
+      `Challenge (truncated, do not reuse nonce): \`${display}\` ` +
+      `— [How to sign](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md). ` +
+      `_This snippet is informational and does not block \`ready\` unless documented._`
+    );
+  }
+
+  // Dashboard URL invalid => fall back to no snippet to avoid posting a broken link
+  return undefined;
+}

@@ -21,6 +21,7 @@ import {
 } from './links';
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
+import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -37,6 +38,28 @@ export const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = 'warn' | 'strict';
+
+/**
+ * Claimable-balance policy (Issue #260).
+ *
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
+ */
+export type ClaimableBalancePolicy = 'ignore' | 'count';
+
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+export function hasClaimableBalances(account: HorizonAccount): boolean {
+  return account.balances.some((b) => b.asset_type === 'claimable_balance_id');
+}
+
+export function countClaimableBalances(account: HorizonAccount): number {
+  return account.balances.filter((b) => b.asset_type === 'claimable_balance_id').length;
+}
 
 export interface CheckConfig {
   assetCode: string;
@@ -105,6 +128,26 @@ export interface CheckConfig {
    * the overall `valid` flag is unaffected.
    */
   ledgerFreshnessFailOnStale?: boolean;
+
+  // ---------------------------------------------------------------------------
+  // Claimable-balance-aware funded definition (Issue #260)
+  // ---------------------------------------------------------------------------
+  /**
+   * How to treat claimable balances when determining `funded` status.
+   *
+   * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
+   *   balances are ignored; an address with only claimable balances still shows
+   *   “not found / unfunded”. No extra Horizon request is made.
+   * - `"count"` — when the account is 404, TrustBridge also checks
+   *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
+   *   5s). If claimable balances exist, the comment notes them but `accountFunded`
+   *   remains false and `valid` is not set true unless documented. This is
+   *   informational only and never auto-claims.
+   *
+   * Default `"ignore"` matches today’s behavior and avoids extra request budget.
+   * Empty claimables (0) are treated as no hint in either mode.
+   */
+  claimableBalancePolicy?: ClaimableBalancePolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +179,17 @@ export interface NetworkMismatchHint {
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
  *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
+ *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
  * @param fetchFn               Optional injected fetch (for testing).
@@ -148,6 +202,12 @@ export async function detectNetworkMismatch(
   const configuredNetwork = inferStellarNetwork(configuredHorizonUrl);
   const altNetwork = oppositeNetwork(configuredNetwork);
   const altHorizonUrl = canonicalHorizonUrl(altNetwork);
+  // SSRF guard: canonical URLs are known-good, but validate anyway so a
+  // future change that returns a private/loopback URL cannot be probed.
+  const ssrfCheck = validateHorizonUrl(altHorizonUrl, 'alt_horizon_url', { allowHttp: true });
+  if (!ssrfCheck.valid) {
+    return undefined;
+  }
   const checkUrl = `${altHorizonUrl}/accounts/${stellarAddress}`;
 
   try {
@@ -158,15 +218,37 @@ export async function detectNetworkMismatch(
       signal: AbortSignal.timeout(5000),
     });
 
+    // Deterministic: only 200 is a positive mismatch signal. 404 => genuinely unfunded.
+    // Any other status (503, 429, 500, etc.) is treated as "no evidence" to avoid
+    // false positives when the opposite Horizon is temporarily unavailable.
     if (response.status === 200) {
       return { configuredNetwork, activeOnNetwork: altNetwork };
     }
-    // 404 means genuinely not found on alt network — no mismatch evidence
     return undefined;
   } catch {
     // Network error or timeout — can't determine, so no hint
     return undefined;
   }
+}
+
+/**
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
+ */
+export function buildNetworkMismatchDetail(
+  stellarAddress: string,
+  hint: NetworkMismatchHint,
+): string {
+  const safeAddress = inlineCode(stellarAddress);
+  const altUrl = canonicalHorizonUrl(hint.activeOnNetwork);
+  const configuredUrl = canonicalHorizonUrl(hint.configuredNetwork);
+  return (
+    `Account ${safeAddress} was **not found** on the **${hint.configuredNetwork}** network` +
+    ` but **is active on ${hint.activeOnNetwork}** (${altUrl}).` +
+    ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network` +
+    ` (expected ${hint.configuredNetwork}: ${configuredUrl}).`
+  );
 }
 
 export interface CheckResultItem {
@@ -217,6 +299,13 @@ export interface ValidationResult {
    * `config.checkLedgerFreshness` is true.
    */
   ledgerFreshnessResult?: LedgerFreshnessCheckResult;
+  /**
+   * Claimable balance info (Issue #260). Only populated when the account was
+   * fetched and the policy is observed. Informational only — does not affect
+   * `accountFunded` when policy is `ignore` (default).
+   */
+  claimableBalanceCount?: number;
+  hasClaimableBalances?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +822,24 @@ export function runAccountChecks(
     numSponsored: account.num_sponsored ?? 0,
   };
 
+  // Claimable-balance-aware funded definition (Issue #260)
+  // Default 'ignore' means claimables do not affect funded/valid.
+  // When policy is 'count', we surface an informational note if claimables exist.
+  const claimableBalancePolicy = config.claimableBalancePolicy ?? 'ignore';
+  const claimableBalanceCount = countClaimableBalances(account);
+  const hasClaimables = claimableBalanceCount > 0;
+  if (claimableBalancePolicy === 'count' && hasClaimables) {
+    checks.push({
+      passed: true,
+      label: 'Claimable balances',
+      detail: `Account has **${claimableBalanceCount} claimable balance(s)** — these are not counted toward \`account_funded\` but can be claimed via Horizon claimable_balances endpoint.`,
+    });
+    globalMetrics.incrementCounter('claimable_balances_found');
+    globalMetrics.recordMetric('claimable_balances_count', claimableBalanceCount, 'count', {
+      policy: 'count',
+    });
+  }
+
   return {
     valid,
     accountFunded: true,
@@ -746,6 +853,8 @@ export function runAccountChecks(
     trustlineLimit,
     checks,
     remediation,
+    claimableBalanceCount,
+    hasClaimableBalances: hasClaimables,
     reasonCode: (() => {
       if (valid) return 'SUCCESS';
       if (!trustlineExists) return 'TRUSTLINE_MISSING';
@@ -764,6 +873,7 @@ export function unfundedAccountResult(
   stellarAddress: string,
   config: CheckConfig,
   mismatchHint?: NetworkMismatchHint,
+  claimableCount?: number,
 ): ValidationResult {
   const safeAssetCode = escapeMarkdownInline(config.assetCode);
   const safeAddress = inlineCode(stellarAddress);
@@ -771,13 +881,21 @@ export function unfundedAccountResult(
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
 
   // Build the "not found" detail, extended with mismatch context when available
+  // Uses centralized deterministic builder so public↔testnet produce identical format.
   let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
   if (mismatchHint) {
-    const altUrl = canonicalHorizonUrl(mismatchHint.activeOnNetwork);
-    notFoundDetail =
-      `Account ${safeAddress} was **not found** on the **${mismatchHint.configuredNetwork}** network` +
-      ` but **is active on ${mismatchHint.activeOnNetwork}** (${altUrl}).` +
-      ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network.`;
+    notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
+  }
+  // Claimable-balance-aware funded definition (Issue #260): when policy is 'count' and
+  // claimableCount >0, surface an informational note. This does NOT set accountFunded true;
+  // the account is still unfunded, but the contributor is told claimables exist.
+  const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
+  const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
+  if (claimablePolicy === 'count' && hasClaimables) {
+    notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
+  } else if (claimablePolicy === 'ignore' && hasClaimables) {
+    // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
+    // Metrics still tracked for observability if caller fetched count.
   }
 
   const checks: CheckResultItem[] = [
@@ -806,12 +924,29 @@ export function unfundedAccountResult(
     });
   }
 
+  // Claimable balances informational check (Issue #260) — only when policy is count
+  const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
+  if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+    checks.push({
+      passed: true,
+      label: 'Claimable balances',
+      detail: `Account has **${claimableCount} claimable balance(s)** pending claim. Fund the account first, then claim via Horizon or wallet.`,
+    });
+  }
+
   // Base remediation steps
   const remediationSteps = [
     `Activate ${safeAddress} by sending at least **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
     `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${buildChangeTrustLink(network)}) or [LOBSTR](${buildLobstrLink()}).`,
     `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
   ];
+
+  // Claimable remediation when policy is count
+  if ((config.claimableBalancePolicy ?? 'ignore') === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+    remediationSteps.push(
+      `This address has **${claimableCount} claimable balance(s)** awaiting claim. After funding, claim them via [Horizon claimable_balances endpoint](${config.horizonUrl ?? 'https://horizon.stellar.org'}/claimable_balances?claimant=${stellarAddress}) or a wallet that supports claimable balances.`,
+    );
+  }
 
   // Prepend network-mismatch guidance when detected so it's the first thing a
   // contributor reads.
@@ -858,6 +993,8 @@ export function unfundedAccountResult(
     failedCheckLabels: toFailedCheckCodes(checks),
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     homeDomainCheck,
+    claimableBalanceCount: typeof claimableCount === 'number' ? claimableCount : 0,
+    hasClaimableBalances: typeof claimableCount === 'number' && claimableCount > 0,
   };
 }
 
