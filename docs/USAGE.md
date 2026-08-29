@@ -313,7 +313,7 @@ with:
 
 When Horizon returns 404 for the configured `horizon_url`, TrustBridge deterministically probes the **canonical opposite network** (`https://horizon.stellar.org` ↔ `https://horizon-testnet.stellar.org`) with a 5s timeout to see if the same `G…` address is funded elsewhere:
 
-- `404` on public + `200` on testnet (or reverse) → comment shows a clear mismatch: “was not found on **public** but **is active on testnet** (https://horizon-testnet.stellar.org) — ensure `horizon_url` points at the correct network.” Remediation suggests either funding on the configured network or updating `horizon_url` to the opposite canonical URL.
+- `404` on public + `200` on testnet (or reverse) → comment names both networks and both canonical URLs: the account was not found on the configured network but is active on the other network. Remediation suggests either funding on the configured network or updating `horizon_url` to the active network URL if that is the intended target.
 - `404` on both networks → genuinely unfunded, no mismatch hint.
 - Opposite returns `503/429/500` or network error/timeout → no hint (avoids false positives when the other Horizon is temporarily unavailable).
 - The opposite URL is SSRF-validated; an invalid URL never gets probed.
@@ -1649,7 +1649,7 @@ TrustBridge automatically runs a **preflight check** before any Horizon calls to
 
 ### Preflight-only mode
 
-Set `preflight_only: true` to run only the permission check and exit without calling Horizon. Useful when setting up TrustBridge for the first time:
+Set `preflight_only: true` to run only the permission check and exit without calling Horizon. This is a first-class action input and defaults to `false`. Useful when setting up TrustBridge for the first time:
 
 ```yaml
 - uses: Stellar-TrustBridge/trustbridge-action@v1
@@ -2060,6 +2060,8 @@ To simplify adoption across multiple repositories and prevent permission misconf
 
 Organizations can invoke this reusable workflow with `workflow_call` and configure it as a **required status check** in GitHub Branch Protection rules.
 
+The reusable workflow should resolve the target issue or PR number in the caller and pass it through as `issue_number`. TrustBridge will use that explicit number for comment posting instead of reading a number from the event payload body or any untrusted PR text.
+
 ### Reusable Workflow Caller Example
 
 Create a workflow file in your repository (e.g. `.github/workflows/wallet-check.yml`):
@@ -2078,6 +2080,9 @@ on:
       stellar_address:
         description: 'Stellar G-address'
         required: true
+      issue_number:
+        description: 'Target issue or pull request number for the reusable workflow'
+        required: false
 
 permissions:
   contents: read
@@ -2092,6 +2097,7 @@ jobs:
     secrets: inherit
     with:
       stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
       fail_on_missing: true
 ```
 
@@ -2109,6 +2115,7 @@ jobs:
 - **Minimal Permissions:** The reusable workflow requests only `contents: read`, `issues: write`, `pull-requests: read`, and `id-token: write`.
 - **Pinned Version:** Always pin the reusable workflow to a major version tag (e.g. `@v1`) or a specific commit SHA.
 - **Pass-through Secrets:** Using `secrets: inherit` automatically forwards `GITHUB_TOKEN` to post/update sticky issue comments without hardcoding personal access tokens.
+- **Explicit comment target:** Pass `issue_number` from the caller workflow when the reusable workflow needs to comment on an issue or PR. This keeps TrustBridge away from untrusted body text and makes the target deterministic for `workflow_call` consumers.
 - **Merge Queue Support:** Works seamlessly with `merge_group` trigger events.
 
 ---
@@ -2206,4 +2213,3 @@ Tests validate:
 - **Removed:** `src/validator.ts` (duplicate of `src/metrics.ts`)
 - **Impact:** Zero; these modules were not part of the public API
 - **Verify:** `npm run build && npm test` confirm no imports of deleted modules
-

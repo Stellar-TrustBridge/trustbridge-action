@@ -19,6 +19,11 @@ on:
         description: 'Stellar account address (G-address) to validate'
         required: true
         type: string
+      issue_number:
+        description: 'Explicit issue or pull request number to post the result comment on'
+        required: false
+        type: string
+        default: ''
       horizon_url:
         description: 'Stellar Horizon API base URL'
         required: false
@@ -153,6 +158,7 @@ jobs:
         uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
         with:
           stellar_address_input: ${{ inputs.stellar_address_input }}
+          issue_number: ${{ inputs.issue_number }}
           github_token: ${{ secrets.github_token || github.token }}
           horizon_url: ${{ inputs.horizon_url }}
           horizon_url_fallback: ${{ inputs.horizon_url_fallback }}

@@ -109,6 +109,15 @@
       ],
       "default": "true"
     },
+    "preflight_only": {
+      "type": "string",
+      "description": "Run only the issues:write preflight check and exit before any Horizon calls.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
     "debug_mode": {
       "type": "string",
       "description": "Enable extra action logs and append an expert diagnostics block to the issue comment for troubleshooting.",

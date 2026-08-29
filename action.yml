@@ -71,6 +71,21 @@ inputs:
     description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
     required: false
     default: 'true'
+  preflight_only:
+    description: >-
+      Run only the issues:write preflight check and exit before any Horizon
+      calls. Useful when verifying token permissions or setting up a new
+      workflow. Default false.
+    required: false
+    default: 'false'
+  issue_number:
+    description: >-
+      Explicit issue or pull request number to comment on. Use this for
+      reusable workflows or workflow_dispatch runs that need to post results
+      without trusting event payload text. Leave empty to resolve from the
+      GitHub event context (`issues`, `pull_request`, or `pull_request_target`).
+    required: false
+    default: ''
   debug_mode:
     description: 'Enable extra action logs for troubleshooting'
     required: false

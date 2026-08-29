@@ -39235,6 +39235,10 @@ async function run() {
     }
     const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress);
     const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
+    const issueNumberInputRaw = core.getInput('issue_number') || '';
+    const issueNumberInput = issueNumberInputRaw.trim()
+        ? (0, inputs_1.parseNumberInput)(issueNumberInputRaw, 0, { min: 1 })
+        : undefined;
     const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
     const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
         min: 1000,
@@ -39951,6 +39955,7 @@ async function run() {
                 sticky: stickyComment,
                 forceComment,
                 snoozeWindowMs,
+                issueNumber: issueNumberInput,
             });
             metrics_1.globalMetrics.stopTimer('comment_post');
             if (commentUrl) {
@@ -40006,7 +40011,7 @@ async function run() {
             octokit,
             owner,
             repo,
-            issueNumber,
+            issueNumber: issueNumberInput ?? issueNumber,
             payload: github.context.payload,
             result,
             unassignOnNotReady,

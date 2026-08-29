@@ -705,3 +705,32 @@ describe('Reusable workflows — integration scenarios', () => {
     expect(report.trustlines.every((t) => t.exists)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reusable workflow contract: explicit issue_number pass-through
+// ---------------------------------------------------------------------------
+
+describe('Reusable workflow issue_number contract', () => {
+  const actionPath = path.join(__dirname, '../action.yml');
+  const workflowPath = path.join(__dirname, '../docs/examples/trustbridge-reusable.yml');
+  const usagePath = path.join(__dirname, '../docs/USAGE.md');
+
+  it('action.yml declares issue_number as an explicit input', () => {
+    const content = fs.readFileSync(actionPath, 'utf8');
+    expect(content).toContain('issue_number:');
+    expect(content).toContain('Explicit issue or pull request number to comment on');
+  });
+
+  it('reusable workflow declares and forwards issue_number', () => {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+    expect(content).toContain('issue_number:');
+    expect(content).toContain('Explicit issue or pull request number to post the result comment on');
+    expect(content).toContain('issue_number: ${{ inputs.issue_number }}');
+  });
+
+  it('USAGE.md documents the reusable workflow issue_number handoff', () => {
+    const content = fs.readFileSync(usagePath, 'utf8');
+    expect(content).toContain('pass it through as `issue_number`');
+    expect(content).toContain('github.event.pull_request.number || github.event.issue.number');
+  });
+});

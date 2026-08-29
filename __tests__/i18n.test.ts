@@ -125,6 +125,11 @@ describe('i18n locale utilities', () => {
       expect(strings.validationGateHeading).toBeDefined();
       expect(strings.balancesHeading).toBeDefined();
       expect(strings.remediationHeading).toBeDefined();
+      expect(strings.networkMismatchDetected).toBeDefined();
+      expect(strings.networkMismatchConfiguredNetwork).toBeDefined();
+      expect(strings.networkMismatchActiveNetwork).toBeDefined();
+      expect(strings.networkMismatchFix).toBeDefined();
+      expect(strings.networkMismatchUpdateUrl).toBeDefined();
     });
 
     it('provides all required locale keys for Spanish', () => {
@@ -134,6 +139,11 @@ describe('i18n locale utilities', () => {
       expect(strings.validationGateHeading).toBeDefined();
       expect(strings.balancesHeading).toBeDefined();
       expect(strings.remediationHeading).toBeDefined();
+      expect(strings.networkMismatchDetected).toBeDefined();
+      expect(strings.networkMismatchConfiguredNetwork).toBeDefined();
+      expect(strings.networkMismatchActiveNetwork).toBeDefined();
+      expect(strings.networkMismatchFix).toBeDefined();
+      expect(strings.networkMismatchUpdateUrl).toBeDefined();
     });
 
     it('provides all required locale keys for Portuguese', () => {
@@ -143,6 +153,11 @@ describe('i18n locale utilities', () => {
       expect(strings.validationGateHeading).toBeDefined();
       expect(strings.balancesHeading).toBeDefined();
       expect(strings.remediationHeading).toBeDefined();
+      expect(strings.networkMismatchDetected).toBeDefined();
+      expect(strings.networkMismatchConfiguredNetwork).toBeDefined();
+      expect(strings.networkMismatchActiveNetwork).toBeDefined();
+      expect(strings.networkMismatchFix).toBeDefined();
+      expect(strings.networkMismatchUpdateUrl).toBeDefined();
     });
 
     it('all English strings are non-empty', () => {
