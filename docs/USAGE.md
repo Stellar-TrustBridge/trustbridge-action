@@ -1772,6 +1772,85 @@ You can define any labels your program requires; these are examples.
 
 ---
 
+## Organization-wide policy defaults
+
+Use the **org-defaults composite action** to inject organization-wide policy values (Horizon URL, asset issuer, reserve requirements) so individual repositories don't need to duplicate these settings.
+
+### When to use
+
+- **Consistency**: Ensure all repos in your org use the same Horizon endpoint and asset configuration.
+- **Centralized policy**: Change the org-wide asset issuer or reserve threshold in one place.
+- **Repo flexibility**: Any repo can override org defaults for specific use cases (e.g., a testnet repo).
+
+### How it works
+
+The composite action at `.github/actions/trustbridge-org-defaults/action.yml` defines:
+
+1. **Org policy inputs** (`org_horizon_url`, `org_asset_code`, `org_asset_issuer`, `org_min_xlm_reserve`, `org_fail_on_missing`, `org_sticky_comment`) — organization-wide defaults.
+2. **Repo override inputs** (`horizon_url`, `asset_code`, `asset_issuer`, etc.) — when set, these override the org defaults.
+3. **Passthrough inputs** — all other trustbridge-action inputs forwarded unchanged.
+
+### Quick start
+
+Create `.github/workflows/trustbridge-verify.yml` in your repository:
+
+```yaml
+name: Verify Wallet
+
+on:
+  issues:
+    types: [assigned]
+
+permissions:
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          # Org defaults are used unless overridden here
+```
+
+### Override org defaults per-repo
+
+```yaml
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          # Override org default for this specific repo
+          horizon_url: 'https://horizon-testnet.stellar.org'
+          asset_code: 'EURC'
+```
+
+### Org admin setup
+
+In your organization's `.github` repo, set the org defaults:
+
+```yaml
+# .github/workflows/trustbridge-verify.yml
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          org_horizon_url: 'https://horizon.stellar.org'
+          org_asset_code: 'USDC'
+          org_asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+          org_min_xlm_reserve: '2.0'
+          org_fail_on_missing: 'true'
+          org_sticky_comment: 'true'
+```
+
+### Outputs
+
+The composite action forwards all TrustBridge outputs: `ready`, `trustline_exists`, `xlm_balance`, `account_funded`, `comment_url`, `asset_balance`, `native_balance`, `horizon_url_used`, `reason_code`.
+
+---
+
 ## Integrations and extension examples
 
 ### KYC gate (optional consumer logic)
