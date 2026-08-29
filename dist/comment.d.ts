@@ -67,6 +67,15 @@ export interface CommentConfig extends CheckConfig {
      * section is appended to the comment showing newly-passed/failed checks.
      */
     delta?: ValidationDelta | null;
+    /**
+     * SEP-0010 challenge proof (Issue #252). Optional — when either field is set,
+     * a "Proof of wallet control" snippet is appended to the comment. Does not
+     * block `ready` unless the caller explicitly gates on it. Prefer
+     * `sep0010DashboardUrl` over raw `sep0010ChallengeXdr` to avoid leaking
+     * nonces in public issues.
+     */
+    sep0010ChallengeXdr?: string;
+    sep0010DashboardUrl?: string;
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**

@@ -573,6 +573,10 @@ outputs:
     description: 'Execution duration of comment posting phase in milliseconds'
   timing_total_ms:
     description: 'Total execution duration in milliseconds'
+  num_sponsoring:
+    description: 'Number of accounts this account is sponsoring (numeric string)'
+  num_sponsored:
+    description: 'Number of accounts sponsoring this account (numeric string)'
 
 runs:
   using: 'node20'

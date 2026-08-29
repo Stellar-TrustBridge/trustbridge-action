@@ -17,6 +17,51 @@ const result: ValidationResult = {
   reasonCode: 'SUCCESS',
 };
 
+function parseActionYmlOutputs(yamlText: string): Set<string> {
+  const outputNames = new Set<string>();
+  const lines = yamlText.split('\n');
+
+  let inOutputsSection = false;
+  let currentOutputName: string | null = null;
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+
+    if (/^outputs:\s*$/.test(line)) {
+      inOutputsSection = true;
+      continue;
+    }
+
+    if (inOutputsSection && /^[a-zA-Z_]/.test(line) && !/^\s/.test(line)) {
+      if (currentOutputName !== null) {
+        outputNames.add(currentOutputName);
+      }
+      inOutputsSection = false;
+      currentOutputName = null;
+      continue;
+    }
+
+    if (!inOutputsSection) continue;
+
+    if (/^\s*#/.test(line)) continue;
+
+    const outputMatch = line.match(/^  ([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
+    if (outputMatch) {
+      if (currentOutputName !== null) {
+        outputNames.add(currentOutputName);
+      }
+      currentOutputName = outputMatch[1]!;
+      continue;
+    }
+  }
+
+  if (currentOutputName !== null) {
+    outputNames.add(currentOutputName);
+  }
+
+  return outputNames;
+}
+
 describe('toActionOutputs', () => {
   it('serializes legacy and new audit/timing outputs for GitHub Actions', () => {
     const outputs = toActionOutputs(result, undefined, undefined, {
@@ -155,5 +200,24 @@ describe('toActionOutputs', () => {
     expect(outputs.xlm_balance).toBe('unknown');
     expect(outputs.native_balance).toBe('unknown');
     expect(outputs.asset_balance).toBe('unknown');
+  });
+
+  it('keeps the action.yml output contract stable against a golden manifest', () => {
+    const repoRoot = path.resolve(__dirname, '..');
+    const actionPath = path.join(repoRoot, 'action.yml');
+    const goldenPath = path.join(__dirname, 'action-output-golden.json');
+
+    const actionText = fs.readFileSync(actionPath, 'utf8');
+    const actionOutputNames = parseActionYmlOutputs(actionText);
+    const goldenOutputNames = JSON.parse(fs.readFileSync(goldenPath, 'utf8')) as string[];
+    const runtimeOutputNames = new Set(Object.keys(toActionOutputs(result)));
+
+    const missingFromGolden = [...goldenOutputNames].filter((name) => !runtimeOutputNames.has(name));
+    const missingFromAction = [...goldenOutputNames].filter((name) => !actionOutputNames.has(name));
+    const actionOnly = [...actionOutputNames].filter((name) => !runtimeOutputNames.has(name));
+
+    expect(missingFromGolden).toEqual([]);
+    expect(missingFromAction).toEqual([]);
+    expect(actionOnly).toEqual([]);
   });
 });

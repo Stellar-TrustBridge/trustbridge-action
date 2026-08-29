@@ -127,6 +127,30 @@ A change is **safe** if consumers who do not adopt it see no change in behaviour
 
 ---
 
+## Output stability contract
+
+TrustBridge treats action outputs as a compatibility contract for downstream composite actions and reusable workflows. Any output change is governed by the same breakage policy as inputs: removing or renaming an existing output is a **breaking change** and requires a major-version bump and migration notes.
+
+To prevent silent drift, the repository maintains a golden manifest in `__tests__/action-output-golden.json`. CI validates three things:
+
+1. Every output declared in `action.yml` is present in the approved golden list.
+2. Every output still produced by `src/outputs.ts` (`toActionOutputs`) matches the declared `action.yml` contract.
+3. Any output removal from the golden list fails the test unless the removal is intentionally approved via a major-version change and accompanying documentation in this file.
+
+### Required update process for output changes
+
+When an output is intentionally added, renamed, or removed:
+
+1. Update `action.yml` to declare the new output names and remove deprecated names only in a major-version change.
+2. Update `src/outputs.ts` and any runtime setOutput calls so the emitted keys match the declared contract.
+3. Update `__tests__/action-output-golden.json` to reflect the new approved manifest.
+4. Add a brief note to the [Change history](#change-history) section describing the breaking or additive change.
+5. If the change is breaking, bump the major version and update the migration guidance for downstream consumers.
+
+This guard is intentionally strict for removals: it blocks accidental deletions of output names even when the project still builds. Additive output additions are allowed only when the approved manifest is updated in the same PR.
+
+---
+
 ## Deprecation process
 
 TrustBridge follows a **warn → remove** lifecycle spanning at least one full major version:
@@ -173,6 +197,7 @@ An input or output **must** remain in the warn state for **at least one full maj
 - [ ] Identify whether the change is breaking or non-breaking using the table above
 - [ ] If **breaking** — bump MAJOR in the release, add a `## v(N) → v(N+1)` entry to [Change history](#change-history)
 - [ ] If **deprecating** — add `# DEPRECATED` to `action.yml`, add `core.warning`, mark README table, add to [Deprecation history](#deprecation-history)
+- [ ] If changing outputs — update `action.yml`, `src/outputs.ts`, and `__tests__/action-output-golden.json` together; removing any output is a breaking change
 - [ ] Update `README.md` inputs/outputs table
 - [ ] Confirm `action.yml` descriptions stay aligned with README (see [docs/RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md))
 
