@@ -6,6 +6,7 @@ import {
   CheckConfig,
   detectNetworkMismatch,
   horizonFailureResult,
+  parseMinAssetBalance,
   parseMinXlmReserve,
   runAccountChecks,
   unfundedAccountResult,
@@ -634,7 +635,6 @@ async function run(): Promise<void> {
   const effectiveFailOnMissing = merged.failOnMissing as boolean;
   const resolvedAddress = stellarAddress;
   const effectiveResolvedAddress = stellarAddress;
-  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
   const jobController = new AbortController();
   const horizonMaxRequests = parseNumberInput(
     core.getInput('horizon_max_requests') || '0',
@@ -684,6 +684,7 @@ async function run(): Promise<void> {
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
   const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
   const minTrustlineLimit = minTrustlineLimitRaw ? parseNumberInput(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
+  const minAssetBalance = parseMinAssetBalance(core.getInput('min_asset_balance') || '');
 
   // Optional multi-asset JSON — validate early so bad input fails fast.
   if (assetsJsonRaw.trim()) {
@@ -712,6 +713,15 @@ async function run(): Promise<void> {
   const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
   const homeDomainCheckMode: HomeDomainCheckMode =
     homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+
+  // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
+  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
+  const stellarTomlCacheTtlMs = parseNumberInput(
+    core.getInput('stellar_toml_cache_ttl_ms') || '3600000',
+    3600000,
+    { min: 0, max: 86400000 }, // 0 = no cache, 86400000 = 24 hours max
+  );
+  const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
 
   // GitHub Checks API integration (Wave #26 — optional, off by default)
   const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
@@ -777,17 +787,30 @@ async function run(): Promise<void> {
     );
   }
 
+  // Claimable-balance policy (Issue #260) — default ignore
+  const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
+  const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' as const : 'ignore' as const;
+
+  // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
+  const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
+  const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
+
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
     minXlmReserve: Number(minXlmReserve),
+    minAssetBalance,
     minTrustlineLimit,
     horizonUrl,
     homeDomainCheckEnabled,
     expectedHomeDomain,
     homeDomainCheckMode,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPin,
     checkLedgerFreshness: checkLedgerFreshnessEnabled,
     maxLedgerLagSeconds,
     ledgerFreshnessFailOnStale,
+    claimableBalancePolicy,
   };
 
   // ---------------------------------------------------------------------------
@@ -961,17 +984,15 @@ async function run(): Promise<void> {
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
     horizonFetchStatusCode = 200;
     globalMetrics.stopTimer('horizon_fetch');
-    result = runAccountChecks(account, checkConfig);
+    result = await runAccountChecks(account, checkConfig);
   } catch (error) {
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
     globalMetrics.stopTimer('horizon_fetch');
     if (error instanceof HorizonError && error.statusCode === 404) {
       horizonFetchStatusCode = 404;
       horizonFetchError = error.message;
-      // #144: attempt cross-network detection before building the result so
-      // the comment surfaces a clear mismatch error when the address is active
-      // on the opposite network. Fire-and-forget with a short timeout so a
-      // slow alt-network Horizon never blocks the primary run.
+      // #144/#266: deterministic cross-network detection — probes canonical opposite
+      // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
       const mismatchHint = await detectNetworkMismatch(horizonUrl, stellarAddress).catch(
         () => undefined,
       );
@@ -981,7 +1002,21 @@ async function run(): Promise<void> {
           `but horizon_url points at ${mismatchHint.configuredNetwork}.`,
         );
       }
-      result = unfundedAccountResult(stellarAddress, checkConfig, mismatchHint);
+      // #260: claimable-balance-aware funded definition — when policy is 'count',
+      // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+      let claimableCount: number | undefined;
+      if (claimableBalancePolicy === 'count') {
+        try {
+          const { fetchClaimableBalanceCount } = await import('./horizon');
+          claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+          if (claimableCount > 0) {
+            core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+          }
+        } catch {
+          claimableCount = 0;
+        }
+      }
+      result = unfundedAccountResult(stellarAddress, checkConfig, mismatchHint, claimableCount);
     } else if (error instanceof HorizonError) {
       horizonFetchStatusCode = error.statusCode;
       horizonFetchError = error.message;
@@ -1193,6 +1228,8 @@ async function run(): Promise<void> {
     onboardingChecklist,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    sep0010ChallengeXdr,
+    sep0010DashboardUrl,
     locale,
     debugMode,
     docsBaseUrl: core.getInput('docs_base_url') || undefined,

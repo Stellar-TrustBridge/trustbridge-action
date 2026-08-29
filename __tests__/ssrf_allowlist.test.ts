@@ -20,6 +20,7 @@ import {
   validateSsrfSafeUrl,
   validateHorizonUrl,
 } from '../src/validation';
+import { fetchSSRFSafe } from '../src/ssrf';
 
 // ---------------------------------------------------------------------------
 // Block-list structural integrity
@@ -249,5 +250,74 @@ describe('SSRF allowlist completeness audit — CI gate (Wave #20)', () => {
   it.each(auditTable)('blocks documented threat: %s', (_desc, url) => {
     const r = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: true });
     expect(r.valid).toBe(false);
+  });
+});
+
+describe('fetchSSRFSafe redirect enforcement', () => {
+  const makeResponse = (status: number, headers: Record<string, string>, body = '') => ({
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers(headers),
+    text: async () => body,
+  } as any);
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('rejects redirect loops once the redirect cap is reached', async () => {
+    const sequence = [
+      makeResponse(302, { location: 'https://example.com/second' }),
+      makeResponse(302, { location: 'https://example.com/third' }),
+      makeResponse(302, { location: 'https://example.com/second' }),
+    ];
+
+    jest.spyOn(global, 'fetch').mockImplementation(async () => sequence.shift() ?? makeResponse(200, {}, 'done'));
+
+    const result = await fetchSSRFSafe('https://example.com/first', {
+      followRedirects: true,
+      maxRedirects: 2,
+    });
+
+    if (!result.ok) {
+      expect(result.error).toMatch(/redirect|limit|loop/i);
+      return;
+    }
+
+    throw new Error('Expected fetchSSRFSafe to reject redirect loops');
+  });
+
+  it('rejects protocol downgrade redirects', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce(
+      makeResponse(302, { location: 'http://example.com/next' }),
+    );
+
+    const result = await fetchSSRFSafe('https://example.com/start', {
+      followRedirects: true,
+    });
+
+    if (!result.ok) {
+      expect(result.error).toMatch(/downgrade|https/i);
+      return;
+    }
+
+    throw new Error('Expected fetchSSRFSafe to reject protocol downgrade redirects');
+  });
+
+  it('rejects redirect hops that resolve to a blocked SSRF target', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce(
+      makeResponse(302, { location: 'https://169.254.169.254/latest/meta-data/' }),
+    );
+
+    const result = await fetchSSRFSafe('https://example.com/start', {
+      followRedirects: true,
+    });
+
+    if (!result.ok) {
+      expect(result.error).toMatch(/unsafe redirect|blocked|SSRF/i);
+      return;
+    }
+
+    throw new Error('Expected fetchSSRFSafe to reject SSRF redirect hops');
   });
 });

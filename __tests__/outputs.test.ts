@@ -101,4 +101,59 @@ describe('toActionOutputs', () => {
     const outputs = toActionOutputs(result, undefined, undefined);
     expect(outputs.full_report_path).toBe('');
   });
+
+  it('splits native XLM vs trustline asset balance (Issue #246) — distinct outputs, 7 decimals', () => {
+    const withAsset: ValidationResult = {
+      ...result,
+      xlmBalance: '10.5000000',
+      assetBalance: '100.0000000',
+      trustlineExists: true,
+    };
+    const outputs = toActionOutputs(withAsset);
+    expect(outputs.xlm_balance).toBe('10.5000000');
+    expect(outputs.native_balance).toBe('10.5000000');
+    expect(outputs.asset_balance).toBe('100.0000000');
+    // legacy retained
+    expect(outputs.trustline_exists).toBe('true');
+  });
+
+  it('asset_balance is 0 when trustline missing vs 0.0000000 when 0-balance trustline exists', () => {
+    const missing: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: false,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0',
+      checks: [],
+    };
+    expect(toActionOutputs(missing).asset_balance).toBe('0');
+
+    const zeroBalance: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: true,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0.0000000',
+      checks: [],
+    };
+    expect(toActionOutputs(zeroBalance).asset_balance).toBe('0.0000000');
+  });
+
+  it('asset_balance is unknown on Horizon error, distinct from native', () => {
+    const err: ValidationResult = {
+      valid: false,
+      accountFunded: false,
+      trustlineExists: false,
+      xlmBalance: 'unknown',
+      xlmReserveMet: false,
+      assetBalance: 'unknown',
+      checks: [],
+    };
+    const outputs = toActionOutputs(err);
+    expect(outputs.xlm_balance).toBe('unknown');
+    expect(outputs.native_balance).toBe('unknown');
+    expect(outputs.asset_balance).toBe('unknown');
+  });
 });

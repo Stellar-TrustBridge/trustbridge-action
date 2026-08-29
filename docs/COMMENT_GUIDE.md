@@ -56,6 +56,24 @@ Each item is a GitHub Markdown task-list checkbox (`- [x]` / `- [ ]`) driven by 
 
 Set `onboarding_checklist: false` to omit the section entirely (e.g. for expert-only workflows).
 
+## SEP-0010 challenge proof (Issue #252)
+
+To prove wallet control, you can include a SEP-0010 challenge snippet in the comment:
+
+- **Dashboard Freighter proof (preferred):** set `sep0010_dashboard_url` to an `https` dashboard URL (e.g. `https://your-dashboard.example/verify?address=G…`). The comment shows: *“Proof of wallet control (SEP-0010) — [Open dashboard proof](url)”* with network context. The link is informational and **does not block `ready`** unless your workflow explicitly gates on it. The URL must be `https` and not a private/loopback host; invalid URLs are silently omitted so comment posting is never blocked.
+- **Raw challenge XDR (fallback):** set `sep0010_challenge_xdr` to a base64 XDR string. The comment shows a truncated `24…8` snippet with signing instructions and a SEP-0010 link. Raw nonces are truncated in the comment and never logged; do not reuse a challenge — prefer the dashboard link when possible.
+
+When both are set, the dashboard link wins (no raw XDR rendered). The section is size-capped; if the total comment exceeds GitHub’s 65k limit, the snippet is included in the truncated report (`trustbridge-report.md`). See `src/links.ts:buildSep0010ChallengeSnippet` and `src/comment.ts` for the exact rendering.
+
+```yaml
+with:
+  sep0010_dashboard_url: https://your-dashboard.example/verify?address=GABC...
+  # or
+  sep0010_challenge_xdr: AAAA...
+```
+
+Snapshots for this section are in `__tests__/comment.test.ts` (golden snapshots for dashboard link and XDR snippet).
+
 ## Maintainer tips
 
 If contributors are confused, ask them to compare the account and issuer shown in the comment with the wallet account they intended to use. Most failures come from unfunded accounts, wrong issuers, or missing Change Trust operations.

@@ -21,7 +21,7 @@ import {
 } from './links';
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
-import { logger, redactHorizonUrl } from './logger';
+import { fetchTomlWithCache } from './toml';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -38,6 +38,28 @@ export const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = 'warn' | 'strict';
+
+/**
+ * Claimable-balance policy (Issue #260).
+ *
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
+ */
+export type ClaimableBalancePolicy = 'ignore' | 'count';
+
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+export function hasClaimableBalances(account: HorizonAccount): boolean {
+  return account.balances.some((b) => b.asset_type === 'claimable_balance_id');
+}
+
+export function countClaimableBalances(account: HorizonAccount): number {
+  return account.balances.filter((b) => b.asset_type === 'claimable_balance_id').length;
+}
 
 export interface CheckConfig {
   assetCode: string;
@@ -79,6 +101,27 @@ export interface CheckConfig {
    */
   homeDomainCheckMode?: HomeDomainCheckMode;
 
+  /**
+   * When true, TrustBridge fetches stellar.toml from the issuer's home_domain
+   * (https://{home_domain}/.well-known/stellar.toml) with SSRF protection and
+   * TTL caching. Only used when homeDomainCheckEnabled is true. Default: false.
+   */
+  stellarTomlFetchEnabled?: boolean;
+
+  /**
+   * Time-to-live for stellar.toml fetch cache in milliseconds.
+   * Default: 3600000 (1 hour). Only used when stellarTomlFetchEnabled is true.
+   */
+  stellarTomlCacheTtlMs?: number;
+
+  /**
+   * Optional integrity hash for stellar.toml content validation.
+   * Format: "algorithm:hexvalue" (e.g. "sha256:abc123...").
+   * When set, the fetched TOML content is hashed and compared; a mismatch fails
+   * the check and blocks valid. Only used when stellarTomlFetchEnabled is true.
+   */
+  stellarTomlHashPin?: string;
+
   // ---------------------------------------------------------------------------
   // Ledger lag / freshness guard (Issue #107 — optional, off by default)
   // ---------------------------------------------------------------------------
@@ -108,21 +151,24 @@ export interface CheckConfig {
   ledgerFreshnessFailOnStale?: boolean;
 
   // ---------------------------------------------------------------------------
-  // Network passphrase mismatch detection (Issue #2)
+  // Claimable-balance-aware funded definition (Issue #260)
   // ---------------------------------------------------------------------------
-
   /**
-   * Optional Stellar network passphrase for validation and diagnostics.
-   * When provided, compared against Horizon root endpoint to detect
-   * configuration mismatches. Leave empty to infer from horizon_url.
+   * How to treat claimable balances when determining `funded` status.
+   *
+   * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
+   *   balances are ignored; an address with only claimable balances still shows
+   *   “not found / unfunded”. No extra Horizon request is made.
+   * - `"count"` — when the account is 404, TrustBridge also checks
+   *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
+   *   5s). If claimable balances exist, the comment notes them but `accountFunded`
+   *   remains false and `valid` is not set true unless documented. This is
+   *   informational only and never auto-claims.
+   *
+   * Default `"ignore"` matches today’s behavior and avoids extra request budget.
+   * Empty claimables (0) are treated as no hint in either mode.
    */
-  networkPassphrase?: string;
-
-  /**
-   * When true, check network passphrase mismatch before account validation.
-   * Defaults to true (opt-out). Set false to skip the check entirely.
-   */
-  checkNetworkPassphrase?: boolean;
+  claimableBalancePolicy?: ClaimableBalancePolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +200,17 @@ export interface NetworkMismatchHint {
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
  *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
+ *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
  * @param fetchFn               Optional injected fetch (for testing).
@@ -166,6 +223,12 @@ export async function detectNetworkMismatch(
   const configuredNetwork = inferStellarNetwork(configuredHorizonUrl);
   const altNetwork = oppositeNetwork(configuredNetwork);
   const altHorizonUrl = canonicalHorizonUrl(altNetwork);
+  // SSRF guard: canonical URLs are known-good, but validate anyway so a
+  // future change that returns a private/loopback URL cannot be probed.
+  const ssrfCheck = validateHorizonUrl(altHorizonUrl, 'alt_horizon_url', { allowHttp: true });
+  if (!ssrfCheck.valid) {
+    return undefined;
+  }
   const checkUrl = `${altHorizonUrl}/accounts/${stellarAddress}`;
 
   try {
@@ -176,10 +239,12 @@ export async function detectNetworkMismatch(
       signal: AbortSignal.timeout(5000),
     });
 
+    // Deterministic: only 200 is a positive mismatch signal. 404 => genuinely unfunded.
+    // Any other status (503, 429, 500, etc.) is treated as "no evidence" to avoid
+    // false positives when the opposite Horizon is temporarily unavailable.
     if (response.status === 200) {
       return { configuredNetwork, activeOnNetwork: altNetwork };
     }
-    // 404 means genuinely not found on alt network — no mismatch evidence
     return undefined;
   } catch {
     // Network error or timeout — can't determine, so no hint
@@ -187,97 +252,24 @@ export async function detectNetworkMismatch(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Network passphrase mismatch detection (Issue #2)
-// ---------------------------------------------------------------------------
-
-export interface NetworkPassphraseMismatch {
-  /** Network passphrase provided via input (or inferred default). */
-  expectedPassphrase: string;
-  /** Network passphrase reported by Horizon root endpoint. */
-  actualPassphrase: string;
-  /** User-facing explanation of the mismatch. */
-  message: string;
-}
-
 /**
- * Compare the expected network passphrase (from input or inference) against
- * what the Horizon root endpoint reports. Returns a mismatch object when
- * they differ, or undefined when they match or comparison is unavailable.
- *
- * Common mismatches:
- * - Input says "testnet" but Horizon URL points to public network
- * - Input says "public" but Horizon URL points to testnet
- * - Custom/private network Horizon without matching passphrase input
- *
- * @param horizonUrl           The Horizon base URL being used
- * @param inputPassphrase      The network_passphrase input (empty if not provided)
- * @param fetchPassphraseFn    Optional function to fetch from Horizon (for testing)
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
  */
-export async function detectPassphraseMismatch(
-  horizonUrl: string,
-  inputPassphrase: string,
-  fetchPassphraseFn?: (url: string) => Promise<string>,
-): Promise<NetworkPassphraseMismatch | undefined> {
-  // Determine expected passphrase: use input if provided, else infer from URL
-  let expectedPassphrase = inputPassphrase.trim();
-  
-  if (!expectedPassphrase) {
-    // Infer from horizon URL
-    const inferredNetwork = inferStellarNetwork(horizonUrl);
-    expectedPassphrase = inferredNetwork === 'testnet'
-      ? 'Test SDF Network ; September 2015'
-      : 'Public Global Stellar Network ; September 2015';
-  }
-
-  // Fetch actual passphrase from Horizon
-  let actualPassphrase: string;
-  try {
-    if (fetchPassphraseFn) {
-      actualPassphrase = await fetchPassphraseFn(horizonUrl);
-    } else {
-      const { fetchNetworkPassphrase } = await import('./horizon');
-      actualPassphrase = await fetchNetworkPassphrase(horizonUrl, { timeoutMs: 5000, maxRetries: 1 });
-    }
-  } catch (error) {
-    // Cannot fetch passphrase - fail open (don't block validation)
-    logger.debug('Unable to fetch network passphrase from Horizon for mismatch check', {
-      component: 'checks',
-      horizonUrl: redactHorizonUrl(horizonUrl),
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return undefined;
-  }
-
-  // Compare (case-sensitive, whitespace-normalized)
-  const normalizedExpected = expectedPassphrase.trim();
-  const normalizedActual = actualPassphrase.trim();
-
-  if (normalizedExpected === normalizedActual) {
-    return undefined; // Match - no mismatch
-  }
-
-  // Build user-facing message
-  const expectedNetwork = normalizedExpected.includes('Test SDF') ? 'testnet' : 
-                          normalizedExpected.includes('Public Global') ? 'public' : 'custom';
-  const actualNetwork = normalizedActual.includes('Test SDF') ? 'testnet' :
-                        normalizedActual.includes('Public Global') ? 'public' : 'custom';
-
-  let message = `Network passphrase mismatch detected. `;
-  
-  if (expectedNetwork !== actualNetwork && expectedNetwork !== 'custom' && actualNetwork !== 'custom') {
-    message += `You configured ${expectedNetwork} but Horizon URL points to ${actualNetwork}. `;
-  } else {
-    message += `Expected "${normalizedExpected}" but Horizon reports "${normalizedActual}". `;
-  }
-
-  message += `This will cause confusing 404 errors. Update either your horizon_url or network_passphrase input to match.`;
-
-  return {
-    expectedPassphrase: normalizedExpected,
-    actualPassphrase: normalizedActual,
-    message,
-  };
+export function buildNetworkMismatchDetail(
+  stellarAddress: string,
+  hint: NetworkMismatchHint,
+): string {
+  const safeAddress = inlineCode(stellarAddress);
+  const altUrl = canonicalHorizonUrl(hint.activeOnNetwork);
+  const configuredUrl = canonicalHorizonUrl(hint.configuredNetwork);
+  return (
+    `Account ${safeAddress} was **not found** on the **${hint.configuredNetwork}** network` +
+    ` but **is active on ${hint.activeOnNetwork}** (${altUrl}).` +
+    ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network` +
+    ` (expected ${hint.configuredNetwork}: ${configuredUrl}).`
+  );
 }
 
 export interface CheckResultItem {
@@ -329,10 +321,12 @@ export interface ValidationResult {
    */
   ledgerFreshnessResult?: LedgerFreshnessCheckResult;
   /**
-   * Network passphrase mismatch detection (Issue #2). Populated when
-   * the input/inferred passphrase differs from what Horizon reports.
+   * Claimable balance info (Issue #260). Only populated when the account was
+   * fetched and the policy is observed. Informational only — does not affect
+   * `accountFunded` when policy is `ignore` (default).
    */
-  networkPassphraseMismatch?: NetworkPassphraseMismatch;
+  claimableBalanceCount?: number;
+  hasClaimableBalances?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +368,17 @@ export interface HomeDomainCheckResult {
    * this flag is true to indicate the failure should block `valid`.
    */
   blocksValid: boolean;
+
+  /**
+   * Optional SEP-0001 stellar.toml fetch result. Only populated when
+   * stellarTomlFetchEnabled is true and a fetch was attempted.
+   */
+  tomlFetch?: {
+    ok: boolean;
+    error?: string;
+    hash?: string;
+    cached: boolean; // true if served from cache
+  };
 }
 
 /**
@@ -383,7 +388,9 @@ export interface HomeDomainCheckResult {
  * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
- * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md).
+ * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
+ * fetch is added later, it must use a redirect-limited, HTTPS-only, SSRF-safe
+ * wrapper that re-validates every redirect hop before following it.
  *
  * @param issuerAccount  The Horizon account for the asset issuer (not the
  *                       recipient wallet). May be `null` when Horizon did
@@ -441,6 +448,97 @@ export function evaluateHomeDomain(
     detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` ✓`,
     blocksValid: false,
   };
+}
+
+/**
+ * Asynchronously fetch and validate stellar.toml for a home_domain.
+ *
+ * This function:
+ *  - Only runs if stellarTomlFetchEnabled is true in config
+ *  - Skips fetch if on-chain home domain check failed
+ *  - Fetches with SSRF protection and TTL caching
+ *  - Validates hash (if pin provided)
+ *  - Appends tomlFetch result to the existing HomeDomainCheckResult
+ *  - Fails the check if fetch/hash validation fails in strict mode
+ *
+ * @param result The existing HomeDomainCheckResult from evaluateHomeDomain
+ * @param config The CheckConfig with TOML options
+ * @returns Potentially updated result with tomlFetch populated
+ */
+export async function enrichHomeDomainCheckWithToml(
+  result: HomeDomainCheckResult,
+  config: CheckConfig,
+): Promise<HomeDomainCheckResult> {
+  // Only fetch TOML if enabled
+  if (!config.stellarTomlFetchEnabled) {
+    return result;
+  }
+
+  // Only fetch if we have a valid on-chain domain
+  if (result.outcome !== 'valid' || !result.actualHomeDomain) {
+    return result;
+  }
+
+  const domain = result.actualHomeDomain;
+  const cacheTtlMs = config.stellarTomlCacheTtlMs ?? 3600000;
+  const hashPin = config.stellarTomlHashPin ?? '';
+
+  try {
+    const fetchResult = await fetchTomlWithCache(domain, {
+      cacheTtlMs,
+      hashPin: hashPin || undefined,
+    });
+
+    if (!fetchResult.ok) {
+      const detail = `Stellar.toml fetch failed: ${fetchResult.error}`;
+
+      // In strict mode, TOML fetch failure blocks valid
+      const shouldBlock = config.homeDomainCheckMode === 'strict';
+
+      return {
+        ...result,
+        tomlFetch: {
+          ok: false,
+          error: fetchResult.error,
+          cached: false,
+        },
+        // Only block if in strict mode
+        blocksValid: result.blocksValid || shouldBlock,
+        detail: `${result.detail}\n${detail}`,
+      };
+    }
+
+    // TOML fetch succeeded
+    globalMetrics.incrementCounter('home_domain_toml_success');
+
+    return {
+      ...result,
+      tomlFetch: {
+        ok: true,
+        hash: fetchResult.hash,
+        cached: !fetchResult.fetched,
+      },
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const detail = `Stellar.toml fetch error: ${msg}`;
+
+    // In strict mode, unexpected errors block valid
+    const shouldBlock = config.homeDomainCheckMode === 'strict';
+
+    globalMetrics.incrementCounter('home_domain_toml_error');
+
+    return {
+      ...result,
+      tomlFetch: {
+        ok: false,
+        error: detail,
+        cached: false,
+      },
+      blocksValid: result.blocksValid || shouldBlock,
+      detail: `${result.detail}\n${detail}`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -665,10 +763,10 @@ function explainReserveRequirement(reserve: ReserveRequirement): string {
   return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
 }
 
-export function runAccountChecks(
+export async function runAccountChecks(
   account: HorizonAccount,
   config: CheckConfig,
-): ValidationResult {
+): Promise<ValidationResult> {
   const xlmBalance = getNativeBalance(account);
   const xlmNumeric = parseHorizonBalance(xlmBalance);
   const trustlineBalance = findTrustlineBalance(account, config.assetCode, config.assetIssuer);
@@ -790,6 +888,11 @@ export function runAccountChecks(
     // lookup is deferred to a future enhancement.
     homeDomainCheck = evaluateHomeDomain(account, config);
 
+    // Optionally enrich with stellar.toml fetch and validation
+    if (config.stellarTomlFetchEnabled) {
+      homeDomainCheck = await enrichHomeDomainCheckWithToml(homeDomainCheck, config);
+    }
+
     // Emit metrics tag for dashboards and payout automation.
     globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
     globalMetrics.recordMetric('home_domain_check', 1, 'count', {
@@ -849,6 +952,24 @@ export function runAccountChecks(
     numSponsored: account.num_sponsored ?? 0,
   };
 
+  // Claimable-balance-aware funded definition (Issue #260)
+  // Default 'ignore' means claimables do not affect funded/valid.
+  // When policy is 'count', we surface an informational note if claimables exist.
+  const claimableBalancePolicy = config.claimableBalancePolicy ?? 'ignore';
+  const claimableBalanceCount = countClaimableBalances(account);
+  const hasClaimables = claimableBalanceCount > 0;
+  if (claimableBalancePolicy === 'count' && hasClaimables) {
+    checks.push({
+      passed: true,
+      label: 'Claimable balances',
+      detail: `Account has **${claimableBalanceCount} claimable balance(s)** — these are not counted toward \`account_funded\` but can be claimed via Horizon claimable_balances endpoint.`,
+    });
+    globalMetrics.incrementCounter('claimable_balances_found');
+    globalMetrics.recordMetric('claimable_balances_count', claimableBalanceCount, 'count', {
+      policy: 'count',
+    });
+  }
+
   return {
     valid,
     accountFunded: true,
@@ -862,6 +983,8 @@ export function runAccountChecks(
     trustlineLimit,
     checks,
     remediation,
+    claimableBalanceCount,
+    hasClaimableBalances: hasClaimables,
     reasonCode: (() => {
       if (valid) return 'SUCCESS';
       if (!trustlineExists) return 'TRUSTLINE_MISSING';
@@ -880,6 +1003,7 @@ export function unfundedAccountResult(
   stellarAddress: string,
   config: CheckConfig,
   mismatchHint?: NetworkMismatchHint,
+  claimableCount?: number,
 ): ValidationResult {
   const safeAssetCode = escapeMarkdownInline(config.assetCode);
   const safeAddress = inlineCode(stellarAddress);
@@ -887,13 +1011,21 @@ export function unfundedAccountResult(
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
 
   // Build the "not found" detail, extended with mismatch context when available
+  // Uses centralized deterministic builder so public↔testnet produce identical format.
   let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
   if (mismatchHint) {
-    const altUrl = canonicalHorizonUrl(mismatchHint.activeOnNetwork);
-    notFoundDetail =
-      `Account ${safeAddress} was **not found** on the **${mismatchHint.configuredNetwork}** network` +
-      ` but **is active on ${mismatchHint.activeOnNetwork}** (${altUrl}).` +
-      ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network.`;
+    notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
+  }
+  // Claimable-balance-aware funded definition (Issue #260): when policy is 'count' and
+  // claimableCount >0, surface an informational note. This does NOT set accountFunded true;
+  // the account is still unfunded, but the contributor is told claimables exist.
+  const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
+  const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
+  if (claimablePolicy === 'count' && hasClaimables) {
+    notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
+  } else if (claimablePolicy === 'ignore' && hasClaimables) {
+    // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
+    // Metrics still tracked for observability if caller fetched count.
   }
 
   const checks: CheckResultItem[] = [
@@ -922,12 +1054,29 @@ export function unfundedAccountResult(
     });
   }
 
+  // Claimable balances informational check (Issue #260) — only when policy is count
+  const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
+  if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+    checks.push({
+      passed: true,
+      label: 'Claimable balances',
+      detail: `Account has **${claimableCount} claimable balance(s)** pending claim. Fund the account first, then claim via Horizon or wallet.`,
+    });
+  }
+
   // Base remediation steps
   const remediationSteps = [
     `Activate ${safeAddress} by sending at least **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
     `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${buildChangeTrustLink(network)}) or [LOBSTR](${buildLobstrLink()}).`,
     `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
   ];
+
+  // Claimable remediation when policy is count
+  if ((config.claimableBalancePolicy ?? 'ignore') === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+    remediationSteps.push(
+      `This address has **${claimableCount} claimable balance(s)** awaiting claim. After funding, claim them via [Horizon claimable_balances endpoint](${config.horizonUrl ?? 'https://horizon.stellar.org'}/claimable_balances?claimant=${stellarAddress}) or a wallet that supports claimable balances.`,
+    );
+  }
 
   // Prepend network-mismatch guidance when detected so it's the first thing a
   // contributor reads.
@@ -974,6 +1123,8 @@ export function unfundedAccountResult(
     failedCheckLabels: toFailedCheckCodes(checks),
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     homeDomainCheck,
+    claimableBalanceCount: typeof claimableCount === 'number' ? claimableCount : 0,
+    hasClaimableBalances: typeof claimableCount === 'number' && claimableCount > 0,
   };
 }
 

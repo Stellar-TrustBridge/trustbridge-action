@@ -1158,6 +1158,71 @@ export interface HorizonFetchOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Claimable balances helper (Issue #260)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the number of claimable balances for a claimant address.
+ *
+ * Used only when `claimableBalancePolicy === 'count'` and the account is 404.
+ * Returns 0 on any error (404, network, timeout) so callers can treat the
+ * absence as "no evidence" without failing the run. The request is bounded to
+ * 5s and validated for SSRF so private Horizon mirrors are never probed
+ * with an attacker-controlled claimant.
+ *
+ * Horizon endpoint: `GET /claimable_balances?claimant=<G-address>&limit=5`
+ * The limit is intentionally small — we only need to know if >0 exist and
+ * at most a count up to 5 for the informational comment.
+ */
+export async function fetchClaimableBalanceCount(
+  horizonUrl: string,
+  stellarAddress: string,
+  fetchFn?: FetchLike,
+  timeoutMs: number = 5000,
+): Promise<number> {
+  const validation = validateHorizonUrl(horizonUrl, 'horizon_url', { allowHttp: true });
+  if (!validation.valid) {
+    return 0;
+  }
+  let normalized: string;
+  try {
+    normalized = normalizeHorizonUrl(horizonUrl);
+  } catch {
+    return 0;
+  }
+  const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
+  const fetcher = fetchFn ?? (await import('node-fetch')).default;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetcher(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal as unknown as import('node-fetch').RequestInit['signal'],
+      });
+      if (!response.ok) {
+        return 0;
+      }
+      const data = (await response.json()) as {
+        _embedded?: { records?: unknown[] };
+        records?: unknown[];
+      };
+      const records = data._embedded?.records ?? data.records ?? [];
+      if (Array.isArray(records)) {
+        return records.length;
+      }
+      return 0;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auto wallet labels  (Wave #31)
 // ---------------------------------------------------------------------------
 

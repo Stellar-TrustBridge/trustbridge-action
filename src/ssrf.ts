@@ -70,10 +70,16 @@ export interface SSRFFetchOptions {
   timeoutMs?: number;
 
   /**
-   * Whether to follow redirects. When true, only same-origin redirects
+   * Whether to follow redirects. When true, only same-origin HTTPS redirects
    * are allowed. Default: false (no redirects).
    */
   followRedirects?: boolean;
+
+  /**
+   * Maximum number of redirect hops to follow before aborting. Default: 5.
+   * Prevents redirect loops and chained exfiltration attempts.
+   */
+  maxRedirects?: number;
 }
 
 /**
@@ -152,66 +158,131 @@ export async function fetchSSRFSafe(
   | { ok: true; status: number; text: () => Promise<string>; headers: Headers }
   | { ok: false; error: string; status?: number }
 > {
-  const validation = validateSSRFSafeUrl(urlStr);
-  if (!validation.valid) {
-    return { ok: false, error: validation.errors.join('; ') };
-  }
-
   const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
   const timeoutMs = options.timeoutMs ?? 10000;
+  const maxRedirects = options.maxRedirects ?? 5;
+  let currentUrl = urlStr;
+  const seenRedirects = new Set<string>();
+  let redirectCount = 0;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  while (true) {
+    const validation = validateSSRFSafeUrl(currentUrl);
+    if (!validation.valid) {
+      return { ok: false, error: validation.errors.join('; ') };
+    }
 
-    const response = await fetch(urlStr, {
-      signal: controller.signal,
-      redirect: options.followRedirects ? 'follow' : 'error',
-      headers: {
-        'User-Agent': 'TrustBridge/1.0',
-        Accept: 'application/toml, text/plain, */*',
-      },
-    });
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-    clearTimeout(timeout);
+      const response = await fetch(currentUrl, {
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'TrustBridge/1.0',
+          Accept: 'application/toml, text/plain, */*',
+        },
+      });
 
-    // Check content-length header
-    const contentLength = response.headers.get('content-length');
-    if (contentLength) {
-      const bytes = parseInt(contentLength, 10);
-      if (bytes > maxBodyBytes) {
+      clearTimeout(timeout);
+
+      if (response.status >= 300 && response.status < 400) {
+        if (!options.followRedirects) {
+          return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+        }
+
+        const locationHeader = response.headers.get('location');
+        if (!locationHeader) {
+          return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+        }
+
+        if (redirectCount >= maxRedirects) {
+          return {
+            ok: false,
+            error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+            status: response.status,
+          };
+        }
+
+        const nextUrl = new URL(locationHeader, currentUrl).toString();
+        const nextTarget = new URL(nextUrl);
+        const hopValidation = validateSSRFSafeUrl(nextUrl);
+        if (!hopValidation.valid) {
+          return {
+            ok: false,
+            error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+            status: response.status,
+          };
+        }
+
+        const currentOrigin = new URL(currentUrl).origin;
+        const nextOrigin = nextTarget.origin;
+
+        if (nextTarget.protocol !== 'https:') {
+          return {
+            ok: false,
+            error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+            status: response.status,
+          };
+        }
+
+        if (currentOrigin !== nextOrigin) {
+          return {
+            ok: false,
+            error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+            status: response.status,
+          };
+        }
+
+        if (seenRedirects.has(nextUrl)) {
+          return {
+            ok: false,
+            error: `Redirect loop detected: ${nextUrl}`,
+            status: response.status,
+          };
+        }
+
+        seenRedirects.add(nextUrl);
+        redirectCount += 1;
+        currentUrl = nextUrl;
+        continue;
+      }
+
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) {
+        const bytes = parseInt(contentLength, 10);
+        if (bytes > maxBodyBytes) {
+          return {
+            ok: false,
+            error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+            status: response.status,
+          };
+        }
+      }
+
+      if (!response.ok) {
+        return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+      }
+
+      const textData = await response.text();
+      if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
         return {
           ok: false,
-          error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+          error: `Response body exceeds limit after decompression`,
           status: response.status,
         };
       }
-    }
 
-    // For non-2xx, fail early
-    if (!response.ok) {
-      return { ok: false, error: `HTTP ${response.status}`, status: response.status };
-    }
-
-    // Read body with size limit
-    const textData = await response.text();
-    if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
       return {
-        ok: false,
-        error: `Response body exceeds limit after decompression`,
+        ok: true,
         status: response.status,
+        text: async () => textData,
+        headers: response.headers,
       };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = message.includes('signal') || message.includes('timeout');
+      return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
     }
-
-    return {
-      ok: true,
-      status: response.status,
-      text: async () => textData,
-      headers: response.headers,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const isTimeout = message.includes('signal') || message.includes('timeout');
-    return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
   }
 }

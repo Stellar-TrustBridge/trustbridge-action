@@ -462,6 +462,27 @@
         "false"
       ],
       "default": "false"
+    },
+    "claimable_balance_policy": {
+      "type": "string",
+      "description": "How to treat claimable balances when determining funded status: ignore (default) or count (surface claimable hint, extra Horizon request only when count).",
+      "enum": [
+        "ignore",
+        "count"
+      ],
+      "default": "ignore"
+    },
+    "sep0010_challenge_xdr": {
+      "type": "string",
+      "description": "Optional base64 XDR of a SEP-0010 challenge transaction to display in the comment (truncated, does not block ready).",
+      "default": ""
+    },
+    "sep0010_dashboard_url": {
+      "type": "string",
+      "description": "Optional HTTPS dashboard URL where Freighter SEP-0010 proof can be verified (preferred over raw XDR, does not block ready).",
+      "format": "uri",
+      "pattern": "^(https://|$)",
+      "default": ""
     }
   }
 }

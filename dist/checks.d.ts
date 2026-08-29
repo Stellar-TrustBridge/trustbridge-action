@@ -188,7 +188,9 @@ export interface HomeDomainCheckResult {
  * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
- * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md).
+ * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
+ * fetch is added later, it must use a redirect-limited, HTTPS-only, SSRF-safe
+ * wrapper that re-validates every redirect hop before following it.
  *
  * @param issuerAccount  The Horizon account for the asset issuer (not the
  *                       recipient wallet). May be `null` when Horizon did

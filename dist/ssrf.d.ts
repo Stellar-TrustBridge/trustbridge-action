@@ -52,10 +52,15 @@ export interface SSRFFetchOptions {
      */
     timeoutMs?: number;
     /**
-     * Whether to follow redirects. When true, only same-origin redirects
+     * Whether to follow redirects. When true, only same-origin HTTPS redirects
      * are allowed. Default: false (no redirects).
      */
     followRedirects?: boolean;
+    /**
+     * Maximum number of redirect hops to follow before aborting. Default: 5.
+     * Prevents redirect loops and chained exfiltration attempts.
+     */
+    maxRedirects?: number;
 }
 /**
  * Validate that a URL is safe for SSRF-protected HTTP fetch.

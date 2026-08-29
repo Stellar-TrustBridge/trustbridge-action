@@ -18,6 +18,18 @@ The check is **purely on-chain** — it does **not** fetch or verify the
 `stellar.toml` file over HTTP. Full SEP-0001 HTTP fetch and TOML signature
 verification is [out of scope](#out-of-scope).
 
+If a future implementation adds the optional HTTP TOML fetch, it must use a
+server-side fetch wrapper that enforces these rules:
+
+- maximum redirect count (default 5 hops)
+- HTTPS-only redirects with no protocol downgrade
+- same-origin redirect enforcement for the home-domain fetch
+- re-validation of every redirect target with the SSRF allowlist checker
+- loop detection to prevent redirect cycling into metadata or private hosts
+
+This keeps the fetch SSRF-safe even when the initial URL is public and a later
+redirect points at an attacker-controlled host.
+
 ---
 
 ## Configuration
