@@ -4,6 +4,7 @@ import { inferStellarNetwork } from './links';
 import { globalMetrics } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, CircuitOpenError } from './resilience';
 import { validateHorizonUrl } from './validation';
+import { createProxiedFetch, getProxyConfig } from './proxy';
 
 export interface HorizonBalanceNative {
   balance: string;
@@ -734,7 +735,9 @@ export async function fetchAccount(
   options: FetchAccountOptions = {},
 ): Promise<HorizonAccount> {
   const fetch: FetchLike =
-    options.fetchFn ?? (await import('node-fetch')).default;
+    options.fetchFn ??
+    createProxiedFetch() ??
+    (await import('node-fetch')).default;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
@@ -1191,8 +1194,7 @@ export async function fetchClaimableBalanceCount(
     return 0;
   }
   const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
-  const fetcher = fetchFn ?? (await import('node-fetch')).default;
-
+  const fetcher = fetchFn ?? createProxiedFetch() ?? (await import('node-fetch')).default;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1383,8 +1385,7 @@ export async function fetchNetworkPassphrase(
   horizonUrl: string,
   options: FetchAccountOptions = {},
 ): Promise<string> {
-  const fetchImpl = options.fetchFn ?? (await import('node-fetch')).default;
-  const timeoutMs = options.timeoutMs || 15000;
+  const fetchImpl = options.fetchFn ?? createProxiedFetch() ?? (await import('node-fetch')).default;  const timeoutMs = options.timeoutMs || 15000;
   const maxRetries = options.maxRetries ?? 3;
 
   let attempt = 0;

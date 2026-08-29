@@ -1484,6 +1484,47 @@ Run through this on your own GHES org before relying on TrustBridge there:
 | `403`/`Resource not accessible by integration` when posting the comment | Token lacks `issues: write`, or your GHES instance enforces stricter default token permissions than github.com | Add `permissions: { issues: write }` to the job/workflow; for a PAT, confirm it has `repo` (classic) or `issues:write` (fine-grained) scope on that specific repo |
 | Comment posts to the wrong host / link in the comment 404s | `comment_url` output correctly reflects whatever host answered the API call — a wrong host here means `GITHUB_API_URL`/`GITHUB_SERVER_URL` are misconfigured on the runner itself, not a TrustBridge issue | Check the self-hosted runner's environment / `_work/_temp` runner config for correct GHES URLs |
 
+### HTTPS proxy support for enterprise networks
+
+GHES runners are often on restricted corporate networks that require an HTTP/HTTPS proxy to reach both the Stellar Horizon API and the GitHub API. TrustBridge honors standard proxy environment variables:
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `HTTPS_PROXY` / `https_proxy` | Proxy URL for HTTPS requests (Horizon + GitHub API) | `http://proxy.corp.com:8080` |
+| `HTTP_PROXY` / `http_proxy` | Fallback proxy URL (used when `HTTPS_PROXY` is unset) | `http://proxy.corp.com:8080` |
+| `NO_PROXY` / `no_proxy` | Comma-separated hostnames to bypass the proxy | `localhost,127.0.0.1,.corp.local` |
+
+**How it works:**
+- Horizon fetches (`src/horizon.ts`) automatically route through the proxy when `HTTPS_PROXY` is set
+- Octokit client (comment posting, Checks API, wallet labels, auto-unassign) uses the proxy agent
+- `NO_PROXY` entries are honored — hosts matching the list connect directly without the proxy
+- SSRF protections remain active — the proxy only handles transport
+- Proxy URLs containing userinfo (username:password) are redacted in logs
+
+**Example — self-hosted runner with corporate proxy:**
+
+```yaml
+jobs:
+  verify:
+    runs-on: [self-hosted, ghes]
+    env:
+      HTTPS_PROXY: http://proxy.corp.com:8080
+      NO_PROXY: github.internal.corp.com,localhost
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: G...
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Troubleshooting:**
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Horizon requests timeout or fail with connection errors | Proxy not configured or `HTTPS_PROXY` not set | Set `HTTPS_PROXY` in the job's `env` block or runner environment |
+| Comment posting fails but Horizon works | Proxy configured but GitHub API host not reachable through it | Ensure `github.internal.corp.com` (or your GHES host) is reachable via the proxy, or add it to `NO_PROXY` if direct connection is preferred |
+| `ECONNREFUSED` to proxy | Proxy URL incorrect or proxy server down | Verify the proxy URL and check with your network admin |
+
 ---
 
 ## workflow_run chained triggers (#146)
