@@ -42,6 +42,11 @@ jobs:
       - name: Verify action.yml ↔ schema sync
         run: npm test -- --testPathPattern action-schema-sync --no-coverage
 
+      # Error catalog drift check: fails if a reason code in src/ is missing
+      # from the structured catalog in docs/ERROR_HANDLING.md.
+      - name: Verify error catalog sync
+        run: node scripts/check-error-catalog.js
+
       # Includes __tests__/validation.performance.test.ts (mocked Horizon p95 budget).
       - name: Test
         run: npm test
