@@ -42,6 +42,13 @@ inputs:
       this threshold. Leave empty to skip this check. (Issue #140)
     required: false
     default: ''
+  min_asset_balance:
+    description: >-
+      Minimum balance required for the configured asset (numeric string, e.g. 100).
+      When set, the action will warn or fail if the account's asset balance is below
+      this threshold. Leave empty to skip this check. (Issue #112)
+    required: false
+    default: ''
   stellar_address_input:
     description: >-
       Stellar account address (G-address) to validate. Required unless
