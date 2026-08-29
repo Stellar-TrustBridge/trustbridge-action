@@ -50,6 +50,7 @@ code here will fail the build.
 | `HORIZON_TIMEOUT` | `horizonFailureResult` · `src/checks.ts` | Yes (≤ 3 retries) | Horizon request timed out (AbortController fired after `horizon_timeout_ms`). |
 | `TLS_ERROR` | `tlsFailureResult` · `src/checks.ts` | No | TLS handshake or certificate verification failed for `horizon_url`; connection was never established. |
 | `RATE_LIMIT_EXHAUSTED` | `HorizonRateLimitError` · `src/horizon.ts` | No (budget exhausted) | Horizon returned HTTP 429 and all retry attempts were exhausted (or `retry_max_total_wait_ms` budget was exceeded). |
+| `PIN_MISMATCH` | `HorizonPinMismatchError` · `src/horizon.ts` | No | The Horizon TLS certificate fingerprint did not match `horizon_pin_fingerprint`. Not retried — a fingerprint mismatch means the certificate has changed or a MITM is present. Update `horizon_pin_fingerprint` or investigate the endpoint. (Issue #303) |
 
 ### Notes
 

@@ -483,6 +483,11 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "horizon_pin_fingerprint": {
+      "type": "string",
+      "description": "Optional SHA-256 TLS certificate fingerprint (colon-separated hex) to pin the Horizon endpoint certificate. Default empty (pinning disabled). (Issue #303)",
+      "default": ""
     }
   }
 }

@@ -2113,6 +2113,66 @@ jobs:
 
 ---
 
+## Certificate pinning (optional, Issue #303)
+
+For high-security environments where you want to guard against certificate
+substitution attacks (e.g. enterprise MITM proxies, rogue CA abuse), you can
+pin the Horizon TLS certificate to an expected SHA-256 fingerprint:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    horizon_pin_fingerprint: 'AA:BB:CC:DD:...:FF'   # SHA-256, colon-separated hex
+```
+
+When `horizon_pin_fingerprint` is set, TrustBridge opens a TLS probe connection
+to `horizon_url` **before** any account fetch, retrieves the server certificate,
+computes its SHA-256 fingerprint over the raw DER bytes, and compares it against
+the configured value. If they differ, the action fails immediately with a clear
+`HorizonPinMismatchError` and no Horizon data is consumed.
+
+> **Security warning:**
+> Pin rotation will break your workflow until you update `horizon_pin_fingerprint`.
+> Certificate changes happen during:
+> - Scheduled renewals (e.g. Let's Encrypt: ~90 days)
+> - Incident response (emergency certificate replacement)
+> - Infrastructure or CDN migrations
+>
+> Do **not** set this in shared public workflow templates — only use it in
+> private, security-controlled workflows where you can promptly update the pin.
+>
+> `horizon_pin_fingerprint` is **disabled by default** (empty string). All
+> workflows use standard WebPKI certificate validation unless you explicitly
+> opt in.
+
+### Getting the fingerprint
+
+Retrieve the current Horizon certificate fingerprint with OpenSSL:
+
+```bash
+openssl s_client -connect horizon.stellar.org:443 </dev/null 2>/dev/null \
+  | openssl x509 -fingerprint -sha256 -noout \
+  | sed 's/SHA256 Fingerprint=//'
+```
+
+Or using `curl` (macOS / modern Linux):
+
+```bash
+curl -vvI https://horizon.stellar.org 2>&1 \
+  | grep -i "subject:\|start date:\|expire date:\|SHA"
+```
+
+### Fallback URL and pinning
+
+When `horizon_url_fallback` is also set, the pin check applies **only** to the
+primary `horizon_url`. The fallback URL uses standard WebPKI validation. This
+is intentional — fallback endpoints may carry different certificates, and a
+misconfigured pin should not block all fallback attempts.
+
+---
+
 ## Horizon Retry & Exponential Backoff Configuration (Issue #203)
 
 TrustBridge includes full plumbing for configurable retry attempts and exponential backoff parameters on Horizon API requests (including 429 rate limits, 502/503/504 gateway errors, and transient network timeouts).

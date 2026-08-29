@@ -1,3 +1,5 @@
+import * as tls from 'tls';
+import * as crypto from 'crypto';
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
 import { inferStellarNetwork } from './links';
@@ -123,6 +125,21 @@ export class HorizonTlsError extends HorizonError {
 }
 
 /**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+export class HorizonPinMismatchError extends HorizonError {
+  constructor(
+    message: string,
+    public readonly expectedFingerprint: string,
+    public readonly actualFingerprint: string,
+  ) {
+    super(message, 0, false);
+    this.name = 'HorizonPinMismatchError';
+  }
+}
+
+/**
  * Node/OpenSSL error codes that indicate a TLS handshake or certificate
  * verification failure, as opposed to a generic connection/network error.
  */
@@ -204,6 +221,14 @@ export interface FetchAccountOptions {
   allowCrossNetworkFailover?: boolean;
   /** Optional secondary Horizon URL used for same-network failover. */
   secondaryHorizonUrl?: string;
+  /**
+   * Optional SHA-256 certificate fingerprint to pin the Horizon TLS cert.
+   * When set, a pre-flight TLS probe is performed before the first fetch.
+   * Mismatch throws HorizonPinMismatchError immediately (not retried).
+   * Leave empty (default) to use standard WebPKI certificate validation only.
+   * (Issue #303)
+   */
+  pinFingerprint?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -256,6 +281,88 @@ export function displayHorizonUrl(url: string, revealHost: boolean): string {
 
 export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 503 || status === 502 || status === 504;
+}
+
+/**
+ * Performs a TLS pre-flight check to verify the server certificate fingerprint.
+ * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...')
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ * (Issue #303)
+ */
+export async function checkCertificatePin(
+  horizonUrl: string,
+  expectedFingerprint: string,
+): Promise<void> {
+  const parsed = new URL(horizonUrl);
+  if (parsed.protocol !== 'https:') {
+    // Only HTTPS connections have TLS certificates to pin
+    return;
+  }
+
+  const host = parsed.hostname;
+  const port = parseInt(parsed.port || '443', 10);
+  const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
+
+  return new Promise<void>((resolve, reject) => {
+    const socket = tls.connect({ host, port, servername: host }, () => {
+      try {
+        const cert = socket.getPeerCertificate();
+        socket.destroy();
+
+        if (!cert || !cert.raw) {
+          reject(new HorizonTlsError(
+            'Could not retrieve server certificate for fingerprint check.',
+          ));
+          return;
+        }
+
+        // Compute SHA-256 fingerprint over the raw DER-encoded certificate
+        const fingerprint = crypto
+          .createHash('sha256')
+          .update(cert.raw)
+          .digest('hex')
+          .toUpperCase()
+          .match(/.{2}/g)!
+          .join(':');
+
+        const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
+
+        if (normalizedActual !== normalizedExpected) {
+          reject(new HorizonPinMismatchError(
+            `TLS certificate fingerprint mismatch for Horizon endpoint. ` +
+            `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +
+            `The Horizon host certificate may have changed — update horizon_pin_fingerprint or investigate MITM.`,
+            normalizedExpected,
+            normalizedActual,
+          ));
+          return;
+        }
+
+        resolve();
+      } catch (err) {
+        socket.destroy();
+        reject(err instanceof Error ? err : new HorizonTlsError('Certificate pin check failed.'));
+      }
+    });
+
+    socket.on('error', (err) => {
+      const tlsCode = (err as NodeJS.ErrnoException).code;
+      reject(new HorizonTlsError(
+        'TLS connection failed during certificate pin check.',
+        tlsCode,
+      ));
+    });
+
+    // 10 second timeout for the TLS probe
+    socket.setTimeout(10000, () => {
+      socket.destroy();
+      reject(new HorizonTlsError('TLS certificate pin check timed out.'));
+    });
+  });
 }
 
 export function parseRetryAfterMs(response: import('node-fetch').Response): number | null {
@@ -765,6 +872,14 @@ export async function fetchAccount(
   // Bail out immediately if the job was already cancelled before we start.
   if (signal?.aborted) {
     throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
+  }
+
+  // Certificate pinning pre-flight (Issue #303).
+  // Performed once before the cache or any Horizon request. A mismatch is
+  // not retried — it means the endpoint's certificate has changed or is not
+  // what was configured, so the run must stop immediately.
+  if (options.pinFingerprint && options.pinFingerprint.trim()) {
+    await checkCertificatePin(normalizedHorizonUrl, options.pinFingerprint.trim());
   }
 
   const cachingEnabled = cacheTtlMs > 0;

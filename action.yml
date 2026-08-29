@@ -515,6 +515,17 @@ inputs:
       Must be https and not a private/loopback host. Does not block `ready` unless documented.
     required: false
     default: ''
+  horizon_pin_fingerprint:
+    description: >-
+      Optional TLS certificate fingerprint (SHA-256, colon-separated hex, e.g.
+      AA:BB:CC:...:FF) to pin the Horizon endpoint certificate against.
+      When set, TrustBridge performs a pre-flight TLS probe to the horizon_url
+      host and compares the server certificate fingerprint. A mismatch fails
+      the action immediately with a clear error. Default empty (pinning disabled).
+      WARNING: Pin rotation will break your workflow until you update this value.
+      Do not pin in shared public workflow examples. (Issue #303)
+    required: false
+    default: ""
 
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
