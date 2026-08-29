@@ -66,6 +66,17 @@ export interface DiagnosticsConfig {
   runInfo?: DiagnosticsRunInfo;
   /** Whether to include the full normalized-inputs table (default true). */
   showInputs?: boolean;
+  /** Optional sponsorship info for chain analysis. */
+  sponsorshipInfo?: { numSponsoring: number; numSponsored: number };
+  /** Optional reserve requirement for sponsorship breakdown. */
+  reserveRequirement?: {
+    protocolMinimum: number;
+    configuredFloor: number;
+    required: number;
+    actual: number;
+    met: boolean;
+    subentryCount: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +153,7 @@ const DIAGNOSTICS_CLOSE_MARKER = '<!-- trustbridge-action:diagnostics-end -->';
  */
 export function buildDiagnosticsBlock(config: DiagnosticsConfig): string {
   const showInputs = config.showInputs !== false;
-  const { inputs, runInfo } = config;
+  const { inputs, runInfo, sponsorshipInfo, reserveRequirement } = config;
 
   const lines: string[] = [
     '',
@@ -189,6 +200,12 @@ export function buildDiagnosticsBlock(config: DiagnosticsConfig): string {
     lines.push('');
   }
 
+  // --- Sponsorship chain analysis (Issue #1) ---
+  const sponsorshipSection = buildSponsorshipDiagnostics(sponsorshipInfo, reserveRequirement);
+  if (sponsorshipSection) {
+    lines.push(sponsorshipSection);
+  }
+
   // --- Normalized inputs ---
   if (showInputs) {
     const safe = buildSafeInputsSnapshot(inputs);
@@ -205,6 +222,103 @@ export function buildDiagnosticsBlock(config: DiagnosticsConfig): string {
   }
 
   lines.push('</details>', '', DIAGNOSTICS_CLOSE_MARKER, '');
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Sponsorship diagnostics extension (Issue #1)
+// ---------------------------------------------------------------------------
+
+export interface SponsorshipDiagnostics {
+  numSponsoring: number;
+  numSponsored: number;
+  subentryCount: number;
+  netSponsorshipEffect: number;
+  protocolMinimum: number;
+  configuredFloor: number;
+  finalRequired: number;
+  actualBalance: number;
+  meetsRequirement: boolean;
+}
+
+/**
+ * Build a sponsorship-specific diagnostics section for accounts with
+ * non-zero sponsorship counts. This provides visibility into how nested
+ * sponsorship chains affect reserve requirements without modifying the
+ * contributor-facing sections.
+ */
+export function buildSponsorshipDiagnostics(
+  sponsorshipInfo?: { numSponsoring: number; numSponsored: number },
+  reserveRequirement?: {
+    protocolMinimum: number;
+    configuredFloor: number;
+    required: number;
+    actual: number;
+    met: boolean;
+    subentryCount: number;
+  },
+): string {
+  if (!sponsorshipInfo || (sponsorshipInfo.numSponsoring === 0 && sponsorshipInfo.numSponsored === 0)) {
+    return '';
+  }
+
+  if (!reserveRequirement) {
+    return '';
+  }
+
+  const { numSponsoring, numSponsored } = sponsorshipInfo;
+  const netEffect = numSponsoring - numSponsored;
+
+  const lines: string[] = [
+    '',
+    '#### Sponsorship chain analysis',
+    '',
+    '> ℹ️ **Chain depth context:** This account has active sponsorship relationships that affect its reserve requirement.',
+    '',
+    '| Metric | Value | Impact |',
+    '| --- | --- | --- |',
+    `| Accounts sponsored (outbound) | \`${numSponsoring}\` | ${numSponsoring > 0 ? `+${(numSponsoring * 0.5).toFixed(1)} XLM to requirement` : 'None'} |`,
+    `| Sponsorships received (inbound) | \`${numSponsored}\` | ${numSponsored > 0 ? `-${(numSponsored * 0.5).toFixed(1)} XLM from requirement` : 'None'} |`,
+    `| Net sponsorship effect | \`${netEffect > 0 ? '+' : ''}${netEffect}\` entries | ${netEffect > 0 ? `**Increases** requirement by ${(netEffect * 0.5).toFixed(1)} XLM` : netEffect < 0 ? `**Reduces** requirement by ${(Math.abs(netEffect) * 0.5).toFixed(1)} XLM` : 'Neutral (balanced)'} |`,
+    `| Subentries (trustlines/offers/data) | \`${reserveRequirement.subentryCount}\` | +${(reserveRequirement.subentryCount * 0.5).toFixed(1)} XLM base |`,
+    '',
+    '**Reserve breakdown:**',
+    '',
+    '```',
+    'Protocol formula: (2 + subentries + sponsoring - sponsored) × 0.5 XLM',
+    `                  (2 + ${reserveRequirement.subentryCount} + ${numSponsoring} - ${numSponsored}) × 0.5`,
+    `                = ${reserveRequirement.protocolMinimum.toFixed(1)} XLM`,
+    '',
+    `Configured floor: ${reserveRequirement.configuredFloor.toFixed(1)} XLM`,
+    `Final required:   ${reserveRequirement.required.toFixed(1)} XLM (max of protocol and floor)`,
+    `Actual balance:   ${reserveRequirement.actual.toFixed(1)} XLM`,
+    `Status:           ${reserveRequirement.met ? '✅ Met' : '❌ Deficit'}`,
+    '```',
+    '',
+  ];
+
+  // Warning for deep sponsorship chains
+  if (numSponsoring > 3) {
+    lines.push(
+      '> ⚠️ **Deep sponsorship chain detected:** This account sponsors more than 3 accounts.',
+      '> Nested sponsor-of-sponsor patterns can cause cascading reserve failures if any',
+      '> intermediate sponsor becomes underfunded. Monitor the full chain, not just',
+      '> immediate sponsees.',
+      '',
+    );
+  }
+
+  // Guidance for overfunding scenario
+  if (numSponsored > 0 && numSponsoring === 0 && reserveRequirement.actual > reserveRequirement.required + 1.0) {
+    lines.push(
+      '> ℹ️ **Overfunding detected:** This sponsored account has significantly more XLM than',
+      `> required (${(reserveRequirement.actual - reserveRequirement.required).toFixed(1)} XLM surplus). Since sponsorship covers reserve`,
+      '> costs, this balance may be unnecessary. Consider keeping only operational funds',
+      '> (for transaction fees) on sponsored accounts.',
+      '',
+    );
+  }
+
   return lines.join('\n');
 }
 

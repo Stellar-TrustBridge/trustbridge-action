@@ -186,3 +186,126 @@ describe('buildDiagnosticsBlock', () => {
     expect(block).toContain('✅ 200');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sponsorship diagnostics (Issue #1)
+// ---------------------------------------------------------------------------
+
+describe('buildDiagnosticsBlock with sponsorship info', () => {
+  const baseConfig: DiagnosticsConfig = {
+    inputs: BASE_INPUTS,
+  };
+
+  it('includes sponsorship section when sponsorship data provided', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      sponsorshipInfo: { numSponsoring: 2, numSponsored: 1 },
+      reserveRequirement: {
+        protocolMinimum: 2.5,
+        configuredFloor: 1.5,
+        required: 2.5,
+        actual: 3.0,
+        met: true,
+        subentryCount: 2,
+      },
+    });
+    
+    expect(block).toContain('Sponsorship chain analysis');
+    expect(block).toContain('Chain depth context');
+  });
+
+  it('does not include sponsorship section when no sponsorship', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+      reserveRequirement: {
+        protocolMinimum: 1.0,
+        configuredFloor: 1.5,
+        required: 1.5,
+        actual: 2.0,
+        met: true,
+        subentryCount: 0,
+      },
+    });
+    
+    expect(block).not.toContain('Sponsorship chain analysis');
+  });
+
+  it('positions sponsorship section between Horizon details and inputs', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      runInfo: { horizonStatusCode: 200, horizonLatencyMs: 150 },
+      sponsorshipInfo: { numSponsoring: 1, numSponsored: 0 },
+      reserveRequirement: {
+        protocolMinimum: 1.5,
+        configuredFloor: 1.5,
+        required: 1.5,
+        actual: 2.0,
+        met: true,
+        subentryCount: 1,
+      },
+    });
+    
+    const horizonPos = block.indexOf('Horizon request details');
+    const sponsorshipPos = block.indexOf('Sponsorship chain analysis');
+    const inputsPos = block.indexOf('Normalized inputs');
+    
+    expect(horizonPos).toBeGreaterThan(-1);
+    expect(sponsorshipPos).toBeGreaterThan(horizonPos);
+    expect(inputsPos).toBeGreaterThan(sponsorshipPos);
+  });
+
+  it('includes deep chain warning in diagnostics', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      sponsorshipInfo: { numSponsoring: 5, numSponsored: 0 },
+      reserveRequirement: {
+        protocolMinimum: 3.5,
+        configuredFloor: 1.5,
+        required: 3.5,
+        actual: 4.0,
+        met: true,
+        subentryCount: 0,
+      },
+    });
+    
+    expect(block).toContain('Deep sponsorship chain detected');
+  });
+
+  it('includes overfunding guidance for sponsored accounts', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      sponsorshipInfo: { numSponsoring: 0, numSponsored: 2 },
+      reserveRequirement: {
+        protocolMinimum: 0.5,
+        configuredFloor: 1.5,
+        required: 1.5,
+        actual: 5.0,
+        met: true,
+        subentryCount: 1,
+      },
+    });
+    
+    expect(block).toContain('Overfunding detected');
+    expect(block).toContain('3.5 XLM surplus');
+  });
+
+  it('shows correct net effect for mixed sponsorship', () => {
+    const block = buildDiagnosticsBlock({
+      ...baseConfig,
+      sponsorshipInfo: { numSponsoring: 3, numSponsored: 1 },
+      reserveRequirement: {
+        protocolMinimum: 3.0,
+        configuredFloor: 1.5,
+        required: 3.0,
+        actual: 3.5,
+        met: true,
+        subentryCount: 2,
+      },
+    });
+    
+    expect(block).toContain('+2'); // Net: 3 - 1 = 2
+    expect(block).toContain('Increases');
+    expect(block).toContain('1.0 XLM'); // 2 * 0.5
+  });
+});
