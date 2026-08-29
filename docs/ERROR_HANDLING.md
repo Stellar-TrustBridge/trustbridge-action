@@ -131,6 +131,20 @@ Same retry policy as 429. Public Horizon occasionally returns 503 during mainten
 
 Default **15 seconds** per attempt. Network partitions or slow Horizon nodes trigger abort + retry.
 
+### Fetch stack (Node 20 / undici)
+
+TrustBridge uses Node.js 20's built-in `fetch` API (backed by `undici`) for Horizon requests,
+with `node-fetch` as a compatibility layer. This means:
+
+- Keep-alive connections are managed by undici's connection pool
+- Timeouts are enforced via `AbortController` — not socket-level SO_TIMEOUT
+- HTTP/2 multiplexing is not currently used; each request uses HTTP/1.1
+- Hung sockets: when `AbortController` fires, the underlying TCP socket
+  may remain in TIME_WAIT until the OS reclaims it, but no new requests
+  are dispatched
+- `ECONNRESET` from a dropped keep-alive connection is treated as a
+  retryable transport error (status 0)
+
 ### TLS / certificate verification failure
 
 Raised when the TLS handshake to `horizon_url` itself fails — expired certificate, self-signed certificate, hostname mismatch, or an untrusted CA. Not retried (retrying the same misconfigured endpoint cannot succeed) and, when a fallback URL is configured, the action falls through to it just like any other primary-endpoint failure.
