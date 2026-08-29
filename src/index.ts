@@ -510,6 +510,11 @@ async function run(): Promise<void> {
   const commentMode = commentModeRaw as 'post' | 'dry-run' | 'off';
   const shouldPostComment = commentMode === 'post';
 
+  // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
+  // instead of calling live Horizon. No network call is made.
+  const fixtureMode = parseBooleanInput(core.getInput('fixture_mode'), false);
+  const fixturePath = core.getInput('fixture_path') || '';
+
   // Signed dashboard webhook (Issue #101)
   // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
   const webhookUrl =
@@ -961,6 +966,33 @@ async function run(): Promise<void> {
   let horizonFetchStatusCode: number | undefined;
   let horizonFetchError: string | undefined;
 
+  // Issue #304 — Fixture mode: short-circuit Horizon fetch with a local file.
+  if (fixtureMode) {
+    if (!fixturePath) {
+      core.setFailed('fixture_mode is true but fixture_path is not set. Provide a path to a JSON fixture file (e.g. fixtures/account-funded.json).');
+      return;
+    }
+    const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
+    const resolvedFixturePath = path.resolve(workspaceRoot, fixturePath);
+    // Path-traversal guard: fixture must stay inside workspace root.
+    if (!resolvedFixturePath.startsWith(workspaceRoot + path.sep) && resolvedFixturePath !== workspaceRoot) {
+      core.setFailed(`fixture_path "${fixturePath}" resolves outside the workspace root. Path traversal is not allowed.`);
+      return;
+    }
+    try {
+      const fixtureRaw = fs.readFileSync(resolvedFixturePath, 'utf8');
+      account = JSON.parse(fixtureRaw) as HorizonAccount;
+      core.info(`[fixture_mode] Loaded Horizon fixture from ${fixturePath} — no network call made.`);
+      horizonFetchStatusCode = 200;
+      horizonFetchLatencyMs = 0;
+      result = await runAccountChecks(account, checkConfig);
+    } catch (fixtureError) {
+      const msg = getErrorMessage(fixtureError);
+      core.setFailed(`Failed to load fixture file "${fixturePath}": ${msg}`);
+      return;
+    }
+  } else {
+  // Normal Horizon fetch path
   try {
     account = waitUntilFunded
       ? await waitForFundedAccount(
@@ -1035,6 +1067,7 @@ async function run(): Promise<void> {
     // Ensure the controller is not leaked if the function returns early.
     jobController.abort();
   }
+  } // end else (normal Horizon fetch path — fixtureMode === false)
 
   // result is undefined only when the run was cancelled and we returned early above.
   if (result == null) {

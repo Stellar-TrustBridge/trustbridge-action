@@ -483,6 +483,131 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "fixture_mode": {
+      "type": "string",
+      "description": "When true, load the Horizon account response from fixture_path instead of calling live Horizon. No network call is made. Intended for offline development and CI without a live Horizon endpoint.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "fixture_path": {
+      "type": "string",
+      "description": "Path to a Horizon account JSON fixture file (relative to GITHUB_WORKSPACE). Only used when fixture_mode is true. Example: fixtures/account-funded.json.",
+      "default": ""
+    },
+    "contract_id": {
+      "type": "string",
+      "description": "Soroban contract ID to look up the contributor's Stellar address on-chain via the Soroban RPC registry.",
+      "default": ""
+    },
+    "github_username": {
+      "type": "string",
+      "description": "GitHub username override for contract registry lookup. When empty the action resolves from the event payload.",
+      "default": ""
+    },
+    "milestone_allowlist": {
+      "type": "string",
+      "description": "Comma-separated list of milestone titles that must be set on the issue for TrustBridge to run.",
+      "default": ""
+    },
+    "milestone_fail_on_skip": {
+      "type": "string",
+      "description": "When true and the milestone gate causes a skip, the step fails instead of exiting gracefully.",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
+    "preflight_only": {
+      "type": "string",
+      "description": "When true, exit after the issues:write preflight check without running account validation.",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
+    "previous_validation_path": {
+      "type": "string",
+      "description": "Path to a previous run's validation.json artifact for delta comparison.",
+      "default": ""
+    },
+    "privacy_mode": {
+      "type": "string",
+      "description": "When true, omit the contributor's Stellar address from the issue comment and logs.",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
+    "report_output_path": {
+      "type": "string",
+      "description": "Path where the full Markdown validation report is written when the comment body exceeds GitHub's size limit.",
+      "default": "trustbridge-report.md"
+    },
+    "soroban_rpc_url": {
+      "type": "string",
+      "description": "Soroban RPC endpoint URL for contract registry address lookup. Required when contract_id is set.",
+      "default": ""
+    },
+    "use_check_runs": {
+      "type": "string",
+      "description": "When true, post validation results as GitHub Check Run annotations. Requires checks:write permission.",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
+    "min_asset_balance": {
+      "type": "string",
+      "description": "Minimum balance required for the configured asset (numeric string, e.g. 100). When set, the action warns or fails if the asset balance is below this threshold.",
+      "default": ""
+    },
+    "webhook_auth_mode": {
+      "type": "string",
+      "description": "Authentication mode for the dashboard webhook: hmac (default HMAC-SHA256 signature) or oidc (GitHub OIDC token in Authorization header).",
+      "enum": ["hmac", "oidc"],
+      "default": "hmac"
+    },
+    "webhook_oidc_audience": {
+      "type": "string",
+      "description": "OIDC audience claim for the webhook when webhook_auth_mode is oidc.",
+      "default": "trustbridge-dashboard"
+    },
+    "stellar_toml_fetch_enabled": {
+      "type": "string",
+      "description": "When true, fetch and cache the issuer stellar.toml for home domain verification.",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
+    "stellar_toml_cache_ttl_ms": {
+      "type": "string",
+      "description": "TTL for the stellar.toml in-memory cache in milliseconds. 0 disables caching. Max 86400000 (24 hours).",
+      "default": "3600000"
+    },
+    "stellar_toml_hash_pin": {
+      "type": "string",
+      "description": "Optional SHA-256 hex hash of the expected stellar.toml content. When set, the fetched toml is validated against this pin.",
+      "default": ""
+    },
+    "project_id": {
+      "type": "string",
+      "description": "GitHub Projects v2 project ID for updating the issue card status after validation.",
+      "default": ""
+    },
+    "project_status_field": {
+      "type": "string",
+      "description": "Name of the GitHub Projects v2 status field to update.",
+      "default": "Status"
+    },
+    "project_status_pass": {
+      "type": "string",
+      "description": "Value to set the GitHub Projects v2 status field to when all checks pass.",
+      "default": ""
+    },
+    "project_status_fail": {
+      "type": "string",
+      "description": "Value to set the GitHub Projects v2 status field to when any check fails.",
+      "default": ""
+    },
+    "project_token": {
+      "type": "string",
+      "description": "Optional GitHub token with project or write:org scope for updating GitHub Projects v2. Defaults to github_token.",
+      "default": ""
     }
   }
 }

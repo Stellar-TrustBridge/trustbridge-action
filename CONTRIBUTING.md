@@ -88,6 +88,216 @@ affected by whether Docker is running.
 
 ---
 
+
+---
+
+## Offline development with fixture mode (Issue #304)
+
+Contributors without Horizon access — or who want to iterate on comment
+formatting without burning network quota — can run TrustBridge entirely
+offline using pre-recorded account JSON fixtures.
+
+### What fixture mode does
+
+When `fixture_mode: true` is set, TrustBridge:
+
+1. Reads a local JSON file (`fixture_path`) instead of calling Horizon.
+2. Makes **zero network calls** — no SSRF checks on the loaded data, no
+   retries, no rate-limit counters.
+3. Runs all validation logic and comment formatting against the fixture.
+4. Still respects `comment_mode` — use `dry-run` to also skip the GitHub
+   API call (see [Fork dry-run cookbook](#fork-dry-run-cookbook-issue-305) below).
+
+### Bundled fixtures
+
+| File | Scenario |
+|------|----------|
+| `fixtures/account-funded.json` | All checks pass (10 XLM, USDC trustline) |
+| `fixtures/account-no-trustline.json` | No USDC trustline |
+| `fixtures/account-low-balance.json` | Low XLM balance (0.5 XLM) |
+
+See [fixtures/README.md](fixtures/README.md) for full documentation and
+instructions on recording your own fixtures.
+
+### Running offline locally
+
+```bash
+# 1. Build the action (needed once, or when src/ changes)
+npm run build
+
+# 2. Run the fixture tests
+npm test -- --testPathPattern 'offline-fixture'
+
+# 3. Full offline run simulating a GitHub Actions environment
+INPUT_FIXTURE_MODE=true \
+INPUT_FIXTURE_PATH=fixtures/account-funded.json \
+INPUT_STELLAR_ADDRESS_INPUT=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF \
+INPUT_GITHUB_TOKEN=placeholder \
+INPUT_COMMENT_MODE=dry-run \
+node dist/index.js
+```
+
+> **Note:** `INPUT_FIXTURE_MODE` / `INPUT_FIXTURE_PATH` correspond to the
+> `fixture_mode` / `fixture_path` action inputs. GitHub Actions maps input
+> names to `INPUT_<NAME>` environment variables.
+
+### Custom fixtures
+
+```bash
+# Capture a real Horizon response
+curl -s "https://horizon.stellar.org/accounts/GABC...XYZ" > fixtures/my-account.json
+
+# Scrub the real address before committing
+sed -i 's/GABC...XYZ/GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF/g' \
+  fixtures/my-account.json
+```
+
+**Privacy rule:** Never commit real contributor G-addresses or balance data.
+Replace `id` / `account_id` with the placeholder address before committing.
+
+---
+
+## Fork dry-run cookbook (Issue #305)
+
+Fork pull requests run in a restricted security context — they cannot access
+repository secrets, so `GITHUB_TOKEN` does not have `issues: write` permission.
+This means **the action cannot post comments on fork PRs**. Contributors
+sometimes mistake this for a bug.
+
+### Why fork PRs cannot post comments
+
+GitHub restricts secret access on fork PRs to prevent malicious forks from
+exfiltrating secrets. The `GITHUB_TOKEN` available in a fork PR context has
+read-only permissions:
+
+```
+permissions:
+  issues: read   # not write
+  contents: read
+```
+
+Attempting to call `postIssueComment` with a read-only token produces:
+`403 Resource not accessible by integration`
+
+### Solution: use `comment_mode: dry-run`
+
+Setting `comment_mode: dry-run` tells TrustBridge to **build the comment body
+but not call the GitHub API**. The comment Markdown is emitted to the Actions
+log and the workflow job summary (`GITHUB_STEP_SUMMARY`).
+
+This is the **recommended pattern for fork PR contributions**.
+
+### Step-by-step cookbook
+
+#### 1. Add a dry-run workflow for fork development
+
+Create `.github/workflows/trustbridge-dryrun.yml` in your fork:
+
+```yaml
+name: TrustBridge dry-run (fork)
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to test'
+        required: false
+        default: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read      # read-only is sufficient for dry-run
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: TrustBridge dry-run
+        id: trustbridge
+        uses: ./
+        with:
+          stellar_address_input: ${{ github.event.inputs.stellar_address || 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          comment_mode: dry-run        # no GitHub API comment call
+          fail_on_missing: false
+
+      - name: Print outputs
+        run: |
+          echo "account_funded:   ${{ steps.trustbridge.outputs.account_funded }}"
+          echo "trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}"
+          echo "xlm_balance:      ${{ steps.trustbridge.outputs.xlm_balance }}"
+          echo "ready:            ${{ steps.trustbridge.outputs.ready }}"
+```
+
+#### 2. Combine with fixture mode for fully offline dry-run
+
+```yaml
+      - name: TrustBridge offline dry-run
+        uses: ./
+        with:
+          stellar_address_input: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fixture_mode: 'true'
+          fixture_path: fixtures/account-funded.json
+          comment_mode: dry-run
+          fail_on_missing: false
+```
+
+#### 3. Read the comment from the job summary
+
+When `comment_mode: dry-run`, TrustBridge writes the full comment Markdown to
+the **GitHub Actions Job Summary**. View it:
+
+1. Go to the Actions tab → click the workflow run → click the job.
+2. Click the **Summary** tab at the top of the job page.
+
+The summary contains the rendered Markdown exactly as it would appear on the
+issue, plus the validation result JSON.
+
+#### 4. Check the log output
+
+The dry-run comment body is also emitted as a `core.info` line in the step
+log. Expand the **TrustBridge dry-run** step and look for
+`[dry-run] comment body:`.
+
+### `comment_mode` reference
+
+| Value | What happens | Requires `issues: write`? |
+|-------|-------------|--------------------------|
+| `post` | Posts/updates sticky issue comment | **Yes** |
+| `dry-run` | Builds comment, writes to job summary and log | No |
+| `off` | Skips comment generation entirely | No |
+
+Action outputs (`account_funded`, `trustline_exists`, `xlm_balance`, `ready`,
+etc.) are **always set** regardless of `comment_mode`.
+
+### Permission reference for fork workflows
+
+```yaml
+# For non-fork workflows (comment posting):
+permissions:
+  issues: write
+  contents: read
+
+# For fork PR workflows (dry-run):
+permissions:
+  issues: read
+  contents: read
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `403 Resource not accessible by integration` | `comment_mode: post` on a fork PR | Set `comment_mode: dry-run` |
+| Comment not appearing on issue | Fork PR or missing `issues: write` | Use `dry-run` for forks; check permissions for non-forks |
+| `fixture_path not found` | Wrong path relative to workspace | Run `ls fixtures/` in a prior step to verify |
+| Outputs not set | Action exited early (error) | Check step log; try `fail_on_missing: false` |
+
+---
+
 ## Live testnet integration job (Issue #156)
 
 TrustBridge includes an optional CI job (`testnet-live-integration` in `.github/workflows/ci.yml`)
