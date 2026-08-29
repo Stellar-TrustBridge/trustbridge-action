@@ -6,6 +6,7 @@ import {
   CheckConfig,
   detectNetworkMismatch,
   horizonFailureResult,
+  parseMinAssetBalance,
   parseMinXlmReserve,
   runAccountChecks,
   unfundedAccountResult,
@@ -684,6 +685,7 @@ async function run(): Promise<void> {
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
   const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
   const minTrustlineLimit = minTrustlineLimitRaw ? parseNumberInput(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
+  const minAssetBalance = parseMinAssetBalance(core.getInput('min_asset_balance') || '');
 
   // Optional multi-asset JSON — validate early so bad input fails fast.
   if (assetsJsonRaw.trim()) {
@@ -788,6 +790,7 @@ async function run(): Promise<void> {
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
     minXlmReserve: Number(minXlmReserve),
+    minAssetBalance,
     minTrustlineLimit,
     horizonUrl,
     homeDomainCheckEnabled,
