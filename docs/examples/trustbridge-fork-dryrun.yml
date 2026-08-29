@@ -1,0 +1,80 @@
+# TrustBridge fork dry-run workflow
+#
+# Use this workflow in a fork PR to test TrustBridge without `issues: write`.
+#
+# comment_mode: dry-run builds the comment but skips the GitHub API call.
+# All outputs (account_funded, ready, etc.) are still set.
+# The comment Markdown is written to the job summary and step log.
+#
+# For full offline development, add:
+#   fixture_mode: 'true'
+#   fixture_path: fixtures/account-funded.json
+#
+# See CONTRIBUTING.md#fork-dry-run-cookbook-issue-305 for the full guide.
+
+name: TrustBridge — fork dry-run
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate'
+        required: false
+        default: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
+      use_fixture:
+        description: 'Use offline fixture instead of live Horizon (true/false)'
+        required: false
+        default: 'false'
+      fixture_scenario:
+        description: 'Fixture scenario: funded | no-trustline | low-balance'
+        required: false
+        default: 'funded'
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+
+    # Fork PRs: read-only permissions are sufficient for comment_mode: dry-run
+    permissions:
+      issues: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: TrustBridge dry-run
+        id: trustbridge
+        uses: ./
+        with:
+          stellar_address_input: ${{ github.event.inputs.stellar_address || 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # ------------------------------------------------------------------
+          # comment_mode: dry-run
+          # Builds the comment body and writes it to the job summary.
+          # Does NOT call the GitHub Issues API — safe for fork PRs.
+          # ------------------------------------------------------------------
+          comment_mode: dry-run
+
+          # ------------------------------------------------------------------
+          # Fixture mode (optional)
+          # Set use_fixture=true to skip Horizon entirely.
+          # ------------------------------------------------------------------
+          fixture_mode: ${{ github.event.inputs.use_fixture || 'false' }}
+          fixture_path: ${{ github.event.inputs.use_fixture == 'true' && format('fixtures/account-{0}.json', github.event.inputs.fixture_scenario || 'funded') || '' }}
+
+          fail_on_missing: false
+
+      - name: Print TrustBridge outputs
+        run: |
+          echo "=== TrustBridge Validation Results ==="
+          echo "account_funded:   ${{ steps.trustbridge.outputs.account_funded }}"
+          echo "trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}"
+          echo "xlm_balance:      ${{ steps.trustbridge.outputs.xlm_balance }}"
+          echo "asset_balance:    ${{ steps.trustbridge.outputs.asset_balance }}"
+          echo "ready:            ${{ steps.trustbridge.outputs.ready }}"
+          echo "reason_code:      ${{ steps.trustbridge.outputs.reason_code }}"
+          echo ""
+          echo "View the full comment in the job Summary tab above."

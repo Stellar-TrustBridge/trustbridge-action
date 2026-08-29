@@ -88,6 +88,154 @@ affected by whether Docker is running.
 
 ---
 
+
+---
+
+## Fork dry-run cookbook (Issue #305)
+
+Fork pull requests run in a restricted security context — they cannot access
+repository secrets, so `GITHUB_TOKEN` does not have `issues: write` permission.
+This means **the action cannot post comments on fork PRs**. Contributors
+sometimes mistake this for a bug.
+
+### Why fork PRs cannot post comments
+
+GitHub restricts secret access on fork PRs to prevent malicious forks from
+exfiltrating secrets. The `GITHUB_TOKEN` available in a fork PR context has
+read-only permissions:
+
+```
+permissions:
+  issues: read   # not write
+  contents: read
+```
+
+Attempting to call `postIssueComment` with a read-only token produces:
+`403 Resource not accessible by integration`
+
+### Solution: use `comment_mode: dry-run`
+
+Setting `comment_mode: dry-run` tells TrustBridge to **build the comment body
+but not call the GitHub API**. The comment Markdown is emitted to the Actions
+log and the workflow job summary (`GITHUB_STEP_SUMMARY`).
+
+This is the **recommended pattern for fork PR contributions**.
+
+### Step-by-step cookbook
+
+#### 1. Add a dry-run workflow in your fork
+
+Create `.github/workflows/trustbridge-dryrun.yml`:
+
+```yaml
+name: TrustBridge dry-run (fork)
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to test'
+        required: false
+        default: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read      # read-only is sufficient for dry-run
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: TrustBridge dry-run
+        id: trustbridge
+        uses: ./
+        with:
+          stellar_address_input: ${{ github.event.inputs.stellar_address || 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          comment_mode: dry-run        # no GitHub API comment call
+          fail_on_missing: false
+
+      - name: Print outputs
+        run: |
+          echo "account_funded:   ${{ steps.trustbridge.outputs.account_funded }}"
+          echo "trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}"
+          echo "xlm_balance:      ${{ steps.trustbridge.outputs.xlm_balance }}"
+          echo "ready:            ${{ steps.trustbridge.outputs.ready }}"
+```
+
+A ready-to-use copy lives at [`docs/examples/trustbridge-fork-dryrun.yml`](docs/examples/trustbridge-fork-dryrun.yml).
+
+#### 2. Combine with fixture mode for a fully offline dry-run
+
+```yaml
+      - name: TrustBridge offline dry-run
+        uses: ./
+        with:
+          stellar_address_input: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fixture_mode: 'true'
+          fixture_path: fixtures/account-funded.json
+          comment_mode: dry-run
+          fail_on_missing: false
+```
+
+No network calls are made — Horizon is never contacted.
+
+#### 3. Read the comment from the job summary
+
+When `comment_mode: dry-run`, TrustBridge writes the full comment Markdown to
+the **GitHub Actions Job Summary**. View it:
+
+1. Go to the Actions tab → click the workflow run → click the job.
+2. Click the **Summary** tab at the top of the job page.
+
+The summary contains the rendered Markdown exactly as it would appear on the
+issue, plus the validation result JSON.
+
+#### 4. Check the step log
+
+The dry-run comment body is also emitted as a `core.info` line in the step
+log. Expand the **TrustBridge dry-run** step and look for
+`[dry-run] comment body:`.
+
+### `comment_mode` reference
+
+| Value | What happens | Requires `issues: write`? |
+|-------|-------------|--------------------------|
+| `post` | Posts/updates sticky issue comment | **Yes** |
+| `dry-run` | Builds comment, writes to job summary and log | No |
+| `off` | Skips comment generation entirely | No |
+
+Action outputs (`account_funded`, `trustline_exists`, `xlm_balance`, `ready`,
+etc.) are **always set** regardless of `comment_mode`.
+
+### Permission reference
+
+```yaml
+# Non-fork workflows (comment posting):
+permissions:
+  issues: write
+  contents: read
+
+# Fork PR workflows (dry-run, no comment posting):
+permissions:
+  issues: read
+  contents: read
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `403 Resource not accessible by integration` | `comment_mode: post` on fork PR | Set `comment_mode: dry-run` |
+| Comment not appearing | Fork PR or missing `issues: write` | Use `dry-run` for forks; check permissions for non-forks |
+| `fixture_path not found` | Wrong relative path | Verify path with `ls fixtures/` step before the action |
+| Outputs not set | Action exited early | Check step log; set `fail_on_missing: false` for debugging |
+
+---
+
 ## Live testnet integration job (Issue #156)
 
 TrustBridge includes an optional CI job (`testnet-live-integration` in `.github/workflows/ci.yml`)
