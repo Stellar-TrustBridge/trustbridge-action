@@ -391,6 +391,12 @@ export const SSRF_BLOCKED_PATTERNS: RegExp[] = [
   // IPv6 loopback / link-local
   /^https?:\/\/\[?::1\]?/,
   /^https?:\/\/\[?fe80:/i,
+  // IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1, ::ffff:192.168.1.1)
+  /^https?:\/\/\[?::ffff:(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i,
+  // IPv6 ULA (Unique Local Addresses: fc00::/7 — private equivalent of RFC1918)
+  /^https?:\/\/\[?f[cd][0-9a-f]{2}:/i,
+  // IPv6 loopback with zone ID (e.g., ::1%eth0)
+  /^https?:\/\/\[?::1[%]/,
   // Bare "localhost"
   /^https?:\/\/localhost[:/]/i,
   /^https?:\/\/localhost$/i,
