@@ -21,6 +21,7 @@ import {
 } from './links';
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
+import { logger, redactHorizonUrl } from './logger';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -105,6 +106,23 @@ export interface CheckConfig {
    * the overall `valid` flag is unaffected.
    */
   ledgerFreshnessFailOnStale?: boolean;
+
+  // ---------------------------------------------------------------------------
+  // Network passphrase mismatch detection (Issue #2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Optional Stellar network passphrase for validation and diagnostics.
+   * When provided, compared against Horizon root endpoint to detect
+   * configuration mismatches. Leave empty to infer from horizon_url.
+   */
+  networkPassphrase?: string;
+
+  /**
+   * When true, check network passphrase mismatch before account validation.
+   * Defaults to true (opt-out). Set false to skip the check entirely.
+   */
+  checkNetworkPassphrase?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +187,99 @@ export async function detectNetworkMismatch(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Network passphrase mismatch detection (Issue #2)
+// ---------------------------------------------------------------------------
+
+export interface NetworkPassphraseMismatch {
+  /** Network passphrase provided via input (or inferred default). */
+  expectedPassphrase: string;
+  /** Network passphrase reported by Horizon root endpoint. */
+  actualPassphrase: string;
+  /** User-facing explanation of the mismatch. */
+  message: string;
+}
+
+/**
+ * Compare the expected network passphrase (from input or inference) against
+ * what the Horizon root endpoint reports. Returns a mismatch object when
+ * they differ, or undefined when they match or comparison is unavailable.
+ *
+ * Common mismatches:
+ * - Input says "testnet" but Horizon URL points to public network
+ * - Input says "public" but Horizon URL points to testnet
+ * - Custom/private network Horizon without matching passphrase input
+ *
+ * @param horizonUrl           The Horizon base URL being used
+ * @param inputPassphrase      The network_passphrase input (empty if not provided)
+ * @param fetchPassphraseFn    Optional function to fetch from Horizon (for testing)
+ */
+export async function detectPassphraseMismatch(
+  horizonUrl: string,
+  inputPassphrase: string,
+  fetchPassphraseFn?: (url: string) => Promise<string>,
+): Promise<NetworkPassphraseMismatch | undefined> {
+  // Determine expected passphrase: use input if provided, else infer from URL
+  let expectedPassphrase = inputPassphrase.trim();
+  
+  if (!expectedPassphrase) {
+    // Infer from horizon URL
+    const inferredNetwork = inferStellarNetwork(horizonUrl);
+    expectedPassphrase = inferredNetwork === 'testnet'
+      ? 'Test SDF Network ; September 2015'
+      : 'Public Global Stellar Network ; September 2015';
+  }
+
+  // Fetch actual passphrase from Horizon
+  let actualPassphrase: string;
+  try {
+    if (fetchPassphraseFn) {
+      actualPassphrase = await fetchPassphraseFn(horizonUrl);
+    } else {
+      const { fetchNetworkPassphrase } = await import('./horizon');
+      actualPassphrase = await fetchNetworkPassphrase(horizonUrl, { timeoutMs: 5000, maxRetries: 1 });
+    }
+  } catch (error) {
+    // Cannot fetch passphrase - fail open (don't block validation)
+    logger.debug('Unable to fetch network passphrase from Horizon for mismatch check', {
+      component: 'checks',
+      horizonUrl: redactHorizonUrl(horizonUrl),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+
+  // Compare (case-sensitive, whitespace-normalized)
+  const normalizedExpected = expectedPassphrase.trim();
+  const normalizedActual = actualPassphrase.trim();
+
+  if (normalizedExpected === normalizedActual) {
+    return undefined; // Match - no mismatch
+  }
+
+  // Build user-facing message
+  const expectedNetwork = normalizedExpected.includes('Test SDF') ? 'testnet' : 
+                          normalizedExpected.includes('Public Global') ? 'public' : 'custom';
+  const actualNetwork = normalizedActual.includes('Test SDF') ? 'testnet' :
+                        normalizedActual.includes('Public Global') ? 'public' : 'custom';
+
+  let message = `Network passphrase mismatch detected. `;
+  
+  if (expectedNetwork !== actualNetwork && expectedNetwork !== 'custom' && actualNetwork !== 'custom') {
+    message += `You configured ${expectedNetwork} but Horizon URL points to ${actualNetwork}. `;
+  } else {
+    message += `Expected "${normalizedExpected}" but Horizon reports "${normalizedActual}". `;
+  }
+
+  message += `This will cause confusing 404 errors. Update either your horizon_url or network_passphrase input to match.`;
+
+  return {
+    expectedPassphrase: normalizedExpected,
+    actualPassphrase: normalizedActual,
+    message,
+  };
+}
+
 export interface CheckResultItem {
   passed: boolean;
   label: string;
@@ -217,6 +328,11 @@ export interface ValidationResult {
    * `config.checkLedgerFreshness` is true.
    */
   ledgerFreshnessResult?: LedgerFreshnessCheckResult;
+  /**
+   * Network passphrase mismatch detection (Issue #2). Populated when
+   * the input/inferred passphrase differs from what Horizon reports.
+   */
+  networkPassphraseMismatch?: NetworkPassphraseMismatch;
 }
 
 // ---------------------------------------------------------------------------
