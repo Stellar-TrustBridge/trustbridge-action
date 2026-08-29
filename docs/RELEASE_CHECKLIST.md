@@ -17,20 +17,47 @@ Related docs: [Breaking Changes](BREAKING_CHANGES.md) · [License Report](LICENS
 
 ## Verify build provenance
 
-The tag-triggered release workflow publishes a signed SLSA provenance attestation for the freshly built `dist/index.js` to GitHub's attestations API. Verify the exact bundle from the release tag before moving a major tag:
+The tag-triggered release workflow publishes signed SLSA provenance attestations for the freshly built `dist/index.js` and `dist/licenses.txt` to GitHub's attestations API. It also generates a SHA-256 checksum manifest (`trustbridge-checksums.txt`) uploaded as a release asset.
+
+### Verifying attestations
+
+Verify the exact bundle from the release tag before moving a major tag:
 
 ```bash
 TAG=v1.0.1
 git clone --depth 1 --branch "$TAG" https://github.com/Stellar-TrustBridge/trustbridge-action.git
 cd trustbridge-action
 
+# Verify SLSA provenance for the main bundle
 gh attestation verify dist/index.js \
+  --repo Stellar-TrustBridge/trustbridge-action \
+  --signer-workflow Stellar-TrustBridge/trustbridge-action/.github/workflows/release.yml \
+  --source-ref "refs/tags/$TAG"
+
+# Verify SLSA provenance for the license report
+gh attestation verify dist/licenses.txt \
   --repo Stellar-TrustBridge/trustbridge-action \
   --signer-workflow Stellar-TrustBridge/trustbridge-action/.github/workflows/release.yml \
   --source-ref "refs/tags/$TAG"
 ```
 
-Replace `v1.0.1` with the release tag. A successful result proves that the bundle digest matches a SLSA provenance statement signed by the repository's release workflow for that tag. If verification fails, do not publish or move the major tag; inspect the release run and rebuild from a clean tag.
+### Verifying checksums
+
+Download the checksum manifest from the GitHub Release and verify:
+
+```bash
+# Download checksums from the release
+gh release download "$TAG" --pattern trustbridge-checksums.txt
+
+# Verify checksums
+sha256sum -c trustbridge-checksums.txt
+```
+
+Replace `v1.0.1` with the release tag. A successful result proves that:
+1. The bundle digest matches a SLSA provenance statement signed by the repository's release workflow for that tag
+2. The checksums in the manifest match the actual files
+
+If verification fails, do not publish or move the major tag; inspect the release run and rebuild from a clean tag.
 
 ## Scheduled re-validation
 
