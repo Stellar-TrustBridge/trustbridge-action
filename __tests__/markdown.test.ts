@@ -77,8 +77,15 @@ describe('buildOnboardingChecklist', () => {
 
   it('links FAQ anchors for each step', () => {
     const markdown = buildOnboardingChecklist(result({}), baseOptions);
-    expect(markdown).toContain('#account-is-reported-unfunded');
-    expect(markdown).toContain('#trustline-is-missing');
+    // Anchors must match headings in docs/FAQ.md (Issue #328)
+    expect(markdown).toContain('#account-not-funded');
+    expect(markdown).toContain('#trustline-missing');
     expect(markdown).toContain('#xlm-reserve-too-low');
+  });
+
+  it('FAQ links point to docs/FAQ.md, not a non-existent TROUBLESHOOTING.md', () => {
+    const markdown = buildOnboardingChecklist(result({}), baseOptions);
+    expect(markdown).not.toContain('TROUBLESHOOTING.md');
+    expect(markdown).toContain('docs/FAQ.md');
   });
 });

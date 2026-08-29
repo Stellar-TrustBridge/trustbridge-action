@@ -5,9 +5,9 @@ exports[`buildOnboardingChecklist renders a partial checklist when only funding 
 
 _Complete these steps in order. Boxes update automatically from live Horizon checks._
 
-- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))"
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
 `;
 
 exports[`buildOnboardingChecklist renders all checked boxes when validation fully passes 1`] = `
@@ -15,9 +15,9 @@ exports[`buildOnboardingChecklist renders all checked boxes when validation full
 
 _Complete these steps in order. Boxes update automatically from live Horizon checks._
 
-- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))"
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
 `;
 
 exports[`buildOnboardingChecklist renders all unchecked boxes when every check fails 1`] = `
@@ -25,7 +25,7 @@ exports[`buildOnboardingChecklist renders all unchecked boxes when every check f
 
 _Complete these steps in order. Boxes update automatically from live Horizon checks._
 
-- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))"
+- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
 `;
