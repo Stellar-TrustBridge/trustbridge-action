@@ -1,13 +1,12 @@
-name: 'TrustBridge Action'
+name: "TrustBridge Action"
 description: >-
   Verify that a Stellar account is funded, holds a trustline for a specified
   asset (default USDC), and meets the minimum XLM reserve before continuing
   GitHub issue workflows.
-author: 'Stellar-TrustBridge'
-
+author: "Stellar-TrustBridge"
 branding:
-  icon: 'shield'
-  color: 'blue'
+  icon: "shield"
+  color: "blue"
 
 # Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md
 inputs:
@@ -20,42 +19,42 @@ inputs:
     required: false
     default: "1000"
   horizon_url:
-    description: 'Stellar Horizon API base URL'
+    description: "Stellar Horizon API base URL"
     required: false
-    default: 'https://horizon.stellar.org'
+    default: "https://horizon.stellar.org"
   asset_code:
-    description: 'Asset code to check trustline for'
+    description: "Asset code to check trustline for"
     required: false
-    default: 'USDC'
+    default: "USDC"
   asset_issuer:
-    description: 'Asset issuer Stellar address (G-address)'
+    description: "Asset issuer Stellar address (G-address)"
     required: false
-    default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+    default: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
   min_xlm_reserve:
-    description: 'Minimum native XLM balance required (string, e.g. 1.5)'
+    description: "Minimum native XLM balance required (string, e.g. 1.5)"
     required: false
-    default: '1.5'
+    default: "1.5"
   min_trustline_limit:
     description: >-
       Minimum trustline limit required for the configured asset (numeric, e.g. 100).
       When set, the action will warn or fail if the account's trustline limit is below
       this threshold. Leave empty to skip this check. (Issue #140)
     required: false
-    default: ''
+    default: ""
   min_asset_balance:
     description: >-
       Minimum balance required for the configured asset (numeric string, e.g. 100).
       When set, the action will warn or fail if the account's asset balance is below
       this threshold. Leave empty to skip this check. (Issue #112)
     required: false
-    default: ''
+    default: ""
   stellar_address_input:
     description: >-
       Stellar account address (G-address) to validate. Required unless
       assignee_address_map is set, in which case the address is resolved
       from the map using the GitHub assignee login.
     required: false
-    default: ''
+    default: ""
   assignee_address_map:
     description: >-
       Optional JSON object (or path to a JSON file) mapping GitHub usernames
@@ -66,43 +65,43 @@ inputs:
       'rosters/wallets.json'. Do not commit private rosters to public repos;
       prefer org/repo secrets or a private path.
     required: false
-    default: ''
+    default: ""
   fail_on_missing:
-    description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
+    description: "Fail the workflow step when checks do not pass (true) or only warn (false)"
     required: false
-    default: 'true'
+    default: "true"
   debug_mode:
-    description: 'Enable extra action logs for troubleshooting'
+    description: "Enable extra action logs for troubleshooting"
     required: false
-    default: 'false'
+    default: "false"
   horizon_timeout_ms:
-    description: 'Horizon request timeout in milliseconds (1000-60000)'
+    description: "Horizon request timeout in milliseconds (1000-60000)"
     required: false
-    default: '15000'
+    default: "15000"
   sticky_comment:
     description: >-
       Update TrustBridge's previous comment on the issue instead of posting a
       new one each run (true), or always post a new comment (false)
     required: false
-    default: 'true'
+    default: "true"
   wait_until_funded:
     description: >-
       Poll Horizon until the account becomes funded (true) instead of
       immediately returning an unfunded result on the first 404 (false)
     required: false
-    default: 'false'
+    default: "false"
   wait_until_funded_timeout_ms:
     description: >-
       Maximum total time to poll for the account to become funded, in
       milliseconds (0-600000). Only used when wait_until_funded is true.
     required: false
-    default: '120000'
+    default: "120000"
   wait_until_funded_interval_ms:
     description: >-
       Delay between funded-account polling attempts, in milliseconds
       (1000-60000). Only used when wait_until_funded is true.
     required: false
-    default: '5000'
+    default: "5000"
   horizon_url_fallback:
     description: >-
       Optional fallback Horizon API base URL. When the primary Horizon URL
@@ -110,29 +109,29 @@ inputs:
       against this URL before giving up. Useful for cross-region or
       multi-provider resilience.
     required: false
-    default: ''
+    default: ""
   horizon_cache_ttl_ms:
     description: >-
       Time-to-live for the in-memory Horizon account cache, in milliseconds.
       Set to 0 to disable caching entirely. Default 60000 (60 seconds).
     required: false
-    default: '60000'
+    default: "60000"
   rpc_fallback_url:
-    description: 'Optional secondary/fallback Horizon or RPC URL if primary fails'
+    description: "Optional secondary/fallback Horizon or RPC URL if primary fails"
     required: false
-    default: ''
+    default: ""
   horizon_max_requests:
-    description: 'Global cap on Horizon requests per run to prevent 429 stampedes (0 for unlimited)'
+    description: "Global cap on Horizon requests per run to prevent 429 stampedes (0 for unlimited)"
     required: false
-    default: '0'
+    default: "0"
   retry_max_delay_ms:
-    description: 'Maximum backoff delay in milliseconds for Horizon retries'
+    description: "Maximum backoff delay in milliseconds for Horizon retries"
     required: false
-    default: '30000'
+    default: "30000"
   use_cache:
-    description: 'Cache successful Horizon responses in job memory (true/false)'
+    description: "Cache successful Horizon responses in job memory (true/false)"
     required: false
-    default: 'false'
+    default: "false"
   use_actions_cache_backend:
     description: >-
       Enable GitHub Actions cache backend persistence (true/false) to share
@@ -142,7 +141,7 @@ inputs:
       validating account state on cache hits. Defaults to false for
       backward compatibility.
     required: false
-    default: 'false'
+    default: "false"
   allow_cross_network_fallback:
     description: >-
       By default, the fallback URL (`horizon_url_fallback`/`rpc_fallback_url`)
@@ -152,7 +151,7 @@ inputs:
       return funded/trustline/reserve data for the wrong ledger. Set this to
       `true` to opt into cross-network fallback anyway. Defaults to false.
     required: false
-    default: 'false'
+    default: "false"
   log_inputs:
     description: >-
       Emit a structured JSON log record of all resolved action inputs at run
@@ -161,7 +160,7 @@ inputs:
       output). Useful for auditing which inputs were active during a run.
       Defaults to false.
     required: false
-    default: 'false'
+    default: "false"
   trustbridge_config_path:
     description: >-
       Path (relative to the repository root, or absolute) to a consumer
@@ -173,7 +172,20 @@ inputs:
       ".trustbridge.yml" in the repository root.  Leave empty to skip the
       config file entirely.
     required: false
-    default: '.trustbridge.yml'
+    default: ".trustbridge.yml"
+  milestone_allowlist:
+    description: >-
+      Comma-separated list of allowed milestone names. When set, runs will skip
+      validation unless the issue/PR milestone matches one of these values. Useful
+      for repo-level workflow gates.
+    required: false
+    default: ""
+  milestone_fail_on_skip:
+    description: >-
+      When true and the milestone gate skips validation, fail the workflow step
+      instead of only logging a warning. Default false.
+    required: false
+    default: "false"
   github_token:
     description: >-
       GitHub token used to post issue comments. Requires `issues: write`
@@ -194,7 +206,7 @@ inputs:
       organization-wide triage workflows or cross-repository comments.
       When provided, takes precedence over github_token. (Issue #225)
     required: false
-    default: ''
+    default: ""
   assets_json:
     description: >-
       JSON array of additional assets to validate trustlines for, e.g.
@@ -205,13 +217,13 @@ inputs:
       the `assets_trustline_status` and `trustlines_summary` outputs and
       rendered as a per-asset breakdown in the issue comment.
     required: false
-    default: ''
+    default: ""
   sep0007_deep_links:
     description: >-
       When true, embed SEP-0007 wallet deep links in the issue comment for
       funding and trustline setup. Default false.
     required: false
-    default: 'false'
+    default: "false"
   auto_wallet_labels:
     description: >-
       Automatically apply a wallet state label to the issue
@@ -219,13 +231,25 @@ inputs:
       wallet: reserve-low | wallet: horizon-error). Requires
       `issues: write` permission. Default false.
     required: false
-    default: 'false'
+    default: "false"
+  pass_label:
+    description: >-
+      Optional label name to apply when the TrustBridge check passes. Leave empty to disable.
+      Useful for boards or labels that represent a ready state distinct from auto_wallet_labels.
+    required: false
+    default: ""
+  fail_label:
+    description: >-
+      Optional label name to apply when the TrustBridge check fails. Leave empty to disable.
+      Useful for boards or labels that represent a not-ready state distinct from auto_wallet_labels.
+    required: false
+    default: ""
   sep0007_origin_domain:
     description: >-
       Optional origin domain embedded in SEP-0007 URIs for wallet validation
       (SEP-0007 §3.4). Leave empty to omit the field.
     required: false
-    default: ''
+    default: ""
   snooze_window_minutes:
     description: >-
       Time window (in minutes) to suppress duplicate validation failure comments
@@ -234,14 +258,14 @@ inputs:
       noise. Outputs are always updated even when snoozed. Set to 0 to disable
       snoozing (always post). Default 30 minutes. (Issue #155)
     required: false
-    default: '30'
+    default: "30"
   force_comment:
     description: >-
       Bypass snooze logic and force an immediate comment post, even if within
       the snooze window. Useful for maintainers who want to re-alert after
       a fix attempt. Default false. (Issue #155)
     required: false
-    default: 'false'
+    default: "false"
   webhook_url:
     description: >-
       Optional HTTPS URL to POST a signed webhook notification to after every
@@ -250,7 +274,7 @@ inputs:
       HMAC-SHA256 when `webhook_secret` is also supplied. Disabled by default.
       (Issue #101)
     required: false
-    default: ''
+    default: ""
   webhook_secret:
     description: >-
       Shared secret used to sign the webhook payload with HMAC-SHA256. The
@@ -259,7 +283,7 @@ inputs:
       Leave empty to send unsigned webhooks (not recommended for production).
       Only used when `webhook_url` is set. (Issue #101)
     required: false
-    default: ''
+    default: ""
   webhook_timeout_ms:
     description: >-
       Maximum time in milliseconds to wait for the webhook endpoint to
@@ -267,7 +291,7 @@ inputs:
       is logged — comment posting and validation results are unaffected.
       Default 5000 (5 seconds). (Issue #101)
     required: false
-    default: '5000'
+    default: "5000"
   webhook_auth_mode:
     description: >-
       Authentication mechanism for dashboard webhook notifications: "hmac" (default)
@@ -275,13 +299,13 @@ inputs:
       ID token and send as `Authorization: Bearer <token>`. Requires `id-token: write`
       permission when set to "oidc". (Issue #224)
     required: false
-    default: 'hmac'
+    default: "hmac"
   webhook_oidc_audience:
     description: >-
       Expected audience for GitHub OIDC token when webhook_auth_mode is "oidc".
       Default "trustbridge-dashboard". (Issue #224)
     required: false
-    default: 'trustbridge-dashboard'
+    default: "trustbridge-dashboard"
   docs_base_url:
     description: >-
       Optional base URL for FAQ/docs deep links embedded in failing check
@@ -289,7 +313,7 @@ inputs:
       forks or mirrors that host their own documentation. Must be an HTTPS
       URL; invalid values fall back to the default silently. (Issue #104)
     required: false
-    default: ''
+    default: ""
   network:
     description: >-
       Stellar network shorthand: "testnet", "public", or "mainnet". When set
@@ -297,7 +321,7 @@ inputs:
       horizon_url, asset_code, and asset_issuer defaults. Explicit action
       inputs always win over preset values. (Issue #207)
     required: false
-    default: ''
+    default: ""
   preset:
     description: >-
       Campaign preset name (e.g. "testnet", "public", "testnet-usdc",
@@ -305,7 +329,7 @@ inputs:
       asset_issuer defaults. Takes precedence over the "network" input.
       Explicit action inputs always win. (Issue #207)
     required: false
-    default: ''
+    default: ""
 
   comment_mode:
     description: >-
@@ -328,49 +352,49 @@ inputs:
       Include an onboarding checklist task list in the issue comment whose
       checkboxes reflect live ValidationResult state. Default true.
     required: false
-    default: 'true'
+    default: "true"
   check_ledger_freshness:
     description: >-
       When true, query Horizon root for ledger lag before account checks and
       surface a freshness banner in the comment. Default false.
     required: false
-    default: 'false'
+    default: "false"
   max_ledger_lag_seconds:
     description: >-
       Maximum acceptable Horizon ledger lag in seconds when check_ledger_freshness
       is enabled. Default 60.
     required: false
-    default: '60'
+    default: "60"
   ledger_freshness_fail_on_stale:
     description: >-
       When true and ledger freshness is stale, treat the run as invalid.
       Default false (warn only).
     required: false
-    default: 'false'
+    default: "false"
   network_passphrase:
     description: >-
       Optional Stellar network passphrase override used for diagnostics and
       SEP-0007 deep links. Leave empty to infer from horizon_url.
     required: false
-    default: ''
+    default: ""
   home_domain_check_enabled:
     description: >-
       Enable SEP-0001 home_domain alignment check against the asset issuer
       account. Default false.
     required: false
-    default: 'false'
+    default: "false"
   expected_home_domain:
     description: >-
       Expected issuer home_domain value when home_domain_check_enabled is true.
       Leave empty to accept any non-empty on-chain home_domain.
     required: false
-    default: ''
+    default: ""
   home_domain_check_mode:
     description: >-
       How to treat home_domain mismatches: "warn" (default) or "strict"
       (blocks valid).
     required: false
-    default: 'warn'
+    default: "warn"
   stellar_toml_fetch_enabled:
     description: >-
       Enable optional SEP-0001 stellar.toml fetch and validation when
@@ -378,13 +402,13 @@ inputs:
       https://{home_domain}/.well-known/stellar.toml with SSRF protection
       and TTL caching. Default false.
     required: false
-    default: 'false'
+    default: "false"
   stellar_toml_cache_ttl_ms:
     description: >-
       Time-to-live for stellar.toml fetch cache in milliseconds. Default 3600000
       (1 hour). Only used when stellar_toml_fetch_enabled is true.
     required: false
-    default: '3600000'
+    default: "3600000"
   stellar_toml_hash_pin:
     description: >-
       Optional integrity hash for stellar.toml content validation. Format:
@@ -393,21 +417,21 @@ inputs:
       cache poisoning and MITM attacks. Only used when stellar_toml_fetch_enabled
       is true.
     required: false
-    default: ''
+    default: ""
   write_validation_json:
     description: >-
       When true, write the validation result to validation_json_path as a
       machine-readable JSON artifact. Includes all check results, account
       state, and metadata. Default false.
     required: false
-    default: 'false'
+    default: "false"
   validation_json_path:
     description: >-
       File path where the validation result JSON is written when
       write_validation_json is true. Relative paths are resolved from the
       workflow workspace. Default "validation.json".
     required: false
-    default: 'validation.json'
+    default: "validation.json"
   trustbridge_plugins_path:
     description: >-
       Comma-separated list of workspace-relative paths to external CheckPlugin
@@ -417,7 +441,7 @@ inputs:
       external plugins). When a plugin fails to load, a warning is logged and
       the run continues (fail-open).
     required: false
-    default: ''
+    default: ""
 
   sarif_output_path:
     description: >-
@@ -425,14 +449,14 @@ inputs:
       integration. Leave empty to skip SARIF output. The file is written
       under GITHUB_WORKSPACE. (Issue #197)
     required: false
-    default: ''
+    default: ""
 
   use_plugin_runner:
     description: >-
       Use the plugin-based check pipeline (runPlugins + core plugins)
       instead of the monolith runAccountChecks. Default false. (Issue #198)
     required: false
-    default: 'false'
+    default: "false"
 
   locale:
     description: >-
@@ -440,7 +464,7 @@ inputs:
       es (Spanish), pt (Portuguese). Invalid or unsupported locales fall
       back to English. (Issue #202)
     required: false
-    default: 'en'
+    default: "en"
 
   stellar_addresses:
     description: >-
@@ -449,7 +473,7 @@ inputs:
       summary comment. Single-address jobs should use
       stellar_address_input instead. (Issue #199)
     required: false
-    default: ''
+    default: ""
 
   unassign_on_not_ready:
     description: >-
@@ -458,38 +482,38 @@ inputs:
       permission. Permission or API errors are logged as warnings and do not fail the run.
       Does not unassign during Horizon network/connectivity outages. (Issue #228)
     required: false
-    default: 'false'
+    default: "false"
 
   project_id:
     description: >-
       Optional GitHub Projects v2 ID (node ID e.g. PVT_...) to update item status
       when validation passes or fails. (Issue #222)
     required: false
-    default: ''
+    default: ""
 
   project_status_field:
     description: >-
       Name of the status field in the GitHub Projects v2 board. Default "Status". (Issue #222)
     required: false
-    default: 'Status'
+    default: "Status"
 
   project_status_pass:
     description: >-
       Value/option to set on the project status field when validation passes. (Issue #222)
     required: false
-    default: ''
+    default: ""
 
   project_status_fail:
     description: >-
       Value/option to set on the project status field when validation fails. (Issue #222)
     required: false
-    default: ''
+    default: ""
 
   project_token:
     description: >-
       Optional GitHub token with `project` or `write:org` scope if different from github_token. (Issue #222)
     required: false
-    default: ''
+    default: ""
 
   claimable_balance_policy:
     description: >-
@@ -498,7 +522,7 @@ inputs:
       "count" — when account is 404, also checks claimable_balances claimant endpoint and surfaces claimable presence in the comment (informational, does not auto-claim).
       Empty claimables are treated as no hint in either mode. Default "ignore" matches today’s behavior.
     required: false
-    default: 'ignore'
+    default: "ignore"
 
   sep0010_challenge_xdr:
     description: >-
@@ -506,7 +530,7 @@ inputs:
       When set, the comment includes a truncated challenge snippet for Freighter signing. Prefer `sep0010_dashboard_url` to avoid leaking nonces.
       Does not block `ready` unless your workflow explicitly gates on it.
     required: false
-    default: ''
+    default: ""
 
   sep0010_dashboard_url:
     description: >-
@@ -514,18 +538,18 @@ inputs:
       When set, the comment shows a “Verify with Freighter on dashboard” link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
       Must be https and not a private/loopback host. Does not block `ready` unless documented.
     required: false
-    default: ''
+    default: ""
 
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
-    description: 'Whether the account has a trustline for the configured asset'
+    description: "Whether the account has a trustline for the configured asset"
   xlm_balance:
-    description: 'Current native XLM balance as reported by Horizon'
+    description: "Current native XLM balance as reported by Horizon"
   account_funded:
-    description: 'Whether the account exists and is activated on the Stellar network'
+    description: "Whether the account exists and is activated on the Stellar network"
   comment_url:
-    description: 'URL of the created or updated issue comment, when run in an issue context'
+    description: "URL of the created or updated issue comment, when run in an issue context"
   full_report_path:
     description: >-
       Absolute path of the full validation report file written to the workflow
@@ -534,46 +558,46 @@ outputs:
 
   # ── Audit & Integration outputs (Issue #66, #67) ─────────────────────────
   ready:
-    description: 'Whether all validation checks passed (true/false)'
+    description: "Whether all validation checks passed (true/false)"
   validated_at:
-    description: 'ISO-8601 timestamp when the validation checks were performed'
+    description: "ISO-8601 timestamp when the validation checks were performed"
   horizon_url:
-    description: 'Horizon API base URL used for validation'
+    description: "Horizon API base URL used for validation"
   asset_code:
-    description: 'Asset code validated by the action'
+    description: "Asset code validated by the action"
   asset_issuer:
-    description: 'Asset issuer address validated by the action'
+    description: "Asset issuer address validated by the action"
   reason_code:
-    description: 'Machine-readable failure reason code (e.g. SUCCESS, ACCOUNT_NOT_FUNDED, TRUSTLINE_MISSING, RESERVE_TOO_LOW)'
+    description: "Machine-readable failure reason code (e.g. SUCCESS, ACCOUNT_NOT_FUNDED, TRUSTLINE_MISSING, RESERVE_TOO_LOW)"
   checks_json:
-    description: 'JSON string array of individual check results and pass/fail statuses'
+    description: "JSON string array of individual check results and pass/fail statuses"
 
   # ── Badge outputs (Issue #TBD) ────────────────────────────────────────────
   badge_markdown:
-    description: 'Markdown-formatted badge snippet (e.g. for README embeds) linking to TrustBridge repo'
+    description: "Markdown-formatted badge snippet (e.g. for README embeds) linking to TrustBridge repo"
   badge_url:
-    description: 'Shields.io badge URL reflecting validation state (pass/fail/pending)'
+    description: "Shields.io badge URL reflecting validation state (pass/fail/pending)"
 
   # ── Split balance outputs (Issue #246) ─────────────────────────────────────
   asset_balance:
-    description: 'Current configured asset (e.g. USDC) balance as reported by Horizon (7-decimal string, 0 if no trustline, unknown on Horizon error)'
+    description: "Current configured asset (e.g. USDC) balance as reported by Horizon (7-decimal string, 0 if no trustline, unknown on Horizon error)"
   native_balance:
-    description: 'Native XLM balance alias of xlm_balance (7-decimal Horizon string)'
+    description: "Native XLM balance alias of xlm_balance (7-decimal Horizon string)"
 
   # ── Timing breakdown outputs (Issue #93) ──────────────────────────────────
   timings_json:
-    description: 'JSON string containing millisecond execution timings for all major phases'
+    description: "JSON string containing millisecond execution timings for all major phases"
   timing_input_parse_ms:
-    description: 'Execution duration of input parsing phase in milliseconds'
+    description: "Execution duration of input parsing phase in milliseconds"
   timing_horizon_fetch_ms:
-    description: 'Execution duration of Horizon API fetch phase in milliseconds'
+    description: "Execution duration of Horizon API fetch phase in milliseconds"
   timing_checks_ms:
-    description: 'Execution duration of validation checks phase in milliseconds'
+    description: "Execution duration of validation checks phase in milliseconds"
   timing_comment_post_ms:
-    description: 'Execution duration of comment posting phase in milliseconds'
+    description: "Execution duration of comment posting phase in milliseconds"
   timing_total_ms:
-    description: 'Total execution duration in milliseconds'
+    description: "Total execution duration in milliseconds"
 
 runs:
-  using: 'node20'
-  main: 'dist/index.js'
+  using: "node20"
+  main: "dist/index.js"

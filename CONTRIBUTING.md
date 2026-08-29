@@ -36,17 +36,37 @@ cd trustbridge-action
 npm ci
 ```
 
+### Self-hosted runner recipe
+
+TrustBridge works on GitHub-hosted runners and self-hosted runners without Docker. For the happy path, install Node.js 20 LTS or 22 LTS, grant read access to the repository, and ensure the runner can reach the configured Horizon endpoint over outbound HTTPS.
+
+```yaml
+runs-on: [self-hosted, linux, x64]
+permissions:
+  contents: read
+  issues: write
+```
+
+Minimal requirements for a self-hosted runner:
+
+- Node.js 20 LTS or 22 LTS installed locally
+- `GITHUB_TOKEN` available with `issues: write` when commenting or labeling
+- Outbound HTTPS access to your configured `horizon_url` and any fallback endpoints
+- No Docker requirement for normal validation runs; the mock Horizon stack is optional for local testing only
+
+The Docker-based mock Horizon remains optional for contributors who want local integration testing, but it is not required for a normal self-hosted workflow.
+
 ### Commands
 
-| Command | Purpose |
-|---------|---------|
-| `npm test` | Run Jest unit tests |
-| `npm run test:coverage` | Coverage report in `coverage/` |
-| `npm run test:mock` | Smoke tests against local mock Horizon (requires `npm run mock:start` first) |
-| `npm run lint` | ESLint on `src/` and `__tests__/` |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run mock:start` | Start mock Horizon container on `http://localhost:8089` |
-| `npm run mock:stop` | Stop and remove mock Horizon container |
+| Command                 | Purpose                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `npm test`              | Run Jest unit tests                                                          |
+| `npm run test:coverage` | Coverage report in `coverage/`                                               |
+| `npm run test:mock`     | Smoke tests against local mock Horizon (requires `npm run mock:start` first) |
+| `npm run lint`          | ESLint on `src/` and `__tests__/`                                            |
+| `npm run build`         | Compile TypeScript to `dist/`                                                |
+| `npm run mock:start`    | Start mock Horizon container on `http://localhost:8089`                      |
+| `npm run mock:stop`     | Stop and remove mock Horizon container                                       |
 
 All commands except `mock:*` and `test:mock` must pass before opening a PR. CI runs the same pipeline (see `.github/workflows/ci.yml`).
 
@@ -69,13 +89,13 @@ npm run mock:stop                                 # stop container
 
 ### What is mocked
 
-| Scenario | Address | Response |
-|----------|---------|----------|
-| All checks pass | `GAAA...AWHF` | 200, 10 XLM, USDC trustline |
-| Unfunded account | `GBBB...BBBB` | 404 Not Found |
-| Low XLM balance | `GCCC...CCCC` | 200, 0.5 XLM, USDC trustline |
-| No trustline | `GDDD...DDDD` | 200, 10 XLM, no trustline |
-| Rate limited | `GEEE...EEEE` | 429 with `Retry-After: 1` |
+| Scenario         | Address       | Response                     |
+| ---------------- | ------------- | ---------------------------- |
+| All checks pass  | `GAAA...AWHF` | 200, 10 XLM, USDC trustline  |
+| Unfunded account | `GBBB...BBBB` | 404 Not Found                |
+| Low XLM balance  | `GCCC...CCCC` | 200, 0.5 XLM, USDC trustline |
+| No trustline     | `GDDD...DDDD` | 200, 10 XLM, no trustline    |
+| Rate limited     | `GEEE...EEEE` | 429 with `Retry-After: 1`    |
 
 Stub definitions live in `mock/horizon/mappings/`. Full documentation:
 [mock/horizon/README.md](mock/horizon/README.md).
@@ -111,6 +131,7 @@ releases while staying opt-in to avoid flaky default CI.
 ### Setup (for maintainers)
 
 1. **Create a funded testnet account**
+
    ```bash
    # Use Stellar Laboratory (testnet mode) to create and fund a new account
    # https://laboratory.stellar.org/#account-creator?network=test
@@ -142,13 +163,13 @@ releases while staying opt-in to avoid flaky default CI.
 
 ### Failure modes
 
-| Failure | Likely cause | Fix |
-|---------|--------------|-----|
-| Job skipped entirely | Repository secrets not set | Add `TEST_STELLAR_ADDRESS` to repo secrets |
-| "account_funded: false" | Testnet account not funded or wrong account | Use Stellar Lab to fund or verify address |
-| "Comment posting failed" | Token or permissions issue | Check `GITHUB_TOKEN` has `issues: write` |
-| Rate limit (429) | Testnet Horizon overloaded | Wait a few minutes and retry |
-| Timeout | Network connectivity | Check internet and Horizon endpoint availability |
+| Failure                  | Likely cause                                | Fix                                              |
+| ------------------------ | ------------------------------------------- | ------------------------------------------------ |
+| Job skipped entirely     | Repository secrets not set                  | Add `TEST_STELLAR_ADDRESS` to repo secrets       |
+| "account_funded: false"  | Testnet account not funded or wrong account | Use Stellar Lab to fund or verify address        |
+| "Comment posting failed" | Token or permissions issue                  | Check `GITHUB_TOKEN` has `issues: write`         |
+| Rate limit (429)         | Testnet Horizon overloaded                  | Wait a few minutes and retry                     |
+| Timeout                  | Network connectivity                        | Check internet and Horizon endpoint availability |
 
 ### Security
 
@@ -194,7 +215,6 @@ Do not import `@actions/github` outside `comment.ts` / `index.ts`.
 
 ---
 
-
 ## Keeping the schema in sync with action.yml
 
 `schemas/action-inputs.schema.json` is the single source of truth for
@@ -233,14 +253,14 @@ that mirrors the `inputs:` section of `action.yml`. Each property:
 
 `__tests__/action-schema-sync.test.ts` parses `action.yml` at test time using Node's built-in `fs` module (no extra YAML-parser dependency) and asserts:
 
-| Check | What it catches |
-|-------|-----------------|
-| Every `action.yml` input in schema | Input added to action but schema not updated |
-| Every schema property in `action.yml` | Property added to schema but input removed |
-| `required: true` inputs in `required[]` | Required input missing from schema array |
-| Schema `required[]` matches action | Schema marks an optional input as required |
-| All properties have `type: "string"` | Accidental non-string type in schema |
-| Property count parity | Fast sanity check for bulk additions/removals |
+| Check                                   | What it catches                               |
+| --------------------------------------- | --------------------------------------------- |
+| Every `action.yml` input in schema      | Input added to action but schema not updated  |
+| Every schema property in `action.yml`   | Property added to schema but input removed    |
+| `required: true` inputs in `required[]` | Required input missing from schema array      |
+| Schema `required[]` matches action      | Schema marks an optional input as required    |
+| All properties have `type: "string"`    | Accidental non-string type in schema          |
+| Property count parity                   | Fast sanity check for bulk additions/removals |
 
 CI runs a dedicated step on every push and PR:
 
@@ -250,6 +270,7 @@ CI runs a dedicated step on every push and PR:
 ```
 
 ---
+
 ## Pull request process
 
 1. **Fork** the repository and create a feature branch from `main`
@@ -300,34 +321,39 @@ Before cutting a release tag, ensure:
 5. **Update action.yml if inputs/outputs changed** — Ensure new or changed inputs have descriptions and defaults
 6. **Update JSON Schema** — When adding or modifying inputs in `action.yml`, also update `schemas/action-inputs.schema.json` with the matching property (type, description, default, pattern/format for URLs and addresses). Run `npm test -- --testPathPattern schema` to verify no drift. See [docs/SCHEMA.md](docs/SCHEMA.md) for the full sync process.
 7. **Update docs** — If behavior or inputs changed, update [docs/USAGE.md](docs/USAGE.md) and [README.md](README.md)
-7. **Smoke test via SHA reference** — Clone a fresh copy of the repository and test the action by SHA to ensure the bundled dist/ works as a GitHub Action
-8. **Prepare SBOM** — If releasing with Issue #69 (SBOM attachment), generate the SBOM before tagging
-9. **Create GitHub Release** — Once the tag is pushed, create a Release page with a changelog (use `v1.0.0` format for tag names)
+8. **Smoke test via SHA reference** — Clone a fresh copy of the repository and test the action by SHA to ensure the bundled dist/ works as a GitHub Action
+9. **Prepare SBOM** — If releasing with Issue #69 (SBOM attachment), generate the SBOM before tagging
+10. **Create GitHub Release** — Once the tag is pushed, create a Release page with a changelog (use `v1.0.0` format for tag names)
 
 ### Packaging essentials
 
 **Why packaging matters:**
+
 - Consumers pin the action by SHA (`@<commit>`) or tag (`@v1`). Missing or stale `dist/` silently breaks comment posting.
 - GitHub Actions require `dist/index.js` to exist; missing it causes "action not found" errors.
 - `ncc` bundles dependencies so Node.js isn't required at runtime; if `dist/` isn't committed, the compiled code won't be available to runners.
 
 **Build process:**
+
 ```bash
 npm run build
 # Outputs: dist/index.js, dist/index.js.map, dist/licenses.txt
 ```
 
 This step:
+
 1. Runs `tsc --noEmit` to typecheck (fails if there are errors)
 2. Runs `@vercel/ncc` to bundle all dependencies into a single `dist/index.js`
 3. Generates source maps for debugging
 4. Extracts license information
 
 **CI enforcement:**
+
 - `.github/workflows/ci.yml` runs `npm run build` and verifies `dist/index.js` exists
 - It also runs `git diff --exit-code -- dist/` to fail if committed `dist/` is stale relative to src/
 
 **Manual smoke test:**
+
 ```bash
 # In a fresh clone of the release tag:
 git checkout v1.0.0
@@ -365,10 +391,10 @@ Once packaging is complete and tagged:
 
 CI includes a deterministic performance budget test (`__tests__/validation.performance.test.ts`) that times a full validation run of the action handler (`run` in `src/index.ts`) with **mocked Horizon** (no live network).
 
-| Setting | Value |
-|---------|--------|
-| Metric | p95 wall-clock duration over 25 samples (after warmup) |
-| Budget | **2000 ms** (`VALIDATION_PERFORMANCE_BUDGET_P95_MS`) |
+| Setting      | Value                                                       |
+| ------------ | ----------------------------------------------------------- |
+| Metric       | p95 wall-clock duration over 25 samples (after warmup)      |
+| Budget       | **2000 ms** (`VALIDATION_PERFORMANCE_BUDGET_P95_MS`)        |
 | Why generous | Standard GitHub-hosted runners vary; headroom avoids flakes |
 
 The test fails when p95 exceeds the budget. Failure messages call out likely causes: **Horizon retries**, **extra fetches**, or **logging/metrics bloat** on the validation path.
@@ -418,12 +444,12 @@ assignment job and hint at accidental imports.
 
 ### Current budget
 
-| Metric | Value |
-|--------|-------|
-| **Budget (hard limit)** | 2,097,152 bytes (2 MB) |
-| **Baseline (as of 2024-12-29)** | 1,688,671 bytes (~1.6 MB) |
-| **Headroom** | 408,481 bytes (~24%) |
-| **Warn threshold** | 1,887,436 bytes (90% of budget) |
+| Metric                          | Value                           |
+| ------------------------------- | ------------------------------- |
+| **Budget (hard limit)**         | 2,097,152 bytes (2 MB)          |
+| **Baseline (as of 2024-12-29)** | 1,688,671 bytes (~1.6 MB)       |
+| **Headroom**                    | 408,481 bytes (~24%)            |
+| **Warn threshold**              | 1,887,436 bytes (90% of budget) |
 
 ### How it works
 
@@ -478,11 +504,13 @@ npm run build && npm run bundle-size
 ### When CI fails with "Bundle size exceeds budget"
 
 The failure message includes:
+
 - Current size vs budget
 - Overage in bytes and percentage
 - Actionable next steps
 
 Common causes:
+
 - A new dependency was added without checking size (`npm ls --depth=0` shows
   direct deps; use `npm why <package>` to see why a transitive dep is present).
 - A dev-only fixture was accidentally imported into `src/` (check recent
