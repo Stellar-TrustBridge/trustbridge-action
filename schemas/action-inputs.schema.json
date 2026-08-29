@@ -483,6 +483,34 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "skip_for_maintainers": {
+      "type": "string",
+      "description": "Opt-in skip of validation checks when the workflow actor is a maintainer (listed in CODEOWNERS or maintainers_allowlist). Defaults to false.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "skip_if_maintainer": {
+      "type": "string",
+      "description": "Alias for skip_for_maintainers. Opt-in skip when actor is a maintainer. Defaults to false.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "maintainers_allowlist": {
+      "type": "string",
+      "description": "Optional comma-separated list of GitHub usernames or teams to treat as maintainers when skip_for_maintainers is true.",
+      "default": ""
+    },
+    "codeowners_path": {
+      "type": "string",
+      "description": "Optional path to CODEOWNERS file. When omitted, checks standard locations.",
+      "default": ""
     }
   }
 }

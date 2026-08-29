@@ -70,6 +70,7 @@ import {
 } from './batch';
 import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
 import { DiagnosticsConfig } from './diagnostics';
+import { loadCodeowners, isMaintainerActor } from './codeowners';
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -339,6 +340,56 @@ async function run(): Promise<void> {
 
         return;
       }
+    }
+  }
+
+  // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in)
+  const skipForMaintainers = parseBooleanInput(
+    core.getInput('skip_for_maintainers') || core.getInput('skip_if_maintainer'),
+    false,
+  );
+  if (skipForMaintainers) {
+    const actor =
+      github.context.actor ||
+      (github.context.payload.sender as { login?: string } | undefined)?.login ||
+      '';
+    const maintainersAllowlistRaw = core.getInput('maintainers_allowlist') || '';
+    const maintainersAllowlist = maintainersAllowlistRaw
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const customCodeownersPath = core.getInput('codeowners_path') || '';
+
+    const rawGithubToken = core.getInput('github_token');
+    const githubAppToken = resolveInput('github_app_token', core.getInput('github_app_token'));
+    const token = resolveGitHubAuthToken({
+      githubToken: rawGithubToken,
+      githubAppToken,
+    });
+
+    const codeowners = await loadCodeowners({
+      customPath: customCodeownersPath || undefined,
+      githubToken: token || undefined,
+    });
+
+    const isMaintainer = isMaintainerActor(actor, codeowners, maintainersAllowlist);
+
+    if (isMaintainer) {
+      const skipMessage = `Actor @${actor} is a maintainer (matched in CODEOWNERS / maintainers_allowlist). Skipping TrustBridge validation checks (skip_for_maintainers=true).`;
+      core.info(skipMessage);
+
+      core.setOutput('ready', 'true');
+      core.setOutput('reason_code', 'MAINTAINER_SKIPPED');
+      core.setOutput('checks_json', '[]');
+      core.setOutput('account_funded', 'true');
+      core.setOutput('trustline_exists', 'true');
+      core.setOutput('xlm_balance', '0');
+
+      core.summary.addHeading('Maintainer Validation Skipped', 3);
+      core.summary.addRaw(skipMessage);
+      await core.summary.write();
+
+      return;
     }
   }
 
