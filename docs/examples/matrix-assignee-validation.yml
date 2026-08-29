@@ -1,0 +1,81 @@
+name: Matrix Assignee Validation
+
+# Example workflow demonstrating matrix-friendly outputs for parallel assignee validation.
+# Issue #3: GitHub matrices need stable output names per assignee.
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  # Job 1: Validate all assignees in parallel using matrix strategy
+  validate-assignees:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    strategy:
+      matrix:
+        # In a real workflow, you'd populate this dynamically or from a roster file
+        assignee: [alice, bob, charlie]
+      fail-fast: false  # Continue checking all assignees even if one fails
+    
+    steps:
+      - name: Checkout (for roster file)
+        uses: actions/checkout@v4
+
+      - name: Load assignee address
+        id: addr
+        run: |
+          # Example: Load from a JSON roster file
+          ADDRESS=$(jq -r '.["${{ matrix.assignee }}"]' rosters/wallets.json)
+          echo "stellar_address=$ADDRESS" >> $GITHUB_OUTPUT
+
+      - name: Validate wallet
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.addr.outputs.stellar_address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Matrix-friendly: Pass assignee info for output keying
+          assignee_login: ${{ matrix.assignee }}
+
+      - name: Check result
+        run: |
+          echo "Assignee: ${{ matrix.assignee }}"
+          echo "Ready: ${{ steps.trustbridge.outputs.ready }}"
+          echo "Balance: ${{ steps.trustbridge.outputs.xlm_balance }}"
+          
+          # Access matrix-friendly output
+          READY_MAP='${{ steps.trustbridge.outputs.matrix_ready_map }}'
+          ASSIGNEE_READY=$(echo "$READY_MAP" | jq -r '.["${{ matrix.assignee }}"]')
+          echo "From matrix map: $ASSIGNEE_READY"
+
+      - name: Post summary
+        run: |
+          if [ "${{ steps.trustbridge.outputs.ready }}" = "true" ]; then
+            echo "✅ ${{ matrix.assignee }} is ready for payout" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ ${{ matrix.assignee }} is not ready: ${{ steps.trustbridge.outputs.reason_code }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Job 2: Aggregate results and gate payout
+  aggregate-results:
+    needs: validate-assignees
+    runs-on: ubuntu-latest
+    if: always()  # Run even if some validations failed
+    
+    steps:
+      - name: Aggregate validation results
+        id: aggregate
+        run: |
+          # In a real workflow, you'd collect outputs from all matrix jobs
+          # For now, demonstrate the pattern
+          echo "All validations complete"
+          echo "Check individual job outputs for per-assignee results"
+
+      - name: Gate payout workflow
+        run: |
+          # Example: Only proceed with payout if all assignees passed
+          # Access matrix_ready_map from validation jobs to make decision
+          echo "Implement payout gating logic here"

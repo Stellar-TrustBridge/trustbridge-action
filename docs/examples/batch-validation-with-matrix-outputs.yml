@@ -1,0 +1,117 @@
+name: Batch Validation with Matrix Outputs
+
+# Example: Validate multiple assignees and use matrix-friendly JSON outputs
+# to access per-assignee results in downstream jobs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      assignees:
+        description: 'Comma-separated list of GitHub usernames'
+        required: true
+        default: 'alice,bob,charlie'
+
+jobs:
+  # Single job that validates all assignees and produces matrix-friendly outputs
+  batch-validate:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    
+    outputs:
+      # Expose matrix-friendly outputs for downstream jobs
+      assignee_results: ${{ steps.trustbridge.outputs.assignee_results_json }}
+      ready_map: ${{ steps.trustbridge.outputs.matrix_ready_map }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse assignee list
+        id: parse
+        run: |
+          # Convert comma-separated list to JSON array
+          ASSIGNEES='${{ github.event.inputs.assignees }}'
+          JSON_ARRAY=$(echo "$ASSIGNEES" | jq -R -s 'split(",") | map(gsub("^\\s+|\\s+$";""))')
+          echo "assignees=$JSON_ARRAY" >> $GITHUB_OUTPUT
+
+      - name: Validate all assignees
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          # Use stellar_addresses input for batch validation
+          stellar_addresses: |
+            alice:GALICE...
+            bob:GBOB...
+            charlie:GCHARLIE...
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Display results summary
+        run: |
+          echo "## Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse and display results from assignee_results_json
+          RESULTS='${{ steps.trustbridge.outputs.assignee_results_json }}'
+          
+          for assignee in $(echo "$RESULTS" | jq -r 'keys[]'); do
+            ready=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].ready')
+            balance=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].xlm_balance')
+            
+            if [ "$ready" = "true" ]; then
+              echo "- ✅ **$assignee**: Ready ($balance XLM)" >> $GITHUB_STEP_SUMMARY
+            else
+              reason=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].reason_code')
+              echo "- ❌ **$assignee**: Not ready - $reason" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+  # Downstream job that uses the matrix-friendly outputs
+  process-ready-assignees:
+    needs: batch-validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Dynamically create matrix from ready assignees
+        assignee: ${{ fromJSON(needs.batch-validate.outputs.ready_map) }}
+    
+    steps:
+      - name: Process ready assignee
+        if: matrix.assignee.value == true
+        run: |
+          echo "Processing payout for ${{ matrix.assignee.key }}"
+          
+          # Access full results from assignee_results_json
+          RESULTS='${{ needs.batch-validate.outputs.assignee_results }}'
+          ADDRESS=$(echo "$RESULTS" | jq -r '.["${{ matrix.assignee.key }}"].stellar_address')
+          BALANCE=$(echo "$RESULTS" | jq -r '.["${{ matrix.assignee.key }}"].xlm_balance')
+          
+          echo "Address: $ADDRESS"
+          echo "Balance: $BALANCE"
+          echo "Implement payout logic here"
+
+  # Alternative: Process all assignees with conditional logic
+  conditional-processing:
+    needs: batch-validate
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Process based on ready status
+        run: |
+          READY_MAP='${{ needs.batch-validate.outputs.ready_map }}'
+          RESULTS='${{ needs.batch-validate.outputs.assignee_results }}'
+          
+          echo "Processing assignees based on their ready status..."
+          
+          for assignee in $(echo "$READY_MAP" | jq -r 'keys[]'); do
+            is_ready=$(echo "$READY_MAP" | jq -r --arg a "$assignee" '.[$a]')
+            
+            if [ "$is_ready" = "true" ]; then
+              address=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].stellar_address')
+              echo "✅ Queue payout for $assignee ($address)"
+            else
+              reason=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].reason_code')
+              echo "⏭️  Skip $assignee: $reason"
+            fi
+          done
