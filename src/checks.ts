@@ -21,7 +21,7 @@ import {
 } from './links';
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
-import { validateHorizonUrl } from './validation';
+import { fetchTomlWithCache } from './toml';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -100,6 +100,27 @@ export interface CheckConfig {
    * tightened.
    */
   homeDomainCheckMode?: HomeDomainCheckMode;
+
+  /**
+   * When true, TrustBridge fetches stellar.toml from the issuer's home_domain
+   * (https://{home_domain}/.well-known/stellar.toml) with SSRF protection and
+   * TTL caching. Only used when homeDomainCheckEnabled is true. Default: false.
+   */
+  stellarTomlFetchEnabled?: boolean;
+
+  /**
+   * Time-to-live for stellar.toml fetch cache in milliseconds.
+   * Default: 3600000 (1 hour). Only used when stellarTomlFetchEnabled is true.
+   */
+  stellarTomlCacheTtlMs?: number;
+
+  /**
+   * Optional integrity hash for stellar.toml content validation.
+   * Format: "algorithm:hexvalue" (e.g. "sha256:abc123...").
+   * When set, the fetched TOML content is hashed and compared; a mismatch fails
+   * the check and blocks valid. Only used when stellarTomlFetchEnabled is true.
+   */
+  stellarTomlHashPin?: string;
 
   // ---------------------------------------------------------------------------
   // Ledger lag / freshness guard (Issue #107 — optional, off by default)
@@ -347,6 +368,17 @@ export interface HomeDomainCheckResult {
    * this flag is true to indicate the failure should block `valid`.
    */
   blocksValid: boolean;
+
+  /**
+   * Optional SEP-0001 stellar.toml fetch result. Only populated when
+   * stellarTomlFetchEnabled is true and a fetch was attempted.
+   */
+  tomlFetch?: {
+    ok: boolean;
+    error?: string;
+    hash?: string;
+    cached: boolean; // true if served from cache
+  };
 }
 
 /**
@@ -416,6 +448,97 @@ export function evaluateHomeDomain(
     detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` ✓`,
     blocksValid: false,
   };
+}
+
+/**
+ * Asynchronously fetch and validate stellar.toml for a home_domain.
+ *
+ * This function:
+ *  - Only runs if stellarTomlFetchEnabled is true in config
+ *  - Skips fetch if on-chain home domain check failed
+ *  - Fetches with SSRF protection and TTL caching
+ *  - Validates hash (if pin provided)
+ *  - Appends tomlFetch result to the existing HomeDomainCheckResult
+ *  - Fails the check if fetch/hash validation fails in strict mode
+ *
+ * @param result The existing HomeDomainCheckResult from evaluateHomeDomain
+ * @param config The CheckConfig with TOML options
+ * @returns Potentially updated result with tomlFetch populated
+ */
+export async function enrichHomeDomainCheckWithToml(
+  result: HomeDomainCheckResult,
+  config: CheckConfig,
+): Promise<HomeDomainCheckResult> {
+  // Only fetch TOML if enabled
+  if (!config.stellarTomlFetchEnabled) {
+    return result;
+  }
+
+  // Only fetch if we have a valid on-chain domain
+  if (result.outcome !== 'valid' || !result.actualHomeDomain) {
+    return result;
+  }
+
+  const domain = result.actualHomeDomain;
+  const cacheTtlMs = config.stellarTomlCacheTtlMs ?? 3600000;
+  const hashPin = config.stellarTomlHashPin ?? '';
+
+  try {
+    const fetchResult = await fetchTomlWithCache(domain, {
+      cacheTtlMs,
+      hashPin: hashPin || undefined,
+    });
+
+    if (!fetchResult.ok) {
+      const detail = `Stellar.toml fetch failed: ${fetchResult.error}`;
+
+      // In strict mode, TOML fetch failure blocks valid
+      const shouldBlock = config.homeDomainCheckMode === 'strict';
+
+      return {
+        ...result,
+        tomlFetch: {
+          ok: false,
+          error: fetchResult.error,
+          cached: false,
+        },
+        // Only block if in strict mode
+        blocksValid: result.blocksValid || shouldBlock,
+        detail: `${result.detail}\n${detail}`,
+      };
+    }
+
+    // TOML fetch succeeded
+    globalMetrics.incrementCounter('home_domain_toml_success');
+
+    return {
+      ...result,
+      tomlFetch: {
+        ok: true,
+        hash: fetchResult.hash,
+        cached: !fetchResult.fetched,
+      },
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const detail = `Stellar.toml fetch error: ${msg}`;
+
+    // In strict mode, unexpected errors block valid
+    const shouldBlock = config.homeDomainCheckMode === 'strict';
+
+    globalMetrics.incrementCounter('home_domain_toml_error');
+
+    return {
+      ...result,
+      tomlFetch: {
+        ok: false,
+        error: detail,
+        cached: false,
+      },
+      blocksValid: result.blocksValid || shouldBlock,
+      detail: `${result.detail}\n${detail}`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -640,10 +763,10 @@ function explainReserveRequirement(reserve: ReserveRequirement): string {
   return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
 }
 
-export function runAccountChecks(
+export async function runAccountChecks(
   account: HorizonAccount,
   config: CheckConfig,
-): ValidationResult {
+): Promise<ValidationResult> {
   const xlmBalance = getNativeBalance(account);
   const xlmNumeric = parseHorizonBalance(xlmBalance);
   const trustlineBalance = findTrustlineBalance(account, config.assetCode, config.assetIssuer);
@@ -764,6 +887,11 @@ export function runAccountChecks(
     // (homeDomainPlugin) follows the same convention. Full issuer-account
     // lookup is deferred to a future enhancement.
     homeDomainCheck = evaluateHomeDomain(account, config);
+
+    // Optionally enrich with stellar.toml fetch and validation
+    if (config.stellarTomlFetchEnabled) {
+      homeDomainCheck = await enrichHomeDomainCheckWithToml(homeDomainCheck, config);
+    }
 
     // Emit metrics tag for dashboards and payout automation.
     globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
