@@ -22,6 +22,7 @@ import {
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
 import { fetchTomlWithCache } from './toml';
+import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -650,18 +651,120 @@ export function isValidStellarAddress(address: string): boolean {
   return expectedChecksum === actualChecksum;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #250 — Muxed (M-) address support
+// ---------------------------------------------------------------------------
+
+/** StrKey version byte for a muxed account ("M..." address): 12 << 3. */
+const STRKEY_VERSION_BYTE_MUXED = 0x60;
+
+/** Matches M-addresses (69 chars: M + 68 base32). */
+const MUXED_ADDRESS_REGEX = /^M[A-Z2-7]{68}$/;
+
+/** Matches bare M-addresses embedded in free-form text. */
+const MUXED_ADDRESS_IN_TEXT_REGEX = /\bM[A-Z2-7]{68}\b/g;
+
+/**
+ * Validates a Stellar muxed ("M...") address against the full StrKey policy:
+ * 69 characters (M + 68 base32), version byte 0x60, and a matching CRC-16/XMODEM checksum.
+ *
+ * M-addresses encode: 1 version byte + 32-byte ed25519 key + 8-byte muxed ID + 2-byte checksum = 43 bytes → 69 base32 chars.
+ */
+export function isValidMuxedAddress(address: string): boolean {
+  const trimmed = normalizeStellarAddress(address);
+  if (!MUXED_ADDRESS_REGEX.test(trimmed)) {
+    return false;
+  }
+
+  const decoded = base32Decode(trimmed);
+  // 1 version + 32 key + 8 id + 2 checksum = 43 bytes.
+  if (!decoded || decoded.length !== 43) {
+    return false;
+  }
+
+  if (decoded[0] !== STRKEY_VERSION_BYTE_MUXED) {
+    return false;
+  }
+
+  const versionAndPayload = decoded.subarray(0, 41);
+  const expectedChecksum = crc16xmodem(versionAndPayload);
+  const actualChecksum = decoded[41] | (decoded[42] << 8);
+
+  return expectedChecksum === actualChecksum;
+}
+
+/**
+ * Decodes a Stellar muxed ("M...") address into the underlying G-address and muxed ID.
+ *
+ * Returns `null` if the input is not a valid M-address.
+ */
+export function decodeMuxedAddress(
+  mAddress: string,
+): { gAddress: string; muxedId: bigint } | null {
+  const trimmed = normalizeStellarAddress(mAddress);
+  if (!isValidMuxedAddress(trimmed)) {
+    return null;
+  }
+
+  const decoded = base32Decode(trimmed);
+  if (!decoded || decoded.length !== 43) {
+    return null;
+  }
+
+  // Extract 32-byte ed25519 key (bytes 1-32) and encode as G-address
+  const ed25519Key = decoded.slice(1, 33);
+  const gVersionAndPayload = Uint8Array.from([STRKEY_VERSION_BYTE_ED25519_PUBLIC_KEY, ...ed25519Key]);
+  const gChecksum = crc16xmodem(gVersionAndPayload);
+  const gBytes = Uint8Array.from([...gVersionAndPayload, gChecksum & 0xff, (gChecksum >> 8) & 0xff]);
+
+  // Encode as base32
+  let bits = 0;
+  let value = 0;
+  let gAddress = '';
+  for (const byte of gBytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      gAddress += STRKEY_BASE32_ALPHABET[(value >> bits) & 0x1f];
+    }
+  }
+
+  // Extract 8-byte muxed ID (bytes 33-40, big-endian per SEP-0023)
+  let muxedId = 0n;
+  for (let i = 33; i <= 40; i++) {
+    muxedId = (muxedId << 8n) | BigInt(decoded[i]);
+  }
+
+  return { gAddress, muxedId };
+}
+
+/**
+ * Converts a Stellar muxed ("M...") address to the underlying G-address.
+ * Throws if the input is not a valid M-address.
+ */
+export function convertMuxedToGAddress(address: string): string {
+  const result = decodeMuxedAddress(address);
+  if (!result) {
+    throw new Error(
+      `Invalid Stellar muxed address "${address}". Expected a 69-character M-address with valid StrKey checksum.`,
+    );
+  }
+  return result.gAddress;
+}
+
 export interface AddressExtractionResult {
-  /** The first valid Stellar G-address found, or undefined if none. */
+  /** The first valid Stellar address found (G or M), or undefined if none. */
   address: string | undefined;
-  /** All valid G-addresses found in the text (deduplicated, order preserved). */
+  /** All valid Stellar addresses found in the text (G and M, deduplicated, order preserved). */
   allAddresses: string[];
 }
 
 /**
- * Extract Stellar G-addresses from free-form text such as an issue body.
+ * Extract Stellar addresses (G-addresses and M-addresses) from free-form text such as an issue body.
  *
- * Scans the text for all 56-character sequences starting with G followed by
- * base32 characters, validates each one, and returns the first valid hit
+ * Scans the text for all 56-character G-address sequences and 69-character
+ * M-address sequences, validates each one, and returns the first valid hit
  * together with a deduplicated list of every valid address found.
  *
  * Safe to call with arbitrary untrusted input — performs no network requests
@@ -676,6 +779,7 @@ export function extractStellarAddressFromText(text: string | undefined | null): 
   }
 
   STELLAR_ADDRESS_IN_TEXT_REGEX.lastIndex = 0;
+  MUXED_ADDRESS_IN_TEXT_REGEX.lastIndex = 0;
   const seen = new Set<string>();
   const allAddresses: string[] = [];
 
@@ -683,6 +787,15 @@ export function extractStellarAddressFromText(text: string | undefined | null): 
   while ((match = STELLAR_ADDRESS_IN_TEXT_REGEX.exec(text)) !== null) {
     const candidate = match[0];
     if (isValidStellarAddress(candidate) && !seen.has(candidate)) {
+      seen.add(candidate);
+      allAddresses.push(candidate);
+    }
+  }
+
+  // Also scan for M-addresses (Issue #250)
+  while ((match = MUXED_ADDRESS_IN_TEXT_REGEX.exec(text)) !== null) {
+    const candidate = match[0];
+    if (isValidMuxedAddress(candidate) && !seen.has(candidate)) {
       seen.add(candidate);
       allAddresses.push(candidate);
     }
@@ -698,10 +811,10 @@ export function validateStellarAddress(address: string): void {
   if (!address || !address.trim()) {
     throw new Error('stellar_address_input is required.');
   }
-  if (!isValidStellarAddress(address)) {
+  if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
     throw new Error(
-      `Invalid Stellar address "${address}". Expected a 56-character ed25519 public key ` +
-        'starting with "G" with a valid StrKey checksum.',
+      `Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
+        'with a valid StrKey checksum.',
     );
   }
 }
@@ -778,6 +891,10 @@ export async function runAccountChecks(
   const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
   const authorizationBlocks = isUnauthorized && unauthorizedPolicy === 'fail';
 
+  // Detect issuer flags for enhanced messaging (Issue #248)
+  const issuerAuthRevocable = account.flags?.auth_revocable ?? false;
+  const issuerAuthClawback = account.flags?.auth_clawback_enabled ?? false;
+
   const clawbackStrictMode = config.clawbackStrictMode ?? false;
   const clawbackBlocks = trustlineExistsRaw && clawbackEnabled && clawbackStrictMode;
 
@@ -788,6 +905,9 @@ export async function runAccountChecks(
   const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric, account);
   const xlmReserveMet = reserveRequirement.met;
   const hasAnyTrustlines = account.balances.some((b) => isCreditBalance(b));
+  // Issue #249: LP shares (liquidity_pool_shares) are explicitly excluded via
+  // isCreditBalance() — only credit_alphanum4/credit_alphanum12 count as trustlines.
+  // LP shares must never be treated as asset trustlines for readiness checks.
 
   const assetBalanceRaw = getAssetBalance(account, config.assetCode, config.assetIssuer);
   const assetBalanceNumeric = parseHorizonBalance(assetBalanceRaw);
@@ -809,8 +929,16 @@ export async function runAccountChecks(
     trustlineDetail = authorizationBlocks
       ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${inlineCode(config.assetIssuer)}) — blocked by \`unauthorized_trustline_policy: fail\`.`
       : `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer — transfers will fail until authorized.`;
+    // Issue #248: Add auth_revocable context when relevant
+    if (issuerAuthRevocable) {
+      trustlineDetail += ' The issuer has **AUTH_REVOCABLE** enabled, meaning authorized trustlines can be revoked.';
+    }
   } else if (trustlineExistsRaw) {
     trustlineDetail = `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured.`;
+    // Issue #248: Add clawback context when relevant (non-strict mode)
+    if (clawbackEnabled && !clawbackStrictMode) {
+      trustlineDetail += ' **Clawback is enabled** — the issuer can reclaim assets at any time.';
+    }
   } else if (hasAnyTrustlines) {
     trustlineDetail = `Account has trustlines, but not for **${safeAssetCode}** issued by ${inlineCode(config.assetIssuer)}.`;
   } else {
@@ -988,6 +1116,7 @@ export async function runAccountChecks(
     reasonCode: (() => {
       if (valid) return 'SUCCESS';
       if (!trustlineExists) return 'TRUSTLINE_MISSING';
+      if (isUnauthorized) return 'TRUSTLINE_UNAUTHORIZED'; // Issue #248
       if (!xlmReserveMet) return 'RESERVE_TOO_LOW';
       if (config.minTrustlineLimit && !trustlineLimitMet) return 'TRUSTLINE_LIMIT_TOO_LOW';
       return 'FAILED';

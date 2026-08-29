@@ -511,10 +511,18 @@ inputs:
   sep0010_dashboard_url:
     description: >-
       Optional HTTPS dashboard URL where Freighter SEP-0010 proof can be verified (Issue #252).
-      When set, the comment shows a “Verify with Freighter on dashboard” link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
+      When set, the comment shows a "Verify with Freighter on dashboard" link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
       Must be https and not a private/loopback host. Does not block `ready` unless documented.
     required: false
     default: ''
+
+  federation_resolution_enabled:
+    description: >-
+      Enable optional federation (user*domain) address resolution. When true,
+      addresses in "user*domain" format are resolved via HTTPS stellar.toml
+      federation protocol. Default false. (Issue #257)
+    required: false
+    default: 'false'
 
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────

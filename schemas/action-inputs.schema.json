@@ -483,6 +483,11 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "federation_resolution_enabled": {
+      "type": "string",
+      "description": "Enable optional federation (user*domain) address resolution. When true, addresses in 'user*domain' format are resolved via HTTPS stellar.toml federation protocol. Default false. (Issue #257)",
+      "default": "false"
     }
   }
 }
