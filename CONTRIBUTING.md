@@ -47,6 +47,8 @@ npm ci
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run mock:start` | Start mock Horizon container on `http://localhost:8089` |
 | `npm run mock:stop` | Stop and remove mock Horizon container |
+| `npm run mutation` | Run Stryker mutation tests on `src/validation.ts` (HTML + text report) |
+| `npm run mutation:ci` | Run Stryker mutation tests in CI mode (text report only, faster output) |
 
 All commands except `mock:*` and `test:mock` must pass before opening a PR. CI runs the same pipeline (see `.github/workflows/ci.yml`).
 
@@ -156,6 +158,46 @@ releases while staying opt-in to avoid flaky default CI.
 - **Testnet only** — No real XLM or production accounts involved
 - **Forks skip gracefully** — Secrets aren't available on forks, so no failures
 - **Comments posted to test issues only** — Never production workflows
+
+---
+
+## Mutation testing
+
+TrustBridge uses [Stryker](https://stryker-mutator.io) to mutation-test `src/validation.ts` — the SSRF block-list and StrKey address gate. Mutation testing verifies that the existing test suite would actually catch a weakened security check (e.g. a removed SSRF pattern or a changed comparison operator). Standard code coverage alone cannot provide this guarantee.
+
+### Why only validation.ts?
+
+Mutation testing is computationally expensive. Scoping to `validation.ts` keeps run time under two minutes and targets the highest-risk security boundary. Expanding scope to other modules is possible but intentionally out of scope for this issue.
+
+### Running locally
+
+```bash
+npm run mutation        # full run — HTML report in stryker-tmp/reports/mutation/
+npm run mutation:ci     # CI-style — text report only, no HTML
+```
+
+The HTML report opens automatically in `stryker-tmp/reports/mutation/mutation.html`. Each surviving mutant is shown with the original and mutated code, plus which tests killed (or missed) it.
+
+### Thresholds
+
+| Level | Score | Meaning |
+|-------|-------|---------|
+| `high` | ≥ 80 % | All good — green label in report |
+| `low`  | ≥ 70 % | Acceptable — yellow label |
+| `break`| ≥ 60 % | **CI hard-fail** — surviving mutants must be fixed or explicitly ignored |
+
+### CI job
+
+The `mutation-ci` job in `.github/workflows/ci.yml` runs on every **pull request** (not on push to `main`, to avoid repeated cost). It fails when the mutation score drops below the `break` threshold (60 %).
+
+### Fixing a surviving mutant
+
+A surviving mutant means a test did not catch a code change. Options:
+
+1. **Add a targeted test** — the most valuable fix. Add a test that would have caught the mutation.
+2. **Mark as ignored** — if the mutant is genuinely unreachable or equivalent code, add an inline `// Stryker disable next-line` comment with a comment explaining why.
+
+Never raise the `break` threshold to suppress a failing mutant without understanding why it survived.
 
 ---
 
