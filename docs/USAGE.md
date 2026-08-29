@@ -2207,3 +2207,72 @@ Tests validate:
 - **Impact:** Zero; these modules were not part of the public API
 - **Verify:** `npm run build && npm test` confirm no imports of deleted modules
 
+
+---
+
+## Merge-resolution conflict report (#319)
+
+When multiple sources provide a value for the same input field (e.g. `stellar_address_input` is set in the workflow step *and* `assignee_address_map` resolves to a different address), TrustBridge records the disagreement in a structured **conflict report** instead of silently using one value.
+
+### How precedence works
+
+Sources are resolved in this order (first wins):
+
+1. `workflow_input` — explicit value set directly in the workflow step.
+2. `assignee_map` — resolved from `assignee_address_map` using the event assignee login.
+3. `contract` — resolved from an on-chain or Soroban contract source (when integrated).
+4. `config_file` — resolved from the `.trustbridge.yml` consumer config file.
+
+### Outputs
+
+| Output | Type | When set |
+|--------|------|----------|
+| `has_conflicts` | `'true'` / `'false'` | Every run |
+| `conflict_report` | JSON string | Every run (empty when no conflicts) |
+
+```yaml
+- name: TrustBridge check
+  id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Fail if conflicting sources disagree
+  if: steps.trustbridge.outputs.has_conflicts == 'true'
+  run: |
+    echo "Conflict report:"
+    echo '${{ steps.trustbridge.outputs.conflict_report }}' | jq .
+    exit 1
+```
+
+### Comment section
+
+When a conflict is detected the issue comment includes a `⚠️ Input source conflicts detected` table showing every field, the resolved value, and all contributing sources:
+
+```markdown
+### ⚠️ Input source conflicts detected
+
+> Two or more sources provided different values for the same input field.
+> The value with the highest precedence (workflow_input > assignee_map > contract > config_file) was used.
+
+| Field | Resolved value | Sources |
+| --- | --- | --- |
+| `stellar_address` | `GAAA…AWHF` | `workflow_input`: `GAAA…AWHF`, `assignee_map`: `GBBB…BBUA` |
+```
+
+### Privacy
+
+When `privacy_mode: true` is set, address values in the conflict report are redacted to first4…last4 (`GAAA…AWHF`) before being placed in the comment or JSON output. Non-address values (asset codes, boolean flags) are never redacted.
+
+### Policy
+
+By default, detecting a conflict does **not** fail the run — TrustBridge validates the winning address and sets `has_conflicts: true` for downstream steps to gate on. To hard-fail on any conflict, add:
+
+```yaml
+- name: Fail on conflict
+  if: steps.trustbridge.outputs.has_conflicts == 'true'
+  run: |
+    echo "::error::Conflicting input sources detected. Review conflict_report output."
+    exit 1
+```

@@ -133,6 +133,16 @@
       ],
       "default": "true"
     },
+    "comment_mode": {
+      "type": "string",
+      "description": "Comment threading strategy. One of: sticky (default), new, reply. When set, takes precedence over sticky_comment.",
+      "enum": [
+        "sticky",
+        "new",
+        "reply"
+      ],
+      "default": "sticky"
+    },
     "onboarding_checklist": {
       "type": "string",
       "description": "Include an onboarding checklist in the issue comment.",

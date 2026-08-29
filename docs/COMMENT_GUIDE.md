@@ -82,3 +82,61 @@ If contributors are confused, ask them to compare the account and issuer shown i
 
 Comment Markdown formatting is protected by golden snapshot tests (`__tests__/comment.test.ts`). Any changes to comment structure, headers, status icons, or links will cause golden snapshot verification in CI (`.github/workflows/ci.yml`) to fail unless explicitly updated via `npx jest -u`.
 
+
+## Comment threading / reply mode (#322)
+
+By default TrustBridge uses `comment_mode: sticky` (equivalent to the legacy `sticky_comment: true`). You can change the threading strategy per-run without changing anything else:
+
+| Mode | Behavior | When to use |
+|------|----------|-------------|
+| `sticky` (default) | Update TrustBridge's previous comment in place. | Normal re-validation; avoids spam. |
+| `new` | Always post a brand-new top-level comment. | Audit trail — full history of every check result. |
+| `reply` | Post a new comment that references the first TrustBridge comment. | Teams that want a chronological reply chain while keeping the original summary intact. |
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token:          ${{ secrets.GITHUB_TOKEN }}
+    comment_mode:          reply     # sticky | new | reply
+```
+
+**Notes:**
+- `comment_mode` takes precedence over the legacy `sticky_comment` input when both are set.
+- Invalid values fall back to `sticky` with a `core.warning`.
+- GitHub's issue comment API does not support native in-reply-to for issue comments (only PR review comments). The `reply` mode therefore posts a normal top-level comment that includes a quoted link back to the first TrustBridge comment so reviewers can follow the chain.
+- The `reply` mode still uses `findStickyComment` to locate the parent; if no prior comment is found the new comment is posted normally without a reference.
+
+## Address-change detection (#321)
+
+When a `validation.json` artifact from a previous run is available (via `previous_validation_path` or auto-discovery), TrustBridge can detect whether the Stellar address being validated has changed since the last run.
+
+### How it works
+
+1. The current address is normalised (muxed M-addresses are reduced to their base G-address).
+2. The previous address is loaded from the stored artifact.
+3. If they differ, an `⚠️ Stellar address changed` section is prepended to the comment body.
+
+### Privacy handling
+
+When `privacy_mode: true` is set, **both** the previous and current addresses are hashed with SHA-256 before comparison. The hashes are safe to embed in a public comment. Raw address values are never stored or logged.
+
+If a previous artifact was stored under privacy mode (address is a `sha256:` hash) and the current run is not using privacy mode, TrustBridge conservatively reports a potential change (the hash cannot be reversed) and shows the stored hash as the previous value.
+
+### Muxed addresses
+
+Muxed M-addresses encode an underlying G-address plus a memo ID. TrustBridge strips the muxed prefix and compares only the base G-address, so rotating the memo ID without changing the underlying account is not flagged as an address change.
+
+### Comment section example
+
+```markdown
+### ⚠️ Stellar address changed
+
+> **The Stellar address being validated has changed since the last run.**
+> Previous: `GAAA…AWHF`
+> Current:  `GBBB…BBUA`
+>
+> If this change was intentional (e.g. you rotated your wallet), no action
+> is required — the new address will be validated normally.
+> If unexpected, verify that the correct address is submitted in the issue.
+```

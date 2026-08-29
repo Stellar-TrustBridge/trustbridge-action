@@ -502,3 +502,149 @@ export function extractFromZip(
 
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// #321 — Address-change detection vs last successful validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of comparing the current Stellar address against the address stored
+ * in the previous `validation.json` artifact.
+ */
+export interface AddressChangeResult {
+  /** True when a previous address was found and it differs from the current. */
+  changed: boolean;
+  /**
+   * The previous address as stored/displayed. When `privacyMode` is true this
+   * will be the hashed form (`sha256:<16 hex>`) so the raw prior address is
+   * never logged or commented publicly.
+   */
+  previousAddress: string | null;
+  /**
+   * The current address as stored/displayed (same masking policy as above).
+   */
+  currentAddress: string;
+  /** True when the comparison was done against hashed values (privacy mode). */
+  privacyMode: boolean;
+}
+
+/**
+ * Detect whether the Stellar address has changed since the last successful
+ * validation run.
+ *
+ * Strategy:
+ * - When `privacyMode` is **off** (default), addresses are compared and
+ *   stored in plain form (`G…`) in the result for display in the comment.
+ * - When `privacyMode` is **on**, both the current and previous addresses are
+ *   hashed with SHA-256 and only the hashes are compared/stored. This means
+ *   the raw prior address is never placed into a public issue comment.
+ *
+ * Muxed accounts (M…): muxed addresses encode an underlying G-address and a
+ * memo id. Two different muxed addresses over the *same* G-address are treated
+ * as the *same* address for comparison purposes — only the base G-address
+ * (`[GC][A-Z2-7]{55}`) is extracted for comparison.
+ *
+ * First-run handling: when `previousArtifact` is null/undefined (no previous
+ * run), the function returns `changed: false` so the action never emits a
+ * spurious "address changed" warning on first run.
+ *
+ * @param currentAddress     The Stellar address being validated this run.
+ * @param previousArtifact   The loaded previous `validation.json` artifact, or null.
+ * @param privacyMode        When true, hash addresses before comparing/storing.
+ */
+export function detectAddressChange(
+  currentAddress: string,
+  previousArtifact: ValidationArtifact | null | undefined,
+  privacyMode = false,
+): AddressChangeResult {
+  // Normalise: extract base G/C address (strip muxed M-prefix memo id).
+  const normalise = (addr: string): string => {
+    const match = /([GC][A-Z2-7]{55})/.exec(addr);
+    return match ? match[1] : addr;
+  };
+
+  const normCurrent = normalise(currentAddress);
+
+  if (!previousArtifact || !previousArtifact.address) {
+    // First run — no previous address to compare.
+    return {
+      changed: false,
+      previousAddress: null,
+      currentAddress: privacyMode ? hashAddressForPrivacy(normCurrent) : normCurrent,
+      privacyMode,
+    };
+  }
+
+  // The stored address in the artifact may already be hashed (if a prior run
+  // used privacy mode). Detect this by checking for the sha256: prefix.
+  const previousRaw = previousArtifact.address;
+  const previousIsHashed = previousRaw.startsWith('sha256:');
+
+  let addressesMatch: boolean;
+  let displayPrevious: string;
+  let displayCurrent: string;
+
+  if (privacyMode) {
+    // Compare hashes — always safe to log.
+    const currentHash = hashAddressForPrivacy(normCurrent);
+    const previousHash = previousIsHashed
+      ? previousRaw
+      : hashAddressForPrivacy(normalise(previousRaw));
+    addressesMatch = currentHash === previousHash;
+    displayPrevious = previousHash;
+    displayCurrent = currentHash;
+  } else {
+    // Compare plain addresses (normalised). If the previous was hashed we
+    // cannot reverse it — treat as different to be conservative.
+    if (previousIsHashed) {
+      // Previous was hashed, current is not — we can't compare directly.
+      // Treat as possibly changed; surface a note in the comment.
+      addressesMatch = false;
+      displayPrevious = previousRaw; // keep hash for display
+      displayCurrent = normCurrent;
+    } else {
+      const normPrevious = normalise(previousRaw);
+      addressesMatch = normCurrent === normPrevious;
+      displayPrevious = normPrevious;
+      displayCurrent = normCurrent;
+    }
+  }
+
+  return {
+    changed: !addressesMatch,
+    previousAddress: displayPrevious,
+    currentAddress: displayCurrent,
+    privacyMode,
+  };
+}
+
+/**
+ * Render a Markdown warning section for the issue comment when an address
+ * change is detected.
+ *
+ * Returns an empty string when `changeResult.changed` is false so callers
+ * can unconditionally append the result.
+ */
+export function formatAddressChangeWarning(
+  changeResult: AddressChangeResult,
+): string {
+  if (!changeResult.changed) return '';
+
+  const prevDisplay = changeResult.previousAddress ?? '_unknown_';
+  const currDisplay = changeResult.currentAddress;
+  const privacyNote = changeResult.privacyMode
+    ? ' _(addresses shown as privacy hashes — raw values not stored)_'
+    : '';
+
+  return [
+    '### ⚠️ Stellar address changed',
+    '',
+    '> **The Stellar address being validated has changed since the last run.**',
+    `> Previous: \`${prevDisplay}\`${privacyNote}`,
+    `> Current:  \`${currDisplay}\``,
+    '>',
+    '> If this change was intentional (e.g. you rotated your wallet), no action',
+    '> is required — the new address will be validated normally.',
+    '> If unexpected, verify that the correct address is submitted in the issue.',
+  ].join('\n');
+}

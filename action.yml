@@ -85,6 +85,17 @@ inputs:
       new one each run (true), or always post a new comment (false)
     required: false
     default: 'true'
+  comment_mode:
+    description: >-
+      Controls the comment threading strategy. One of: 'sticky' (default —
+      updates TrustBridge's previous comment in place, equivalent to
+      sticky_comment:true), 'new' (always posts a new comment for a full audit
+      trail — equivalent to sticky_comment:false), or 'reply' (posts a reply
+      to the first TrustBridge bot comment in the thread rather than updating
+      it, creating a chronological reply chain). When set, comment_mode takes
+      precedence over the sticky_comment input.
+    required: false
+    default: 'sticky'
   wait_until_funded:
     description: >-
       Poll Horizon until the account becomes funded (true) instead of
@@ -573,6 +584,19 @@ outputs:
     description: 'Execution duration of comment posting phase in milliseconds'
   timing_total_ms:
     description: 'Total execution duration in milliseconds'
+
+  # ── Conflict report outputs (#319) ────────────────────────────────────────
+  conflict_report:
+    description: >-
+      JSON string listing all detected source conflicts for this run (e.g.
+      workflow_input vs assignee_map vs contract disagreeing on the Stellar
+      address or asset issuer). Empty string when there are no conflicts.
+      Parse with `JSON.parse(steps.trustbridge.outputs.conflict_report)`.
+  has_conflicts:
+    description: >-
+      'true' when at least one source conflict was detected during this run,
+      'false' otherwise. Gate downstream steps with
+      `if: steps.trustbridge.outputs.has_conflicts == 'true'`.
 
 runs:
   using: 'node20'

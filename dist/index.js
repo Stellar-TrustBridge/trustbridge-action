@@ -34255,7 +34255,7 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
         }
         try {
             const account = await (0, horizon_1.fetchAccount)(horizonUrl, address, fetchOptions);
-            const result = (0, checks_1.runAccountChecks)(account, config);
+            const result = await (0, checks_1.runAccountChecks)(account, config);
             let failureReason = null;
             if (!result.valid) {
                 const reasons = [];
@@ -34595,8 +34595,12 @@ exports.defaultCache = new SimpleCache();
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
+exports.hasClaimableBalances = hasClaimableBalances;
+exports.countClaimableBalances = countClaimableBalances;
 exports.detectNetworkMismatch = detectNetworkMismatch;
+exports.buildNetworkMismatchDetail = buildNetworkMismatchDetail;
 exports.evaluateHomeDomain = evaluateHomeDomain;
+exports.enrichHomeDomainCheckWithToml = enrichHomeDomainCheckWithToml;
 exports.normalizeStellarAddress = normalizeStellarAddress;
 exports.isValidStellarAddress = isValidStellarAddress;
 exports.extractStellarAddressFromText = extractStellarAddressFromText;
@@ -34629,10 +34633,24 @@ const assets_1 = __nccwpck_require__(5462);
 const markdown_1 = __nccwpck_require__(3758);
 const links_1 = __nccwpck_require__(3346);
 const metrics_1 = __nccwpck_require__(5670);
+const toml_1 = __nccwpck_require__(5887);
+const validation_1 = __nccwpck_require__(4344);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+function hasClaimableBalances(account) {
+    return account.balances.some((b) => b.asset_type === 'claimable_balance_id');
+}
+function countClaimableBalances(account) {
+    return account.balances.filter((b) => b.asset_type === 'claimable_balance_id').length;
+}
 /**
  * Detect whether a Stellar address that returned 404 on the primary Horizon
  * URL is actually active on the opposite network.
@@ -34640,6 +34658,17 @@ exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  * Returns a `NetworkMismatchHint` when a mismatch is confirmed, or
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
+ *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
  *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
@@ -34649,6 +34678,12 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
     const configuredNetwork = (0, links_1.inferStellarNetwork)(configuredHorizonUrl);
     const altNetwork = (0, links_1.oppositeNetwork)(configuredNetwork);
     const altHorizonUrl = (0, links_1.canonicalHorizonUrl)(altNetwork);
+    // SSRF guard: canonical URLs are known-good, but validate anyway so a
+    // future change that returns a private/loopback URL cannot be probed.
+    const ssrfCheck = (0, validation_1.validateHorizonUrl)(altHorizonUrl, 'alt_horizon_url', { allowHttp: true });
+    if (!ssrfCheck.valid) {
+        return undefined;
+    }
     const checkUrl = `${altHorizonUrl}/accounts/${stellarAddress}`;
     try {
         const fetcher = fetchFn ?? ((...args) => fetch(...args));
@@ -34657,16 +34692,32 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
             headers: { Accept: 'application/json' },
             signal: AbortSignal.timeout(5000),
         });
+        // Deterministic: only 200 is a positive mismatch signal. 404 => genuinely unfunded.
+        // Any other status (503, 429, 500, etc.) is treated as "no evidence" to avoid
+        // false positives when the opposite Horizon is temporarily unavailable.
         if (response.status === 200) {
             return { configuredNetwork, activeOnNetwork: altNetwork };
         }
-        // 404 means genuinely not found on alt network — no mismatch evidence
         return undefined;
     }
     catch {
         // Network error or timeout — can't determine, so no hint
         return undefined;
     }
+}
+/**
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
+ */
+function buildNetworkMismatchDetail(stellarAddress, hint) {
+    const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
+    const altUrl = (0, links_1.canonicalHorizonUrl)(hint.activeOnNetwork);
+    const configuredUrl = (0, links_1.canonicalHorizonUrl)(hint.configuredNetwork);
+    return (`Account ${safeAddress} was **not found** on the **${hint.configuredNetwork}** network` +
+        ` but **is active on ${hint.activeOnNetwork}** (${altUrl}).` +
+        ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network` +
+        ` (expected ${hint.configuredNetwork}: ${configuredUrl}).`);
 }
 /**
  * Evaluate the issuer's SEP-0001 home domain alignment against the
@@ -34727,6 +34778,83 @@ function evaluateHomeDomain(issuerAccount, config) {
         detail: `Issuer \`home_domain\` is \`${(0, markdown_1.escapeMarkdownInline)(rawDomain)}\` ✓`,
         blocksValid: false,
     };
+}
+/**
+ * Asynchronously fetch and validate stellar.toml for a home_domain.
+ *
+ * This function:
+ *  - Only runs if stellarTomlFetchEnabled is true in config
+ *  - Skips fetch if on-chain home domain check failed
+ *  - Fetches with SSRF protection and TTL caching
+ *  - Validates hash (if pin provided)
+ *  - Appends tomlFetch result to the existing HomeDomainCheckResult
+ *  - Fails the check if fetch/hash validation fails in strict mode
+ *
+ * @param result The existing HomeDomainCheckResult from evaluateHomeDomain
+ * @param config The CheckConfig with TOML options
+ * @returns Potentially updated result with tomlFetch populated
+ */
+async function enrichHomeDomainCheckWithToml(result, config) {
+    // Only fetch TOML if enabled
+    if (!config.stellarTomlFetchEnabled) {
+        return result;
+    }
+    // Only fetch if we have a valid on-chain domain
+    if (result.outcome !== 'valid' || !result.actualHomeDomain) {
+        return result;
+    }
+    const domain = result.actualHomeDomain;
+    const cacheTtlMs = config.stellarTomlCacheTtlMs ?? 3600000;
+    const hashPin = config.stellarTomlHashPin ?? '';
+    try {
+        const fetchResult = await (0, toml_1.fetchTomlWithCache)(domain, {
+            cacheTtlMs,
+            hashPin: hashPin || undefined,
+        });
+        if (!fetchResult.ok) {
+            const detail = `Stellar.toml fetch failed: ${fetchResult.error}`;
+            // In strict mode, TOML fetch failure blocks valid
+            const shouldBlock = config.homeDomainCheckMode === 'strict';
+            return {
+                ...result,
+                tomlFetch: {
+                    ok: false,
+                    error: fetchResult.error,
+                    cached: false,
+                },
+                // Only block if in strict mode
+                blocksValid: result.blocksValid || shouldBlock,
+                detail: `${result.detail}\n${detail}`,
+            };
+        }
+        // TOML fetch succeeded
+        metrics_1.globalMetrics.incrementCounter('home_domain_toml_success');
+        return {
+            ...result,
+            tomlFetch: {
+                ok: true,
+                hash: fetchResult.hash,
+                cached: !fetchResult.fetched,
+            },
+        };
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const detail = `Stellar.toml fetch error: ${msg}`;
+        // In strict mode, unexpected errors block valid
+        const shouldBlock = config.homeDomainCheckMode === 'strict';
+        metrics_1.globalMetrics.incrementCounter('home_domain_toml_error');
+        return {
+            ...result,
+            tomlFetch: {
+                ok: false,
+                error: detail,
+                cached: false,
+            },
+            blocksValid: result.blocksValid || shouldBlock,
+            detail: `${result.detail}\n${detail}`,
+        };
+    }
 }
 const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
 /** Matches bare G-addresses embedded in free-form text (issue bodies, comments). */
@@ -34892,7 +35020,7 @@ function explainReserveRequirement(reserve) {
     const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) × ${exports.STELLAR_BASE_RESERVE_XLM} XLM`;
     return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
 }
-function runAccountChecks(account, config) {
+async function runAccountChecks(account, config) {
     const xlmBalance = (0, horizon_1.getNativeBalance)(account);
     const xlmNumeric = (0, horizon_1.parseHorizonBalance)(xlmBalance);
     const trustlineBalance = (0, horizon_1.findTrustlineBalance)(account, config.assetCode, config.assetIssuer);
@@ -35002,6 +35130,10 @@ function runAccountChecks(account, config) {
         // (homeDomainPlugin) follows the same convention. Full issuer-account
         // lookup is deferred to a future enhancement.
         homeDomainCheck = evaluateHomeDomain(account, config);
+        // Optionally enrich with stellar.toml fetch and validation
+        if (config.stellarTomlFetchEnabled) {
+            homeDomainCheck = await enrichHomeDomainCheckWithToml(homeDomainCheck, config);
+        }
         // Emit metrics tag for dashboards and payout automation.
         metrics_1.globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
         metrics_1.globalMetrics.recordMetric('home_domain_check', 1, 'count', {
@@ -35045,6 +35177,23 @@ function runAccountChecks(account, config) {
         numSponsoring: account.num_sponsoring ?? 0,
         numSponsored: account.num_sponsored ?? 0,
     };
+    // Claimable-balance-aware funded definition (Issue #260)
+    // Default 'ignore' means claimables do not affect funded/valid.
+    // When policy is 'count', we surface an informational note if claimables exist.
+    const claimableBalancePolicy = config.claimableBalancePolicy ?? 'ignore';
+    const claimableBalanceCount = countClaimableBalances(account);
+    const hasClaimables = claimableBalanceCount > 0;
+    if (claimableBalancePolicy === 'count' && hasClaimables) {
+        checks.push({
+            passed: true,
+            label: 'Claimable balances',
+            detail: `Account has **${claimableBalanceCount} claimable balance(s)** — these are not counted toward \`account_funded\` but can be claimed via Horizon claimable_balances endpoint.`,
+        });
+        metrics_1.globalMetrics.incrementCounter('claimable_balances_found');
+        metrics_1.globalMetrics.recordMetric('claimable_balances_count', claimableBalanceCount, 'count', {
+            policy: 'count',
+        });
+    }
     return {
         valid,
         accountFunded: true,
@@ -35058,6 +35207,8 @@ function runAccountChecks(account, config) {
         trustlineLimit,
         checks,
         remediation,
+        claimableBalanceCount,
+        hasClaimableBalances: hasClaimables,
         reasonCode: (() => {
             if (valid)
                 return 'SUCCESS';
@@ -35075,19 +35226,28 @@ function runAccountChecks(account, config) {
         sponsorshipInfo,
     };
 }
-function unfundedAccountResult(stellarAddress, config, mismatchHint) {
+function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCount) {
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
     const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
     // Build the "not found" detail, extended with mismatch context when available
+    // Uses centralized deterministic builder so public↔testnet produce identical format.
     let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
     if (mismatchHint) {
-        const altUrl = (0, links_1.canonicalHorizonUrl)(mismatchHint.activeOnNetwork);
-        notFoundDetail =
-            `Account ${safeAddress} was **not found** on the **${mismatchHint.configuredNetwork}** network` +
-                ` but **is active on ${mismatchHint.activeOnNetwork}** (${altUrl}).` +
-                ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network.`;
+        notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
+    }
+    // Claimable-balance-aware funded definition (Issue #260): when policy is 'count' and
+    // claimableCount >0, surface an informational note. This does NOT set accountFunded true;
+    // the account is still unfunded, but the contributor is told claimables exist.
+    const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
+    const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
+    if (claimablePolicy === 'count' && hasClaimables) {
+        notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
+    }
+    else if (claimablePolicy === 'ignore' && hasClaimables) {
+        // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
+        // Metrics still tracked for observability if caller fetched count.
     }
     const checks = [
         {
@@ -35113,12 +35273,25 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint) {
             detail: `Cannot verify ${safeAssetCode} balance — Fund the account and establish a trustline first.`,
         });
     }
+    // Claimable balances informational check (Issue #260) — only when policy is count
+    const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
+    if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+        checks.push({
+            passed: true,
+            label: 'Claimable balances',
+            detail: `Account has **${claimableCount} claimable balance(s)** pending claim. Fund the account first, then claim via Horizon or wallet.`,
+        });
+    }
     // Base remediation steps
     const remediationSteps = [
         `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
         `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
         `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
     ];
+    // Claimable remediation when policy is count
+    if ((config.claimableBalancePolicy ?? 'ignore') === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+        remediationSteps.push(`This address has **${claimableCount} claimable balance(s)** awaiting claim. After funding, claim them via [Horizon claimable_balances endpoint](${config.horizonUrl ?? 'https://horizon.stellar.org'}/claimable_balances?claimant=${stellarAddress}) or a wallet that supports claimable balances.`);
+    }
     // Prepend network-mismatch guidance when detected so it's the first thing a
     // contributor reads.
     if (mismatchHint) {
@@ -35160,6 +35333,8 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint) {
         failedCheckLabels: toFailedCheckCodes(checks),
         sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
         homeDomainCheck,
+        claimableBalanceCount: typeof claimableCount === 'number' ? claimableCount : 0,
+        hasClaimableBalances: typeof claimableCount === 'number' && claimableCount > 0,
     };
 }
 function getFailedCheckLabels(result) {
@@ -35587,11 +35762,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
 exports.writeFullReport = writeFullReport;
+exports.resolveCommentMode = resolveCommentMode;
 exports.resolveIssueOrPullRequestNumber = resolveIssueOrPullRequestNumber;
 exports.isTrustBridgeComment = isTrustBridgeComment;
 exports.findStickyComment = findStickyComment;
@@ -35697,9 +35873,24 @@ function formatCommentBody(result, config) {
         }
         lines.push('', `### ${strings.validationGateHeading}`, '', gate.ready
             ? `- ${strings.readyToProceed}`
-            : `- ${strings.blockedBy} ${gate.failedLabels.join(', ')}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, '', `### ${strings.balancesHeading}`, '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
-            ? `- **Minimum required:** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-            : `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', `### ${strings.setupCostHeading}`, '', `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', `### ${strings.addTrustlineHeading}`, '', `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+            : `- ${strings.blockedBy} ${gate.failedLabels.join(', ')}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, '', `### ${strings.balancesHeading}`, '', `- **Native XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
+            ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
+            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``, 
+        // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
+        (() => {
+            const asset = config.assetCode;
+            const bal = result.assetBalance ?? '0';
+            const trustline = result.trustlineExists;
+            if (bal === 'unknown') {
+                return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? 'exists' : 'missing'})`;
+            }
+            if (!trustline) {
+                return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
+            }
+            // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
+            const limitNote = result.trustlineLimit ? ` (limit \`${result.trustlineLimit} ${asset}\`)` : '';
+            return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
+        })(), '', `### ${strings.setupCostHeading}`, '', `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', `### ${strings.addTrustlineHeading}`, '', `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
         // SEP-0007 wallet deep links (Issue #44)
         if (config.sep0007DeepLinks) {
             const payLink = (0, links_1.buildSep0007PayLink)({
@@ -35710,6 +35901,17 @@ function formatCommentBody(result, config) {
                 originDomain: config.sep0007OriginDomain || undefined,
             });
             lines.push('', `### ${strings.sepWalletActionsHeading}`, '', `_${strings.sepWalletActionsDescription}_`, '', `- [${strings.sendXlmToActivate.replace('{amount}', String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`);
+        }
+        // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready
+        // Prefer dashboard proof link over raw XDR to avoid leaking nonces in public issues.
+        const sep0010Snippet = (0, links_1.buildSep0010ChallengeSnippet)({
+            challengeXdr: config.sep0010ChallengeXdr,
+            dashboardUrl: config.sep0010DashboardUrl,
+            network: stellarLabNetwork,
+            stellarAddress: config.stellarAddress,
+        });
+        if (sep0010Snippet) {
+            lines.push('', '### Proof of wallet control (SEP-0010)', '', sep0010Snippet, '', '_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._');
         }
         // Sponsorship info explainer (Issue #141)
         if (result.sponsorshipInfo && (result.sponsorshipInfo.numSponsoring > 0 || result.sponsorshipInfo.numSponsored > 0)) {
@@ -35733,7 +35935,7 @@ function formatCommentBody(result, config) {
             const interval = config.waitUntilFundedIntervalMs ?? 5000;
             lines.push(`| \`wait_until_funded_timeout_ms\` | ${strings.waitUntilFundedTimeoutMs.replace('{ms}', String(timeout))} |`, `| \`wait_until_funded_interval_ms\` | ${strings.waitUntilFundedIntervalMs.replace('{ms}', String(interval))} |`);
         }
-        lines.push('', `### ${strings.outputsHeading}`, '', `_${strings.outputsDescription}_`, '', `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace('{assetCode}', config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
+        lines.push('', `### ${strings.outputsHeading}`, '', `_${strings.outputsDescription}_`, '', `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace('{assetCode}', config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`, `| \`asset_balance\` | \`${result.assetBalance ?? '0'}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
         // Hardened metrics JSON export (Issue #33)
         if (config.metricsSnapshot) {
             const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
@@ -35894,6 +36096,31 @@ function writeFullReport(fullBody, outputPath) {
     }
 }
 /**
+ * Valid `CommentMode` values — used for input validation.
+ */
+exports.VALID_COMMENT_MODES = ['sticky', 'new', 'reply'];
+/**
+ * Resolve the effective `CommentMode` from action inputs.
+ *
+ * Priority: `commentMode` input > derive from `sticky` boolean > default `'sticky'`.
+ * Invalid values fall back to `'sticky'` with a warning so the action
+ * never hard-fails due to a misconfigured `comment_mode`.
+ */
+function resolveCommentMode(commentMode, sticky) {
+    if (commentMode) {
+        const normalised = commentMode.trim().toLowerCase();
+        if (exports.VALID_COMMENT_MODES.includes(normalised)) {
+            return normalised;
+        }
+        // Invalid value — warn and fall through to default.
+        core.warning(`Invalid comment_mode value "${commentMode}". Expected one of: ${exports.VALID_COMMENT_MODES.join(', ')}. Falling back to "sticky".`);
+    }
+    // Derive from legacy sticky boolean.
+    if (sticky === false)
+        return 'new';
+    return 'sticky';
+}
+/**
  * Resolve the issue or pull-request number a comment should be posted to.
  *
  * `pull_request` (and `pull_request_target`) events carry the number under
@@ -36037,7 +36264,11 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
     return undefined;
 }
 async function postIssueComment(token, body, options = {}) {
-    const sticky = options.sticky ?? true;
+    // Resolve effective comment mode (#322): commentMode input takes precedence
+    // over legacy sticky boolean.
+    const effectiveMode = resolveCommentMode(options.commentMode, options.sticky);
+    // Map back to sticky boolean for the existing snooze/lookup machinery.
+    const sticky = effectiveMode === 'sticky';
     const forceComment = options.forceComment ?? false;
     const snoozeWindowMs = options.snoozeWindowMs ?? 0;
     const context = github.context;
@@ -36129,13 +36360,39 @@ async function postIssueComment(token, body, options = {}) {
             core.warning(`Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`);
         }
     }
+    // reply mode (#322): find the first TrustBridge comment and post a new
+    // top-level comment that references it. GitHub's issue comment API does not
+    // have a native `in_reply_to` for issue comments (only PR review comments
+    // support that), so we prepend a contextual reference line so readers can
+    // follow the chain. When no prior comment exists, falls through to a plain
+    // new comment.
+    if (effectiveMode === 'reply') {
+        let parentId;
+        try {
+            parentId = await findStickyComment(octokit, owner, repo, issueNumber);
+        }
+        catch (error) {
+            core.debug(`reply mode: could not find parent comment: ${error}`);
+        }
+        const replyBody = parentId
+            ? `> _Reply to [TrustBridge check #${parentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentId})_\n\n${body}`
+            : body;
+        const replyResponse = await octokit.rest.issues.createComment({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            body: replyBody,
+        });
+        core.info(`Posted TrustBridge reply comment on issue #${issueNumber}${parentId ? ` (reply to #${parentId})` : ''}.`);
+        return replyResponse.data.html_url;
+    }
     const response = await octokit.rest.issues.createComment({
         owner,
         repo,
         issue_number: issueNumber,
         body,
     });
-    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
     return response.data.html_url;
 }
 // ---------------------------------------------------------------------------
@@ -36898,6 +37155,8 @@ exports.buildValidationArtifact = buildValidationArtifact;
 exports.formatDeltaMarkdown = formatDeltaMarkdown;
 exports.discoverPreviousValidationArtifact = discoverPreviousValidationArtifact;
 exports.extractFromZip = extractFromZip;
+exports.detectAddressChange = detectAddressChange;
+exports.formatAddressChangeWarning = formatAddressChangeWarning;
 const crypto = __importStar(__nccwpck_require__(6982));
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
@@ -37289,6 +37548,114 @@ function extractFromZip(zipBuffer, targetFileName) {
         offset = dataStart + compressedSize;
     }
     return null;
+}
+/**
+ * Detect whether the Stellar address has changed since the last successful
+ * validation run.
+ *
+ * Strategy:
+ * - When `privacyMode` is **off** (default), addresses are compared and
+ *   stored in plain form (`G…`) in the result for display in the comment.
+ * - When `privacyMode` is **on**, both the current and previous addresses are
+ *   hashed with SHA-256 and only the hashes are compared/stored. This means
+ *   the raw prior address is never placed into a public issue comment.
+ *
+ * Muxed accounts (M…): muxed addresses encode an underlying G-address and a
+ * memo id. Two different muxed addresses over the *same* G-address are treated
+ * as the *same* address for comparison purposes — only the base G-address
+ * (`[GC][A-Z2-7]{55}`) is extracted for comparison.
+ *
+ * First-run handling: when `previousArtifact` is null/undefined (no previous
+ * run), the function returns `changed: false` so the action never emits a
+ * spurious "address changed" warning on first run.
+ *
+ * @param currentAddress     The Stellar address being validated this run.
+ * @param previousArtifact   The loaded previous `validation.json` artifact, or null.
+ * @param privacyMode        When true, hash addresses before comparing/storing.
+ */
+function detectAddressChange(currentAddress, previousArtifact, privacyMode = false) {
+    // Normalise: extract base G/C address (strip muxed M-prefix memo id).
+    const normalise = (addr) => {
+        const match = /([GC][A-Z2-7]{55})/.exec(addr);
+        return match ? match[1] : addr;
+    };
+    const normCurrent = normalise(currentAddress);
+    if (!previousArtifact || !previousArtifact.address) {
+        // First run — no previous address to compare.
+        return {
+            changed: false,
+            previousAddress: null,
+            currentAddress: privacyMode ? hashAddressForPrivacy(normCurrent) : normCurrent,
+            privacyMode,
+        };
+    }
+    // The stored address in the artifact may already be hashed (if a prior run
+    // used privacy mode). Detect this by checking for the sha256: prefix.
+    const previousRaw = previousArtifact.address;
+    const previousIsHashed = previousRaw.startsWith('sha256:');
+    let addressesMatch;
+    let displayPrevious;
+    let displayCurrent;
+    if (privacyMode) {
+        // Compare hashes — always safe to log.
+        const currentHash = hashAddressForPrivacy(normCurrent);
+        const previousHash = previousIsHashed
+            ? previousRaw
+            : hashAddressForPrivacy(normalise(previousRaw));
+        addressesMatch = currentHash === previousHash;
+        displayPrevious = previousHash;
+        displayCurrent = currentHash;
+    }
+    else {
+        // Compare plain addresses (normalised). If the previous was hashed we
+        // cannot reverse it — treat as different to be conservative.
+        if (previousIsHashed) {
+            // Previous was hashed, current is not — we can't compare directly.
+            // Treat as possibly changed; surface a note in the comment.
+            addressesMatch = false;
+            displayPrevious = previousRaw; // keep hash for display
+            displayCurrent = normCurrent;
+        }
+        else {
+            const normPrevious = normalise(previousRaw);
+            addressesMatch = normCurrent === normPrevious;
+            displayPrevious = normPrevious;
+            displayCurrent = normCurrent;
+        }
+    }
+    return {
+        changed: !addressesMatch,
+        previousAddress: displayPrevious,
+        currentAddress: displayCurrent,
+        privacyMode,
+    };
+}
+/**
+ * Render a Markdown warning section for the issue comment when an address
+ * change is detected.
+ *
+ * Returns an empty string when `changeResult.changed` is false so callers
+ * can unconditionally append the result.
+ */
+function formatAddressChangeWarning(changeResult) {
+    if (!changeResult.changed)
+        return '';
+    const prevDisplay = changeResult.previousAddress ?? '_unknown_';
+    const currDisplay = changeResult.currentAddress;
+    const privacyNote = changeResult.privacyMode
+        ? ' _(addresses shown as privacy hashes — raw values not stored)_'
+        : '';
+    return [
+        '### ⚠️ Stellar address changed',
+        '',
+        '> **The Stellar address being validated has changed since the last run.**',
+        `> Previous: \`${prevDisplay}\`${privacyNote}`,
+        `> Current:  \`${currDisplay}\``,
+        '>',
+        '> If this change was intentional (e.g. you rotated your wallet), no action',
+        '> is required — the new address will be validated normally.',
+        '> If unexpected, verify that the correct address is submitted in the issue.',
+    ].join('\n');
 }
 
 
@@ -37720,6 +38087,7 @@ exports.getAssetBalance = getAssetBalance;
 exports.getTrustlineLimit = getTrustlineLimit;
 exports.parseHorizonBalance = parseHorizonBalance;
 exports.formatStroops = formatStroops;
+exports.fetchClaimableBalanceCount = fetchClaimableBalanceCount;
 exports.deriveWalletLabel = deriveWalletLabel;
 exports.applyWalletLabels = applyWalletLabels;
 exports.fetchNetworkPassphrase = fetchNetworkPassphrase;
@@ -38521,6 +38889,63 @@ function formatStroops(stroops) {
     const fracPart = str.slice(-7);
     const cleanFrac = fracPart.replace(/0+$/, '');
     return `${isNegative ? '-' : ''}${intPart}.${cleanFrac.padEnd(7, '0')}`;
+}
+// ---------------------------------------------------------------------------
+// Claimable balances helper (Issue #260)
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the number of claimable balances for a claimant address.
+ *
+ * Used only when `claimableBalancePolicy === 'count'` and the account is 404.
+ * Returns 0 on any error (404, network, timeout) so callers can treat the
+ * absence as "no evidence" without failing the run. The request is bounded to
+ * 5s and validated for SSRF so private Horizon mirrors are never probed
+ * with an attacker-controlled claimant.
+ *
+ * Horizon endpoint: `GET /claimable_balances?claimant=<G-address>&limit=5`
+ * The limit is intentionally small — we only need to know if >0 exist and
+ * at most a count up to 5 for the informational comment.
+ */
+async function fetchClaimableBalanceCount(horizonUrl, stellarAddress, fetchFn, timeoutMs = 5000) {
+    const validation = (0, validation_1.validateHorizonUrl)(horizonUrl, 'horizon_url', { allowHttp: true });
+    if (!validation.valid) {
+        return 0;
+    }
+    let normalized;
+    try {
+        normalized = normalizeHorizonUrl(horizonUrl);
+    }
+    catch {
+        return 0;
+    }
+    const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
+    const fetcher = fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetcher(url, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                return 0;
+            }
+            const data = (await response.json());
+            const records = data._embedded?.records ?? data.records ?? [];
+            if (Array.isArray(records)) {
+                return records.length;
+            }
+            return 0;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    catch {
+        return 0;
+    }
 }
 /**
  * All wallet label strings — useful for bulk removal before re-applying
@@ -39461,6 +39886,7 @@ async function run() {
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
     const minTrustlineLimit = minTrustlineLimitRaw ? (0, inputs_1.parseNumberInput)(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
+    const minAssetBalance = (0, checks_1.parseMinAssetBalance)(core.getInput('min_asset_balance') || '');
     // Optional multi-asset JSON — validate early so bad input fails fast.
     if (assetsJsonRaw.trim()) {
         (0, assets_1.parseAssetsJson)(assetsJsonRaw);
@@ -39485,6 +39911,10 @@ async function run() {
     const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
     const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
     const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+    // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
+    const stellarTomlFetchEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('stellar_toml_fetch_enabled'), false);
+    const stellarTomlCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('stellar_toml_cache_ttl_ms') || '3600000', 3600000, { min: 0, max: 86400000 });
+    const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
     // GitHub Checks API integration (Wave #26 — optional, off by default)
     const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
     // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
@@ -39533,17 +39963,28 @@ async function run() {
         // here to ensure validation spans are consistently recorded.
         metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
     }
+    // Claimable-balance policy (Issue #260) — default ignore
+    const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
+    const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' : 'ignore';
+    // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
+    const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
+    const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve: Number(minXlmReserve),
+        minAssetBalance,
         minTrustlineLimit,
         horizonUrl,
         homeDomainCheckEnabled,
         expectedHomeDomain,
         homeDomainCheckMode,
+        stellarTomlFetchEnabled,
+        stellarTomlCacheTtlMs,
+        stellarTomlHashPin,
         checkLedgerFreshness: checkLedgerFreshnessEnabled,
         maxLedgerLagSeconds,
         ledgerFreshnessFailOnStale,
+        claimableBalancePolicy,
     };
     // ---------------------------------------------------------------------------
     // Batch mode (Issue #199)
@@ -39697,7 +40138,7 @@ async function run() {
         horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
         horizonFetchStatusCode = 200;
         metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        result = (0, checks_1.runAccountChecks)(account, checkConfig);
+        result = await (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
         horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
@@ -39705,16 +40146,29 @@ async function run() {
         if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
             horizonFetchStatusCode = 404;
             horizonFetchError = error.message;
-            // #144: attempt cross-network detection before building the result so
-            // the comment surfaces a clear mismatch error when the address is active
-            // on the opposite network. Fire-and-forget with a short timeout so a
-            // slow alt-network Horizon never blocks the primary run.
+            // #144/#266: deterministic cross-network detection — probes canonical opposite
+            // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
             const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
             if (mismatchHint) {
                 core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
                     `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
             }
-            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint);
+            // #260: claimable-balance-aware funded definition — when policy is 'count',
+            // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+            let claimableCount;
+            if (claimableBalancePolicy === 'count') {
+                try {
+                    const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
+                    claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+                    if (claimableCount > 0) {
+                        core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+                    }
+                }
+                catch {
+                    claimableCount = 0;
+                }
+            }
+            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
         }
         else if (error instanceof horizon_1.HorizonError) {
             horizonFetchStatusCode = error.statusCode;
@@ -39898,6 +40352,8 @@ async function run() {
         onboardingChecklist,
         sep0007DeepLinks,
         sep0007OriginDomain,
+        sep0010ChallengeXdr,
+        sep0010DashboardUrl,
         locale,
         debugMode,
         docsBaseUrl: core.getInput('docs_base_url') || undefined,
@@ -40375,6 +40831,8 @@ exports.buildChangeTrustLink = buildChangeTrustLink;
 exports.buildLobstrLink = buildLobstrLink;
 exports.buildSep0007TxLink = buildSep0007TxLink;
 exports.buildSep0007PayLink = buildSep0007PayLink;
+exports.isValidDashboardUrl = isValidDashboardUrl;
+exports.buildSep0010ChallengeSnippet = buildSep0010ChallengeSnippet;
 // ---------------------------------------------------------------------------
 // FAQ anchor deep links (Issue #104)
 // ---------------------------------------------------------------------------
@@ -40587,6 +41045,76 @@ function buildSep0007PayLink(options) {
         params.set('origin_domain', options.originDomain);
     }
     return `web+stellar:pay?${params.toString()}`;
+}
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ */
+function isValidDashboardUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:')
+            return false;
+        if (parsed.username || parsed.password)
+            return false;
+        // Block private/loopback/metadata hosts (same list as Horizon SSRF)
+        const blocked = [
+            /^127\./,
+            /^10\./,
+            /^192\.168\./,
+            /^172\.(1[6-9]|2\d|3[01])\./,
+            /^169\.254\./,
+            /^localhost$/i,
+        ];
+        const host = parsed.hostname;
+        for (const pat of blocked) {
+            if (pat.test(host))
+                return false;
+        }
+        if (host === 'metadata.google.internal')
+            return false;
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+function buildSep0010ChallengeSnippet(options) {
+    const network = options.network ?? 'public';
+    const hasDashboard = !!options.dashboardUrl && options.dashboardUrl.trim().length > 0;
+    const hasChallenge = !!options.challengeXdr && options.challengeXdr.trim().length > 0;
+    if (!hasDashboard && !hasChallenge) {
+        return undefined;
+    }
+    if (hasDashboard && isValidDashboardUrl(options.dashboardUrl)) {
+        const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
+        return (`**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +
+            `[Open dashboard proof](${options.dashboardUrl}) — network **${network}**. ` +
+            `_Challenge verification happens off-action; this link is informational and does not block \`ready\`._`);
+    }
+    if (hasChallenge) {
+        const xdr = options.challengeXdr.trim();
+        // Truncate XDR for display to avoid leaking full nonce and to keep comment size small
+        const display = xdr.length > 32 ? `${xdr.slice(0, 24)}…${xdr.slice(-8)}` : xdr;
+        const networkNote = network === 'testnet' ? ' (testnet)' : '';
+        return (`**SEP-0010 challenge${networkNote}:** prove wallet control by signing this challenge with Freighter and posting the signed XDR to your dashboard. ` +
+            `Challenge (truncated, do not reuse nonce): \`${display}\` ` +
+            `— [How to sign](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md). ` +
+            `_This snippet is informational and does not block \`ready\` unless documented._`);
+    }
+    // Dashboard URL invalid => fall back to no snippet to avoid posting a broken link
+    return undefined;
 }
 
 
@@ -41560,6 +42088,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildConflictReport = buildConflictReport;
+exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
 exports.writeValidationJson = writeValidationJson;
@@ -41568,6 +42098,77 @@ const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const badge_1 = __nccwpck_require__(3120);
 const delta_1 = __nccwpck_require__(1493);
+/**
+ * Build a `ConflictReport` from a map of field → sources.
+ * A conflict exists when a field has values from ≥ 2 sources that disagree.
+ *
+ * @param fieldSources  Map from field name to an array of `ConflictSource` items.
+ * @param privacyMode   When true, address values are masked to first4…last4.
+ * @param now           ISO-8601 timestamp override for testing.
+ */
+function buildConflictReport(fieldSources, options = {}) {
+    const privacyMode = Boolean(options.privacyMode);
+    const generatedAt = options.now ?? new Date().toISOString();
+    const conflicts = [];
+    for (const [field, sources] of Object.entries(fieldSources)) {
+        if (!sources || sources.length < 2)
+            continue;
+        // Mask values if privacy mode — redact G/C addresses to first4…last4.
+        const maskedSources = sources.map((s) => ({
+            source: s.source,
+            value: privacyMode ? maskConflictValue(s.value) : s.value,
+        }));
+        const uniqueValues = new Set(maskedSources.map((s) => s.value));
+        if (uniqueValues.size <= 1)
+            continue; // All sources agree — no conflict.
+        // The first source in the array is the winner (caller must supply in
+        // precedence order: workflow_input > assignee_map > contract > config_file).
+        const resolvedValue = maskedSources[0].value;
+        conflicts.push({ field, resolvedValue, sources: maskedSources });
+    }
+    return {
+        hasConflicts: conflicts.length > 0,
+        conflicts,
+        generatedAt,
+    };
+}
+/**
+ * Mask a value for privacy mode.
+ * Redacts G/C Stellar addresses to first4…last4; leaves other values intact.
+ */
+function maskConflictValue(value) {
+    return value.replace(/\b([GC][A-Z2-7]{55})\b/g, (addr) => {
+        return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+    });
+}
+/**
+ * Format a `ConflictReport` as a Markdown section for embedding in an issue
+ * comment.
+ *
+ * Returns an empty string when there are no conflicts so callers can
+ * unconditionally append the result.
+ */
+function formatConflictReportMarkdown(report) {
+    if (!report || !report.hasConflicts)
+        return '';
+    const lines = [
+        '### ⚠️ Input source conflicts detected',
+        '',
+        '> Two or more sources provided different values for the same input field.',
+        '> The value with the highest precedence (`workflow_input` > `assignee_map` > `contract` > `config_file`) was used.',
+        '',
+        '| Field | Resolved value | Sources |',
+        '| --- | --- | --- |',
+    ];
+    for (const conflict of report.conflicts) {
+        const sourceSummary = conflict.sources
+            .map((s) => `\`${s.source}\`: \`${s.value}\``)
+            .join(', ');
+        lines.push(`| \`${conflict.field}\` | \`${conflict.resolvedValue}\` | ${sourceSummary} |`);
+    }
+    lines.push('');
+    return lines.join('\n');
+}
 function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const timings = extras.timings ?? {};
     const validatedAt = extras.validatedAt ?? new Date().toISOString();
@@ -41589,6 +42190,9 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
             passed: check.passed,
             detail: check.detail,
         }))),
+        // Split balances — native vs asset (Issue #246). 7-decimal strings; legacy xlm_balance retained
+        asset_balance: result.assetBalance ?? '0',
+        native_balance: result.xlmBalance,
         badge_markdown: badgeMarkdown,
         badge_url: badgeUrl,
         timings_json: JSON.stringify({
@@ -41605,6 +42209,11 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         timing_total_ms: String(timings.total_ms ?? 0),
         num_sponsoring: String(result.sponsorshipInfo?.numSponsoring ?? 0),
         num_sponsored: String(result.sponsorshipInfo?.numSponsored ?? 0),
+        // #319 — conflict report
+        conflict_report: extras.conflictReport
+            ? JSON.stringify(extras.conflictReport)
+            : '',
+        has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
     };
 }
 function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
@@ -43496,14 +44105,257 @@ function parseAddressFromSimulateResult(json) {
 
 /***/ }),
 
-/***/ 8855:
+/***/ 9681:
 /***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
+/**
+ * @file ssrf.ts
+ * SSRF-safe HTTP fetch utilities for TrustBridge.
+ *
+ * This module provides helpers for making HTTP requests with built-in
+ * protections against Server-Side Request Forgery (SSRF) attacks:
+ * - HTTPS-only (no HTTP, file://, ftp://, etc.)
+ * - No private/internal IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+ * - Request size and timeout limits
+ * - No redirect chains to different origins
+ *
+ * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
+ * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SSRF_BLOCKED_RANGES = void 0;
+exports.isSSRFBlocked = isSSRFBlocked;
+exports.validateSSRFSafeUrl = validateSSRFSafeUrl;
+exports.fetchSSRFSafe = fetchSSRFSafe;
+/**
+ * SSRF blocklist: IP ranges that should never be fetched from inside a
+ * GitHub Actions workflow.
+ *
+ * Covers:
+ * - Loopback: 127.0.0.0/8
+ * - Private RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ * - Link-local: 169.254.0.0/16
+ * - Multicast: 224.0.0.0/4
+ * - Reserved: 240.0.0.0/4
+ * - Localhost IPv6: ::1
+ * - Link-local IPv6: fe80::/10
+ */
+exports.SSRF_BLOCKED_RANGES = [
+    { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
+    { name: 'private_10', pattern: /^10\./ },
+    { name: 'private_172', pattern: /^172\.(1[6-9]|2[0-9]|3[01])\./ },
+    { name: 'private_192', pattern: /^192\.168\./ },
+    { name: 'link_local_169', pattern: /^169\.254\./ },
+    { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
+    { name: 'reserved_240', pattern: /^240\./ },
+    { name: 'ipv6_link_local', pattern: /^fe80:/i },
+];
+/**
+ * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * Returns `{ blocked: true, reason }` if the host should be rejected,
+ * or `{ blocked: false }` if it's safe to fetch from.
+ */
+function isSSRFBlocked(host) {
+    const normalized = host.toLowerCase();
+    for (const range of exports.SSRF_BLOCKED_RANGES) {
+        if (range.pattern.test(normalized)) {
+            return { blocked: true, reason: `Host matches SSRF blocklist: ${range.name}` };
+        }
+    }
+    return { blocked: false };
+}
+/**
+ * Validate that a URL is safe for SSRF-protected HTTP fetch.
+ *
+ * Checks:
+ * - Scheme is HTTPS (no HTTP, file://, ftp://, etc.)
+ * - Hostname is not in the SSRF blocklist
+ * - URL has a valid hostname (not relative, not localhost, etc.)
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }`.
+ */
+function validateSSRFSafeUrl(urlStr) {
+    const errors = [];
+    let parsed;
+    try {
+        parsed = new URL(urlStr);
+    }
+    catch {
+        errors.push('Invalid URL format');
+        return { valid: false, errors };
+    }
+    // Only HTTPS allowed
+    if (parsed.protocol !== 'https:') {
+        errors.push(`Scheme must be HTTPS, got: ${parsed.protocol}`);
+    }
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+        errors.push('URL must not contain credentials (username/password)');
+    }
+    // Hostname must be present and not empty
+    if (!parsed.hostname) {
+        errors.push('URL must have a non-empty hostname');
+    }
+    // Check SSRF blocklist
+    if (parsed.hostname) {
+        const blocked = isSSRFBlocked(parsed.hostname);
+        if (blocked.blocked) {
+            errors.push(`Hostname blocked by SSRF policy: ${blocked.reason}`);
+        }
+    }
+    if (errors.length > 0) {
+        return { valid: false, errors };
+    }
+    return { valid: true };
+}
+/**
+ * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ *
+ * NOT currently called by TrustBridge, but available for future enhancements
+ * that need to safely fetch HTTP resources from URLs in Horizon data.
+ *
+ * Usage:
+ * ```ts
+ * const result = await fetchSSRFSafe(homeDomainUrl, { maxBodyBytes: 256 * 1024 });
+ * if (!result.ok) {
+ *   logger.warn(`Fetch failed: ${result.error}`);
+ *   return;
+ * }
+ * const text = await result.text();
+ * ```
+ */
+async function fetchSSRFSafe(urlStr, options = {}) {
+    const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const maxRedirects = options.maxRedirects ?? 5;
+    let currentUrl = urlStr;
+    const seenRedirects = new Set();
+    let redirectCount = 0;
+    while (true) {
+        const validation = validateSSRFSafeUrl(currentUrl);
+        if (!validation.valid) {
+            return { ok: false, error: validation.errors.join('; ') };
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            const response = await fetch(currentUrl, {
+                signal: controller.signal,
+                redirect: 'manual',
+                headers: {
+                    'User-Agent': 'TrustBridge/1.0',
+                    Accept: 'application/toml, text/plain, */*',
+                },
+            });
+            clearTimeout(timeout);
+            if (response.status >= 300 && response.status < 400) {
+                if (!options.followRedirects) {
+                    return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+                }
+                const locationHeader = response.headers.get('location');
+                if (!locationHeader) {
+                    return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+                }
+                if (redirectCount >= maxRedirects) {
+                    return {
+                        ok: false,
+                        error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+                        status: response.status,
+                    };
+                }
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                const nextTarget = new URL(nextUrl);
+                const hopValidation = validateSSRFSafeUrl(nextUrl);
+                if (!hopValidation.valid) {
+                    return {
+                        ok: false,
+                        error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+                        status: response.status,
+                    };
+                }
+                const currentOrigin = new URL(currentUrl).origin;
+                const nextOrigin = nextTarget.origin;
+                if (nextTarget.protocol !== 'https:') {
+                    return {
+                        ok: false,
+                        error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (currentOrigin !== nextOrigin) {
+                    return {
+                        ok: false,
+                        error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (seenRedirects.has(nextUrl)) {
+                    return {
+                        ok: false,
+                        error: `Redirect loop detected: ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                seenRedirects.add(nextUrl);
+                redirectCount += 1;
+                currentUrl = nextUrl;
+                continue;
+            }
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) {
+                const bytes = parseInt(contentLength, 10);
+                if (bytes > maxBodyBytes) {
+                    return {
+                        ok: false,
+                        error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+                        status: response.status,
+                    };
+                }
+            }
+            if (!response.ok) {
+                return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+            }
+            const textData = await response.text();
+            if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
+                return {
+                    ok: false,
+                    error: `Response body exceeds limit after decompression`,
+                    status: response.status,
+                };
+            }
+            return {
+                ok: true,
+                status: response.status,
+                text: async () => textData,
+                headers: response.headers,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isTimeout = message.includes('signal') || message.includes('timeout');
+            return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+        }
+    }
+}
+
+
+/***/ }),
+
+/***/ 8855:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DIGEST_MAX_LISTED_ISSUES = void 0;
 exports.summarizeChecks = summarizeChecks;
 exports.formatFailureSummary = formatFailureSummary;
+exports.aggregateDigest = aggregateDigest;
+exports.formatDigestComment = formatDigestComment;
+const delta_1 = __nccwpck_require__(1493);
 function summarizeChecks(result) {
     const failedLabels = result.checks
         .filter((check) => !check.passed)
@@ -43520,6 +44372,404 @@ function formatFailureSummary(result) {
     return summary.failedLabels.length > 0
         ? summary.failedLabels.join(', ')
         : 'none';
+}
+/**
+ * Maximum number of entries listed per section in the Markdown digest.
+ * Caps the comment size on large Wave issues (e.g. 200+ contributors).
+ */
+exports.DIGEST_MAX_LISTED_ISSUES = 50;
+/**
+ * Aggregate multiple `DigestEntry` items into a `DigestReport`.
+ *
+ * - When `privacyMode` is true, addresses are hashed (sha256 prefix) in the
+ *   report so the digest can be posted publicly without leaking contributor
+ *   addresses.
+ * - Entries are capped at `DIGEST_MAX_LISTED_ISSUES` per section to keep
+ *   comment size within GitHub limits.
+ *
+ * @param entries  One entry per issue/address validation run.
+ * @param options  Aggregation options.
+ */
+function aggregateDigest(entries, options = {}) {
+    const privacyMode = Boolean(options.privacyMode);
+    const generatedAt = options.now ?? new Date().toISOString();
+    // Apply privacy masking to addresses only when privacyMode is on.
+    const maskedEntries = entries.map((entry) => ({
+        ...entry,
+        stellarAddress: privacyMode
+            ? (0, delta_1.privacyMaskAddress)(entry.stellarAddress, true)
+            : entry.stellarAddress,
+    }));
+    const readyEntries = maskedEntries.filter((e) => e.result.valid);
+    const blockedEntries = maskedEntries.filter((e) => !e.result.valid);
+    const totalIssues = maskedEntries.length;
+    const readyCount = readyEntries.length;
+    const blockedCount = blockedEntries.length;
+    const readyRateNum = totalIssues > 0 ? (readyCount / totalIssues) * 100 : 0;
+    const readyRate = `${readyRateNum.toFixed(1)}%`;
+    return {
+        totalIssues,
+        readyCount,
+        blockedCount,
+        readyRate,
+        readyEntries: readyEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
+        blockedEntries: blockedEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
+        generatedAt,
+        privacyMode,
+    };
+}
+/**
+ * Format a `DigestReport` as a Markdown string suitable for posting as a
+ * GitHub issue comment.
+ *
+ * - Lists ready and blocked contributors with their issue numbers and
+ *   (optionally redacted) addresses.
+ * - Caps each section at `DIGEST_MAX_LISTED_ISSUES` with a note when
+ *   truncated.
+ * - Includes a machine-readable gate summary (ready/blocked counts).
+ */
+function formatDigestComment(report) {
+    const lines = [
+        '<!-- trustbridge-action:digest -->',
+        '## TrustBridge — Weekly Wallet Digest',
+        '',
+        `_Generated: \`${report.generatedAt}\`_`,
+        `_Privacy mode: ${report.privacyMode ? '**on** (addresses hashed)' : 'off'}_`,
+        '',
+        '### Summary',
+        '',
+        `| Metric | Value |`,
+        `| --- | --- |`,
+        `| Total issues checked | **${report.totalIssues}** |`,
+        `| ✅ Ready | **${report.readyCount}** |`,
+        `| ❌ Blocked | **${report.blockedCount}** |`,
+        `| Ready rate | **${report.readyRate}** |`,
+        '',
+    ];
+    // Blocked section
+    if (report.blockedEntries.length > 0) {
+        lines.push('### ❌ Blocked contributors', '');
+        for (const entry of report.blockedEntries) {
+            const failedLabels = entry.result.checks
+                .filter((c) => !c.passed)
+                .map((c) => c.label)
+                .join(', ');
+            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
+            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ❌ ${failedLabels}`);
+        }
+        if (report.blockedCount > exports.DIGEST_MAX_LISTED_ISSUES) {
+            lines.push(`- _… and ${report.blockedCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
+        }
+        lines.push('');
+    }
+    // Ready section
+    if (report.readyEntries.length > 0) {
+        lines.push('### ✅ Ready contributors', '');
+        for (const entry of report.readyEntries) {
+            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
+            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ✅ all checks pass`);
+        }
+        if (report.readyCount > exports.DIGEST_MAX_LISTED_ISSUES) {
+            lines.push(`- _… and ${report.readyCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
+        }
+        lines.push('');
+    }
+    lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
+    return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
 }
 
 

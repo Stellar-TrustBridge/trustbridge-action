@@ -129,3 +129,56 @@ export declare function discoverPreviousValidationArtifact(githubToken: string, 
  * @internal Exported for testing.
  */
 export declare function extractFromZip(zipBuffer: Buffer, targetFileName: string): string | null;
+/**
+ * Result of comparing the current Stellar address against the address stored
+ * in the previous `validation.json` artifact.
+ */
+export interface AddressChangeResult {
+    /** True when a previous address was found and it differs from the current. */
+    changed: boolean;
+    /**
+     * The previous address as stored/displayed. When `privacyMode` is true this
+     * will be the hashed form (`sha256:<16 hex>`) so the raw prior address is
+     * never logged or commented publicly.
+     */
+    previousAddress: string | null;
+    /**
+     * The current address as stored/displayed (same masking policy as above).
+     */
+    currentAddress: string;
+    /** True when the comparison was done against hashed values (privacy mode). */
+    privacyMode: boolean;
+}
+/**
+ * Detect whether the Stellar address has changed since the last successful
+ * validation run.
+ *
+ * Strategy:
+ * - When `privacyMode` is **off** (default), addresses are compared and
+ *   stored in plain form (`G…`) in the result for display in the comment.
+ * - When `privacyMode` is **on**, both the current and previous addresses are
+ *   hashed with SHA-256 and only the hashes are compared/stored. This means
+ *   the raw prior address is never placed into a public issue comment.
+ *
+ * Muxed accounts (M…): muxed addresses encode an underlying G-address and a
+ * memo id. Two different muxed addresses over the *same* G-address are treated
+ * as the *same* address for comparison purposes — only the base G-address
+ * (`[GC][A-Z2-7]{55}`) is extracted for comparison.
+ *
+ * First-run handling: when `previousArtifact` is null/undefined (no previous
+ * run), the function returns `changed: false` so the action never emits a
+ * spurious "address changed" warning on first run.
+ *
+ * @param currentAddress     The Stellar address being validated this run.
+ * @param previousArtifact   The loaded previous `validation.json` artifact, or null.
+ * @param privacyMode        When true, hash addresses before comparing/storing.
+ */
+export declare function detectAddressChange(currentAddress: string, previousArtifact: ValidationArtifact | null | undefined, privacyMode?: boolean): AddressChangeResult;
+/**
+ * Render a Markdown warning section for the issue comment when an address
+ * change is detected.
+ *
+ * Returns an empty string when `changeResult.changed` is false so callers
+ * can unconditionally append the result.
+ */
+export declare function formatAddressChangeWarning(changeResult: AddressChangeResult): string;
