@@ -22,6 +22,7 @@ import {
 import { globalMetrics } from './metrics';
 import { UnauthorizedTrustlinePolicy } from './inputs';
 import { fetchTomlWithCache } from './toml';
+import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
