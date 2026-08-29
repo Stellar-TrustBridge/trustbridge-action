@@ -364,6 +364,29 @@ inputs:
       (blocks valid).
     required: false
     default: 'warn'
+  stellar_toml_fetch_enabled:
+    description: >-
+      Enable optional SEP-0001 stellar.toml fetch and validation when
+      home_domain_check_enabled is true. Fetches the TOML file at
+      https://{home_domain}/.well-known/stellar.toml with SSRF protection
+      and TTL caching. Default false.
+    required: false
+    default: 'false'
+  stellar_toml_cache_ttl_ms:
+    description: >-
+      Time-to-live for stellar.toml fetch cache in milliseconds. Default 3600000
+      (1 hour). Only used when stellar_toml_fetch_enabled is true.
+    required: false
+    default: '3600000'
+  stellar_toml_hash_pin:
+    description: >-
+      Optional integrity hash for stellar.toml content validation. Format:
+      "algorithm:hexvalue" (e.g. "sha256:abc123..."). When set, the fetched TOML
+      content is hashed and compared; a mismatch fails the check. Protects against
+      cache poisoning and MITM attacks. Only used when stellar_toml_fetch_enabled
+      is true.
+    required: false
+    default: ''
   write_validation_json:
     description: >-
       When true, write the validation result to validation_json_path as a

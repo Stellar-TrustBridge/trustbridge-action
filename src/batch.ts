@@ -155,7 +155,7 @@ export async function runBatchValidation(
 
     try {
       const account = await fetchAccount(horizonUrl, address, fetchOptions);
-      const result = runAccountChecks(account, config);
+      const result = await runAccountChecks(account, config);
 
       let failureReason: string | null = null;
       if (!result.valid) {

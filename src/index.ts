@@ -713,6 +713,15 @@ async function run(): Promise<void> {
   const homeDomainCheckMode: HomeDomainCheckMode =
     homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
 
+  // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
+  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
+  const stellarTomlCacheTtlMs = parseNumberInput(
+    core.getInput('stellar_toml_cache_ttl_ms') || '3600000',
+    3600000,
+    { min: 0, max: 86400000 }, // 0 = no cache, 86400000 = 24 hours max
+  );
+  const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
+
   // GitHub Checks API integration (Wave #26 — optional, off by default)
   const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
 
@@ -785,6 +794,9 @@ async function run(): Promise<void> {
     homeDomainCheckEnabled,
     expectedHomeDomain,
     homeDomainCheckMode,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPin,
     checkLedgerFreshness: checkLedgerFreshnessEnabled,
     maxLedgerLagSeconds,
     ledgerFreshnessFailOnStale,
@@ -961,7 +973,7 @@ async function run(): Promise<void> {
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
     horizonFetchStatusCode = 200;
     globalMetrics.stopTimer('horizon_fetch');
-    result = runAccountChecks(account, checkConfig);
+    result = await runAccountChecks(account, checkConfig);
   } catch (error) {
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
     globalMetrics.stopTimer('horizon_fetch');
