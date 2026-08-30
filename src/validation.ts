@@ -471,7 +471,7 @@ export function validateSsrfSafeUrl(
 export function validateHorizonUrl(
   url: string,
   fieldName = 'horizon_url',
-  options: { allowHttp?: boolean } = {},
+  options: { allowHttp?: boolean; allowlist?: string[] } = {},
 ): ValidationResult {
   // Allow http by default (testnet / private mirrors); pass allowHttp:false for https-only.
   const allowHttp = options.allowHttp !== false;
@@ -498,6 +498,41 @@ export function validateHorizonUrl(
   }
   for (const w of [...urlCheck.warnings, ...ssrf.warnings]) {
     if (!warnings.includes(w)) warnings.push(w);
+  }
+
+  // Issue #315: Strict allowlist check
+  if (options.allowlist && options.allowlist.length > 0 && urlCheck.valid) {
+    try {
+      const parsedTarget = new URL(trimmed);
+      const targetHost = parsedTarget.host.toLowerCase();
+
+      let matched = false;
+      for (const allowed of options.allowlist) {
+        const cleanAllowed = allowed.trim();
+        if (!cleanAllowed) continue;
+
+        try {
+          // If the allowlist entry is a full URL, parse and compare hosts
+          const parsedAllowed = new URL(cleanAllowed);
+          if (targetHost === parsedAllowed.host.toLowerCase()) {
+            matched = true;
+            break;
+          }
+        } catch {
+          // If the allowlist entry is just a hostname/port
+          if (targetHost === cleanAllowed.toLowerCase() || parsedTarget.hostname.toLowerCase() === cleanAllowed.toLowerCase()) {
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      if (!matched) {
+        errors.push(`${fieldName} host "${targetHost}" is not in the allowlist`);
+      }
+    } catch {
+      // Ignore URL parse errors here, let urlCheck handle invalid format
+    }
   }
 
   const normalizedErrors = errors.map((e) => {

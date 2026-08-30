@@ -101,7 +101,7 @@ function parseYamlValue(raw: string): unknown {
 // ---------------------------------------------------------------------------
 
 export interface ReadConfigResult {
-  /** The validated and typed config, or null if no config file was found. */
+  /** The validated and typed config, or null if no config files were found. */
   config: TrustbridgeConsumerConfig | null;
   /** Validation result — always present even when config is null. */
   validation: ValidationResult;
@@ -109,8 +109,56 @@ export interface ReadConfigResult {
   redactedSnapshot: Record<string, unknown> | null;
   /** Absolute path that was read (or attempted). */
   resolvedPath: string;
-  /** True when the file existed and was successfully read. */
+  /** True when at least one file existed and was successfully read. */
   found: boolean;
+}
+
+/**
+ * Reads and merges organization-level and repository-level configuration files.
+ * Organization config (.github/trustbridge.yml) is loaded first.
+ * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
+ */
+export function readTrustbridgeConfigs(
+  repoConfigPath?: string,
+  workspaceRoot?: string,
+): ReadConfigResult {
+  const root = workspaceRoot ?? process.cwd();
+
+  const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
+
+  // Use the explicit repo path, or fallback to default repo path
+  const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
+  const repoResult = readTrustbridgeConfig(targetRepoPath, root);
+
+  const valid = orgResult.validation.valid && repoResult.validation.valid;
+  const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
+  const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
+
+  // Merge configs (repo overrides org)
+  let config: TrustbridgeConsumerConfig | null = null;
+  if (orgResult.config || repoResult.config) {
+    config = { ...orgResult.config };
+    if (repoResult.config) {
+      for (const [key, value] of Object.entries(repoResult.config)) {
+        if (value !== undefined) {
+          (config as Record<string, unknown>)[key] = value;
+        }
+      }
+    }
+  }
+
+  let redactedSnapshot: Record<string, unknown> | null = null;
+  if (orgResult.redactedSnapshot || repoResult.redactedSnapshot) {
+    redactedSnapshot = { ...orgResult.redactedSnapshot, ...repoResult.redactedSnapshot };
+  }
+
+  return {
+    config,
+    validation: { valid, errors, warnings },
+    redactedSnapshot,
+    resolvedPath: repoResult.resolvedPath,
+    found: orgResult.found || repoResult.found,
+  };
 }
 
 /**

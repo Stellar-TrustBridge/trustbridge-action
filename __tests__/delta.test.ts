@@ -326,10 +326,20 @@ describe('discoverPreviousValidationArtifact', () => {
 
   it('returns null on API error (fail open)', async () => {
     const { discoverPreviousValidationArtifact } = require('../src/delta');
+
     process.env.GITHUB_REPOSITORY = 'owner/repo';
     process.env.GITHUB_RUN_ID = '123';
-    process.env.GITHUB_API_URL = 'https://httpstat.us';
-    const result = await discoverPreviousValidationArtifact('ghp_test');
-    expect(result).toBeNull();
+
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValue(new Error('API unavailable'));
+
+    try {
+      const result = await discoverPreviousValidationArtifact('ghp_test');
+      expect(result).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });

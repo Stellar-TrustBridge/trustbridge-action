@@ -516,6 +516,44 @@ inputs:
     required: false
     default: ''
 
+  horizon_url_allowlist:
+    description: >-
+      Optional comma-separated list of allowed Horizon base URLs.
+      When set, any configured Horizon URL must strictly match one of these allowed
+      hosts, in addition to passing the existing SSRF block-list checks.
+    required: false
+    default: ''
+
+  dashboard_roster_url:
+    description: >-
+      Optional dashboard API URL to fetch the assignee roster via HTTP GET.
+      When configured, this overrides the local assignee_address_map.
+    required: false
+    default: ''
+
+  dashboard_roster_secret:
+    description: >-
+      Optional secret key used to generate the X-TrustBridge-Signature HMAC for dashboard requests.
+    required: false
+    default: ''
+
+  dashboard_roster_timeout_ms:
+    description: 'Dashboard HTTP request timeout in milliseconds (1000-60000)'
+    required: false
+    default: '5000'
+
+  soroban_full_roster:
+    description: >-
+      If true, retrieves the complete assignee roster from the Soroban contract using pagination.
+      Defaults to false (single lookup).
+    required: false
+    default: 'false'
+
+  soroban_roster_page_limit:
+    description: 'Maximum number of pages to fetch when soroban_full_roster is true'
+    required: false
+    default: '10'
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:

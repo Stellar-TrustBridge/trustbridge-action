@@ -57,11 +57,16 @@ import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { parseLocaleInput } from './i18n';
 import { sendWebhookNotification } from './webhook';
 import { runIssuesPreflight } from './preflight';
-import { lookupAddressFromContract, ContractLookupError } from './soroban';
+import {
+  ContractLookupError,
+  lookupAddressFromContract,
+  fetchFullContractRoster,
+} from './soroban';
+import { fetchDashboardRoster } from './roster';
 import { registerCorePlugins } from './corePlugins';
 import { defaultRegistry } from './plugin';
 import { loadPluginsFromAllowlist } from './pluginLoader';
-import { readTrustbridgeConfig, mergeConsumerConfig } from './configReader';
+import { readTrustbridgeConfigs, mergeConsumerConfig } from './configReader';
 import {
   parseBatchAddresses,
   runBatchValidation,
@@ -114,6 +119,7 @@ function resolveStellarAddressInput(
   stellarAddressInput: string,
   assigneeAddressMapRaw: string,
   contractAddress?: string,
+  dashboardAddress?: string,
 ): string {
   const resolvedFrom: string[] = [];
 
@@ -125,6 +131,16 @@ function resolveStellarAddressInput(
       source: 'contract',
     });
     return contractAddress;
+  }
+
+  // Source 2: Dashboard roster API
+  if (dashboardAddress) {
+    resolvedFrom.push('dashboard_roster');
+    logger.info('Address resolved from dashboard roster', {
+      component: 'index',
+      source: 'dashboard_roster',
+    });
+    return dashboardAddress;
   }
 
   // Source 2: Assignee address map
@@ -365,7 +381,16 @@ async function run(): Promise<void> {
   const stellarAddressInput = core.getInput('stellar_address_input');
   const assigneeAddressMapRaw = core.getInput('assignee_address_map');
 
-  // Issue #219: Contract registry lookup (source 1 of address resolution).
+  // Issue #317: Dashboard roster API inputs
+  const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
+  const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
+  const dashboardRosterTimeoutMs = parseNumberInput(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
+
+  // Issue #318: Soroban full roster inputs
+  const sorobanFullRoster = parseBooleanInput(core.getInput('soroban_full_roster'), false);
+  const sorobanRosterPageLimit = parseNumberInput(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
+
+  // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
   const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
   const contractId = core.getInput('contract_id') || '';
   let contractResolvedAddress: string | undefined;
@@ -373,12 +398,22 @@ async function run(): Promise<void> {
     const assigneeLogin = resolveAssigneeLoginFromContext();
     if (assigneeLogin) {
       try {
-        const lookup = await lookupAddressFromContract(assigneeLogin, {
-          sorobanRpcUrl,
-          contractId,
-        });
-        if (lookup.address) {
-          contractResolvedAddress = lookup.address;
+        if (sorobanFullRoster) {
+          const map = await fetchFullContractRoster(assigneeLogin, {
+            sorobanRpcUrl,
+            contractId,
+            pageLimit: sorobanRosterPageLimit,
+          });
+          const found = map[assigneeLogin.toLowerCase()];
+          if (found) contractResolvedAddress = found;
+        } else {
+          const lookup = await lookupAddressFromContract(assigneeLogin, {
+            sorobanRpcUrl,
+            contractId,
+          });
+          if (lookup.address) {
+            contractResolvedAddress = lookup.address;
+          }
         }
       } catch (err) {
         const isRetryable = err instanceof ContractLookupError && err.retryable;
@@ -391,10 +426,27 @@ async function run(): Promise<void> {
     }
   }
 
+  // Issue #317: Dashboard roster lookup (source 2 of address resolution).
+  let dashboardResolvedAddress: string | undefined;
+  if (dashboardRosterUrl) {
+    const assigneeLogin = resolveAssigneeLoginFromContext();
+    if (assigneeLogin) {
+      try {
+        const map = await fetchDashboardRoster(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs);
+        const found = map[assigneeLogin.toLowerCase()];
+        if (found) dashboardResolvedAddress = found;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
+      }
+    }
+  }
+
   const stellarAddress = resolveStellarAddressInput(
     stellarAddressInput,
     assigneeAddressMapRaw,
     contractResolvedAddress,
+    dashboardResolvedAddress,
   );
   const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
   const debugMode = parseBooleanInput(core.getInput('debug_mode'), false);
@@ -576,7 +628,7 @@ async function run(): Promise<void> {
   // Read the consumer .trustbridge.yml and merge values into action inputs.
   // Explicit non-empty action inputs always win over config-file values.
   // ---------------------------------------------------------------------------
-  const configResult = readTrustbridgeConfig(
+  const configResult = readTrustbridgeConfigs(
     trustbridgeConfigPath,
     process.env.GITHUB_WORKSPACE || process.cwd(),
   );
@@ -715,14 +767,6 @@ async function run(): Promise<void> {
     homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
 
   // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
-  const stellarTomlCacheTtlMs = parseNumberInput(
-    core.getInput('stellar_toml_cache_ttl_ms') || '3600000',
-    3600000,
-    { min: 0, max: 86400000 }, // 0 = no cache, 86400000 = 24 hours max
-  );
-  const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
-
   // GitHub Checks API integration (Wave #26 — optional, off by default)
   const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
 
@@ -804,9 +848,6 @@ async function run(): Promise<void> {
     homeDomainCheckEnabled,
     expectedHomeDomain,
     homeDomainCheckMode,
-    stellarTomlFetchEnabled,
-    stellarTomlCacheTtlMs,
-    stellarTomlHashPin,
     checkLedgerFreshness: checkLedgerFreshnessEnabled,
     maxLedgerLagSeconds,
     ledgerFreshnessFailOnStale,

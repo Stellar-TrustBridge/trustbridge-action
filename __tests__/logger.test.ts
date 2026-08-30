@@ -204,7 +204,7 @@ describe('buildInputsLogRecord', () => {
   });
 
   it('returns a plain JSON-serialisable object (no circular refs, no undefined)', () => {
-    const record = buildInputsLogRecord(makeInputs());
+    const record = buildInputsLogRecord(makeInputs({ maxRetries: 3, retryBaseDelayMs: 1000 }));
     expect(() => JSON.stringify(record)).not.toThrow();
     const parsed = JSON.parse(JSON.stringify(record));
     // Every key that exists in the record must survive the JSON round-trip

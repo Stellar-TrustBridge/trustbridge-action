@@ -572,8 +572,8 @@ class OidcClient {
             const res = yield httpclient
                 .getJson(id_token_url)
                 .catch(error => {
-                throw new Error(`Failed to get ID Token. \n 
-        Error Code : ${error.statusCode}\n 
+                throw new Error(`Failed to get ID Token. \n
+        Error Code : ${error.statusCode}\n
         Error Message: ${error.message}`);
             });
             const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
@@ -34255,7 +34255,7 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
         }
         try {
             const account = await (0, horizon_1.fetchAccount)(horizonUrl, address, fetchOptions);
-            const result = (0, checks_1.runAccountChecks)(account, config);
+            const result = await (0, checks_1.runAccountChecks)(account, config);
             let failureReason = null;
             if (!result.valid) {
                 const reasons = [];
@@ -34595,7 +34595,10 @@ exports.defaultCache = new SimpleCache();
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
+exports.hasClaimableBalances = hasClaimableBalances;
+exports.countClaimableBalances = countClaimableBalances;
 exports.detectNetworkMismatch = detectNetworkMismatch;
+exports.buildNetworkMismatchDetail = buildNetworkMismatchDetail;
 exports.evaluateHomeDomain = evaluateHomeDomain;
 exports.normalizeStellarAddress = normalizeStellarAddress;
 exports.isValidStellarAddress = isValidStellarAddress;
@@ -34629,10 +34632,23 @@ const assets_1 = __nccwpck_require__(5462);
 const markdown_1 = __nccwpck_require__(3758);
 const links_1 = __nccwpck_require__(3346);
 const metrics_1 = __nccwpck_require__(5670);
+const validation_1 = __nccwpck_require__(4344);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+function hasClaimableBalances(account) {
+    return account.balances.some((b) => b.asset_type === 'claimable_balance_id');
+}
+function countClaimableBalances(account) {
+    return account.balances.filter((b) => b.asset_type === 'claimable_balance_id').length;
+}
 /**
  * Detect whether a Stellar address that returned 404 on the primary Horizon
  * URL is actually active on the opposite network.
@@ -34640,6 +34656,17 @@ exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  * Returns a `NetworkMismatchHint` when a mismatch is confirmed, or
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
+ *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
  *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
@@ -34649,6 +34676,12 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
     const configuredNetwork = (0, links_1.inferStellarNetwork)(configuredHorizonUrl);
     const altNetwork = (0, links_1.oppositeNetwork)(configuredNetwork);
     const altHorizonUrl = (0, links_1.canonicalHorizonUrl)(altNetwork);
+    // SSRF guard: canonical URLs are known-good, but validate anyway so a
+    // future change that returns a private/loopback URL cannot be probed.
+    const ssrfCheck = (0, validation_1.validateHorizonUrl)(altHorizonUrl, 'alt_horizon_url', { allowHttp: true });
+    if (!ssrfCheck.valid) {
+        return undefined;
+    }
     const checkUrl = `${altHorizonUrl}/accounts/${stellarAddress}`;
     try {
         const fetcher = fetchFn ?? ((...args) => fetch(...args));
@@ -34657,16 +34690,32 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
             headers: { Accept: 'application/json' },
             signal: AbortSignal.timeout(5000),
         });
+        // Deterministic: only 200 is a positive mismatch signal. 404 => genuinely unfunded.
+        // Any other status (503, 429, 500, etc.) is treated as "no evidence" to avoid
+        // false positives when the opposite Horizon is temporarily unavailable.
         if (response.status === 200) {
             return { configuredNetwork, activeOnNetwork: altNetwork };
         }
-        // 404 means genuinely not found on alt network — no mismatch evidence
         return undefined;
     }
     catch {
         // Network error or timeout — can't determine, so no hint
         return undefined;
     }
+}
+/**
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
+ */
+function buildNetworkMismatchDetail(stellarAddress, hint) {
+    const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
+    const altUrl = (0, links_1.canonicalHorizonUrl)(hint.activeOnNetwork);
+    const configuredUrl = (0, links_1.canonicalHorizonUrl)(hint.configuredNetwork);
+    return (`Account ${safeAddress} was **not found** on the **${hint.configuredNetwork}** network` +
+        ` but **is active on ${hint.activeOnNetwork}** (${altUrl}).` +
+        ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network` +
+        ` (expected ${hint.configuredNetwork}: ${configuredUrl}).`);
 }
 /**
  * Evaluate the issuer's SEP-0001 home domain alignment against the
@@ -35045,6 +35094,23 @@ function runAccountChecks(account, config) {
         numSponsoring: account.num_sponsoring ?? 0,
         numSponsored: account.num_sponsored ?? 0,
     };
+    // Claimable-balance-aware funded definition (Issue #260)
+    // Default 'ignore' means claimables do not affect funded/valid.
+    // When policy is 'count', we surface an informational note if claimables exist.
+    const claimableBalancePolicy = config.claimableBalancePolicy ?? 'ignore';
+    const claimableBalanceCount = countClaimableBalances(account);
+    const hasClaimables = claimableBalanceCount > 0;
+    if (claimableBalancePolicy === 'count' && hasClaimables) {
+        checks.push({
+            passed: true,
+            label: 'Claimable balances',
+            detail: `Account has **${claimableBalanceCount} claimable balance(s)** — these are not counted toward \`account_funded\` but can be claimed via Horizon claimable_balances endpoint.`,
+        });
+        metrics_1.globalMetrics.incrementCounter('claimable_balances_found');
+        metrics_1.globalMetrics.recordMetric('claimable_balances_count', claimableBalanceCount, 'count', {
+            policy: 'count',
+        });
+    }
     return {
         valid,
         accountFunded: true,
@@ -35058,6 +35124,8 @@ function runAccountChecks(account, config) {
         trustlineLimit,
         checks,
         remediation,
+        claimableBalanceCount,
+        hasClaimableBalances: hasClaimables,
         reasonCode: (() => {
             if (valid)
                 return 'SUCCESS';
@@ -35075,19 +35143,28 @@ function runAccountChecks(account, config) {
         sponsorshipInfo,
     };
 }
-function unfundedAccountResult(stellarAddress, config, mismatchHint) {
+function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCount) {
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
     const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
     // Build the "not found" detail, extended with mismatch context when available
+    // Uses centralized deterministic builder so public↔testnet produce identical format.
     let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
     if (mismatchHint) {
-        const altUrl = (0, links_1.canonicalHorizonUrl)(mismatchHint.activeOnNetwork);
-        notFoundDetail =
-            `Account ${safeAddress} was **not found** on the **${mismatchHint.configuredNetwork}** network` +
-                ` but **is active on ${mismatchHint.activeOnNetwork}** (${altUrl}).` +
-                ` This looks like a network mismatch — ensure \`horizon_url\` points at the correct network.`;
+        notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
+    }
+    // Claimable-balance-aware funded definition (Issue #260): when policy is 'count' and
+    // claimableCount >0, surface an informational note. This does NOT set accountFunded true;
+    // the account is still unfunded, but the contributor is told claimables exist.
+    const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
+    const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
+    if (claimablePolicy === 'count' && hasClaimables) {
+        notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
+    }
+    else if (claimablePolicy === 'ignore' && hasClaimables) {
+        // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
+        // Metrics still tracked for observability if caller fetched count.
     }
     const checks = [
         {
@@ -35113,12 +35190,25 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint) {
             detail: `Cannot verify ${safeAssetCode} balance — Fund the account and establish a trustline first.`,
         });
     }
+    // Claimable balances informational check (Issue #260) — only when policy is count
+    const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
+    if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+        checks.push({
+            passed: true,
+            label: 'Claimable balances',
+            detail: `Account has **${claimableCount} claimable balance(s)** pending claim. Fund the account first, then claim via Horizon or wallet.`,
+        });
+    }
     // Base remediation steps
     const remediationSteps = [
         `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
         `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
         `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
     ];
+    // Claimable remediation when policy is count
+    if ((config.claimableBalancePolicy ?? 'ignore') === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
+        remediationSteps.push(`This address has **${claimableCount} claimable balance(s)** awaiting claim. After funding, claim them via [Horizon claimable_balances endpoint](${config.horizonUrl ?? 'https://horizon.stellar.org'}/claimable_balances?claimant=${stellarAddress}) or a wallet that supports claimable balances.`);
+    }
     // Prepend network-mismatch guidance when detected so it's the first thing a
     // contributor reads.
     if (mismatchHint) {
@@ -35160,6 +35250,8 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint) {
         failedCheckLabels: toFailedCheckCodes(checks),
         sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
         homeDomainCheck,
+        claimableBalanceCount: typeof claimableCount === 'number' ? claimableCount : 0,
+        hasClaimableBalances: typeof claimableCount === 'number' && claimableCount > 0,
     };
 }
 function getFailedCheckLabels(result) {
@@ -35697,9 +35789,24 @@ function formatCommentBody(result, config) {
         }
         lines.push('', `### ${strings.validationGateHeading}`, '', gate.ready
             ? `- ${strings.readyToProceed}`
-            : `- ${strings.blockedBy} ${gate.failedLabels.join(', ')}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, '', `### ${strings.balancesHeading}`, '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
-            ? `- **Minimum required:** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-            : `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', `### ${strings.setupCostHeading}`, '', `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', `### ${strings.addTrustlineHeading}`, '', `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+            : `- ${strings.blockedBy} ${gate.failedLabels.join(', ')}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, '', `### ${strings.balancesHeading}`, '', `- **Native XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
+            ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
+            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``,
+        // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
+        (() => {
+            const asset = config.assetCode;
+            const bal = result.assetBalance ?? '0';
+            const trustline = result.trustlineExists;
+            if (bal === 'unknown') {
+                return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? 'exists' : 'missing'})`;
+            }
+            if (!trustline) {
+                return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
+            }
+            // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
+            const limitNote = result.trustlineLimit ? ` (limit \`${result.trustlineLimit} ${asset}\`)` : '';
+            return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
+        })(), '', `### ${strings.setupCostHeading}`, '', `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', `### ${strings.addTrustlineHeading}`, '', `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
         // SEP-0007 wallet deep links (Issue #44)
         if (config.sep0007DeepLinks) {
             const payLink = (0, links_1.buildSep0007PayLink)({
@@ -35710,6 +35817,17 @@ function formatCommentBody(result, config) {
                 originDomain: config.sep0007OriginDomain || undefined,
             });
             lines.push('', `### ${strings.sepWalletActionsHeading}`, '', `_${strings.sepWalletActionsDescription}_`, '', `- [${strings.sendXlmToActivate.replace('{amount}', String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`);
+        }
+        // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready
+        // Prefer dashboard proof link over raw XDR to avoid leaking nonces in public issues.
+        const sep0010Snippet = (0, links_1.buildSep0010ChallengeSnippet)({
+            challengeXdr: config.sep0010ChallengeXdr,
+            dashboardUrl: config.sep0010DashboardUrl,
+            network: stellarLabNetwork,
+            stellarAddress: config.stellarAddress,
+        });
+        if (sep0010Snippet) {
+            lines.push('', '### Proof of wallet control (SEP-0010)', '', sep0010Snippet, '', '_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._');
         }
         // Sponsorship info explainer (Issue #141)
         if (result.sponsorshipInfo && (result.sponsorshipInfo.numSponsoring > 0 || result.sponsorshipInfo.numSponsored > 0)) {
@@ -35733,7 +35851,7 @@ function formatCommentBody(result, config) {
             const interval = config.waitUntilFundedIntervalMs ?? 5000;
             lines.push(`| \`wait_until_funded_timeout_ms\` | ${strings.waitUntilFundedTimeoutMs.replace('{ms}', String(timeout))} |`, `| \`wait_until_funded_interval_ms\` | ${strings.waitUntilFundedIntervalMs.replace('{ms}', String(interval))} |`);
         }
-        lines.push('', `### ${strings.outputsHeading}`, '', `_${strings.outputsDescription}_`, '', `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace('{assetCode}', config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
+        lines.push('', `### ${strings.outputsHeading}`, '', `_${strings.outputsDescription}_`, '', `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace('{assetCode}', config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`, `| \`asset_balance\` | \`${result.assetBalance ?? '0'}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
         // Hardened metrics JSON export (Issue #33)
         if (config.metricsSnapshot) {
             const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
@@ -36369,6 +36487,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseSimpleYaml = parseSimpleYaml;
+exports.readTrustbridgeConfigs = readTrustbridgeConfigs;
 exports.readTrustbridgeConfig = readTrustbridgeConfig;
 exports.mergeConsumerConfig = mergeConsumerConfig;
 const fs = __importStar(__nccwpck_require__(9896));
@@ -36433,6 +36552,44 @@ function parseYamlValue(raw) {
         return num;
     // Plain string
     return raw;
+}
+/**
+ * Reads and merges organization-level and repository-level configuration files.
+ * Organization config (.github/trustbridge.yml) is loaded first.
+ * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
+ */
+function readTrustbridgeConfigs(repoConfigPath, workspaceRoot) {
+    const root = workspaceRoot ?? process.cwd();
+    const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
+    // Use the explicit repo path, or fallback to default repo path
+    const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
+    const repoResult = readTrustbridgeConfig(targetRepoPath, root);
+    const valid = orgResult.validation.valid && repoResult.validation.valid;
+    const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
+    const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
+    // Merge configs (repo overrides org)
+    let config = null;
+    if (orgResult.config || repoResult.config) {
+        config = { ...orgResult.config };
+        if (repoResult.config) {
+            for (const [key, value] of Object.entries(repoResult.config)) {
+                if (value !== undefined) {
+                    config[key] = value;
+                }
+            }
+        }
+    }
+    let redactedSnapshot = null;
+    if (orgResult.redactedSnapshot || repoResult.redactedSnapshot) {
+        redactedSnapshot = { ...orgResult.redactedSnapshot, ...repoResult.redactedSnapshot };
+    }
+    return {
+        config,
+        validation: { valid, errors, warnings },
+        redactedSnapshot,
+        resolvedPath: repoResult.resolvedPath,
+        found: orgResult.found || repoResult.found,
+    };
 }
 /**
  * Read and validate a consumer trustbridge.yml config file.
@@ -37720,6 +37877,7 @@ exports.getAssetBalance = getAssetBalance;
 exports.getTrustlineLimit = getTrustlineLimit;
 exports.parseHorizonBalance = parseHorizonBalance;
 exports.formatStroops = formatStroops;
+exports.fetchClaimableBalanceCount = fetchClaimableBalanceCount;
 exports.deriveWalletLabel = deriveWalletLabel;
 exports.applyWalletLabels = applyWalletLabels;
 exports.fetchNetworkPassphrase = fetchNetworkPassphrase;
@@ -38522,6 +38680,63 @@ function formatStroops(stroops) {
     const cleanFrac = fracPart.replace(/0+$/, '');
     return `${isNegative ? '-' : ''}${intPart}.${cleanFrac.padEnd(7, '0')}`;
 }
+// ---------------------------------------------------------------------------
+// Claimable balances helper (Issue #260)
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the number of claimable balances for a claimant address.
+ *
+ * Used only when `claimableBalancePolicy === 'count'` and the account is 404.
+ * Returns 0 on any error (404, network, timeout) so callers can treat the
+ * absence as "no evidence" without failing the run. The request is bounded to
+ * 5s and validated for SSRF so private Horizon mirrors are never probed
+ * with an attacker-controlled claimant.
+ *
+ * Horizon endpoint: `GET /claimable_balances?claimant=<G-address>&limit=5`
+ * The limit is intentionally small — we only need to know if >0 exist and
+ * at most a count up to 5 for the informational comment.
+ */
+async function fetchClaimableBalanceCount(horizonUrl, stellarAddress, fetchFn, timeoutMs = 5000) {
+    const validation = (0, validation_1.validateHorizonUrl)(horizonUrl, 'horizon_url', { allowHttp: true });
+    if (!validation.valid) {
+        return 0;
+    }
+    let normalized;
+    try {
+        normalized = normalizeHorizonUrl(horizonUrl);
+    }
+    catch {
+        return 0;
+    }
+    const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
+    const fetcher = fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetcher(url, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                return 0;
+            }
+            const data = (await response.json());
+            const records = data._embedded?.records ?? data.records ?? [];
+            if (Array.isArray(records)) {
+                return records.length;
+            }
+            return 0;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    catch {
+        return 0;
+    }
+}
 /**
  * All wallet label strings — useful for bulk removal before re-applying
  * the current state so stale labels never linger on an issue.
@@ -38984,6 +39199,7 @@ const i18n_1 = __nccwpck_require__(4859);
 const webhook_1 = __nccwpck_require__(8378);
 const preflight_1 = __nccwpck_require__(4504);
 const soroban_1 = __nccwpck_require__(3597);
+const roster_1 = __nccwpck_require__(6260);
 const corePlugins_1 = __nccwpck_require__(4098);
 const plugin_1 = __nccwpck_require__(2375);
 const pluginLoader_1 = __nccwpck_require__(2259);
@@ -39022,7 +39238,7 @@ function resolveAssigneeLoginFromContext() {
  * Each source is tried in order; the first non-empty result wins.
  * Conflicts are logged as warnings so maintainers know which source won.
  */
-function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractAddress) {
+function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractAddress, dashboardAddress) {
     const resolvedFrom = [];
     // Source 1: Contract registry lookup
     if (contractAddress) {
@@ -39032,6 +39248,15 @@ function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, 
             source: 'contract',
         });
         return contractAddress;
+    }
+    // Source 2: Dashboard roster API
+    if (dashboardAddress) {
+        resolvedFrom.push('dashboard_roster');
+        logger_1.logger.info('Address resolved from dashboard roster', {
+            component: 'index',
+            source: 'dashboard_roster',
+        });
+        return dashboardAddress;
     }
     // Source 2: Assignee address map
     const mapRaw = assigneeAddressMapRaw.trim();
@@ -39207,7 +39432,14 @@ async function run() {
     const minXlmReserveRaw = core.getInput('min_xlm_reserve') || campaignPreset?.minXlmReserve || '1.5';
     const stellarAddressInput = core.getInput('stellar_address_input');
     const assigneeAddressMapRaw = core.getInput('assignee_address_map');
-    // Issue #219: Contract registry lookup (source 1 of address resolution).
+    // Issue #317: Dashboard roster API inputs
+    const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
+    const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
+    const dashboardRosterTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
+    // Issue #318: Soroban full roster inputs
+    const sorobanFullRoster = (0, inputs_1.parseBooleanInput)(core.getInput('soroban_full_roster'), false);
+    const sorobanRosterPageLimit = (0, inputs_1.parseNumberInput)(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
+    // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
     const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
     const contractId = core.getInput('contract_id') || '';
     let contractResolvedAddress;
@@ -39215,12 +39447,24 @@ async function run() {
         const assigneeLogin = resolveAssigneeLoginFromContext();
         if (assigneeLogin) {
             try {
-                const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
-                    sorobanRpcUrl,
-                    contractId,
-                });
-                if (lookup.address) {
-                    contractResolvedAddress = lookup.address;
+                if (sorobanFullRoster) {
+                    const map = await (0, soroban_1.fetchFullContractRoster)(assigneeLogin, {
+                        sorobanRpcUrl,
+                        contractId,
+                        pageLimit: sorobanRosterPageLimit,
+                    });
+                    const found = map[assigneeLogin.toLowerCase()];
+                    if (found)
+                        contractResolvedAddress = found;
+                }
+                else {
+                    const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
+                        sorobanRpcUrl,
+                        contractId,
+                    });
+                    if (lookup.address) {
+                        contractResolvedAddress = lookup.address;
+                    }
                 }
             }
             catch (err) {
@@ -39233,7 +39477,24 @@ async function run() {
             }
         }
     }
-    const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress);
+    // Issue #317: Dashboard roster lookup (source 2 of address resolution).
+    let dashboardResolvedAddress;
+    if (dashboardRosterUrl) {
+        const assigneeLogin = resolveAssigneeLoginFromContext();
+        if (assigneeLogin) {
+            try {
+                const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs);
+                const found = map[assigneeLogin.toLowerCase()];
+                if (found)
+                    dashboardResolvedAddress = found;
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger_1.logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
+            }
+        }
+    }
+    const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress, dashboardResolvedAddress);
     const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
     const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
     const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
@@ -39370,7 +39631,7 @@ async function run() {
     // Read the consumer .trustbridge.yml and merge values into action inputs.
     // Explicit non-empty action inputs always win over config-file values.
     // ---------------------------------------------------------------------------
-    const configResult = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
+    const configResult = (0, configReader_1.readTrustbridgeConfigs)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
     if (!configResult.validation.valid) {
         const errMsg = configResult.validation.errors.join('; ');
         core.setFailed(`Trustbridge config file error: ${errMsg}`);
@@ -39461,6 +39722,7 @@ async function run() {
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
     const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
     const minTrustlineLimit = minTrustlineLimitRaw ? (0, inputs_1.parseNumberInput)(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
+    const minAssetBalance = (0, checks_1.parseMinAssetBalance)(core.getInput('min_asset_balance') || '');
     // Optional multi-asset JSON — validate early so bad input fails fast.
     if (assetsJsonRaw.trim()) {
         (0, assets_1.parseAssetsJson)(assetsJsonRaw);
@@ -39485,6 +39747,7 @@ async function run() {
     const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
     const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
     const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+    // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
     // GitHub Checks API integration (Wave #26 — optional, off by default)
     const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
     // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
@@ -39533,9 +39796,16 @@ async function run() {
         // here to ensure validation spans are consistently recorded.
         metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
     }
+    // Claimable-balance policy (Issue #260) — default ignore
+    const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
+    const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' : 'ignore';
+    // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
+    const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
+    const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve: Number(minXlmReserve),
+        minAssetBalance,
         minTrustlineLimit,
         horizonUrl,
         homeDomainCheckEnabled,
@@ -39544,6 +39814,7 @@ async function run() {
         checkLedgerFreshness: checkLedgerFreshnessEnabled,
         maxLedgerLagSeconds,
         ledgerFreshnessFailOnStale,
+        claimableBalancePolicy,
     };
     // ---------------------------------------------------------------------------
     // Batch mode (Issue #199)
@@ -39697,7 +39968,7 @@ async function run() {
         horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
         horizonFetchStatusCode = 200;
         metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        result = (0, checks_1.runAccountChecks)(account, checkConfig);
+        result = await (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
         horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
@@ -39705,16 +39976,29 @@ async function run() {
         if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
             horizonFetchStatusCode = 404;
             horizonFetchError = error.message;
-            // #144: attempt cross-network detection before building the result so
-            // the comment surfaces a clear mismatch error when the address is active
-            // on the opposite network. Fire-and-forget with a short timeout so a
-            // slow alt-network Horizon never blocks the primary run.
+            // #144/#266: deterministic cross-network detection — probes canonical opposite
+            // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
             const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
             if (mismatchHint) {
                 core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
                     `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
             }
-            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint);
+            // #260: claimable-balance-aware funded definition — when policy is 'count',
+            // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+            let claimableCount;
+            if (claimableBalancePolicy === 'count') {
+                try {
+                    const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
+                    claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+                    if (claimableCount > 0) {
+                        core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+                    }
+                }
+                catch {
+                    claimableCount = 0;
+                }
+            }
+            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
         }
         else if (error instanceof horizon_1.HorizonError) {
             horizonFetchStatusCode = error.statusCode;
@@ -39898,6 +40182,8 @@ async function run() {
         onboardingChecklist,
         sep0007DeepLinks,
         sep0007OriginDomain,
+        sep0010ChallengeXdr,
+        sep0010DashboardUrl,
         locale,
         debugMode,
         docsBaseUrl: core.getInput('docs_base_url') || undefined,
@@ -40375,6 +40661,8 @@ exports.buildChangeTrustLink = buildChangeTrustLink;
 exports.buildLobstrLink = buildLobstrLink;
 exports.buildSep0007TxLink = buildSep0007TxLink;
 exports.buildSep0007PayLink = buildSep0007PayLink;
+exports.isValidDashboardUrl = isValidDashboardUrl;
+exports.buildSep0010ChallengeSnippet = buildSep0010ChallengeSnippet;
 // ---------------------------------------------------------------------------
 // FAQ anchor deep links (Issue #104)
 // ---------------------------------------------------------------------------
@@ -40587,6 +40875,76 @@ function buildSep0007PayLink(options) {
         params.set('origin_domain', options.originDomain);
     }
     return `web+stellar:pay?${params.toString()}`;
+}
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ */
+function isValidDashboardUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:')
+            return false;
+        if (parsed.username || parsed.password)
+            return false;
+        // Block private/loopback/metadata hosts (same list as Horizon SSRF)
+        const blocked = [
+            /^127\./,
+            /^10\./,
+            /^192\.168\./,
+            /^172\.(1[6-9]|2\d|3[01])\./,
+            /^169\.254\./,
+            /^localhost$/i,
+        ];
+        const host = parsed.hostname;
+        for (const pat of blocked) {
+            if (pat.test(host))
+                return false;
+        }
+        if (host === 'metadata.google.internal')
+            return false;
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+function buildSep0010ChallengeSnippet(options) {
+    const network = options.network ?? 'public';
+    const hasDashboard = !!options.dashboardUrl && options.dashboardUrl.trim().length > 0;
+    const hasChallenge = !!options.challengeXdr && options.challengeXdr.trim().length > 0;
+    if (!hasDashboard && !hasChallenge) {
+        return undefined;
+    }
+    if (hasDashboard && isValidDashboardUrl(options.dashboardUrl)) {
+        const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
+        return (`**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +
+            `[Open dashboard proof](${options.dashboardUrl}) — network **${network}**. ` +
+            `_Challenge verification happens off-action; this link is informational and does not block \`ready\`._`);
+    }
+    if (hasChallenge) {
+        const xdr = options.challengeXdr.trim();
+        // Truncate XDR for display to avoid leaking full nonce and to keep comment size small
+        const display = xdr.length > 32 ? `${xdr.slice(0, 24)}…${xdr.slice(-8)}` : xdr;
+        const networkNote = network === 'testnet' ? ' (testnet)' : '';
+        return (`**SEP-0010 challenge${networkNote}:** prove wallet control by signing this challenge with Freighter and posting the signed XDR to your dashboard. ` +
+            `Challenge (truncated, do not reuse nonce): \`${display}\` ` +
+            `— [How to sign](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md). ` +
+            `_This snippet is informational and does not block \`ready\` unless documented._`);
+    }
+    // Dashboard URL invalid => fall back to no snippet to avoid posting a broken link
+    return undefined;
 }
 
 
@@ -41589,6 +41947,9 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
             passed: check.passed,
             detail: check.detail,
         }))),
+        // Split balances — native vs asset (Issue #246). 7-decimal strings; legacy xlm_balance retained
+        asset_balance: result.assetBalance ?? '0',
+        native_balance: result.xlmBalance,
         badge_markdown: badgeMarkdown,
         badge_url: badgeUrl,
         timings_json: JSON.stringify({
@@ -42934,6 +43295,158 @@ exports.HttpMockMatrix = HttpMockMatrix;
 
 /***/ }),
 
+/***/ 6260:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchDashboardRoster = fetchDashboardRoster;
+const crypto = __importStar(__nccwpck_require__(6982));
+const validation_1 = __nccwpck_require__(4344);
+const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
+async function fetchDashboardRoster(url, secret, timeoutMs, fetchFn = fetch) {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+        throw new Error('Dashboard roster URL cannot be empty.');
+    }
+    const ssrfCheck = (0, validation_1.validateSsrfSafeUrl)(trimmedUrl, 'dashboard_roster_url', { allowHttp: true });
+    if (!ssrfCheck.valid) {
+        throw new Error(`Dashboard roster URL failed security validation: ${ssrfCheck.errors.join(', ')}`);
+    }
+    const timestamp = Date.now().toString();
+    const signature = secret
+        ? crypto.createHmac('sha256', secret).update(timestamp).digest('hex')
+        : '';
+    const headers = {
+        'Accept': 'application/json',
+    };
+    if (signature) {
+        headers['X-TrustBridge-Timestamp'] = timestamp;
+        headers['X-TrustBridge-Signature'] = `sha256=${signature}`;
+    }
+    let currentResponse;
+    let targetUrl = trimmedUrl;
+    let redirects = 0;
+    while (true) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            currentResponse = await fetchFn(targetUrl, {
+                method: 'GET',
+                headers,
+                signal: controller.signal,
+                redirect: 'manual', // We handle redirects manually for SSRF validation
+            });
+        }
+        catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to fetch dashboard roster: ${msg}`);
+        }
+        finally {
+            clearTimeout(timeoutId);
+        }
+        if ([301, 302, 303, 307, 308].includes(currentResponse.status)) {
+            if (redirects >= 5)
+                throw new Error('Too many redirects');
+            redirects++;
+            const location = currentResponse.headers.get('location');
+            if (!location)
+                throw new Error('Redirect missing location');
+            const redirectUrl = new URL(location, targetUrl).toString();
+            const redirectSsrf = (0, validation_1.validateSsrfSafeUrl)(redirectUrl, 'dashboard_roster_redirect', { allowHttp: true });
+            if (!redirectSsrf.valid) {
+                throw new Error(`Dashboard roster redirect failed security validation: ${redirectSsrf.errors.join(', ')}`);
+            }
+            targetUrl = redirectUrl;
+            continue;
+        }
+        break;
+    }
+    if (!currentResponse.ok) {
+        throw new Error(`Dashboard roster returned HTTP ${currentResponse.status}`);
+    }
+    if (!currentResponse.body) {
+        throw new Error('Response body is empty');
+    }
+    // Stream body to enforce size limit safely
+    const reader = currentResponse.body.getReader();
+    let receivedBytes = 0;
+    const chunks = [];
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            if (value) {
+                receivedBytes += value.length;
+                if (receivedBytes > MAX_ROSTER_SIZE_BYTES) {
+                    throw new Error('Response exceeded size limit');
+                }
+                chunks.push(value);
+            }
+        }
+    }
+    finally {
+        reader.releaseLock();
+    }
+    const text = Buffer.concat(chunks).toString('utf-8');
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        throw new Error('Dashboard roster returned invalid JSON');
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Dashboard roster JSON must be an object');
+    }
+    const result = {};
+    for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value !== 'string') {
+            throw new Error(`Dashboard roster entry for "${key}" must be a string Stellar G-address.`);
+        }
+        result[key.trim().toLowerCase()] = value.trim();
+    }
+    return result;
+}
+
+
+/***/ }),
+
 /***/ 866:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -43370,6 +43883,9 @@ exports.ContractLookupError = void 0;
 exports.lookupAddressFromContract = lookupAddressFromContract;
 exports.buildGetAddressXdr = buildGetAddressXdr;
 exports.parseAddressFromSimulateResult = parseAddressFromSimulateResult;
+exports.buildGetPublicPaginatedXdr = buildGetPublicPaginatedXdr;
+exports.parseRosterPageFromSimulateResult = parseRosterPageFromSimulateResult;
+exports.fetchFullContractRoster = fetchFullContractRoster;
 const node_fetch_1 = __importDefault(__nccwpck_require__(6705));
 /** Errors thrown by the contract registry client. */
 class ContractLookupError extends Error {
@@ -43491,6 +44007,104 @@ function parseAddressFromSimulateResult(json) {
         }
     }
     return null;
+}
+function buildGetPublicPaginatedXdr(contractId, cursor, limit) {
+    const args = [];
+    if (cursor !== undefined)
+        args.push(cursor);
+    if (limit !== undefined)
+        args.push(limit);
+    const payload = JSON.stringify({ contractId, fn: 'get_public_paginated', args });
+    return Buffer.from(payload).toString('base64');
+}
+function parseRosterPageFromSimulateResult(json) {
+    if (typeof json !== 'object' || json === null || !('result' in json))
+        return { map: {} };
+    const result = json['result'];
+    if (typeof result !== 'object' || result === null)
+        return { map: {} };
+    const retval = result['retval'];
+    if (typeof retval !== 'object' || retval === null)
+        return { map: {} };
+    const retvalObj = retval;
+    if (retvalObj['type'] !== 'tuple' || !Array.isArray(retvalObj['value']) || retvalObj['value'].length < 1) {
+        return { map: {} };
+    }
+    const mapData = retvalObj['value'][0];
+    if (mapData?.type !== 'map' || !Array.isArray(mapData.value)) {
+        return { map: {} };
+    }
+    const parsedMap = {};
+    for (const entry of mapData.value) {
+        if (entry?.key?.type === 'string' && typeof entry.key.value === 'string' &&
+            entry?.val?.type === 'address' && typeof entry.val.value === 'string') {
+            if (/^G[A-Z2-7]{55}$/.test(entry.val.value)) {
+                parsedMap[entry.key.value.toLowerCase()] = entry.val.value;
+            }
+        }
+    }
+    let nextCursor;
+    if (retvalObj['value'].length > 1) {
+        const cursorData = retvalObj['value'][1];
+        if (cursorData?.type === 'u32' && typeof cursorData.value === 'number') {
+            nextCursor = cursorData.value;
+        }
+    }
+    return { map: parsedMap, nextCursor };
+}
+async function fetchFullContractRoster(githubUsername, config) {
+    const { sorobanRpcUrl, contractId, timeoutMs = 15000, pageLimit } = config;
+    const rosterMap = {};
+    let currentCursor;
+    for (let page = 0; page < pageLimit; page++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const body = JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'simulateTransaction',
+            params: {
+                transaction: buildGetPublicPaginatedXdr(contractId, currentCursor, 100), // Default limit per page
+            },
+        });
+        let response;
+        try {
+            response = await (0, node_fetch_1.default)(sorobanRpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                signal: controller.signal,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const isAbort = message.includes('abort') || message.includes('timeout');
+            throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+        if (RETRYABLE_STATUS_CODES.has(response.status)) {
+            throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
+        }
+        if (!response.ok) {
+            throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
+        }
+        let json;
+        try {
+            json = await response.json();
+        }
+        catch {
+            throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
+        }
+        const { map, nextCursor } = parseRosterPageFromSimulateResult(json);
+        Object.assign(rosterMap, map);
+        if (nextCursor === undefined || nextCursor === currentCursor) {
+            break;
+        }
+        currentCursor = nextCursor;
+    }
+    return rosterMap;
 }
 
 
@@ -43676,7 +44290,7 @@ const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
  * Records an OTel-style span for every call (success and failure).
  */
 function validateContractAddress(address) {
-    return withSpan('validateContractAddress', 
+    return withSpan('validateContractAddress',
     // Redact the raw address — only record structural metadata in the span.
     { inputLength: address.trim().length, startsWithC: address.trim().startsWith('C') }, () => {
         const errors = [];
@@ -43918,6 +44532,40 @@ function validateHorizonUrl(url, fieldName = 'horizon_url', options = {}) {
     for (const w of [...urlCheck.warnings, ...ssrf.warnings]) {
         if (!warnings.includes(w))
             warnings.push(w);
+    }
+    // Issue #315: Strict allowlist check
+    if (options.allowlist && options.allowlist.length > 0 && urlCheck.valid) {
+        try {
+            const parsedTarget = new URL(trimmed);
+            const targetHost = parsedTarget.host.toLowerCase();
+            let matched = false;
+            for (const allowed of options.allowlist) {
+                const cleanAllowed = allowed.trim();
+                if (!cleanAllowed)
+                    continue;
+                try {
+                    // If the allowlist entry is a full URL, parse and compare hosts
+                    const parsedAllowed = new URL(cleanAllowed);
+                    if (targetHost === parsedAllowed.host.toLowerCase()) {
+                        matched = true;
+                        break;
+                    }
+                }
+                catch {
+                    // If the allowlist entry is just a hostname/port
+                    if (targetHost === cleanAllowed.toLowerCase() || parsedTarget.hostname.toLowerCase() === cleanAllowed.toLowerCase()) {
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+            if (!matched) {
+                errors.push(`${fieldName} host "${targetHost}" is not in the allowlist`);
+            }
+        }
+        catch {
+            // Ignore URL parse errors here, let urlCheck handle invalid format
+        }
     }
     const normalizedErrors = errors.map((e) => {
         if (e.toLowerCase().includes('protocol'))
@@ -46320,7 +46968,7 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /************************************************************************/
 /******/ 	// The module cache
 /******/ 	var __webpack_module_cache__ = {};
-/******/ 	
+/******/
 /******/ 	// The require function
 /******/ 	function __nccwpck_require__(moduleId) {
 /******/ 		// Check if module is in cache
@@ -46334,7 +46982,7 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 			// no module.loaded needed
 /******/ 			exports: {}
 /******/ 		};
-/******/ 	
+/******/
 /******/ 		// Execute the module function
 /******/ 		var threw = true;
 /******/ 		try {
@@ -46343,24 +46991,24 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 		} finally {
 /******/ 			if(threw) delete __webpack_module_cache__[moduleId];
 /******/ 		}
-/******/ 	
+/******/
 /******/ 		// Return the exports of the module
 /******/ 		return module.exports;
 /******/ 	}
-/******/ 	
+/******/
 /************************************************************************/
 /******/ 	/* webpack/runtime/compat */
-/******/ 	
+/******/
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
-/******/ 	
+/******/
 /************************************************************************/
-/******/ 	
+/******/
 /******/ 	// startup
 /******/ 	// Load entry module and return exports
 /******/ 	// This entry module is referenced by other modules so it can't be inlined
 /******/ 	var __webpack_exports__ = __nccwpck_require__(9407);
 /******/ 	module.exports = __webpack_exports__;
-/******/ 	
+/******/
 /******/ })()
 ;
 //# sourceMappingURL=index.js.map

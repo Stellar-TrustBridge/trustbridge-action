@@ -65,3 +65,13 @@ export declare function buildGetAddressXdr(contractId: string, githubUsername: s
  * Returns the G-address string when found, or `null` when not registered.
  */
 export declare function parseAddressFromSimulateResult(json: unknown): string | null;
+export declare function buildGetPublicPaginatedXdr(contractId: string, cursor?: number, limit?: number): string;
+export interface ContractRosterPage {
+    map: Record<string, string>;
+    nextCursor?: number;
+}
+export declare function parseRosterPageFromSimulateResult(json: unknown): ContractRosterPage;
+export interface FetchFullRosterConfig extends ContractConfig {
+    pageLimit: number;
+}
+export declare function fetchFullContractRoster(githubUsername: string, config: FetchFullRosterConfig): Promise<Record<string, string>>;

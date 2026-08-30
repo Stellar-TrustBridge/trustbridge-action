@@ -483,6 +483,91 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "min_asset_balance": {
+      "type": "string",
+      "description": "Minimum balance required for the configured asset.",
+      "default": ""
+    },
+    "webhook_auth_mode": {
+      "type": "string",
+      "description": "Authentication mechanism for dashboard webhook notifications.",
+      "default": "hmac"
+    },
+    "webhook_oidc_audience": {
+      "type": "string",
+      "description": "Expected audience for GitHub OIDC token.",
+      "default": "trustbridge-dashboard"
+    },
+    "stellar_toml_fetch_enabled": {
+      "type": "string",
+      "description": "Enable optional SEP-0001 stellar.toml fetch and validation.",
+      "default": "false"
+    },
+    "stellar_toml_cache_ttl_ms": {
+      "type": "string",
+      "description": "Time-to-live for stellar.toml fetch cache in milliseconds.",
+      "default": "3600000"
+    },
+    "stellar_toml_hash_pin": {
+      "type": "string",
+      "description": "Optional integrity hash for stellar.toml content validation.",
+      "default": ""
+    },
+    "project_id": {
+      "type": "string",
+      "description": "Optional GitHub Projects v2 ID.",
+      "default": ""
+    },
+    "project_status_field": {
+      "type": "string",
+      "description": "Name of the status field in the GitHub Projects v2 board.",
+      "default": "Status"
+    },
+    "project_status_pass": {
+      "type": "string",
+      "description": "Value to set on project status field when validation passes.",
+      "default": ""
+    },
+    "project_status_fail": {
+      "type": "string",
+      "description": "Value to set on project status field when validation fails.",
+      "default": ""
+    },
+    "project_token": {
+      "type": "string",
+      "description": "Optional GitHub token for projects.",
+      "default": ""
+    },
+    "horizon_url_allowlist": {
+      "type": "string",
+      "description": "Optional comma-separated list of allowed Horizon base URLs.",
+      "default": ""
+    },
+    "dashboard_roster_url": {
+      "type": "string",
+      "description": "Optional dashboard API URL to fetch the assignee roster via HTTP GET.",
+      "default": ""
+    },
+    "dashboard_roster_secret": {
+      "type": "string",
+      "description": "Optional secret key used to generate the X-TrustBridge-Signature HMAC for dashboard requests.",
+      "default": ""
+    },
+    "dashboard_roster_timeout_ms": {
+      "type": "string",
+      "description": "Dashboard HTTP request timeout in milliseconds (1000-60000)",
+      "default": "5000"
+    },
+    "soroban_full_roster": {
+      "type": "string",
+      "description": "If true, retrieves the complete assignee roster from the Soroban contract using pagination.",
+      "default": "false"
+    },
+    "soroban_roster_page_limit": {
+      "type": "string",
+      "description": "Maximum number of pages to fetch when soroban_full_roster is true",
+      "default": "10"
     }
   }
 }

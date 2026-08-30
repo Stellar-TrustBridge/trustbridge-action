@@ -17,7 +17,6 @@ import {
   unfundedAccountResult,
   horizonFailureResult,
   CheckConfig,
-  enrichHomeDomainCheckWithToml,
 } from '../src/checks';
 import { HorizonAccount } from '../src/horizon';
 import { homeDomainPlugin } from '../src/corePlugins';
@@ -533,67 +532,5 @@ describe('home domain metrics tag values', () => {
     );
     expect(metric).toBeDefined();
     expect(metric!.tags?.mode).toBe('strict');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SEP-0001 stellar.toml fetch enrichment
-// ---------------------------------------------------------------------------
-
-describe('enrichHomeDomainCheckWithToml', () => {
-  it('skips TOML fetch when disabled', async () => {
-    const result = evaluateHomeDomain(makeAccount({ home_domain: 'centre.io' }), enabledWarnConfig);
-    const enriched = await enrichHomeDomainCheckWithToml(result, enabledWarnConfig);
-    expect(enriched.tomlFetch).toBeUndefined();
-  });
-
-  it('skips TOML fetch when on-chain domain check failed', async () => {
-    const result = evaluateHomeDomain(null, {
-      ...enabledWarnConfig,
-      stellarTomlFetchEnabled: true,
-    });
-    const enriched = await enrichHomeDomainCheckWithToml(result, {
-      ...enabledWarnConfig,
-      stellarTomlFetchEnabled: true,
-    });
-    expect(enriched.tomlFetch).toBeUndefined();
-  });
-
-  it('does not change blocksValid when TOML fetch succeeds', async () => {
-    const result = evaluateHomeDomain(makeAccount({ home_domain: 'centre.io' }), enabledWarnConfig);
-    const originalBlocksValid = result.blocksValid;
-    const enriched = await enrichHomeDomainCheckWithToml(result, {
-      ...enabledWarnConfig,
-      stellarTomlFetchEnabled: true,
-    });
-    // When fetch would succeed (or timeout gracefully), blocksValid shouldn't change
-    expect(enriched.blocksValid).toBe(originalBlocksValid || false);
-  });
-
-  it('preserves home domain details when adding TOML result', async () => {
-    const result = evaluateHomeDomain(makeAccount({ home_domain: 'centre.io' }), enabledWarnConfig);
-    const originalDetail = result.detail;
-    const enriched = await enrichHomeDomainCheckWithToml(result, {
-      ...enabledWarnConfig,
-      stellarTomlFetchEnabled: true,
-    });
-    // Original detail should still be present (though may be appended to)
-    expect(enriched.detail).toContain('centre.io');
-  });
-
-  it('returns result unchanged when stellarTomlFetchEnabled is false', async () => {
-    const result = evaluateHomeDomain(makeAccount({ home_domain: 'centre.io' }), enabledWarnConfig);
-    const enriched = await enrichHomeDomainCheckWithToml(result, enabledWarnConfig);
-    expect(enriched).toEqual(result);
-  });
-
-  it('has default cache TTL of 1 hour', async () => {
-    const config: CheckConfig = {
-      ...enabledWarnConfig,
-      stellarTomlFetchEnabled: true,
-      // stellarTomlCacheTtlMs not set, should default to 3600000
-    };
-    // This is a logic test; the actual cache TTL is tested in toml.test.ts
-    expect(config.stellarTomlCacheTtlMs).toBeUndefined();
   });
 });

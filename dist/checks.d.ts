@@ -14,6 +14,21 @@ export declare const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = 'warn' | 'strict';
+/**
+ * Claimable-balance policy (Issue #260).
+ *
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
+ */
+export type ClaimableBalancePolicy = 'ignore' | 'count';
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+export declare function hasClaimableBalances(account: HorizonAccount): boolean;
+export declare function countClaimableBalances(account: HorizonAccount): number;
 export interface CheckConfig {
     assetCode: string;
     assetIssuer: string;
@@ -67,6 +82,22 @@ export interface CheckConfig {
      * the overall `valid` flag is unaffected.
      */
     ledgerFreshnessFailOnStale?: boolean;
+    /**
+     * How to treat claimable balances when determining `funded` status.
+     *
+     * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
+     *   balances are ignored; an address with only claimable balances still shows
+     *   “not found / unfunded”. No extra Horizon request is made.
+     * - `"count"` — when the account is 404, TrustBridge also checks
+     *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
+     *   5s). If claimable balances exist, the comment notes them but `accountFunded`
+     *   remains false and `valid` is not set true unless documented. This is
+     *   informational only and never auto-claims.
+     *
+     * Default `"ignore"` matches today’s behavior and avoids extra request budget.
+     * Empty claimables (0) are treated as no hint in either mode.
+     */
+    claimableBalancePolicy?: ClaimableBalancePolicy;
 }
 /**
  * Hint passed in from the caller when a 404 is received to indicate that the
@@ -92,6 +123,17 @@ export interface NetworkMismatchHint {
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
  *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
+ *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
  * @param fetchFn               Optional injected fetch (for testing).
@@ -99,6 +141,12 @@ export interface NetworkMismatchHint {
 export declare function detectNetworkMismatch(configuredHorizonUrl: string, stellarAddress: string, fetchFn?: (url: string, init?: RequestInit) => Promise<{
     status: number;
 }>): Promise<NetworkMismatchHint | undefined>;
+/**
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
+ */
+export declare function buildNetworkMismatchDetail(stellarAddress: string, hint: NetworkMismatchHint): string;
 export interface CheckResultItem {
     passed: boolean;
     label: string;
@@ -145,6 +193,13 @@ export interface ValidationResult {
      * `config.checkLedgerFreshness` is true.
      */
     ledgerFreshnessResult?: LedgerFreshnessCheckResult;
+    /**
+     * Claimable balance info (Issue #260). Only populated when the account was
+     * fetched and the policy is observed. Informational only — does not affect
+     * `accountFunded` when policy is `ignore` (default).
+     */
+    claimableBalanceCount?: number;
+    hasClaimableBalances?: boolean;
 }
 /**
  * Outcome of a single SEP-0001 home domain alignment check against an
@@ -254,7 +309,7 @@ export declare function estimateTrustlineSetupCost(): number;
 export declare function formatXlmDeficit(required: number, actual: number): string;
 export declare function formatAssetDeficit(required: number, actual: number): string;
 export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): ValidationResult;
-export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint): ValidationResult;
+export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint, claimableCount?: number): ValidationResult;
 export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;
 /**

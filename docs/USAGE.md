@@ -207,6 +207,30 @@ jobs:
 
 ---
 
+## Assignee Roster Resolution
+
+By default, TrustBridge expects the `stellar_address_input` to be passed directly. However, it can also resolve GitHub usernames to Stellar addresses dynamically:
+
+### Dashboard Roster API (Issue #317)
+```yaml
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
+```
+When configured, TrustBridge issues an HTTP GET request to `dashboard_roster_url`. When `dashboard_roster_secret` is set, requests include `X-TrustBridge-Timestamp` and `X-TrustBridge-Signature: sha256=<hex_hmac>` headers. The API must return a JSON dictionary mapping logins to addresses (e.g. `{"alice": "G...", "bob": "G..."}`).
+
+### Soroban Contract Roster (Issue #318)
+```yaml
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
+```
+TrustBridge queries a Soroban contract page-by-page to resolve assignee addresses. Single-address lookup remains default behavior; setting `soroban_full_roster: "true"` retrieves the complete roster page-by-page from contract state up to `soroban_roster_page_limit`.
+
+---
+
 ## Combined trigger (assigned + manual)
 
 Matches the action design target. Use `issue_number` on `workflow_dispatch` runs to target a specific issue for the result comment (Wave #29):
@@ -2149,6 +2173,48 @@ jobs:
 - **Respects `Retry-After`:** When Horizon returns HTTP 429 with a `Retry-After` header, TrustBridge uses the header value (capped at `retry_max_delay_ms`).
 - **Zero Retries Supported:** Setting `max_retries: 0` disables retries and fails immediately on the first error.
 - **Failover Compatibility:** Works seamlessly with `horizon_url_fallback` and `rpc_fallback_url`.
+
+---
+
+## Roster & Security Policy Configuration (#314, #315, #317, #318)
+
+### Org-Level Policy Discovery & Overrides (#314)
+TrustBridge automatically discovers organization-level policy configuration files located at `.github/trustbridge.yml`. Any settings declared in the local repository configuration override organization defaults.
+
+### Horizon URL Allowlist (#315)
+To prevent unauthorized Horizon endpoint usage, specify `horizon_url_allowlist`:
+
+```yaml
+with:
+  horizon_url: 'https://horizon.stellar.org'
+  horizon_url_allowlist: 'horizon.stellar.org,horizon-testnet.stellar.org'
+```
+
+### Dashboard Assignee Roster API with HMAC (#317)
+Fetch the assignee address roster dynamically from a remote API endpoint via HTTP GET:
+
+```yaml
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
+```
+
+When `dashboard_roster_secret` is set, requests include:
+- `X-TrustBridge-Signature`: `sha256=<hex_hmac>`
+- `X-TrustBridge-Timestamp`: Unix timestamp (seconds)
+
+Expects JSON payload mapping logins to addresses: `{ "alice": "G...", "bob": "G..." }`.
+
+### Paginated Soroban Contract Roster (#318)
+To retrieve the complete roster page-by-page from a Soroban contract:
+
+```yaml
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
+```
 
 ---
 
