@@ -21,6 +21,7 @@ Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Usag
 | Low XLM reserve | Horizon 200, native &lt; min | No | `xlm_balance` set, reserve fail | Posted with amount to send | per `fail_on_missing` |
 | Rate limited | Horizon 429 | Yes (≤3) | If exhausted: failure result | Posted if reachable | per `fail_on_missing` |
 | Service unavailable | Horizon 503/502/504 | Yes (≤3) | If exhausted: failure result | Posted | per `fail_on_missing` |
+| **Rate budget exhausted** | **`horizon_max_requests` exceeded** | **No (fail closed)** | **`reason_code: RATE_BUDGET_EXHAUSTED`, `xlm_balance=unknown`** | **Posted** | **per `fail_on_missing`** |
 | Timeout | AbortController 15s | Yes (≤3) | If exhausted: `xlm_balance=unknown` | Posted | per `fail_on_missing` |
 | TLS/certificate failure | Handshake/cert error connecting to `horizon_url` | No (not retryable — see below) | `xlm_balance=unknown`, distinct "Horizon TLS / certificate verification" check | Posted, attributes failure to the endpoint not the account | per `fail_on_missing` |
 | Unauthorized trustline | Horizon 200, trustline exists, `is_authorized: false` | No | Per `unauthorized_trustline_policy` — `fail` clears `trustline_exists` | Posted with issuer-authorization remediation/warning | per `fail_on_missing` (when policy is `fail`) |
@@ -90,7 +91,54 @@ Horizon may return `Retry-After`. The client:
 3. Retries up to **3** times
 4. If still failing → `horizonFailureResult`
 
-**Operator tip:** For high-volume orgs or mass assignments (Waves), consider configuring `horizon_max_requests` to cap the total requests per run. Once this budget is exhausted, the action will fail fast with a `RateBudgetExhaustedError` rather than stampeding the public Horizon API. Consider self-hosted Horizon or caching for extremely high concurrency workflows.
+**Operator tip:** For high-volume orgs or mass assignments (Waves), consider configuring `horizon_max_requests` to cap the total requests per run. Once this budget is exhausted, the action will fail fast with a `RATE_BUDGET_EXHAUSTED` reason code (distinct from `ACCOUNT_NOT_FUNDED` and `HORIZON_ERROR`) rather than stampeding the public Horizon API. Consider self-hosted Horizon or caching for extremely high concurrency workflows.
+
+---
+
+### `horizon_max_requests` — Rate budget exhausted (`RATE_BUDGET_EXHAUSTED`)
+
+When the `horizon_max_requests` input is set to a value greater than 0, TrustBridge tracks every real Horizon HTTP call (cache hits are not counted) via `RateBudgetTracker`. Once the budget is exceeded, the action **fails closed immediately** — it does not produce an "account not funded" comment that could mislead contributors.
+
+| Property | Value |
+|----------|-------|
+| `reason_code` | `RATE_BUDGET_EXHAUSTED` |
+| `accountFunded` | `false` |
+| `xlmBalance` | `unknown` |
+| `valid` | `false` |
+| Auto-unassign fires? | No — budget exhaustion is not treated as an account validity failure |
+
+**Why "fail closed" and not "unfunded"?**
+
+The account state is genuinely unknown when the budget is exhausted — no successful account lookup was made. Producing an `ACCOUNT_NOT_FUNDED` result (the 404 path) when we never confirmed the account's status would mislead contributors into sending XLM for an account that is already funded. `RATE_BUDGET_EXHAUSTED` makes the cause explicit so operators can tune the budget rather than contributors debugging a phantom "not funded" error.
+
+**Effect on `wait_until_funded` polling:**
+
+Budget exhaustion is **not** treated as "account not yet funded." The `waitForFundedAccount` polling loop only retries on Horizon 404 responses. Any other error — including `RateBudgetExhaustedError` — is rethrown immediately, stopping polling. This means:
+
+- Polling with `budget=1` stops after the first unfunded poll (the second attempt exceeds the budget before any network call).
+- The result reason_code is `RATE_BUDGET_EXHAUSTED`, not `ACCOUNT_NOT_FUNDED`.
+
+**Cache hits and the budget:**
+
+Cache hits (when `use_cache: true` and the TTL has not expired) bypass the `RateBudgetTracker` entirely. Only real HTTP requests to Horizon consume the budget. Setting `use_cache: true` with an appropriate `horizon_cache_ttl_ms` can significantly reduce budget consumption for matrix or high-frequency workflows.
+
+**Remediation:**
+
+- Increase `horizon_max_requests` to allow more requests per run.
+- Enable caching (`use_cache: true`) to reduce the number of real Horizon calls.
+- Reduce `wait_until_funded_timeout_ms` / `wait_until_funded_interval_ms` to limit polling retries.
+- Consider a self-hosted Horizon node for extremely high concurrency.
+
+**Example (enforce a 5-request cap):**
+
+```yaml
+with:
+  horizon_max_requests: 5
+  use_cache: true
+  horizon_cache_ttl_ms: 120000
+```
+
+If 5 requests are exhausted before the account check completes, the run fails with `RATE_BUDGET_EXHAUSTED` rather than making additional uncapped calls to the public Horizon API.
 
 ### 503 / 502 / 504 — Service degradation
 

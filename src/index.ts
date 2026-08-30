@@ -14,6 +14,7 @@ import {
   HomeDomainCheckMode,
   LedgerFreshnessCheckResult,
   ValidationResult,
+  rateBudgetExhaustedResult,
 } from './checks';
 import { fetchAccount, HorizonError, waitForFundedAccount, applyWalletLabels } from './horizon';
 import type { HorizonAccount, HorizonBalance } from './horizon';
@@ -52,7 +53,7 @@ import {
 } from './delta';
 import { logger, emitInputsLogRecord } from './logger';
 import { globalMetrics, writeJobSummary } from './metrics';
-import { RateBudgetTracker, CircuitBreaker } from './resilience';
+import { RateBudgetTracker, CircuitBreaker, RateBudgetExhaustedError } from './resilience';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { parseLocaleInput } from './i18n';
 import { sendWebhookNotification } from './webhook';
@@ -217,7 +218,8 @@ export async function handleAutoUnassign(
   if (
     options.result.reasonCode === 'HORIZON_ERROR' ||
     options.result.reasonCode === 'HORIZON_TIMEOUT' ||
-    options.result.reasonCode === 'TLS_ERROR'
+    options.result.reasonCode === 'TLS_ERROR' ||
+    options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED'
   ) {
     core.info(
       'Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.',
@@ -1024,6 +1026,16 @@ async function run(): Promise<void> {
       globalMetrics.incrementCounter('errors');
       globalMetrics.recordMetric('horizon_error', error.statusCode, 'http_status');
       result = horizonFailureResult(error.message, checkConfig);
+    } else if (error instanceof RateBudgetExhaustedError) {
+      // Fail closed: the rate budget was exhausted (horizon_max_requests exceeded).
+      // The account state is unknown — do NOT emit an unfunded/404 result.
+      // This is a distinct reason_code so dashboards and downstream jobs can
+      // differentiate "account not found" from "budget exhausted before we asked".
+      horizonFetchError = error.message;
+      core.error(error.message);
+      globalMetrics.incrementCounter('errors');
+      globalMetrics.recordMetric('horizon_rate_budget_exhausted', 1, 'count');
+      result = rateBudgetExhaustedResult(error.message, checkConfig);
     } else {
       const message = getErrorMessage(error);
       horizonFetchError = message;

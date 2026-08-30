@@ -14,6 +14,21 @@ export declare const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = 'warn' | 'strict';
+/**
+ * Claimable-balance policy (Issue #260).
+ *
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
+ */
+export type ClaimableBalancePolicy = 'ignore' | 'count';
+/**
+ * Whether an account snapshot contains any `claimable_balance_id` entries.
+ * Note: funded accounts rarely embed claimables in `balances`; this helper
+ * is for completeness and for the optional `count` policy which may also
+ * inspect a separate claimable_balances Horizon response.
+ */
+export declare function hasClaimableBalances(account: HorizonAccount): boolean;
+export declare function countClaimableBalances(account: HorizonAccount): number;
 export interface CheckConfig {
     assetCode: string;
     assetIssuer: string;
@@ -47,6 +62,24 @@ export interface CheckConfig {
      */
     homeDomainCheckMode?: HomeDomainCheckMode;
     /**
+     * When true, TrustBridge fetches stellar.toml from the issuer's home_domain
+     * (https://{home_domain}/.well-known/stellar.toml) with SSRF protection and
+     * TTL caching. Only used when homeDomainCheckEnabled is true. Default: false.
+     */
+    stellarTomlFetchEnabled?: boolean;
+    /**
+     * Time-to-live for stellar.toml fetch cache in milliseconds.
+     * Default: 3600000 (1 hour). Only used when stellarTomlFetchEnabled is true.
+     */
+    stellarTomlCacheTtlMs?: number;
+    /**
+     * Optional integrity hash for stellar.toml content validation.
+     * Format: "algorithm:hexvalue" (e.g. "sha256:abc123...").
+     * When set, the fetched TOML content is hashed and compared; a mismatch fails
+     * the check and blocks valid. Only used when stellarTomlFetchEnabled is true.
+     */
+    stellarTomlHashPin?: string;
+    /**
      * When true, TrustBridge fetches the Horizon root endpoint before the
      * account check and compares `history_latest_ledger_closed_at` against
      * the current wall-clock time.  Off by default so existing workflows are
@@ -67,6 +100,22 @@ export interface CheckConfig {
      * the overall `valid` flag is unaffected.
      */
     ledgerFreshnessFailOnStale?: boolean;
+    /**
+     * How to treat claimable balances when determining `funded` status.
+     *
+     * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
+     *   balances are ignored; an address with only claimable balances still shows
+     *   “not found / unfunded”. No extra Horizon request is made.
+     * - `"count"` — when the account is 404, TrustBridge also checks
+     *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
+     *   5s). If claimable balances exist, the comment notes them but `accountFunded`
+     *   remains false and `valid` is not set true unless documented. This is
+     *   informational only and never auto-claims.
+     *
+     * Default `"ignore"` matches today’s behavior and avoids extra request budget.
+     * Empty claimables (0) are treated as no hint in either mode.
+     */
+    claimableBalancePolicy?: ClaimableBalancePolicy;
 }
 /**
  * Hint passed in from the caller when a 404 is received to indicate that the
@@ -92,6 +141,17 @@ export interface NetworkMismatchHint {
  * `undefined` when there is no evidence of a mismatch (either no cross-check
  * was performed or the address is genuinely unfunded everywhere).
  *
+ * Deterministic heuristics (Issue #266):
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
+ *   comment with both canonical URLs and horizon_url guidance.
+ * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
+ * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
+ * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
+ *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
+ *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
+ *
  * @param configuredHorizonUrl  The `horizon_url` input value.
  * @param stellarAddress        The 56-char G-address that returned 404.
  * @param fetchFn               Optional injected fetch (for testing).
@@ -99,6 +159,12 @@ export interface NetworkMismatchHint {
 export declare function detectNetworkMismatch(configuredHorizonUrl: string, stellarAddress: string, fetchFn?: (url: string, init?: RequestInit) => Promise<{
     status: number;
 }>): Promise<NetworkMismatchHint | undefined>;
+/**
+ * Build the deterministic cross-network mismatch detail string used in the
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
+ * the identical format and are tested deterministically.
+ */
+export declare function buildNetworkMismatchDetail(stellarAddress: string, hint: NetworkMismatchHint): string;
 export interface CheckResultItem {
     passed: boolean;
     label: string;
@@ -145,6 +211,13 @@ export interface ValidationResult {
      * `config.checkLedgerFreshness` is true.
      */
     ledgerFreshnessResult?: LedgerFreshnessCheckResult;
+    /**
+     * Claimable balance info (Issue #260). Only populated when the account was
+     * fetched and the policy is observed. Informational only — does not affect
+     * `accountFunded` when policy is `ignore` (default).
+     */
+    claimableBalanceCount?: number;
+    hasClaimableBalances?: boolean;
 }
 /**
  * Outcome of a single SEP-0001 home domain alignment check against an
@@ -180,6 +253,16 @@ export interface HomeDomainCheckResult {
      * this flag is true to indicate the failure should block `valid`.
      */
     blocksValid: boolean;
+    /**
+     * Optional SEP-0001 stellar.toml fetch result. Only populated when
+     * stellarTomlFetchEnabled is true and a fetch was attempted.
+     */
+    tomlFetch?: {
+        ok: boolean;
+        error?: string;
+        hash?: string;
+        cached: boolean;
+    };
 }
 /**
  * Evaluate the issuer's SEP-0001 home domain alignment against the
@@ -200,6 +283,22 @@ export interface HomeDomainCheckResult {
  * @returns              A `HomeDomainCheckResult` describing the outcome.
  */
 export declare function evaluateHomeDomain(issuerAccount: HorizonAccount | null, config: CheckConfig): HomeDomainCheckResult;
+/**
+ * Asynchronously fetch and validate stellar.toml for a home_domain.
+ *
+ * This function:
+ *  - Only runs if stellarTomlFetchEnabled is true in config
+ *  - Skips fetch if on-chain home domain check failed
+ *  - Fetches with SSRF protection and TTL caching
+ *  - Validates hash (if pin provided)
+ *  - Appends tomlFetch result to the existing HomeDomainCheckResult
+ *  - Fails the check if fetch/hash validation fails in strict mode
+ *
+ * @param result The existing HomeDomainCheckResult from evaluateHomeDomain
+ * @param config The CheckConfig with TOML options
+ * @returns Potentially updated result with tomlFetch populated
+ */
+export declare function enrichHomeDomainCheckWithToml(result: HomeDomainCheckResult, config: CheckConfig): Promise<HomeDomainCheckResult>;
 /**
  * Thin wrapper around `FreshnessCheckResult` from `freshness.ts` that adds
  * the information needed by comment rendering and the checks table.
@@ -253,8 +352,8 @@ export declare function parseTrustlineLimit(value: string): number;
 export declare function estimateTrustlineSetupCost(): number;
 export declare function formatXlmDeficit(required: number, actual: number): string;
 export declare function formatAssetDeficit(required: number, actual: number): string;
-export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): ValidationResult;
-export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint): ValidationResult;
+export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): Promise<ValidationResult>;
+export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint, claimableCount?: number): ValidationResult;
 export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;
 /**
@@ -267,6 +366,17 @@ export declare function horizonFailureResult(message: string, config: CheckConfi
  * is easy to misdiagnose as "the account isn't set up right."
  */
 export declare function tlsFailureResult(message: string, config: CheckConfig): ValidationResult;
+/**
+ * Builds a result for a rate-budget exhaustion failure (horizon_max_requests
+ * exceeded). This is intentionally distinct from both:
+ * - `horizonFailureResult` (Horizon API error or outage) — reason_code: HORIZON_ERROR
+ * - `unfundedAccountResult` (Horizon 404) — reason_code: ACCOUNT_NOT_FUNDED
+ *
+ * A RATE_BUDGET_EXHAUSTED result always means the run was stopped by the
+ * local request cap, *not* by any signal from Horizon about the account.
+ * The account state is therefore genuinely unknown — fail closed.
+ */
+export declare function rateBudgetExhaustedResult(message: string, config: CheckConfig): ValidationResult;
 /** Subset of `HorizonAccount` needed to compute the protocol-accurate minimum balance. */
 export interface SponsorAwareAccountFields {
     subentry_count: number;
