@@ -1,0 +1,117 @@
+{
+  "_fixture_version": "1.0.0",
+  "_generated_from": "trustbridge-contract get_address function — simulateTransaction JSON-RPC response shapes",
+  "_description": "Golden fixtures for the Soroban simulateTransaction response from the trustbridge-contract registry. Each scenario key maps to a realistic response body. Regenerate using scripts/regen-soroban-fixture.sh when the contract ABI changes.",
+  "_contract_fn": "get_address(github_username: Symbol) -> Option<Address>",
+  "scenarios": {
+    "found": {
+      "_description": "Username is registered in the contract — returns a Stellar G-address.",
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "latestLedger": "55000000",
+        "latestLedgerCloseTime": "1722470400",
+        "retval": {
+          "type": "address",
+          "value": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        },
+        "cost": {
+          "cpuInsns": "1234567",
+          "memBytes": "4096"
+        },
+        "stateChanges": []
+      }
+    },
+    "found_alt_address": {
+      "_description": "A second registered address to verify different valid G-addresses parse correctly.",
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "latestLedger": "55000001",
+        "latestLedgerCloseTime": "1722470405",
+        "retval": {
+          "type": "address",
+          "value": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+        },
+        "cost": {
+          "cpuInsns": "1234567",
+          "memBytes": "4096"
+        },
+        "stateChanges": []
+      }
+    },
+    "not_found": {
+      "_description": "Username has no registry entry — contract returns Option::None encoded as void ScVal.",
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "latestLedger": "55000002",
+        "latestLedgerCloseTime": "1722470410",
+        "retval": {
+          "type": "void"
+        },
+        "cost": {
+          "cpuInsns": "987654",
+          "memBytes": "2048"
+        },
+        "stateChanges": []
+      }
+    },
+    "null_retval": {
+      "_description": "Malformed or legacy response where retval field is null — parser must return null safely.",
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "latestLedger": "55000003",
+        "latestLedgerCloseTime": "1722470415",
+        "retval": null,
+        "cost": {
+          "cpuInsns": "0",
+          "memBytes": "0"
+        },
+        "stateChanges": []
+      }
+    },
+    "missing_retval": {
+      "_description": "Response where result exists but retval key is absent — defensive parser path.",
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "latestLedger": "55000004",
+        "latestLedgerCloseTime": "1722470420",
+        "cost": {
+          "cpuInsns": "0",
+          "memBytes": "0"
+        },
+        "stateChanges": []
+      }
+    },
+    "missing_result": {
+      "_description": "Top-level result field absent — e.g. when the RPC returns an error response.",
+      "jsonrpc": "2.0",
+      "id": 6,
+      "error": {
+        "code": -32603,
+        "message": "Internal error"
+      }
+    },
+    "invalid_address_in_retval": {
+      "_description": "Retval type is 'address' but value is not a valid G-address — parser must reject and return null.",
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {
+        "latestLedger": "55000005",
+        "latestLedgerCloseTime": "1722470425",
+        "retval": {
+          "type": "address",
+          "value": "not-a-stellar-address"
+        },
+        "cost": {
+          "cpuInsns": "1234567",
+          "memBytes": "4096"
+        },
+        "stateChanges": []
+      }
+    }
+  }
+}

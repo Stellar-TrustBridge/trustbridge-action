@@ -49,6 +49,12 @@ jobs:
       - name: Verify comment golden snapshots and test coverage
         run: npm run test:coverage
 
+      # Issue #294: Run Soroban contract compatibility tests against checked-in fixture.
+      # These verify parseAddressFromSimulateResult handles every simulateTransaction
+      # response shape produced by the trustbridge-contract get_address function.
+      - name: Soroban contract compatibility tests
+        run: npm test -- --testPathPattern 'soroban' --no-coverage
+
       - name: Build
         run: npm run build
 
