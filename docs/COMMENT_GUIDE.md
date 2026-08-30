@@ -56,6 +56,39 @@ Each item is a GitHub Markdown task-list checkbox (`- [x]` / `- [ ]`) driven by 
 
 Set `onboarding_checklist: false` to omit the section entirely (e.g. for expert-only workflows).
 
+### Checklist state persistence across sticky updates (Issue #311)
+
+By default, every sticky update rebuilds the checklist from live Horizon data. This means that if a contributor manually checks a box in GitHub (e.g. they have funded their account but Horizon hasn't indexed the transaction yet), the next run could overwrite their check with an unchecked state.
+
+**TrustBridge now preserves checked boxes across sticky updates.** When a sticky update runs, the action:
+
+1. Fetches the existing sticky comment body.
+2. Parses the previous `### Onboarding checklist` section with `extractChecklistState()` to recover which boxes were checked.
+3. Merges that prior state into the new checklist: a box is checked if **either** the live Horizon check passes **or** the previous comment had the box checked.
+
+This ensures contributor-manually-checked boxes survive re-runs even when Horizon hasn't caught up yet.
+
+#### Merge semantics
+
+| Live Horizon result | Previous box state | Final rendered state |
+|--------------------|--------------------|---------------------|
+| ✅ pass | checked or unchecked | `[x]` (live truth wins) |
+| ❌ fail | checked | `[x]` (manual check preserved) |
+| ❌ fail | unchecked | `[ ]` (stays unchecked) |
+| ❌ fail | (no prior state) | `[ ]` (stays unchecked) |
+
+A live pass always checks the box, regardless of prior state. A live fail only checks the box if the contributor (or a previous run) had it checked before.
+
+#### Security: injection guard
+
+The checklist parser is scoped to the `### Onboarding checklist` section only (it stops at the next `###` heading) and matches only a fixed allowlist of known label names:
+
+- `Fund account`
+- `Add <ASSET_CODE> trustline` (any asset code that is ASCII-printable)
+- `Verify XLM balance`
+
+No user-controlled label text is used as a map key. A maliciously crafted comment body cannot inject unexpected checked state for arbitrary labels or sections. Asset code strings with non-ASCII or control characters are rejected silently.
+
 ## SEP-0010 challenge proof (Issue #252)
 
 To prove wallet control, you can include a SEP-0010 challenge snippet in the comment:

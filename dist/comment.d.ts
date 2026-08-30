@@ -67,6 +67,23 @@ export interface CommentConfig extends CheckConfig {
      * section is appended to the comment showing newly-passed/failed checks.
      */
     delta?: ValidationDelta | null;
+    /**
+     * SEP-0010 challenge proof (Issue #252). Optional — when either field is set,
+     * a "Proof of wallet control" snippet is appended to the comment. Does not
+     * block `ready` unless the caller explicitly gates on it. Prefer
+     * `sep0010DashboardUrl` over raw `sep0010ChallengeXdr` to avoid leaking
+     * nonces in public issues.
+     */
+    sep0010ChallengeXdr?: string;
+    sep0010DashboardUrl?: string;
+    /**
+     * Raw body of the existing TrustBridge sticky comment, if one was found
+     * (Issue #311).  When provided, `formatCommentBody` extracts the prior
+     * checklist state via `extractChecklistState` and preserves any boxes that
+     * were manually checked by a contributor — even if the live Horizon result
+     * has not yet caught up.  Ignored when `onboardingChecklist` is `false`.
+     */
+    existingCommentBody?: string;
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**
@@ -168,6 +185,24 @@ export interface UpsertCommentOptions {
      * When omitted, falls back to `resolveIssueOrPullRequestNumber(github.context.payload)`.
      */
     issueNumber?: number;
+    /**
+     * Optional body factory called with the existing comment body (Issue #311).
+     *
+     * When provided alongside `sticky: true`, `postIssueComment` fetches the
+     * existing comment body (if a sticky comment is found) and passes it to
+     * this factory *before* building the final comment body.  The returned
+     * string is posted as the new comment body.
+     *
+     * Use this instead of the top-level `body` argument when the comment
+     * content depends on the previous comment body — for example, to preserve
+     * manually-checked onboarding checklist boxes (Issue #311) without making
+     * two separate round-trips to locate the comment.
+     *
+     * When the factory is provided, the `body` argument to `postIssueComment`
+     * is used only as a fallback (when there is no existing comment, or when
+     * the factory is not called due to `sticky: false`).
+     */
+    bodyFactory?: (existingBody: string | undefined) => string;
 }
 type Octokit = ReturnType<typeof github.getOctokit>;
 /**

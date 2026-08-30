@@ -27,6 +27,8 @@ export interface ActionOutputs {
     asset_code: string;
     asset_issuer: string;
     checks_json: string;
+    asset_balance: string;
+    native_balance: string;
     badge_markdown: string;
     badge_url: string;
     timings_json: string;

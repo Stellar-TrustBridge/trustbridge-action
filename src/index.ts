@@ -1216,41 +1216,58 @@ async function run(): Promise<void> {
     };
   }
 
-  const commentBody = formatCommentBody(result, {
-    ...checkConfig,
-    stellarAddress: effectiveResolvedAddress,
-    horizonUrl,
-    failOnMissing,
-    stickyComment,
-    waitUntilFunded,
-    waitUntilFundedTimeoutMs,
-    waitUntilFundedIntervalMs,
-    onboardingChecklist,
-    sep0007DeepLinks,
-    sep0007OriginDomain,
-    sep0010ChallengeXdr,
-    sep0010DashboardUrl,
-    locale,
-    debugMode,
-    docsBaseUrl: core.getInput('docs_base_url') || undefined,
-    delta,
-    diagnosticsConfig,
-  });
+  // Build the comment body.  When onboarding_checklist is enabled and
+  // sticky_comment is on, we need to incorporate the previous comment body so
+  // that manually-checked boxes survive the update (Issue #311).
+  //
+  // We use `bodyFactory` to defer body construction until `postIssueComment`
+  // has fetched the existing sticky comment body — this avoids a second
+  // findStickyComment round-trip.
+  //
+  // For the discussion path (GraphQL), the existing body is not fetched
+  // before postDiscussionComment, so we pass existingCommentBody=undefined
+  // (the initial body without persistence).
+  const buildCommentBody = (existingCommentBody: string | undefined): string => {
+    const rawBody = formatCommentBody(result, {
+      ...checkConfig,
+      stellarAddress: effectiveResolvedAddress,
+      horizonUrl,
+      failOnMissing,
+      stickyComment,
+      waitUntilFunded,
+      waitUntilFundedTimeoutMs,
+      waitUntilFundedIntervalMs,
+      onboardingChecklist,
+      sep0007DeepLinks,
+      sep0007OriginDomain,
+      sep0010ChallengeXdr,
+      sep0010DashboardUrl,
+      locale,
+      debugMode,
+      docsBaseUrl: core.getInput('docs_base_url') || undefined,
+      delta,
+      diagnosticsConfig,
+      existingCommentBody,
+    });
 
-  // Detect oversize and write the full report to a workspace file when needed.
-  const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
+    const bodyBytes = Buffer.byteLength(rawBody, 'utf8');
+    if (bodyBytes > COMMENT_SIZE_LIMIT_BYTES) {
+      return buildTruncatedCommentBody(rawBody, reportOutputPath);
+    }
+    return rawBody;
+  };
+
+  // Build a baseline body (no existing comment) for size-check and full-report write.
+  const baselineBody = buildCommentBody(undefined);
+  const baselineBytes = Buffer.byteLength(baselineBody, 'utf8');
   let fullReportPath: string | undefined;
-  let effectiveCommentBody: string;
 
-  if (commentBodyBytes > COMMENT_SIZE_LIMIT_BYTES) {
+  if (baselineBytes > COMMENT_SIZE_LIMIT_BYTES) {
     core.warning(
-      `Comment body is ${commentBodyBytes} bytes, which exceeds GitHub's ${COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
+      `Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
         `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`,
     );
-    fullReportPath = writeFullReport(commentBody, reportOutputPath);
-    effectiveCommentBody = buildTruncatedCommentBody(commentBody, reportOutputPath);
-  } else {
-    effectiveCommentBody = commentBody;
+    fullReportPath = writeFullReport(buildCommentBody(undefined), reportOutputPath);
   }
 
   let commentUrl: string | undefined;
@@ -1261,8 +1278,11 @@ async function run(): Promise<void> {
   } else if (discussionNodeId) {
     // Discussion events carry a GraphQL node id, not an issue number —
     // comment via GraphQL, never the REST issues API (Issue #221).
+    // Checklist persistence for discussions passes undefined for the existing
+    // body; the factory still runs through the full format path.
+    const discussionBody = buildCommentBody(undefined);
     try {
-      commentUrl = await postDiscussionComment(githubToken, effectiveCommentBody, {
+      commentUrl = await postDiscussionComment(githubToken, discussionBody, {
         sticky: stickyComment,
         forceComment,
         snoozeWindowMs,
@@ -1281,10 +1301,14 @@ async function run(): Promise<void> {
   } else {
     globalMetrics.startTimer('comment_post');
     try {
-      commentUrl = await postIssueComment(githubToken, effectiveCommentBody, {
+      // Use bodyFactory so postIssueComment passes the fetched existing
+      // comment body to buildCommentBody — preserving checklist state (Issue #311)
+      // without a second findStickyComment round-trip.
+      commentUrl = await postIssueComment(githubToken, baselineBody, {
         sticky: stickyComment,
         forceComment,
         snoozeWindowMs,
+        bodyFactory: buildCommentBody,
       });
       globalMetrics.stopTimer('comment_post');
       if (commentUrl) {
