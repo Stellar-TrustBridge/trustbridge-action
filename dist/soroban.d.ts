@@ -65,3 +65,12 @@ export declare function buildGetAddressXdr(contractId: string, githubUsername: s
  * Returns the G-address string when found, or `null` when not registered.
  */
 export declare function parseAddressFromSimulateResult(json: unknown): string | null;
+/**
+ * Verifies that a Soroban contract address exists on a configured RPC endpoint.
+ *
+ * This is a bounded, fail-closed check used for C-address payout destinations.
+ * A C-address is treated as a contract payout target only when the Soroban RPC
+ * confirms the contract exists; no Horizon account fetch is attempted for C-addresses.
+ */
+export declare function contractExistsOnChain(contractAddress: string, config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>): Promise<boolean>;
+export declare function parseContractExistsResult(json: unknown): boolean;

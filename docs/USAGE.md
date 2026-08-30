@@ -1134,6 +1134,33 @@ All three inputs (`soroban_rpc_url`, `contract_id`, `github_username`) default t
 
 ---
 
+## C-address payout destinations
+
+TrustBridge accepts a Soroban contract destination (`C...`) in `stellar_address_input` when the workflow also provides `soroban_rpc_url`.
+
+### What is checked
+
+- `stellar_address_input` is accepted as a valid C-address when it matches the Soroban contract StrKey format.
+- TrustBridge then calls Soroban RPC with `getContractCode` (or the equivalent contract-existence call supported by the configured RPC) to confirm the contract exists on-chain.
+- Only the existence check runs for the payout destination. Horizon account lookups, trustline checks, and XLM reserve checks are intentionally skipped for C-address destinations because those checks are defined for G-account addresses only.
+
+### What is skipped
+
+- `GET /accounts/{address}` is not called for a C-address destination.
+- Trustline validation for the destination wallet is not attempted.
+- XLM reserve and native balance checks are not evaluated for a C-address destination.
+
+### Fail-closed behavior
+
+- If `stellar_address_input` is a C-address and `soroban_rpc_url` is empty or invalid, the action fails closed instead of silently treating the contract as valid.
+- If the RPC cannot confirm that the contract exists, the workflow is marked not ready and the payout destination is rejected.
+
+### Limitations
+
+This C-address support is intentionally narrow: it verifies that a contract destination exists on-chain and is eligible as a payout target, but it does not attempt full SAC/token-balance validation for every token standard. TrustBridge does not perform a full "all balances and trustlines" audit for contract-based destinations.
+
+---
+
 ## Address resolution precedence (Issue #219)
 
 TrustBridge resolves the Stellar G-address to validate using the following precedence order. The **first** source that yields a non-empty address wins; all later sources are skipped.

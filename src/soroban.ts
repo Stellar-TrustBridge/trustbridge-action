@@ -175,3 +175,124 @@ export function parseAddressFromSimulateResult(json: unknown): string | null {
 
   return null;
 }
+
+/**
+ * Verifies that a Soroban contract address exists on a configured RPC endpoint.
+ *
+ * This is a bounded, fail-closed check used for C-address payout destinations.
+ * A C-address is treated as a contract payout target only when the Soroban RPC
+ * confirms the contract exists; no Horizon account fetch is attempted for C-addresses.
+ */
+export async function contractExistsOnChain(
+  contractAddress: string,
+  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>,
+): Promise<boolean> {
+  const trimmed = contractAddress.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (!trimmed.startsWith('C') || trimmed.length !== 56 || !/^C[A-Z2-7]{55}$/.test(trimmed)) {
+    throw new ContractLookupError(
+      `Expected a valid Soroban C-address contract destination, got: "${trimmed}"`,
+      false,
+    );
+  }
+
+  const { sorobanRpcUrl, timeoutMs = 15000 } = config;
+  if (!sorobanRpcUrl || !sorobanRpcUrl.trim()) {
+    throw new ContractLookupError(
+      'Soroban RPC URL is required to verify a C-address payout destination. Configure soroban_rpc_url before using a C-address as stellar_address_input.',
+      false,
+    );
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'getContractCode',
+    params: [trimmed],
+  });
+
+  let response: import('node-fetch').Response;
+
+  try {
+    response = await fetch(sorobanRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: controller.signal as never,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isAbort = message.includes('abort') || message.includes('timeout');
+    throw new ContractLookupError(
+      `Soroban RPC request failed: ${message}`,
+      isAbort,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (RETRYABLE_STATUS_CODES.has(response.status)) {
+    throw new ContractLookupError(
+      `Soroban RPC returned retryable status ${response.status}`,
+      true,
+    );
+  }
+
+  if (!response.ok) {
+    throw new ContractLookupError(
+      `Soroban RPC returned non-retryable status ${response.status}`,
+      false,
+    );
+  }
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
+  }
+
+  return parseContractExistsResult(json);
+}
+
+export function parseContractExistsResult(json: unknown): boolean {
+  if (typeof json !== 'object' || json === null) {
+    return false;
+  }
+
+  const record = json as Record<string, unknown>;
+  if ('error' in record && record.error !== undefined) {
+    return false;
+  }
+
+  if (!('result' in record) || record.result === undefined || record.result === null) {
+    return false;
+  }
+
+  const rawResult = record.result;
+  if (typeof rawResult === 'string') {
+    return rawResult.trim().length > 0;
+  }
+
+  if (typeof rawResult !== 'object' || rawResult === null) {
+    return false;
+  }
+
+  const result = rawResult as Record<string, unknown>;
+  const checks = [
+    result['exists'],
+    result['code'],
+    result['wasm'],
+    result['contract'],
+    result['contract_id'],
+    result['contractId'],
+  ];
+
+  return checks.some((value) => value === true || (typeof value === 'string' && value.trim().length > 0));
+}

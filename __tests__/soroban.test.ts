@@ -2,6 +2,8 @@ import {
   lookupAddressFromContract,
   buildGetAddressXdr,
   parseAddressFromSimulateResult,
+  parseContractExistsResult,
+  contractExistsOnChain,
   ContractLookupError,
   ContractConfig,
 } from '../src/soroban';
@@ -252,6 +254,49 @@ describe('parseAddressFromSimulateResult', () => {
 
   it('returns null when retval is null', () => {
     expect(parseAddressFromSimulateResult({ result: { retval: null } })).toBeNull();
+  });
+});
+
+describe('contractExistsOnChain', () => {
+  it('returns true when Soroban RPC reports the contract exists', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { exists: true } }),
+    } as never);
+
+    await expect(contractExistsOnChain(VALID_CONTRACT, { sorobanRpcUrl: RPC_URL, timeoutMs: 5000 })).resolves.toBe(true);
+  });
+
+  it('returns false when Soroban RPC reports no contract code exists', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { exists: false } }),
+    } as never);
+
+    await expect(contractExistsOnChain(VALID_CONTRACT, { sorobanRpcUrl: RPC_URL, timeoutMs: 5000 })).resolves.toBe(false);
+  });
+
+  it('fails closed when rpc url is missing', async () => {
+    await expect(contractExistsOnChain(VALID_CONTRACT, { sorobanRpcUrl: '', timeoutMs: 5000 })).rejects.toMatchObject({
+      name: 'ContractLookupError',
+      retryable: false,
+    });
+  });
+});
+
+describe('parseContractExistsResult', () => {
+  it('accepts an exists=true payload', () => {
+    expect(parseContractExistsResult({ result: { exists: true } })).toBe(true);
+  });
+
+  it('accepts a non-empty code payload', () => {
+    expect(parseContractExistsResult({ result: { code: '...contract bytecode...' } })).toBe(true);
+  });
+
+  it('rejects an error payload', () => {
+    expect(parseContractExistsResult({ error: { code: -32000 } })).toBe(false);
   });
 });
 
