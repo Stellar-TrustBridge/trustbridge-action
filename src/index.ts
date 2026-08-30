@@ -795,6 +795,10 @@ async function run(): Promise<void> {
   const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
   const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
 
+  // Custom comment template partial (#312) — workspace-relative path to a
+  // Markdown partial file injected before the footer.
+  const customCommentTemplatePath = core.getInput('custom_comment_template_path') || '';
+
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
     minXlmReserve: Number(minXlmReserve),
@@ -1235,6 +1239,7 @@ async function run(): Promise<void> {
     docsBaseUrl: core.getInput('docs_base_url') || undefined,
     delta,
     diagnosticsConfig,
+    customCommentTemplatePath: customCommentTemplatePath || undefined,
   });
 
   // Detect oversize and write the full report to a workspace file when needed.

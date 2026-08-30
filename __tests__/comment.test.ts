@@ -1073,3 +1073,170 @@ describe('writeFullReport', () => {
     expect(written).toBe(body);
   });
 });
+
+// ── Custom comment template integration tests (#312) ─────────────────────────
+
+describe('formatCommentBody with custom_comment_template_path', () => {
+  let tmpDir: string;
+  let savedWorkspace: string | undefined;
+
+  beforeAll(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(1000000000000);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-comment-template-'));
+    // Set GITHUB_WORKSPACE so loadCommentTemplate treats tmpDir as workspace root
+    savedWorkspace = process.env['GITHUB_WORKSPACE'];
+    process.env['GITHUB_WORKSPACE'] = tmpDir;
+  });
+
+  afterAll(() => {
+    jest.restoreAllMocks();
+    // Restore GITHUB_WORKSPACE
+    if (savedWorkspace === undefined) {
+      delete process.env['GITHUB_WORKSPACE'];
+    } else {
+      process.env['GITHUB_WORKSPACE'] = savedWorkspace;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeResult = (valid: boolean) => ({
+    ...validationResult,
+    valid,
+    accountFunded: valid,
+    trustlineExists: valid,
+    xlmReserveMet: valid,
+    xlmBalance: valid ? '10.0000000' : '0',
+  });
+
+  it('injects template partial before the footer when path is valid', () => {
+    const templateFile = path.join(tmpDir, 'custom.md');
+    fs.writeFileSync(templateFile, '### Custom Wave Help\n\nContact: wave@example.com');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'custom.md',
+    });
+
+    // Partial appears before the footer
+    const partialIdx = body.indexOf('Custom Wave Help');
+    const footerIdx = body.indexOf('_Posted by [trustbridge-action]');
+    expect(partialIdx).toBeGreaterThan(0);
+    expect(partialIdx).toBeLessThan(footerIdx);
+  });
+
+  it('interpolates {{account}} and {{status}} in partial', () => {
+    const templateFile = path.join(tmpDir, 'interp.md');
+    fs.writeFileSync(templateFile, 'For {{account}}: {{status}}');
+
+    const body = formatCommentBody(makeResult(true), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'interp.md',
+    });
+
+    expect(body).toContain('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
+    expect(body).toContain('✅ ready');
+  });
+
+  it('does not break comment when customCommentTemplatePath is undefined', () => {
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+
+    expect(body).toContain('_Posted by [trustbridge-action]');
+    expect(body).not.toContain('Custom Wave Help');
+  });
+
+  it('emits a core.warning when the template file does not exist', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'does-not-exist.md',
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('was not found in the workspace'),
+    );
+  });
+
+  it('emits a core.warning and omits partial when template contains <script>', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const templateFile = path.join(tmpDir, 'evil.md');
+    fs.writeFileSync(templateFile, 'Hello <script>alert(1)</script>');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'evil.md',
+    });
+
+    expect(body).not.toContain('<script>');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    // Footer is still present — comment is never broken by template failure
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('emits a core.warning and omits partial on path traversal attempt', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: '../../../../etc/passwd',
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('omits partial and warns on {{constructor}} in template', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const templateFile = path.join(tmpDir, 'proto.md');
+    fs.writeFileSync(templateFile, 'Oops: {{constructor}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'proto.md',
+    });
+
+    expect(body).not.toContain('constructor');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+  });
+
+  it('escapes Markdown injection in template variables from address', () => {
+    // Simulate a "malicious" address that contains link injection syntax.
+    // In production, addresses are validated G-addresses, but the template
+    // system must still escape whatever it receives.
+    const templateFile = path.join(tmpDir, 'injection.md');
+    fs.writeFileSync(templateFile, 'Account: {{account}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      stellarAddress: 'G][evil](https://steal.example)',
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'injection.md',
+    });
+
+    // ] ( ) should be escaped in the template substitution, breaking any link
+    expect(body).toContain('\\]\\[evil\\]\\(https://steal.example\\)');
+    // Footer is still present — comment is never broken by escaped content
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+});

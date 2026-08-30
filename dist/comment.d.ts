@@ -67,6 +67,30 @@ export interface CommentConfig extends CheckConfig {
      * section is appended to the comment showing newly-passed/failed checks.
      */
     delta?: ValidationDelta | null;
+    /**
+     * SEP-0010 challenge proof (Issue #252). Optional — when either field is set,
+     * a "Proof of wallet control" snippet is appended to the comment. Does not
+     * block `ready` unless the caller explicitly gates on it. Prefer
+     * `sep0010DashboardUrl` over raw `sep0010ChallengeXdr` to avoid leaking
+     * nonces in public issues.
+     */
+    sep0010ChallengeXdr?: string;
+    sep0010DashboardUrl?: string;
+    /**
+     * Optional workspace-relative (or absolute) path to a Markdown partial
+     * file that is appended to the comment just before the footer (#312).
+     *
+     * The partial supports `{{variable}}` interpolation for safe substitution
+     * of account, asset, issuer, network, horizon, status, and i18n strings
+     * (`{{locale:KEY}}`). All substituted values are escaped through
+     * `escapeMarkdownInline` to prevent Markdown injection. Dangerous patterns
+     * (prototype-chain keys, <script>, javascript:, inline event handlers) are
+     * rejected before interpolation. The file must reside inside the workspace
+     * root (path traversal is blocked) and must not exceed 8 KB.
+     *
+     * Leave unset or empty to disable the feature entirely.
+     */
+    customCommentTemplatePath?: string;
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**

@@ -31,6 +31,7 @@ import {
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
+import { loadCommentTemplate, buildTemplateContext } from './template';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -104,6 +105,21 @@ export interface CommentConfig extends CheckConfig {
    */
   sep0010ChallengeXdr?: string;
   sep0010DashboardUrl?: string;
+  /**
+   * Optional workspace-relative (or absolute) path to a Markdown partial
+   * file that is appended to the comment just before the footer (#312).
+   *
+   * The partial supports `{{variable}}` interpolation for safe substitution
+   * of account, asset, issuer, network, horizon, status, and i18n strings
+   * (`{{locale:KEY}}`). All substituted values are escaped through
+   * `escapeMarkdownInline` to prevent Markdown injection. Dangerous patterns
+   * (prototype-chain keys, <script>, javascript:, inline event handlers) are
+   * rejected before interpolation. The file must reside inside the workspace
+   * root (path traversal is blocked) and must not exceed 8 KB.
+   *
+   * Leave unset or empty to disable the feature entirely.
+   */
+  customCommentTemplatePath?: string;
 }
 
 export const TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
@@ -386,6 +402,39 @@ export function formatCommentBody(
     const diagnosticsBlock = buildDiagnosticsBlock(config.diagnosticsConfig);
     if (diagnosticsBlock) {
       lines.push(diagnosticsBlock);
+    }
+  }
+
+  // Custom comment template partial (#312) — injected just before the footer.
+  // Path validation, size check, content security, and interpolation escaping
+  // are all handled in loadCommentTemplate / validateTemplateContent.
+  if (config.customCommentTemplatePath) {
+    try {
+      const templateCtx = buildTemplateContext({
+        stellarAddress: config.stellarAddress,
+        assetCode: config.assetCode,
+        assetIssuer: config.assetIssuer,
+        horizonUrl: config.horizonUrl,
+        network: inferStellarNetwork(config.horizonUrl),
+        valid: result.valid,
+        locale: config.locale ?? 'en',
+      });
+      const partial = loadCommentTemplate(config.customCommentTemplatePath, templateCtx);
+      if (partial !== undefined) {
+        lines.push('', partial);
+      } else {
+        // File not found — warn without blocking the comment.
+        core.warning(
+          `custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
+            'The template partial will be omitted from this comment.',
+        );
+      }
+    } catch (templateErr) {
+      const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
+      core.warning(
+        `Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
+          'The template partial will be omitted from this comment.',
+      );
     }
   }
 

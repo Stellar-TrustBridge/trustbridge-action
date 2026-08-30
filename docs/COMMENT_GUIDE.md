@@ -82,3 +82,82 @@ If contributors are confused, ask them to compare the account and issuer shown i
 
 Comment Markdown formatting is protected by golden snapshot tests (`__tests__/comment.test.ts`). Any changes to comment structure, headers, status icons, or links will cause golden snapshot verification in CI (`.github/workflows/ci.yml`) to fail unless explicitly updated via `npx jest -u`.
 
+---
+
+## Custom comment templates (markdown partials) (#312)
+
+Organisations that want to add Wave-specific help, campaign links, or custom remediation guidance without forking the action can supply a **Markdown partial** file. TrustBridge loads the partial, runs safe interpolation, and appends it just before the action footer.
+
+### Quick start
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    custom_comment_template_path: .trustbridge/comment-help.md
+```
+
+Create `.trustbridge/comment-help.md` in your repository:
+
+```markdown
+### Wave-specific help
+
+This run validated account {{account}} for the **{{asset}}** token on {{network}}.
+Current status: {{status}}
+
+Need help? Join [#wave-support](https://discord.example/wave-support) on Discord.
+See the [campaign FAQ](https://your-org.example/wave/faq) for trustline setup instructions.
+```
+
+### Available template variables
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `{{account}}` | Checked Stellar address | Escaped for Markdown |
+| `{{asset}}` | Asset code (e.g. `USDC`) | Escaped for Markdown |
+| `{{issuer}}` | Asset issuer address | Escaped for Markdown |
+| `{{network}}` | Inferred network (`mainnet` / `testnet` / `unknown`) | Escaped for Markdown |
+| `{{horizon}}` | Horizon base URL | Escaped for Markdown |
+| `{{status}}` | `✅ ready` or `❌ blocked` | Safe emoji string — not escaped |
+| `{{locale:KEY}}` | i18n string for `KEY` in the active locale | See i18n keys below |
+
+All variable values (except `{{status}}`) are run through `escapeMarkdownInline` before substitution, so contributor-supplied strings (addresses, asset codes, etc.) cannot inject Markdown structures such as links, emphasis, headings, or code spans.
+
+### i18n string variables (`{{locale:KEY}}`)
+
+Use `{{locale:KEY}}` to embed a translated string from the active locale (`en`, `es`, `pt`). For example:
+
+```markdown
+### {{locale:remediationHeading}}
+
+{{locale:readyToProceed}}
+```
+
+Only `string`-typed fields of `CommentStrings` are supported (function-typed check helpers are excluded and resolve to an empty string). Unknown keys also produce an empty string.
+
+### Security guarantees
+
+| Threat | Defence |
+|--------|---------|
+| **Path traversal** | The resolved path must stay inside the workspace root. `../../etc/passwd`-style paths throw immediately before any file read. |
+| **Oversized file** | Files larger than **8 KB** are rejected before content is read. |
+| **HTML/XSS injection** | Templates containing `<script`, `javascript:`, `vbscript:`, `data:text/html`, or inline event handlers (`onclick=`, `onload=`, etc.) are rejected. |
+| **Prototype-chain placeholders** | `{{constructor}}`, `{{__proto__}}`, `{{prototype}}`, `{{__defineGetter__}}`, `{{__defineSetter__}}`, `{{__lookupGetter__}}`, `{{__lookupSetter__}}` throw a hard error before any substitution occurs. |
+| **Unknown placeholder leakage** | Any `{{unknown}}` placeholder (not in the supported variable set and not a valid `{{locale:KEY}}`) is replaced with an empty string, never echoed back. |
+| **Markdown injection via values** | All substituted values (except the safe `{{status}}`) are escaped through `escapeMarkdownInline`. A contributor address like `][evil](https://malicious.example)` becomes `\\]\\[evil\\]\\(https://malicious.example\\)`. |
+| **Template failure isolation** | Any template loading or validation error emits a `core.warning` and omits the partial. The rest of the comment (i18n core sections) and the footer are always posted. |
+
+### Constraints
+
+- The template file must be **inside the workspace root** (the repository checkout directory). Absolute paths outside the workspace are rejected.
+- Maximum template size: **8 KB**. Keep partials focused to avoid hitting GitHub's 65 KB comment size limit alongside the full TrustBridge comment body.
+- The feature is opt-in. Leave `custom_comment_template_path` empty (the default) to disable it.
+- i18n core sections are produced by `formatCommentBody` using `getStrings()` and are not affected by the template.
+
+### Implementation reference
+
+- Template loader: `src/template.ts` (`loadCommentTemplate`, `validateTemplatePath`, `validateTemplateContent`, `interpolateTemplate`, `buildTemplateContext`)
+- Integration point: `formatCommentBody` in `src/comment.ts` — partial injected before `---` footer
+- Tests: `__tests__/template.test.ts` (unit), `__tests__/comment.test.ts` (integration, injection scenarios)
+
