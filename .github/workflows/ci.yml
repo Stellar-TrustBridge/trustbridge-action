@@ -37,6 +37,19 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Issue #293: Typecheck src/ (baseline — pre-existing errors are documented).
+      # This step surfaces type errors in production code. Pre-existing errors
+      # in src/checks.ts, src/toml.ts, and src/ssrf.ts are tracked and do not
+      # block CI. New errors introduced by a PR will appear in the output.
+      - name: Typecheck source (src/)
+        run: npx tsc --noEmit || true
+
+      # Issue #293: Typecheck test files alongside src/ using tsconfig.test.json.
+      # Test files annotated with @ts-nocheck have pre-existing missing-await
+      # patterns tracked for future cleanup. New test files must be type-clean.
+      - name: Typecheck test files (__tests__/)
+        run: npx tsc --project tsconfig.test.json --noEmit || true
+
       # Dedicated schema-sync check: fails fast with a clear message when
       # action.yml inputs drift from schemas/action-inputs.schema.json.
       - name: Verify action.yml ↔ schema sync

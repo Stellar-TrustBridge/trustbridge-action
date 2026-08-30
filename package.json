@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt && node scripts/normalize-maps.js",
     "bundle-size": "npm test -- --testPathPattern bundle-size --no-coverage",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --project tsconfig.test.json --noEmit",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:mock": "jest --testPathPattern horizon-mock-smoke --forceExit",
