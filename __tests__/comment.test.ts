@@ -1109,3 +1109,224 @@ describe('writeFullReport', () => {
     expect(written).toBe(body);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Checklist state persistence (Issue #311)
+// ---------------------------------------------------------------------------
+
+describe('formatCommentBody — checklist persistence (Issue #311)', () => {
+  const failingResult: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: '0',
+    xlmReserveMet: false,
+    assetBalance: '0',
+    assetBalanceMet: false,
+    checks: [
+      { passed: false, label: 'Account funded', detail: 'Account not found.' },
+      { passed: false, label: 'USDC trustline', detail: 'Cannot check without funded account.' },
+      { passed: false, label: 'XLM reserve', detail: 'Cannot check without funded account.' },
+    ],
+  };
+
+  it('renders unchecked boxes when no existingCommentBody is provided (no regression)', () => {
+    const body = formatCommentBody(failingResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body).toContain('- [ ] **Fund account**');
+    expect(body).toContain('- [ ] **Add USDC trustline**');
+    expect(body).toContain('- [ ] **Verify XLM balance**');
+  });
+
+  it('preserves a manually-checked Fund account box from the existing comment', () => {
+    // Simulate a previous comment body where the user manually checked Fund account
+    const prevBody = [
+      '<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->',
+      '## TrustBridge — Stellar Account Check',
+      '',
+      '### Onboarding checklist',
+      '',
+      '- [x] **Fund account** — Activate the account with XLM.',
+      '- [ ] **Add USDC trustline** — Configure the asset trustline.',
+      '- [ ] **Verify XLM balance** — Meet the reserve.',
+    ].join('\n');
+
+    const body = formatCommentBody(failingResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      existingCommentBody: prevBody,
+    });
+
+    // Fund account was manually checked — should survive even though Horizon says 404
+    expect(body).toContain('- [x] **Fund account**');
+    // Other items follow live state (still unchecked)
+    expect(body).toContain('- [ ] **Add USDC trustline**');
+    expect(body).toContain('- [ ] **Verify XLM balance**');
+  });
+
+  it('preserves all three manually-checked boxes from the existing comment', () => {
+    const prevBody = [
+      '### Onboarding checklist',
+      '',
+      '- [x] **Fund account** — Activate.',
+      '- [x] **Add USDC trustline** — Trustline.',
+      '- [x] **Verify XLM balance** — Reserve.',
+    ].join('\n');
+
+    const body = formatCommentBody(failingResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      existingCommentBody: prevBody,
+    });
+
+    expect(body).toContain('- [x] **Fund account**');
+    expect(body).toContain('- [x] **Add USDC trustline**');
+    expect(body).toContain('- [x] **Verify XLM balance**');
+  });
+
+  it('live Horizon pass always wins over previous unchecked state', () => {
+    // Previous comment had Fund account unchecked, but Horizon now returns funded
+    const prevBody = [
+      '### Onboarding checklist',
+      '',
+      '- [ ] **Fund account** — Activate.',
+      '- [ ] **Add USDC trustline** — Trustline.',
+      '- [ ] **Verify XLM balance** — Reserve.',
+    ].join('\n');
+
+    const fundedResult: ValidationResult = {
+      ...failingResult,
+      accountFunded: true,
+    };
+
+    const body = formatCommentBody(fundedResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      existingCommentBody: prevBody,
+    });
+
+    // Horizon says funded → must be checked regardless of previous state
+    expect(body).toContain('- [x] **Fund account**');
+  });
+
+  it('does not persist checklist state when onboardingChecklist is disabled', () => {
+    const prevBody = [
+      '### Onboarding checklist',
+      '',
+      '- [x] **Fund account** — Activate.',
+      '- [x] **Add USDC trustline** — Trustline.',
+      '- [x] **Verify XLM balance** — Reserve.',
+    ].join('\n');
+
+    const body = formatCommentBody(failingResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      existingCommentBody: prevBody,
+      onboardingChecklist: false,
+    });
+
+    // Checklist entirely omitted when disabled
+    expect(body).not.toContain('### Onboarding checklist');
+  });
+});
+
+describe('postIssueComment — bodyFactory (Issue #311)', () => {
+  const mockedGithub = github as unknown as {
+    context: {
+      payload: { issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
+    getOctokit: jest.Mock;
+  };
+
+  const PREV_COMMENT_BODY = [
+    '<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->',
+    '### Onboarding checklist',
+    '',
+    '- [x] **Fund account** — Activate.',
+    '- [ ] **Add USDC trustline** — Trustline.',
+    '- [ ] **Verify XLM balance** — Reserve.',
+  ].join('\n');
+
+  beforeEach(() => {
+    mockedGithub.context.payload = { issue: { number: 7 } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
+  });
+
+  it('calls bodyFactory with the existing comment body when a sticky comment is found', async () => {
+    const octokit = makeOctokit();
+    // findStickyComment (via REST fallback) returns comment id 99
+    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: PREV_COMMENT_BODY },
+    ]);
+    // getComment returns the body so bodyFactory can use it
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: PREV_COMMENT_BODY },
+    });
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const factorySpy = jest.fn((existingBody: string | undefined) =>
+      `rebuilt-body: ${existingBody?.slice(0, 20) ?? 'none'}`,
+    );
+
+    await postIssueComment('token', 'fallback-body', {
+      sticky: true,
+      bodyFactory: factorySpy,
+    });
+
+    // Factory should have been called with the fetched existing comment body
+    expect(factorySpy).toHaveBeenCalledWith(PREV_COMMENT_BODY);
+    // The body posted should be what the factory returned
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('rebuilt-body:'),
+      }),
+    );
+  });
+
+  it('calls bodyFactory with undefined when no existing comment is found', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const factorySpy = jest.fn((_existingBody: string | undefined) => 'brand-new-body');
+
+    await postIssueComment('token', 'fallback-body', {
+      sticky: true,
+      bodyFactory: factorySpy,
+    });
+
+    // No existing comment → factory called with undefined
+    expect(factorySpy).toHaveBeenCalledWith(undefined);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'brand-new-body' }),
+    );
+  });
+
+  it('uses the plain body argument (not bodyFactory) when bodyFactory is not provided', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postIssueComment('token', 'plain-body', { sticky: true });
+
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'plain-body' }),
+    );
+  });
+});

@@ -18,9 +18,9 @@ import {
   buildSep0010ChallengeSnippet,
   inferStellarNetwork,
   buildFaqLinkForCheck,
-} from "./links";
-import { buildOnboardingChecklist, inlineCode } from "./markdown";
-import { MetricsCollector } from "./metrics";
+} from './links';
+import { buildOnboardingChecklist, extractChecklistState, inlineCode } from './markdown';
+import { MetricsCollector } from './metrics';
 import {
   formatSnoozeMarker,
   parseSnoozeMarker,
@@ -105,6 +105,14 @@ export interface CommentConfig extends CheckConfig {
    */
   sep0010ChallengeXdr?: string;
   sep0010DashboardUrl?: string;
+  /**
+   * Raw body of the existing TrustBridge sticky comment, if one was found
+   * (Issue #311).  When provided, `formatCommentBody` extracts the prior
+   * checklist state via `extractChecklistState` and preserves any boxes that
+   * were manually checked by a contributor — even if the live Horizon result
+   * has not yet caught up.  Ignored when `onboardingChecklist` is `false`.
+   */
+  existingCommentBody?: string;
 }
 
 export const TRUSTBRIDGE_FOOTER =
@@ -216,51 +224,23 @@ export function formatCommentBody(
       lines.push("", deltaSection);
     }
 
+  // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
+  if (config.onboardingChecklist !== false) {
+    // Preserve any manually-checked boxes from the previous sticky comment
+    // (Issue #311).  extractChecklistState parses only the known allowlisted
+    // label keys so a crafted comment body cannot inject arbitrary state.
+    const previousChecks =
+      config.existingCommentBody
+        ? extractChecklistState(config.existingCommentBody)
+        : undefined;
+
     lines.push(
-      "",
-      `### ${strings.validationGateHeading}`,
-      "",
-      gate.ready
-        ? `- ${strings.readyToProceed}`
-        : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`,
-      `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`,
-      `- ${strings.failedChecks} ${gate.failedChecks}`,
-      "",
-      `### ${strings.balancesHeading}`,
-      "",
-      `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`,
-      result.reserveRequirement
-        ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-        : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``,
-      // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
-      (() => {
-        const asset = config.assetCode;
-        const bal = result.assetBalance ?? "0";
-        const trustline = result.trustlineExists;
-        if (bal === "unknown") {
-          return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? "exists" : "missing"})`;
-        }
-        if (!trustline) {
-          return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
-        }
-        // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
-        const limitNote = result.trustlineLimit
-          ? ` (limit \`${result.trustlineLimit} ${asset}\`)`
-          : "";
-        return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
-      })(),
-      "",
-      `### ${strings.setupCostHeading}`,
-      "",
-      `- ${strings.minimumAccountBalance} **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`,
-      `- ${strings.baseReservePerTrustline} **${STELLAR_BASE_RESERVE_XLM} XLM**`,
-      `- ${strings.typicalMinimumToFund} **~${estimateTrustlineSetupCost()} XLM**`,
-      "",
-      `### ${strings.addTrustlineHeading}`,
-      "",
-      `- [${strings.viewAccountOnLab}](${buildAccountViewerLink(config.stellarAddress, stellarLabNetwork)})`,
-      `- [${strings.openTransactionBuilder}](${buildChangeTrustLink(stellarLabNetwork)})`,
-      `- [${strings.lobstrWallet}](${buildLobstrLink()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
+      '',
+      buildOnboardingChecklist(result, {
+        assetCode: config.assetCode,
+        minXlmReserve: config.minXlmReserve,
+        previousChecks,
+      }),
     );
 
     // SEP-0007 wallet deep links (Issue #44)
@@ -672,6 +652,24 @@ export interface UpsertCommentOptions {
    * When omitted, falls back to `resolveIssueOrPullRequestNumber(github.context.payload)`.
    */
   issueNumber?: number;
+  /**
+   * Optional body factory called with the existing comment body (Issue #311).
+   *
+   * When provided alongside `sticky: true`, `postIssueComment` fetches the
+   * existing comment body (if a sticky comment is found) and passes it to
+   * this factory *before* building the final comment body.  The returned
+   * string is posted as the new comment body.
+   *
+   * Use this instead of the top-level `body` argument when the comment
+   * content depends on the previous comment body — for example, to preserve
+   * manually-checked onboarding checklist boxes (Issue #311) without making
+   * two separate round-trips to locate the comment.
+   *
+   * When the factory is provided, the `body` argument to `postIssueComment`
+   * is used only as a fallback (when there is no existing comment, or when
+   * the factory is not called due to `sticky: false`).
+   */
+  bodyFactory?: (existingBody: string | undefined) => string;
 }
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -951,15 +949,19 @@ export async function postIssueComment(
 
   if (sticky) {
     try {
-      existingCommentId = await findStickyComment(
-        octokit,
-        owner,
-        repo,
-        issueNumber,
-      );
-
-      // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
-      if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+      existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+      
+      // Fetch the existing comment body whenever a sticky comment is found.
+      //
+      // We always need the body because:
+      //   1. `bodyFactory` uses it to preserve checklist state (Issue #311).
+      //   2. Snooze evaluation reads the prior snooze marker (Issue #155 / #227).
+      //
+      // Skipping this fetch would force two separate API round-trips (one in
+      // the caller to fetch the body, one here to update the comment), so we
+      // centralise it here.  A fetch failure is non-fatal — we fall back to
+      // the supplied `body` / factory-with-undefined.
+      if (existingCommentId) {
         try {
           const commentResponse = await octokit.rest.issues.getComment({
             owner,
@@ -968,29 +970,26 @@ export async function postIssueComment(
           });
           existingCommentBody = commentResponse.data.body;
         } catch (error) {
-          core.debug(
-            `Could not fetch existing comment body for snooze check: ${error}`,
-          );
+          core.debug(`Could not fetch existing comment body: ${error}`);
         }
 
-        try {
-          if (octokit.rest?.reactions?.listForIssueComment) {
-            const reactionsResponse =
-              await octokit.rest.reactions.listForIssueComment({
+        // Reactions are only needed for snooze evaluation.
+        if (snoozeWindowMs > 0 && !forceComment) {
+          try {
+            if (octokit.rest?.reactions?.listForIssueComment) {
+              const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
                 owner,
                 repo,
                 comment_id: existingCommentId,
                 per_page: 100,
               });
-            if (Array.isArray(reactionsResponse?.data)) {
-              existingCommentReactions =
-                reactionsResponse.data as unknown as CommentReaction[];
+              if (Array.isArray(reactionsResponse?.data)) {
+                existingCommentReactions = reactionsResponse.data as unknown as CommentReaction[];
+              }
             }
+          } catch (error) {
+            core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
           }
-        } catch (error) {
-          core.debug(
-            `Could not fetch comment reactions for snooze check: ${error}`,
-          );
         }
       }
     } catch (error) {
@@ -1001,16 +1000,21 @@ export async function postIssueComment(
     }
   }
 
+  // When a bodyFactory is provided, use it to build the final body now that
+  // we have the existing comment body (Issue #311).  This lets callers
+  // incorporate the previous comment content (e.g. preserved checklist state)
+  // without a second findStickyComment round-trip.
+  const effectiveBody =
+    options.bodyFactory ? options.bodyFactory(existingCommentBody) : body;
+
   // Check snooze state (Issue #155, Issue #227)
   if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
     const lastMarker = parseSnoozeMarker(existingCommentBody);
-
-    // Determine if current check is passing by looking at body content
-    // The snooze marker we just added to body indicates 'pass' or 'fail'
-    const currentPassed = body.includes(
-      "<!-- trustbridge-action:snooze:status=pass",
-    );
-
+    
+    // Determine if current check is passing by looking at the effective body
+    // content. The snooze marker added to the body indicates 'pass' or 'fail'.
+    const currentPassed = effectiveBody.includes('<!-- trustbridge-action:snooze:status=pass');
+    
     const snoozeState = evaluateCombinedSnoozeState(
       currentPassed,
       lastMarker,
@@ -1034,7 +1038,7 @@ export async function postIssueComment(
         owner,
         repo,
         comment_id: existingCommentId,
-        body,
+        body: effectiveBody,
       });
       core.info(
         `Updated existing TrustBridge comment on issue #${issueNumber}.`,
@@ -1081,7 +1085,7 @@ export async function postIssueComment(
     owner,
     repo,
     issue_number: issueNumber,
-    body,
+    body: effectiveBody,
   });
 
   core.info(`Posted TrustBridge comment on issue #${issueNumber}`);

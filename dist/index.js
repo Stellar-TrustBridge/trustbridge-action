@@ -36315,9 +36315,16 @@ function formatCommentBody(result, config) {
         }
         // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
         if (config.onboardingChecklist !== false) {
+            // Preserve any manually-checked boxes from the previous sticky comment
+            // (Issue #311).  extractChecklistState parses only the known allowlisted
+            // label keys so a crafted comment body cannot inject arbitrary state.
+            const previousChecks = config.existingCommentBody
+                ? (0, markdown_1.extractChecklistState)(config.existingCommentBody)
+                : undefined;
             lines.push('', (0, markdown_1.buildOnboardingChecklist)(result, {
                 assetCode: config.assetCode,
                 minXlmReserve: config.minXlmReserve,
+                previousChecks,
             }));
         }
         // Ledger freshness / lag alert (Issue #107) — surfaced as a distinct banner
@@ -36763,8 +36770,17 @@ async function postIssueComment(token, body, options = {}) {
     if (sticky) {
         try {
             existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-            // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
-            if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+            // Fetch the existing comment body whenever a sticky comment is found.
+            //
+            // We always need the body because:
+            //   1. `bodyFactory` uses it to preserve checklist state (Issue #311).
+            //   2. Snooze evaluation reads the prior snooze marker (Issue #155 / #227).
+            //
+            // Skipping this fetch would force two separate API round-trips (one in
+            // the caller to fetch the body, one here to update the comment), so we
+            // centralise it here.  A fetch failure is non-fatal — we fall back to
+            // the supplied `body` / factory-with-undefined.
+            if (existingCommentId) {
                 try {
                     const commentResponse = await octokit.rest.issues.getComment({
                         owner,
@@ -36774,23 +36790,26 @@ async function postIssueComment(token, body, options = {}) {
                     existingCommentBody = commentResponse.data.body;
                 }
                 catch (error) {
-                    core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
+                    core.debug(`Could not fetch existing comment body: ${error}`);
                 }
-                try {
-                    if (octokit.rest?.reactions?.listForIssueComment) {
-                        const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
-                            owner,
-                            repo,
-                            comment_id: existingCommentId,
-                            per_page: 100,
-                        });
-                        if (Array.isArray(reactionsResponse?.data)) {
-                            existingCommentReactions = reactionsResponse.data;
+                // Reactions are only needed for snooze evaluation.
+                if (snoozeWindowMs > 0 && !forceComment) {
+                    try {
+                        if (octokit.rest?.reactions?.listForIssueComment) {
+                            const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+                                owner,
+                                repo,
+                                comment_id: existingCommentId,
+                                per_page: 100,
+                            });
+                            if (Array.isArray(reactionsResponse?.data)) {
+                                existingCommentReactions = reactionsResponse.data;
+                            }
                         }
                     }
-                }
-                catch (error) {
-                    core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+                    catch (error) {
+                        core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+                    }
                 }
             }
         }
@@ -36799,12 +36818,17 @@ async function postIssueComment(token, body, options = {}) {
             core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
         }
     }
+    // When a bodyFactory is provided, use it to build the final body now that
+    // we have the existing comment body (Issue #311).  This lets callers
+    // incorporate the previous comment content (e.g. preserved checklist state)
+    // without a second findStickyComment round-trip.
+    const effectiveBody = options.bodyFactory ? options.bodyFactory(existingCommentBody) : body;
     // Check snooze state (Issue #155, Issue #227)
     if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
         const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
-        // Determine if current check is passing by looking at body content
-        // The snooze marker we just added to body indicates 'pass' or 'fail'
-        const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
+        // Determine if current check is passing by looking at the effective body
+        // content. The snooze marker added to the body indicates 'pass' or 'fail'.
+        const currentPassed = effectiveBody.includes('<!-- trustbridge-action:snooze:status=pass');
         const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
             core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
@@ -36817,7 +36841,7 @@ async function postIssueComment(token, body, options = {}) {
                 owner,
                 repo,
                 comment_id: existingCommentId,
-                body,
+                body: effectiveBody,
             });
             core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
             return response.data.html_url;
@@ -36857,7 +36881,7 @@ async function postIssueComment(token, body, options = {}) {
         owner,
         repo,
         issue_number: issueNumber,
-        body,
+        body: effectiveBody,
     });
     core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
     return response.data.html_url;
@@ -41305,38 +41329,53 @@ async function run() {
             },
         };
     }
-    const commentBody = (0, comment_1.formatCommentBody)(result, {
-        ...checkConfig,
-        stellarAddress: effectiveResolvedAddress,
-        horizonUrl,
-        failOnMissing,
-        stickyComment,
-        waitUntilFunded,
-        waitUntilFundedTimeoutMs,
-        waitUntilFundedIntervalMs,
-        onboardingChecklist,
-        sep0007DeepLinks,
-        sep0007OriginDomain,
-        sep0010ChallengeXdr,
-        sep0010DashboardUrl,
-        locale,
-        debugMode,
-        docsBaseUrl: core.getInput('docs_base_url') || undefined,
-        delta,
-        diagnosticsConfig,
-    });
-    // Detect oversize and write the full report to a workspace file when needed.
-    const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
+    // Build the comment body.  When onboarding_checklist is enabled and
+    // sticky_comment is on, we need to incorporate the previous comment body so
+    // that manually-checked boxes survive the update (Issue #311).
+    //
+    // We use `bodyFactory` to defer body construction until `postIssueComment`
+    // has fetched the existing sticky comment body — this avoids a second
+    // findStickyComment round-trip.
+    //
+    // For the discussion path (GraphQL), the existing body is not fetched
+    // before postDiscussionComment, so we pass existingCommentBody=undefined
+    // (the initial body without persistence).
+    const buildCommentBody = (existingCommentBody) => {
+        const rawBody = (0, comment_1.formatCommentBody)(result, {
+            ...checkConfig,
+            stellarAddress: effectiveResolvedAddress,
+            horizonUrl,
+            failOnMissing,
+            stickyComment,
+            waitUntilFunded,
+            waitUntilFundedTimeoutMs,
+            waitUntilFundedIntervalMs,
+            onboardingChecklist,
+            sep0007DeepLinks,
+            sep0007OriginDomain,
+            sep0010ChallengeXdr,
+            sep0010DashboardUrl,
+            locale,
+            debugMode,
+            docsBaseUrl: core.getInput('docs_base_url') || undefined,
+            delta,
+            diagnosticsConfig,
+            existingCommentBody,
+        });
+        const bodyBytes = Buffer.byteLength(rawBody, 'utf8');
+        if (bodyBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
+            return (0, comment_1.buildTruncatedCommentBody)(rawBody, reportOutputPath);
+        }
+        return rawBody;
+    };
+    // Build a baseline body (no existing comment) for size-check and full-report write.
+    const baselineBody = buildCommentBody(undefined);
+    const baselineBytes = Buffer.byteLength(baselineBody, 'utf8');
     let fullReportPath;
-    let effectiveCommentBody;
-    if (commentBodyBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
-        core.warning(`Comment body is ${commentBodyBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
+    if (baselineBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
+        core.warning(`Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
             `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`);
-        fullReportPath = (0, comment_1.writeFullReport)(commentBody, reportOutputPath);
-        effectiveCommentBody = (0, comment_1.buildTruncatedCommentBody)(commentBody, reportOutputPath);
-    }
-    else {
-        effectiveCommentBody = commentBody;
+        fullReportPath = (0, comment_1.writeFullReport)(buildCommentBody(undefined), reportOutputPath);
     }
     let commentUrl;
     if (!shouldPostComment) {
@@ -41345,8 +41384,11 @@ async function run() {
     else if (discussionNodeId) {
         // Discussion events carry a GraphQL node id, not an issue number —
         // comment via GraphQL, never the REST issues API (Issue #221).
+        // Checklist persistence for discussions passes undefined for the existing
+        // body; the factory still runs through the full format path.
+        const discussionBody = buildCommentBody(undefined);
         try {
-            commentUrl = await (0, comment_1.postDiscussionComment)(githubToken, effectiveCommentBody, {
+            commentUrl = await (0, comment_1.postDiscussionComment)(githubToken, discussionBody, {
                 sticky: stickyComment,
                 forceComment,
                 snoozeWindowMs,
@@ -41368,11 +41410,14 @@ async function run() {
     else {
         metrics_1.globalMetrics.startTimer('comment_post');
         try {
-            commentUrl = await (0, comment_1.postIssueComment)(githubToken, effectiveCommentBody, {
+            // Use bodyFactory so postIssueComment passes the fetched existing
+            // comment body to buildCommentBody — preserving checklist state (Issue #311)
+            // without a second findStickyComment round-trip.
+            commentUrl = await (0, comment_1.postIssueComment)(githubToken, baselineBody, {
                 sticky: stickyComment,
                 forceComment,
                 snoozeWindowMs,
-                issueNumber: issueNumberInput,
+                bodyFactory: buildCommentBody,
             });
             metrics_1.globalMetrics.stopTimer('comment_post');
             if (commentUrl) {
@@ -42514,9 +42559,10 @@ function emitInputsLogRecord(inputs) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TROUBLESHOOTING_FAQ_BASE = void 0;
+exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.TROUBLESHOOTING_FAQ_BASE = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
+exports.extractChecklistState = extractChecklistState;
 exports.buildOnboardingChecklist = buildOnboardingChecklist;
 const links_1 = __nccwpck_require__(3346);
 function escapeMarkdownInline(value) {
@@ -42535,24 +42581,136 @@ function inlineCode(value) {
  */
 exports.TROUBLESHOOTING_FAQ_BASE = links_1.DEFAULT_FAQ_BASE_URL;
 /**
+ * The fixed set of checklist label keys used in the onboarding checklist.
+ * These are the only labels that extractChecklistState will recognise so that
+ * a malicious comment body can never inject unexpected checked state. The
+ * values are exact substrings of the bold label text rendered by
+ * buildOnboardingChecklist (e.g. `**Fund account**`).
+ *
+ * @internal Exported for testing.
+ */
+exports.CHECKLIST_LABEL_KEYS = [
+    'Fund account',
+    // trustline label is dynamic (includes asset code), handled separately
+    'Verify XLM balance',
+];
+/**
+ * Sentinel prefix used to match the trustline checklist label regardless of
+ * the asset code.  The parser matches any line whose bold label *starts with*
+ * this prefix (up to the next ` trustline` suffix pattern) so asset codes
+ * containing markdown-safe characters are matched correctly.
+ */
+exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = 'Add ';
+exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = ' trustline';
+/**
+ * Key used to store the trustline checked state inside the Map returned by
+ * extractChecklistState, regardless of the actual asset code.
+ */
+exports.CHECKLIST_TRUSTLINE_KEY = 'trustline';
+/**
+ * Parse an existing TrustBridge comment body and extract the checked/unchecked
+ * state of each onboarding checklist item (Issue #311).
+ *
+ * Only lines that match one of the known checklist label patterns are
+ * recognised — no user-controlled text is used as a map key, so a maliciously
+ * crafted comment body cannot inject unexpected state.
+ *
+ * The function is intentionally permissive about whitespace and case so that
+ * minor formatting differences between action versions do not break persistence.
+ *
+ * @param body   Raw markdown body of an existing TrustBridge comment.
+ * @returns      A Map from canonical label key to checked boolean.
+ *               Keys: `"Fund account"`, `"trustline"`, `"Verify XLM balance"`.
+ *               Only items found in the body are included — callers should
+ *               treat a missing key as "no previous state".
+ */
+function extractChecklistState(body) {
+    const state = new Map();
+    if (!body || typeof body !== 'string') {
+        return state;
+    }
+    // Locate the onboarding checklist section so we only parse lines inside it.
+    // This prevents false positives from other task-list items in the comment.
+    const checklistHeaderPattern = /^###\s+Onboarding checklist\s*$/im;
+    const headerMatch = checklistHeaderPattern.exec(body);
+    if (!headerMatch) {
+        return state;
+    }
+    // Take only the text after the header.  Stop at the next `###` heading so we
+    // never read checklist state from an unrelated section.
+    const afterHeader = body.slice(headerMatch.index + headerMatch[0].length);
+    const nextHeaderMatch = /^###\s+/m.exec(afterHeader);
+    const checklistSection = nextHeaderMatch
+        ? afterHeader.slice(0, nextHeaderMatch.index)
+        : afterHeader;
+    // Parse task-list lines: `- [x]` or `- [ ]` followed by `**<label>**`.
+    // The label text after `**` is matched against the known allowlist.
+    //
+    // Pattern breakdown:
+    //   ^                 — start of line
+    //   [ \t]*-[ \t]+     — list marker with optional indent
+    //   \[(x| )\]         — checkbox: `[x]` = checked, `[ ]` = unchecked
+    //   [ \t]+            — space after checkbox
+    //   \*\*([^*]+)\*\*   — bold label text (no asterisks inside)
+    const linePattern = /^[ \t]*-[ \t]+\[(x| )\][ \t]+\*\*([^*]+)\*\*/gim;
+    let match;
+    while ((match = linePattern.exec(checklistSection)) !== null) {
+        const checked = match[1] === 'x';
+        const rawLabel = match[2].trim();
+        // Fund account — exact match (allowlisted)
+        if (rawLabel === 'Fund account') {
+            state.set('Fund account', checked);
+            continue;
+        }
+        // Verify XLM balance — exact match (allowlisted)
+        if (rawLabel === 'Verify XLM balance') {
+            state.set('Verify XLM balance', checked);
+            continue;
+        }
+        // Trustline — dynamic label "Add <ASSET_CODE> trustline"; match by prefix+suffix
+        // Only ASCII printable characters are allowed in the asset code portion to
+        // prevent injection via embedded newlines or control characters.
+        if (rawLabel.startsWith(exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX) &&
+            rawLabel.endsWith(exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX) &&
+            // The asset code portion between prefix and suffix must be pure ASCII
+            // printable (no control chars, no Unicode shenanigans).
+            /^[\x20-\x7E]+$/.test(rawLabel)) {
+            state.set(exports.CHECKLIST_TRUSTLINE_KEY, checked);
+        }
+        // Any other bold label text is silently ignored.
+    }
+    return state;
+}
+/**
  * Render a GitHub Markdown task-list checklist whose boxes reflect live
  * `ValidationResult` state (fund → trustline → verify balance).
+ *
+ * When `options.previousChecks` is supplied (extracted from a prior sticky
+ * comment via `extractChecklistState`), a box is checked if EITHER the live
+ * result says it passed OR the previous comment had the box checked.  This
+ * preserves contributor-manually-checked boxes across sticky comment updates
+ * (Issue #311).
  *
  * Checkboxes are comment-only (no GitHub Projects task-list API sync).
  */
 function buildOnboardingChecklist(result, options) {
     const safeAsset = escapeMarkdownInline(options.assetCode);
-    const fundFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`;
-    const trustFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.TRUSTLINE_MISSING}`;
-    const reserveFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`;
+    const fundFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#account-is-reported-unfunded`;
+    const trustFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#trustline-is-missing`;
+    const reserveFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#xlm-reserve-too-low`;
+    const prev = options.previousChecks;
+    // Resolve each checkbox state: live result OR previously-checked.
+    const fundChecked = result.accountFunded || (prev?.get('Fund account') === true);
+    const trustChecked = result.trustlineExists || (prev?.get(exports.CHECKLIST_TRUSTLINE_KEY) === true);
+    const reserveChecked = result.xlmReserveMet || (prev?.get('Verify XLM balance') === true);
     const lines = [
         '### Onboarding checklist',
         '',
         '_Complete these steps in order. Boxes update automatically from live Horizon checks._',
         '',
-        `- [${result.accountFunded ? 'x' : ' '}] **Fund account** — Activate the account with XLM. ([FAQ](${fundFaq}))`,
-        `- [${result.trustlineExists ? 'x' : ' '}] **Add ${safeAsset} trustline** — Configure the asset trustline. ([FAQ](${trustFaq}))`,
-        `- [${result.xlmReserveMet ? 'x' : ' '}] **Verify XLM balance** — Meet the **${options.minXlmReserve} XLM** reserve. ([FAQ](${reserveFaq}))`,
+        `- [${fundChecked ? 'x' : ' '}] **Fund account** — Activate the account with XLM. ([FAQ](${fundFaq}))`,
+        `- [${trustChecked ? 'x' : ' '}] **Add ${safeAsset} trustline** — Configure the asset trustline. ([FAQ](${trustFaq}))`,
+        `- [${reserveChecked ? 'x' : ' '}] **Verify XLM balance** — Meet the **${options.minXlmReserve} XLM** reserve. ([FAQ](${reserveFaq}))`,
     ];
     return lines.join('\n');
 }
@@ -46046,6 +46204,245 @@ async function fetchSSRFSafe(urlStr, options = {}) {
 
 /***/ }),
 
+/***/ 9681:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @file ssrf.ts
+ * SSRF-safe HTTP fetch utilities for TrustBridge.
+ *
+ * This module provides helpers for making HTTP requests with built-in
+ * protections against Server-Side Request Forgery (SSRF) attacks:
+ * - HTTPS-only (no HTTP, file://, ftp://, etc.)
+ * - No private/internal IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+ * - Request size and timeout limits
+ * - No redirect chains to different origins
+ *
+ * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
+ * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SSRF_BLOCKED_RANGES = void 0;
+exports.isSSRFBlocked = isSSRFBlocked;
+exports.validateSSRFSafeUrl = validateSSRFSafeUrl;
+exports.fetchSSRFSafe = fetchSSRFSafe;
+/**
+ * SSRF blocklist: IP ranges that should never be fetched from inside a
+ * GitHub Actions workflow.
+ *
+ * Covers:
+ * - Loopback: 127.0.0.0/8
+ * - Private RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ * - Link-local: 169.254.0.0/16
+ * - Multicast: 224.0.0.0/4
+ * - Reserved: 240.0.0.0/4
+ * - Localhost IPv6: ::1
+ * - Link-local IPv6: fe80::/10
+ */
+exports.SSRF_BLOCKED_RANGES = [
+    { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
+    { name: 'private_10', pattern: /^10\./ },
+    { name: 'private_172', pattern: /^172\.(1[6-9]|2[0-9]|3[01])\./ },
+    { name: 'private_192', pattern: /^192\.168\./ },
+    { name: 'link_local_169', pattern: /^169\.254\./ },
+    { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
+    { name: 'reserved_240', pattern: /^240\./ },
+    { name: 'ipv6_link_local', pattern: /^fe80:/i },
+];
+/**
+ * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * Returns `{ blocked: true, reason }` if the host should be rejected,
+ * or `{ blocked: false }` if it's safe to fetch from.
+ */
+function isSSRFBlocked(host) {
+    const normalized = host.toLowerCase();
+    for (const range of exports.SSRF_BLOCKED_RANGES) {
+        if (range.pattern.test(normalized)) {
+            return { blocked: true, reason: `Host matches SSRF blocklist: ${range.name}` };
+        }
+    }
+    return { blocked: false };
+}
+/**
+ * Validate that a URL is safe for SSRF-protected HTTP fetch.
+ *
+ * Checks:
+ * - Scheme is HTTPS (no HTTP, file://, ftp://, etc.)
+ * - Hostname is not in the SSRF blocklist
+ * - URL has a valid hostname (not relative, not localhost, etc.)
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }`.
+ */
+function validateSSRFSafeUrl(urlStr) {
+    const errors = [];
+    let parsed;
+    try {
+        parsed = new URL(urlStr);
+    }
+    catch {
+        errors.push('Invalid URL format');
+        return { valid: false, errors };
+    }
+    // Only HTTPS allowed
+    if (parsed.protocol !== 'https:') {
+        errors.push(`Scheme must be HTTPS, got: ${parsed.protocol}`);
+    }
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+        errors.push('URL must not contain credentials (username/password)');
+    }
+    // Hostname must be present and not empty
+    if (!parsed.hostname) {
+        errors.push('URL must have a non-empty hostname');
+    }
+    // Check SSRF blocklist
+    if (parsed.hostname) {
+        const blocked = isSSRFBlocked(parsed.hostname);
+        if (blocked.blocked) {
+            errors.push(`Hostname blocked by SSRF policy: ${blocked.reason}`);
+        }
+    }
+    if (errors.length > 0) {
+        return { valid: false, errors };
+    }
+    return { valid: true };
+}
+/**
+ * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ *
+ * NOT currently called by TrustBridge, but available for future enhancements
+ * that need to safely fetch HTTP resources from URLs in Horizon data.
+ *
+ * Usage:
+ * ```ts
+ * const result = await fetchSSRFSafe(homeDomainUrl, { maxBodyBytes: 256 * 1024 });
+ * if (!result.ok) {
+ *   logger.warn(`Fetch failed: ${result.error}`);
+ *   return;
+ * }
+ * const text = await result.text();
+ * ```
+ */
+async function fetchSSRFSafe(urlStr, options = {}) {
+    const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const maxRedirects = options.maxRedirects ?? 5;
+    let currentUrl = urlStr;
+    const seenRedirects = new Set();
+    let redirectCount = 0;
+    while (true) {
+        const validation = validateSSRFSafeUrl(currentUrl);
+        if (!validation.valid) {
+            return { ok: false, error: validation.errors.join('; ') };
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            const response = await fetch(currentUrl, {
+                signal: controller.signal,
+                redirect: 'manual',
+                headers: {
+                    'User-Agent': 'TrustBridge/1.0',
+                    Accept: 'application/toml, text/plain, */*',
+                },
+            });
+            clearTimeout(timeout);
+            if (response.status >= 300 && response.status < 400) {
+                if (!options.followRedirects) {
+                    return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+                }
+                const locationHeader = response.headers.get('location');
+                if (!locationHeader) {
+                    return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+                }
+                if (redirectCount >= maxRedirects) {
+                    return {
+                        ok: false,
+                        error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+                        status: response.status,
+                    };
+                }
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                const nextTarget = new URL(nextUrl);
+                const hopValidation = validateSSRFSafeUrl(nextUrl);
+                if (!hopValidation.valid) {
+                    return {
+                        ok: false,
+                        error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+                        status: response.status,
+                    };
+                }
+                const currentOrigin = new URL(currentUrl).origin;
+                const nextOrigin = nextTarget.origin;
+                if (nextTarget.protocol !== 'https:') {
+                    return {
+                        ok: false,
+                        error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (currentOrigin !== nextOrigin) {
+                    return {
+                        ok: false,
+                        error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (seenRedirects.has(nextUrl)) {
+                    return {
+                        ok: false,
+                        error: `Redirect loop detected: ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                seenRedirects.add(nextUrl);
+                redirectCount += 1;
+                currentUrl = nextUrl;
+                continue;
+            }
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) {
+                const bytes = parseInt(contentLength, 10);
+                if (bytes > maxBodyBytes) {
+                    return {
+                        ok: false,
+                        error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+                        status: response.status,
+                    };
+                }
+            }
+            if (!response.ok) {
+                return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+            }
+            const textData = await response.text();
+            if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
+                return {
+                    ok: false,
+                    error: `Response body exceeds limit after decompression`,
+                    status: response.status,
+                };
+            }
+            return {
+                ok: true,
+                status: response.status,
+                text: async () => textData,
+                headers: response.headers,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isTimeout = message.includes('signal') || message.includes('timeout');
+            return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+        }
+    }
+}
+
+
+/***/ }),
+
 /***/ 8855:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -46417,6 +46814,300 @@ function formatDigestComment(report) {
     }
     lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
     return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
 }
 
 

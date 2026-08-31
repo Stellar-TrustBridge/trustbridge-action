@@ -30,16 +30,73 @@ The onboarding checklist items (Fund account / Add trustline / Verify XLM balanc
 
 All FAQ anchor names are declared in `src/links.ts` in the `FAQ_ANCHORS` constant:
 
-```typescript
-export const FAQ_ANCHORS = {
-  ACCOUNT_NOT_FUNDED:   'account-not-funded',
-  TRUSTLINE_MISSING:    'trustline-missing',
-  XLM_RESERVE_TOO_LOW:  'xlm-reserve-too-low',
-  TESTING_ON_TESTNET:   'testing-on-testnet',
-  HORIZON_ERROR:        'horizon-error',
-  DEBUG_MODE:           'debug-mode',
-  WEBHOOK_NOT_RECEIVED: 'webhook-not-received',
-} as const;
+- The checked Stellar account.
+- The Horizon endpoint used for verification.
+- The target asset code and issuer.
+- Per-check status for funding, trustline readiness, and XLM reserve.
+- An optional **Onboarding checklist** (default on via `onboarding_checklist: true`) with Markdown task-list checkboxes that auto-check from live `ValidationResult` state, plus FAQ links for each step.
+- A machine-readable validation-gate summary that callers can use to tell whether the run is release-ready or blocked.
+- Links to Stellar Laboratory and LOBSTR for remediation.
+
+## Onboarding checklist
+
+When `onboarding_checklist` is enabled (the default), the comment includes a concise guided path:
+
+1. Fund account
+2. Add trustline
+3. Verify XLM balance
+
+Each item is a GitHub Markdown task-list checkbox (`- [x]` / `- [ ]`) driven by `accountFunded`, `trustlineExists`, and `xlmReserveMet`. Boxes are comment-only — they are not synced via the GitHub Projects task-list API. FAQ links point at [TROUBLESHOOTING.md](TROUBLESHOOTING.md) anchors.
+
+Set `onboarding_checklist: false` to omit the section entirely (e.g. for expert-only workflows).
+
+### Checklist state persistence across sticky updates (Issue #311)
+
+By default, every sticky update rebuilds the checklist from live Horizon data. This means that if a contributor manually checks a box in GitHub (e.g. they have funded their account but Horizon hasn't indexed the transaction yet), the next run could overwrite their check with an unchecked state.
+
+**TrustBridge now preserves checked boxes across sticky updates.** When a sticky update runs, the action:
+
+1. Fetches the existing sticky comment body.
+2. Parses the previous `### Onboarding checklist` section with `extractChecklistState()` to recover which boxes were checked.
+3. Merges that prior state into the new checklist: a box is checked if **either** the live Horizon check passes **or** the previous comment had the box checked.
+
+This ensures contributor-manually-checked boxes survive re-runs even when Horizon hasn't caught up yet.
+
+#### Merge semantics
+
+| Live Horizon result | Previous box state | Final rendered state |
+|--------------------|--------------------|---------------------|
+| ✅ pass | checked or unchecked | `[x]` (live truth wins) |
+| ❌ fail | checked | `[x]` (manual check preserved) |
+| ❌ fail | unchecked | `[ ]` (stays unchecked) |
+| ❌ fail | (no prior state) | `[ ]` (stays unchecked) |
+
+A live pass always checks the box, regardless of prior state. A live fail only checks the box if the contributor (or a previous run) had it checked before.
+
+#### Security: injection guard
+
+The checklist parser is scoped to the `### Onboarding checklist` section only (it stops at the next `###` heading) and matches only a fixed allowlist of known label names:
+
+- `Fund account`
+- `Add <ASSET_CODE> trustline` (any asset code that is ASCII-printable)
+- `Verify XLM balance`
+
+No user-controlled label text is used as a map key. A maliciously crafted comment body cannot inject unexpected checked state for arbitrary labels or sections. Asset code strings with non-ASCII or control characters are rejected silently.
+
+## SEP-0010 challenge proof (Issue #252)
+
+To prove wallet control, you can include a SEP-0010 challenge snippet in the comment:
+
+- **Dashboard Freighter proof (preferred):** set `sep0010_dashboard_url` to an `https` dashboard URL (e.g. `https://your-dashboard.example/verify?address=G…`). The comment shows: *“Proof of wallet control (SEP-0010) — [Open dashboard proof](url)”* with network context. The link is informational and **does not block `ready`** unless your workflow explicitly gates on it. The URL must be `https` and not a private/loopback host; invalid URLs are silently omitted so comment posting is never blocked.
+- **Raw challenge XDR (fallback):** set `sep0010_challenge_xdr` to a base64 XDR string. The comment shows a truncated `24…8` snippet with signing instructions and a SEP-0010 link. Raw nonces are truncated in the comment and never logged; do not reuse a challenge — prefer the dashboard link when possible.
+
+When both are set, the dashboard link wins (no raw XDR rendered). The section is size-capped; if the total comment exceeds GitHub’s 65k limit, the snippet is included in the truncated report (`trustbridge-report.md`). See `src/links.ts:buildSep0010ChallengeSnippet` and `src/comment.ts` for the exact rendering.
+
+```yaml
+with:
+  sep0010_dashboard_url: https://your-dashboard.example/verify?address=GABC...
+  # or
+  sep0010_challenge_xdr: AAAA...
 ```
 
 Every value maps 1-to-1 to a heading in `docs/FAQ.md` that uses the explicit `{#anchor-id}` syntax, for example:
