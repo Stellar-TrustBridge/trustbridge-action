@@ -1015,6 +1015,42 @@ describe('buildTruncatedCommentBody', () => {
     const truncated = buildTruncatedCommentBody(exactBody, reportPath);
     expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(COMMENT_SIZE_LIMIT_BYTES);
   });
+
+  // ── GHES fixture: smaller comment cap ──────────────────────────────────
+  describe('GHES-like smaller comment cap', () => {
+    const GHES_SMALL_LIMIT = 32000;
+
+    it('truncates to a smaller GHES-style limit when sizeLimit is provided', () => {
+      const body = 'x'.repeat(GHES_SMALL_LIMIT + 5000);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(GHES_SMALL_LIMIT);
+    });
+
+    it('includes the truncation notice even with a smaller limit', () => {
+      const body = 'A'.repeat(GHES_SMALL_LIMIT + 1000);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(truncated).toContain('⚠️ Report truncated');
+      expect(truncated).toContain(reportPath);
+    });
+
+    it('preserves the sticky marker footer with a smaller limit', () => {
+      const body = 'B'.repeat(GHES_SMALL_LIMIT + 500);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(truncated).toContain('trustbridge-action');
+    });
+
+    it('cuts on a line boundary with a smaller limit', () => {
+      const line = 'line content here\n';
+      const repeated = line.repeat(Math.ceil((GHES_SMALL_LIMIT + 3000) / line.length));
+      const truncated = buildTruncatedCommentBody(repeated, reportPath, GHES_SMALL_LIMIT);
+      const noticeSeparator = '---\n> **⚠️ Report truncated**';
+      const cutIndex = truncated.indexOf(noticeSeparator);
+      if (cutIndex > 0) {
+        const before = truncated.slice(0, cutIndex);
+        expect(before.endsWith('\n') || before.endsWith('\n\n')).toBe(true);
+      }
+    });
+  });
 });
 
 describe('writeFullReport', () => {

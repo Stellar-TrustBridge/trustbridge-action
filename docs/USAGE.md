@@ -1913,6 +1913,8 @@ Key recommendations for cron runs:
 
 **Support statement: best-effort.** TrustBridge is not tested against a live GHES instance in CI (no GHES infra is currently available to this project), but the code path that talks to the GitHub REST API — issue comment posting in `src/comment.ts` — is written to respect the enterprise API base rather than assume `github.com`, and is covered by mocked-API-base tests (`__tests__/comment.test.ts`). Horizon/Stellar checks themselves (`src/horizon.ts`) make no GitHub API calls at all, so they behave identically on GHES and github.com.
 
+> **Full compatibility matrix:** See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) for a detailed matrix covering Comments, Checks API, Artifacts, OIDC, permission requirements, and known GHES-specific limitations.
+
 ### What changes on GHES
 
 On a GHES runner, the Actions runner sets `GITHUB_API_URL` (and `GITHUB_SERVER_URL`, `GITHUB_GRAPHQL_URL`) to your enterprise instance's endpoints instead of the public GitHub ones, e.g.:

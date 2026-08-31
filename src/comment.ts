@@ -499,7 +499,7 @@ export const COMMENT_SIZE_LIMIT_BYTES = 65536;
 export const COMMENT_TRUNCATION_NOTICE_BYTES = 512;
 
 /**
- * Build a truncated comment body that fits within `COMMENT_SIZE_LIMIT_BYTES`.
+ * Build a truncated comment body that fits within the given size limit.
  *
  * The full body is cut at a safe byte offset, a truncation notice is
  * appended, and the TrustBridge footer is preserved so the sticky-comment
@@ -508,15 +508,18 @@ export const COMMENT_TRUNCATION_NOTICE_BYTES = 512;
  *
  * @param fullBody  The full comment body produced by `formatCommentBody`.
  * @param reportPath  Workspace-relative path where the full report was written.
- * @returns A comment body that fits within the GitHub size limit.
+ * @param sizeLimit  Maximum comment body size in bytes (defaults to `COMMENT_SIZE_LIMIT_BYTES`).
+ *                   Pass a smaller value for GHES instances with custom limits.
+ * @returns A comment body that fits within the given size limit.
  *
  * @internal Exported for testing.
  */
 export function buildTruncatedCommentBody(
   fullBody: string,
   reportPath: string,
+  sizeLimit: number = COMMENT_SIZE_LIMIT_BYTES,
 ): string {
-  const budget = COMMENT_SIZE_LIMIT_BYTES - COMMENT_TRUNCATION_NOTICE_BYTES;
+  const budget = sizeLimit - COMMENT_TRUNCATION_NOTICE_BYTES;
 
   // Walk backwards from the budget boundary to find a clean line break.
   const bodyBytes = Buffer.from(fullBody, "utf8");
