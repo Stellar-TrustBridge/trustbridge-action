@@ -1,0 +1,18 @@
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-08-29T20:52:18.429Z",
+  "repository": "Stellar-TrustBridge/trustbridge-action",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true }
+    ]
+  }
+}

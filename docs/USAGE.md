@@ -2484,6 +2484,167 @@ jobs:
 
 ---
 
+## Dashboard webhook receiver contract (Issue #326)
+
+TrustBridge POSTs a signed JSON notification to `webhook_url` after every validation run. This section is the **action-side contract freeze** — everything described here is guaranteed by the code in `src/webhook.ts` and is covered by the golden fixture at `__tests__/fixtures/webhook-payload.json`.
+
+### Enabling webhooks
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: 'https://dashboard.example.com/api/webhooks/trustbridge-action'
+          webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+```
+
+### HTTP request contract
+
+| Property | Value |
+|----------|-------|
+| Method | `POST` |
+| Content-Type | `application/json` |
+| User-Agent | `trustbridge-action/1` |
+| Timeout | `5000 ms` (configurable via `webhook_timeout_ms`) |
+| Retry | None — webhook delivery is best-effort, one attempt per run |
+
+### Signature header
+
+When `webhook_secret` is set, the request includes:
+
+```
+X-TrustBridge-Signature: sha256=<64-hex-chars>
+```
+
+The signature is `HMAC-SHA256` over the **raw UTF-8 JSON body**, formatted as `sha256=<hex-digest>` — the same convention used by GitHub's own webhook signatures.
+
+When `webhook_secret` is empty the `X-TrustBridge-Signature` header is **omitted entirely** (the request is sent unsigned). Always set a secret in production.
+
+### Payload body (schema version `"1"`)
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "<ISO-8601 UTC>",
+  "repository": "owner/repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true }
+    ]
+  }
+}
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `"1"` (string literal) | Contract version. Will be bumped (e.g. `"2"`) on any breaking payload change. |
+| `event` | `"validation_complete"` (string literal) | Event type. Reserved for future event types. |
+| `timestamp` | ISO-8601 UTC string | When the validation ran (`new Date().toISOString()`). |
+| `repository` | `"owner/repo"` string | Full repository name from the GitHub Actions context. |
+| `issue_number` | integer or `null` | Issue number when run in an issue context; `null` for non-issue runs (e.g. `workflow_dispatch` without an issue). |
+| `stellar_address` | redacted string | Contributor address masked to `first4…last4` (e.g. `GA5Z…KZVN`). The full address is **never** sent to the webhook receiver. |
+| `result.valid` | boolean | `true` when all checks passed. |
+| `result.account_funded` | boolean | `true` when Horizon found an active account. |
+| `result.trustline_exists` | boolean | `true` when the configured asset trustline is present. |
+| `result.xlm_balance` | string | Native XLM balance reported by Horizon (`"0"` when unfunded). |
+| `result.checks` | array | One entry per check: `{ "label": string, "passed": boolean }`. The `detail` field present in internal `ValidationResult` is intentionally excluded. |
+
+**Golden fixture:** `__tests__/fixtures/webhook-payload.json` contains a canonical example of a passing-run payload and is imported by `webhook.test.ts` to verify structural compliance.
+
+### Verifying the signature (Node.js receiver snippet)
+
+```javascript
+// Express / Node.js example receiver for
+// POST /api/webhooks/trustbridge-action
+
+const crypto = require('crypto');
+const express = require('express');
+const app = express();
+
+// Parse the raw body as a Buffer so we sign exactly what was sent.
+app.use('/api/webhooks/trustbridge-action', express.raw({ type: 'application/json' }));
+
+app.post('/api/webhooks/trustbridge-action', (req, res) => {
+  const secret = process.env.WEBHOOK_SECRET; // same value as webhook_secret in the workflow
+  const signature = req.headers['x-trustbridge-signature'];
+
+  if (!signature) {
+    res.status(401).json({ error: 'missing signature' });
+    return;
+  }
+
+  // Compute the expected signature over the raw body bytes.
+  const expected = 'sha256=' +
+    crypto.createHmac('sha256', secret)
+          .update(req.body)          // req.body is a Buffer when using express.raw()
+          .digest('hex');
+
+  // Constant-time comparison to prevent timing attacks.
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    res.status(403).json({ error: 'invalid signature' });
+    return;
+  }
+
+  const payload = JSON.parse(req.body.toString('utf8'));
+
+  // Guard against future schema versions your receiver doesn't understand yet.
+  if (payload.schema_version !== '1') {
+    res.status(422).json({ error: `unsupported schema_version: ${payload.schema_version}` });
+    return;
+  }
+
+  // Process the payload.
+  const { event, repository, issue_number, stellar_address, result } = payload;
+  console.log(`[${event}] repo=${repository} issue=${issue_number} address=${stellar_address} valid=${result.valid}`);
+
+  res.status(200).json({ received: true });
+});
+
+app.listen(3000);
+```
+
+> **Important:** Use `express.raw()` (or equivalent middleware that gives you the raw bytes before JSON parsing) when verifying the signature. Running `JSON.stringify(JSON.parse(body))` can silently reorder keys and produce a different byte sequence, causing every signature check to fail.
+
+### HMAC test vector
+
+The known vector used in `webhook.test.ts` for regression testing:
+
+```
+body:   "test"
+secret: "secret"
+result: sha256=0329a06b62cd16b33eb6792be8c60b158d89a2ee3a876fce9a881ebb488c0914
+```
+
+Verify with:
+
+```bash
+echo -n "test" | openssl dgst -sha256 -hmac "secret"
+```
+
+### Schema versioning policy
+
+`schema_version` is a **string** (not a number) to allow future values like `"1.1"` without breaking strict parsers. The current version is `"1"`. Any addition of a new **required** field, removal of an existing field, or change to the meaning of an existing field constitutes a breaking change and will increment the version. New **optional** fields may be added within the same version. Your receiver should check `schema_version` on every request and return `422` for unknown versions rather than silently processing unexpected data.
+
+---
+
 ## OIDC Federation for Dashboard Webhooks (Issue #224)
 
 By default, dashboard webhook notifications use HMAC-SHA256 signatures with a long-lived shared secret (`webhook_secret`). To eliminate the risk of leaked secrets in fork workflows and repository settings, TrustBridge supports **OpenID Connect (OIDC) federation** with `trustbridge-dashboard`.

@@ -1,7 +1,15 @@
 /**
  * Tests for signed dashboard webhook support (Issue #101).
+ *
+ * Golden fixture: __tests__/fixtures/webhook-payload.json
+ * The fixture represents a canonical passing-run payload and is used to
+ * verify that buildWebhookPayload() produces a structurally identical shape,
+ * ensuring the receiver contract documented in docs/USAGE.md stays in sync
+ * with the code (Issue #326).
  */
 
+import * as path from 'path';
+import * as fs from 'fs';
 import {
   computeWebhookSignature,
   buildWebhookPayload,
@@ -10,6 +18,13 @@ import {
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
+
+// ---------------------------------------------------------------------------
+// Golden fixture
+// ---------------------------------------------------------------------------
+
+const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'webhook-payload.json');
+const goldenFixture: WebhookPayload = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
 
 // Minimal ValidationResult stub
 const passedResult = {
@@ -225,7 +240,7 @@ describe('deliverWebhook', () => {
 
     await deliverWebhook(makePayload(), CONFIG, mockFetch as any);
 
-    const expected = computeWebhookSignature(capturedBody!, CONFIG.webhookSecret);
+    const expected = computeWebhookSignature(capturedBody!, CONFIG.webhookSecret!);
     expect(capturedHeaders!['X-TrustBridge-Signature']).toBe(expected);
   });
 });
@@ -258,5 +273,88 @@ describe('sendWebhookNotification', () => {
       sendWebhookNotification(passedResult, ADDRESS, CONFIG, 'owner/repo', 5),
     ).resolves.toBeUndefined();
     (global as any).fetch = origFetch;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden fixture alignment (Issue #326)
+// ---------------------------------------------------------------------------
+
+describe('golden fixture — webhook-payload.json', () => {
+  it('fixture file is valid JSON and can be read', () => {
+    expect(() => JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'))).not.toThrow();
+  });
+
+  it('fixture has schema_version "1"', () => {
+    expect(goldenFixture.schema_version).toBe('1');
+  });
+
+  it('fixture has event "validation_complete"', () => {
+    expect(goldenFixture.event).toBe('validation_complete');
+  });
+
+  it('fixture stellar_address is redacted (first4...last4 format)', () => {
+    expect(goldenFixture.stellar_address).toMatch(/^[GC][A-Z2-7]{3}\.{3}[A-Z2-7]{4}$/);
+  });
+
+  it('fixture result has all required boolean fields', () => {
+    expect(typeof goldenFixture.result.valid).toBe('boolean');
+    expect(typeof goldenFixture.result.account_funded).toBe('boolean');
+    expect(typeof goldenFixture.result.trustline_exists).toBe('boolean');
+  });
+
+  it('fixture result.xlm_balance is a string', () => {
+    expect(typeof goldenFixture.result.xlm_balance).toBe('string');
+  });
+
+  it('fixture result.checks is an array of {label, passed} objects', () => {
+    expect(Array.isArray(goldenFixture.result.checks)).toBe(true);
+    for (const check of goldenFixture.result.checks) {
+      expect(typeof check.label).toBe('string');
+      expect(typeof check.passed).toBe('boolean');
+      // checks in the payload must NOT include the internal 'detail' field
+      expect(Object.keys(check)).toEqual(expect.arrayContaining(['label', 'passed']));
+      expect('detail' in check).toBe(false);
+    }
+  });
+
+  it('fixture issue_number is a number or null', () => {
+    expect(
+      goldenFixture.issue_number === null || typeof goldenFixture.issue_number === 'number',
+    ).toBe(true);
+  });
+
+  it('buildWebhookPayload output matches fixture schema shape', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42);
+
+    // Structural keys must match exactly
+    expect(Object.keys(payload).sort()).toEqual(Object.keys(goldenFixture).sort());
+    expect(Object.keys(payload.result).sort()).toEqual(Object.keys(goldenFixture.result).sort());
+
+    // Types must match
+    expect(payload.schema_version).toBe(goldenFixture.schema_version);
+    expect(payload.event).toBe(goldenFixture.event);
+    expect(typeof payload.timestamp).toBe('string');
+    expect(typeof payload.repository).toBe('string');
+    expect(payload.issue_number).toBe(42);
+    expect(payload.stellar_address).toMatch(/^[GC][A-Z2-7]{3}\.{3}[A-Z2-7]{4}$/);
+    expect(typeof payload.result.valid).toBe('boolean');
+    expect(typeof payload.result.account_funded).toBe('boolean');
+    expect(typeof payload.result.trustline_exists).toBe('boolean');
+    expect(typeof payload.result.xlm_balance).toBe('string');
+    expect(Array.isArray(payload.result.checks)).toBe(true);
+  });
+
+  it('buildWebhookPayload checks have no extra fields beyond label and passed', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42);
+    for (const check of payload.result.checks) {
+      expect(Object.keys(check).sort()).toEqual(['label', 'passed'].sort());
+    }
+  });
+
+  it('fixture timestamp is valid ISO-8601', () => {
+    const d = new Date(goldenFixture.timestamp);
+    expect(isNaN(d.getTime())).toBe(false);
+    expect(d.toISOString()).toBe(goldenFixture.timestamp);
   });
 });
