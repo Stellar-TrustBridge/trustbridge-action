@@ -306,7 +306,6 @@ export function exportSpan(span: TraceSpan): void {
         core.debug(`[TrustBridge][trace] ${JSON.stringify(span)}`);
         break;
       case 'console':
-        // eslint-disable-next-line no-console
         console.log(`[TrustBridge][trace] ${JSON.stringify(span)}`);
         break;
       case 'none':

@@ -240,7 +240,7 @@ export async function sendWebhookNotification(
   // Redact the URL for log output so any embedded credentials are masked.
   const safeUrl = redactHorizonUrl(config.webhookUrl);
 
-  let effectiveConfig = { ...config };
+  const effectiveConfig: WebhookConfig = { ...config };
   if (config.authMode === 'oidc' && !config.oidcToken) {
     const audience = config.oidcAudience || 'trustbridge-dashboard';
     try {
