@@ -43,6 +43,7 @@ import * as crypto from 'crypto';
 import * as core from '@actions/core';
 import { redactStellarAddress, redactHorizonUrl } from './logger';
 import type { ValidationResult } from './checks';
+import { traceWebhookDeliver } from './tracing';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -237,36 +238,38 @@ export async function sendWebhookNotification(
 ): Promise<void> {
   if (!config.webhookUrl) return;
 
-  // Redact the URL for log output so any embedded credentials are masked.
-  const safeUrl = redactHorizonUrl(config.webhookUrl);
+  return traceWebhookDeliver(config.webhookUrl, config.authMode || 'hmac', async () => {
+    // Redact the URL for log output so any embedded credentials are masked.
+    const safeUrl = redactHorizonUrl(config.webhookUrl);
 
-  const effectiveConfig: WebhookConfig = { ...config };
-  if (config.authMode === 'oidc' && !config.oidcToken) {
-    const audience = config.oidcAudience || 'trustbridge-dashboard';
-    try {
-      const token = await core.getIDToken(audience);
-      if (token) {
-        core.setSecret(token);
-        effectiveConfig.oidcToken = token;
+    const effectiveConfig: WebhookConfig = { ...config };
+    if (config.authMode === 'oidc' && !config.oidcToken) {
+      const audience = config.oidcAudience || 'trustbridge-dashboard';
+      try {
+        const token = await core.getIDToken(audience);
+        if (token) {
+          core.setSecret(token);
+          effectiveConfig.oidcToken = token;
+        }
+      } catch (oidcError) {
+        const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+        core.warning(
+          `[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`,
+        );
       }
-    } catch (oidcError) {
-      const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+    }
+
+    const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
+    const delivery = await deliverWebhook(payload, effectiveConfig);
+
+    if (delivery.sent) {
+      core.info(
+        `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
+      );
+    } else {
       core.warning(
-        `[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`,
+        `[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`,
       );
     }
-  }
-
-  const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
-  const delivery = await deliverWebhook(payload, effectiveConfig);
-
-  if (delivery.sent) {
-    core.info(
-      `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
-    );
-  } else {
-    core.warning(
-      `[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`,
-    );
-  }
+  });
 }

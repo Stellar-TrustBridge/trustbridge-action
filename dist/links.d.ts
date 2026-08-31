@@ -183,3 +183,44 @@ export interface Sep0007PayOptions {
  * ```
  */
 export declare function buildSep0007PayLink(options: Sep0007PayOptions): string;
+/**
+ * Options for building a SEP-0010 challenge verification snippet.
+ *
+ * SEP-0010 defines a challenge transaction that a wallet signs to prove
+ * control of a Stellar account. TrustBridge does not verify the signature
+ * inside the action — that is out of scope — but it can surface an
+ * optional challenge snippet or dashboard Freighter proof link in the
+ * remediation comment so reviewers know the contributor proved wallet control.
+ *
+ * Prefer `dashboardUrl` (link to a dashboard where Freighter signage is
+ * verified) over raw `challengeXdr` to avoid leaking nonces in public issues.
+ * When a raw challenge XDR is supplied it is truncated in logs and should
+ * not be reused.
+ */
+export interface Sep0010ChallengeOptions {
+    /** Base64 XDR of the SEP-0010 challenge transaction (optional). */
+    challengeXdr?: string;
+    /** Dashboard URL where Freighter proof can be verified (optional, preferred). */
+    dashboardUrl?: string;
+    /** Stellar network for context (affects messaging). Defaults to public. */
+    network?: StellarNetwork;
+    /** Stellar G-address being verified (for link text). */
+    stellarAddress?: string;
+}
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ */
+export declare function isValidDashboardUrl(url: string): boolean;
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+export declare function buildSep0010ChallengeSnippet(options: Sep0010ChallengeOptions): string | undefined;

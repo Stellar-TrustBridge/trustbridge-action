@@ -70,6 +70,7 @@ import {
 } from './batch';
 import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
 import { DiagnosticsConfig } from './diagnostics';
+import { traceActionRun, emitTraceSummary, clearTraceSpans } from './tracing';
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -291,6 +292,10 @@ export async function handleAutoUnassign(
 }
 
 async function run(): Promise<void> {
+  // Clear any trace spans from previous runs (safety)
+  clearTraceSpans();
+
+  return traceActionRun('trustbridge-action', async () => {
   // Milestone gating (Issue #230)
   const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
   const milestoneFailOnSkip = parseBooleanInput(core.getInput('milestone_fail_on_skip'), false);
@@ -1389,6 +1394,9 @@ async function run(): Promise<void> {
   // Stop total timer and collect timing metrics
   globalMetrics.stopTimer('total');
 
+  // Emit OpenTelemetry trace summary when tracing is enabled
+  emitTraceSummary();
+
   // Wave #27: write Job Summary with latency, failure codes, JSON artifact
   await writeJobSummary(globalMetrics.buildJobSummary());
 
@@ -1406,6 +1414,7 @@ async function run(): Promise<void> {
   } else {
     core.warning(failureMessage);
   }
+  });
 }
 
 // Skip auto-run under Jest so performance / integration tests can import `run`.

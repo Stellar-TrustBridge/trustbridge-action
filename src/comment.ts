@@ -31,6 +31,7 @@ import {
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
+import { traceCommentPost } from './tracing';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -795,114 +796,116 @@ export async function postIssueComment(
   if (!issueNumber) {
     core.warning(
       'No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.',
-  );
+    );
     return undefined;
   }
 
-  // `github.getOctokit` defaults to `https://api.github.com` unless a
-  // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
-  // `GITHUB_API_URL` to the enterprise API base (e.g.
-  // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
-  // Passing it explicitly here is what makes comment posting work on GHES
-  // instead of silently calling the wrong (public) API host.
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
-  const { owner, repo } = context.repo;
+  return traceCommentPost(issueNumber, 'create', async () => {
+    // `github.getOctokit` defaults to `https://api.github.com` unless a
+    // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
+    // `GITHUB_API_URL` to the enterprise API base (e.g.
+    // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
+    // Passing it explicitly here is what makes comment posting work on GHES
+    // instead of silently calling the wrong (public) API host.
+    const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+    const { owner, repo } = context.repo;
 
-  let existingCommentId: number | undefined;
-  let existingCommentBody: string | undefined;
-  let existingCommentReactions: CommentReaction[] = [];
-  
-  if (sticky) {
-    try {
-      existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-      
-      // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
-      if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-        try {
-          const commentResponse = await octokit.rest.issues.getComment({
-            owner,
-            repo,
-            comment_id: existingCommentId,
-          });
-          existingCommentBody = commentResponse.data.body;
-        } catch (error) {
-          core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
-        }
+    let existingCommentId: number | undefined;
+    let existingCommentBody: string | undefined;
+    let existingCommentReactions: CommentReaction[] = [];
 
-        try {
-          if (octokit.rest?.reactions?.listForIssueComment) {
-            const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+    if (sticky) {
+      try {
+        existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+
+        // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
+        if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+          try {
+            const commentResponse = await octokit.rest.issues.getComment({
               owner,
               repo,
               comment_id: existingCommentId,
-              per_page: 100,
             });
-            if (Array.isArray(reactionsResponse?.data)) {
-              existingCommentReactions = reactionsResponse.data as unknown as CommentReaction[];
-            }
+            existingCommentBody = commentResponse.data.body;
+          } catch (error) {
+            core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
           }
-        } catch (error) {
-          core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+
+          try {
+            if (octokit.rest?.reactions?.listForIssueComment) {
+              const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
+                owner,
+                repo,
+                comment_id: existingCommentId,
+                per_page: 100,
+              });
+              if (Array.isArray(reactionsResponse?.data)) {
+                existingCommentReactions = reactionsResponse.data as unknown as CommentReaction[];
+              }
+            }
+          } catch (error) {
+            core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
+          }
         }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        core.warning(
+          `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
+        );
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      core.warning(
-        `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
+    }
+
+    // Check snooze state (Issue #155, Issue #227)
+    if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+      const lastMarker = parseSnoozeMarker(existingCommentBody);
+
+      // Determine if current check is passing by looking at body content
+      // The snooze marker we just added to body indicates 'pass' or 'fail'
+      const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
+
+      const snoozeState = evaluateCombinedSnoozeState(
+        currentPassed,
+        lastMarker,
+        existingCommentReactions,
+        snoozeWindowMs,
       );
-    }
-  }
 
-  // Check snooze state (Issue #155, Issue #227)
-  if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-    const lastMarker = parseSnoozeMarker(existingCommentBody);
-    
-    // Determine if current check is passing by looking at body content
-    // The snooze marker we just added to body indicates 'pass' or 'fail'
-    const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-    
-    const snoozeState = evaluateCombinedSnoozeState(
-      currentPassed,
-      lastMarker,
-      existingCommentReactions,
-      snoozeWindowMs,
-    );
-    
-    if (snoozeState.isSnoozed) {
-      core.info(
-        `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
-      );
-      return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+      if (snoozeState.isSnoozed) {
+        core.info(
+          `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
+        );
+        return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+      }
     }
-  }
 
-  if (existingCommentId) {
-    try {
-      const response = await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existingCommentId,
-        body,
-      });
-      core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-      return response.data.html_url;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      core.warning(
-        `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
-    );
+    if (existingCommentId) {
+      try {
+        const response = await octokit.rest.issues.updateComment({
+          owner,
+          repo,
+          comment_id: existingCommentId,
+          body,
+        });
+        core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+        return response.data.html_url;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        core.warning(
+          `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
+        );
+      }
     }
-  }
 
-  const response = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: issueNumber,
-    body,
+    const response = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    });
+
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    return response.data.html_url;
   });
-
-  core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-  return response.data.html_url;
 }
 
 // ---------------------------------------------------------------------------

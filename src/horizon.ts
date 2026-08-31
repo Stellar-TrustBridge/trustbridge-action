@@ -4,6 +4,7 @@ import { inferStellarNetwork } from './links';
 import { globalMetrics } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, CircuitOpenError } from './resilience';
 import { validateHorizonUrl } from './validation';
+import { traceHorizonFetch } from './tracing';
 
 export interface HorizonBalanceNative {
   balance: string;
@@ -733,243 +734,245 @@ export async function fetchAccount(
   stellarAddress: string,
   options: FetchAccountOptions = {},
 ): Promise<HorizonAccount> {
-  const fetch: FetchLike =
-    options.fetchFn ?? (await import('node-fetch')).default;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-  const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-  const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
-  const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
-  const cache = options.cache ?? defaultCache;
-  const horizonMaxRequests = options.horizonMaxRequests ?? 0;
-  const rateBudgetTracker = options.rateBudgetTracker ?? new RateBudgetTracker(horizonMaxRequests);
-  const signal = options.signal;
-  const allowCrossNetwork =
-    options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
-  const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-  const candidateFallbacks = [
-    options.secondaryHorizonUrl,
-    options.horizonUrlFallback,
-    ...(options.fallbackUrls ?? []),
-  ].filter((u): u is string => Boolean(u && u.trim()));
-  const fallbackCandidate = candidateFallbacks[0];
-  const normalizedFallbackUrl = fallbackCandidate
-    ? normalizeHorizonUrl(fallbackCandidate)
-    : '';
+  return traceHorizonFetch(horizonUrl, stellarAddress, async () => {
+    const fetch: FetchLike =
+      options.fetchFn ?? (await import('node-fetch')).default;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+    const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
+    const cache = options.cache ?? defaultCache;
+    const horizonMaxRequests = options.horizonMaxRequests ?? 0;
+    const rateBudgetTracker = options.rateBudgetTracker ?? new RateBudgetTracker(horizonMaxRequests);
+    const signal = options.signal;
+    const allowCrossNetwork =
+      options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
+    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+    const candidateFallbacks = [
+      options.secondaryHorizonUrl,
+      options.horizonUrlFallback,
+      ...(options.fallbackUrls ?? []),
+    ].filter((u): u is string => Boolean(u && u.trim()));
+    const fallbackCandidate = candidateFallbacks[0];
+    const normalizedFallbackUrl = fallbackCandidate
+      ? normalizeHorizonUrl(fallbackCandidate)
+      : '';
 
-  if (!normalizedHorizonUrl) {
-    throw new HorizonError('horizon_url is required.', 0, false);
-  }
-
-  // Bail out immediately if the job was already cancelled before we start.
-  if (signal?.aborted) {
-    throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
-  }
-
-  const cachingEnabled = cacheTtlMs > 0;
-  const cacheKey = cachingEnabled
-    ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
-    : '';
-
-  if (cachingEnabled) {
-    const cacheStatsBefore = redactCacheStats(cache.getStats());
-    logger.debug('Horizon cache lookup start', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl,
-      horizonUrlFallback: normalizedFallbackUrl,
-      cacheKey,
-      cacheTtlMs,
-      cacheSizeBefore: cacheStatsBefore.size,
-      cacheEntryCountBefore: cacheStatsBefore.entries.length,
-    }));
-
-    const cached = cache.get<HorizonAccount>(cacheKey);
-    if (cached) {
-      logger.debug('Horizon cache hit', safeHorizonContext({
-        component: 'horizon',
-        stellarAddress,
-        horizonUrl,
-        horizonUrlFallback: normalizedFallbackUrl,
-        cacheKey,
-        cacheTtlMs,
-        ...safeAccountSummary(cached),
-      }));
-      recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
-      return cached;
+    if (!normalizedHorizonUrl) {
+      throw new HorizonError('horizon_url is required.', 0, false);
     }
 
-    logger.debug('Horizon cache miss', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl,
-      horizonUrlFallback: normalizedFallbackUrl,
-      cacheKey,
-      cacheTtlMs,
-    }));
-    recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
-  } else {
-    logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl,
-      horizonUrlFallback: normalizedFallbackUrl,
-      cacheTtlMs: 0,
-    }));
-  }
+    // Bail out immediately if the job was already cancelled before we start.
+    if (signal?.aborted) {
+      throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
+    }
 
-  let primaryError: HorizonError | undefined;
-  const circuitBreaker = options.circuitBreaker;
-
-  try {
-    const result = await fetchAccountOnce(
-      fetch,
-      normalizedHorizonUrl,
-      stellarAddress,
-      timeoutMs,
-      maxRetries,
-      'primary',
-      retryMaxDelayMs,
-      retryMaxTotalWaitMs,
-      signal,
-      rateBudgetTracker,
-      circuitBreaker,
-      retryBaseDelayMs,
-    );
-
-    result.account._servedByUrl = normalizedHorizonUrl;
+    const cachingEnabled = cacheTtlMs > 0;
+    const cacheKey = cachingEnabled
+      ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+      : '';
 
     if (cachingEnabled) {
-      cache.set(cacheKey, result.account, cacheTtlMs);
-      const cacheStatsAfter = redactCacheStats(cache.getStats());
-      logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+      const cacheStatsBefore = redactCacheStats(cache.getStats());
+      logger.debug('Horizon cache lookup start', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,
         horizonUrlFallback: normalizedFallbackUrl,
         cacheKey,
         cacheTtlMs,
-        cacheSizeAfter: cacheStatsAfter.size,
-        cacheEntryCountAfter: cacheStatsAfter.entries.length,
-        source: 'primary',
-        ...safeAccountSummary(result.account),
+        cacheSizeBefore: cacheStatsBefore.size,
+        cacheEntryCountBefore: cacheStatsBefore.entries.length,
+      }));
+
+      const cached = cache.get<HorizonAccount>(cacheKey);
+      if (cached) {
+        logger.debug('Horizon cache hit', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl,
+          horizonUrlFallback: normalizedFallbackUrl,
+          cacheKey,
+          cacheTtlMs,
+          ...safeAccountSummary(cached),
+        }));
+        recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+        return cached;
+      }
+
+      logger.debug('Horizon cache miss', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheKey,
+        cacheTtlMs,
+      }));
+      recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
+    } else {
+      logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheTtlMs: 0,
       }));
     }
 
-    return result.account;
-  } catch (error) {
-    if (error instanceof HorizonError) {
-      primaryError = error;
-      if (error.statusCode === 404) {
+    let primaryError: HorizonError | undefined;
+    const circuitBreaker = options.circuitBreaker;
+
+    try {
+      const result = await fetchAccountOnce(
+        fetch,
+        normalizedHorizonUrl,
+        stellarAddress,
+        timeoutMs,
+        maxRetries,
+        'primary',
+        retryMaxDelayMs,
+        retryMaxTotalWaitMs,
+        signal,
+        rateBudgetTracker,
+        circuitBreaker,
+        retryBaseDelayMs,
+      );
+
+      result.account._servedByUrl = normalizedHorizonUrl;
+
+      if (cachingEnabled) {
+        cache.set(cacheKey, result.account, cacheTtlMs);
+        const cacheStatsAfter = redactCacheStats(cache.getStats());
+        logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl,
+          horizonUrlFallback: normalizedFallbackUrl,
+          cacheKey,
+          cacheTtlMs,
+          cacheSizeAfter: cacheStatsAfter.size,
+          cacheEntryCountAfter: cacheStatsAfter.entries.length,
+          source: 'primary',
+          ...safeAccountSummary(result.account),
+        }));
+      }
+
+      return result.account;
+    } catch (error) {
+      if (error instanceof HorizonError) {
+        primaryError = error;
+        if (error.statusCode === 404) {
+          throw error;
+        }
+      } else {
         throw error;
       }
-    } else {
-      throw error;
     }
-  }
 
-  if (!normalizedFallbackUrl) {
-    throw primaryError;
-  }
+    if (!normalizedFallbackUrl) {
+      throw primaryError;
+    }
 
-  // Network binding rule: a G-address is valid on every Stellar network, so
-  // a fallback URL that resolves to a different network than the primary
-  // could silently return funded/trustline/reserve data for the *wrong*
-  // ledger instead of failing loudly. Compare the inferred networks and
-  // refuse the fallback unless the caller explicitly opted in.
-  const primaryNetwork = inferStellarNetwork(normalizedHorizonUrl);
-  const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
-  const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
+    // Network binding rule: a G-address is valid on every Stellar network, so
+    // a fallback URL that resolves to a different network than the primary
+    // could silently return funded/trustline/reserve data for the *wrong*
+    // ledger instead of failing loudly. Compare the inferred networks and
+    // refuse the fallback unless the caller explicitly opted in.
+    const primaryNetwork = inferStellarNetwork(normalizedHorizonUrl);
+    const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
+    const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
 
-  if (crossNetworkFallback && !allowCrossNetwork) {
-    logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl,
-      horizonUrlFallback: normalizedFallbackUrl,
-      primaryNetwork,
-      fallbackNetwork,
-      primaryStatusCode: primaryError?.statusCode,
-      primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
-    }));
-    throw primaryError;
-  }
-
-  logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
-    component: 'horizon',
-    stellarAddress,
-    horizonUrl,
-    horizonUrlFallback: normalizedFallbackUrl,
-    cacheKey: cachingEnabled ? cacheKey : undefined,
-    primaryNetwork,
-    fallbackNetwork,
-    crossNetworkFallback,
-    primaryStatusCode: primaryError?.statusCode,
-    primaryRetryable: primaryError?.retryable,
-    primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
-  }));
-
-  try {
-    const fallbackResult = await fetchAccountOnce(
-      fetch,
-      normalizedFallbackUrl,
-      stellarAddress,
-      timeoutMs,
-      maxRetries,
-      'fallback',
-      retryMaxDelayMs,
-      retryMaxTotalWaitMs,
-      signal,
-      rateBudgetTracker,
-      circuitBreaker,
-      retryBaseDelayMs,
-    );
-
-    fallbackResult.account._servedByUrl = normalizedFallbackUrl;
-
-    if (cachingEnabled) {
-      cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
-      const cacheStatsAfter = redactCacheStats(cache.getStats());
-      logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+    if (crossNetworkFallback && !allowCrossNetwork) {
+      logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,
         horizonUrlFallback: normalizedFallbackUrl,
-        cacheKey,
-        cacheTtlMs,
-        cacheSizeAfter: cacheStatsAfter.size,
-        cacheEntryCountAfter: cacheStatsAfter.entries.length,
-        source: 'fallback',
-        ...safeAccountSummary(fallbackResult.account),
-      }));
-    }
-
-    logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl,
-      horizonUrlFallback: normalizedFallbackUrl,
-      fallbackAttempts: fallbackResult.attempts,
-      fallbackLatencyMs: fallbackResult.latencyMs,
-    }));
-
-    return fallbackResult.account;
-  } catch (fallbackError) {
-    if (fallbackError instanceof HorizonError) {
-      logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
-        component: 'horizon',
-        stellarAddress,
-        horizonUrl,
-        horizonUrlFallback: normalizedFallbackUrl,
+        primaryNetwork,
+        fallbackNetwork,
         primaryStatusCode: primaryError?.statusCode,
         primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
-        fallbackStatusCode: fallbackError.statusCode,
-        fallbackErrorMessage: redactString(fallbackError.message),
       }));
+      throw primaryError;
     }
-    throw fallbackError;
-  }
+
+    logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheKey: cachingEnabled ? cacheKey : undefined,
+      primaryNetwork,
+      fallbackNetwork,
+      crossNetworkFallback,
+      primaryStatusCode: primaryError?.statusCode,
+      primaryRetryable: primaryError?.retryable,
+      primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+    }));
+
+    try {
+      const fallbackResult = await fetchAccountOnce(
+        fetch,
+        normalizedFallbackUrl,
+        stellarAddress,
+        timeoutMs,
+        maxRetries,
+        'fallback',
+        retryMaxDelayMs,
+        retryMaxTotalWaitMs,
+        signal,
+        rateBudgetTracker,
+        circuitBreaker,
+        retryBaseDelayMs,
+      );
+
+      fallbackResult.account._servedByUrl = normalizedFallbackUrl;
+
+      if (cachingEnabled) {
+        cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+        const cacheStatsAfter = redactCacheStats(cache.getStats());
+        logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl,
+          horizonUrlFallback: normalizedFallbackUrl,
+          cacheKey,
+          cacheTtlMs,
+          cacheSizeAfter: cacheStatsAfter.size,
+          cacheEntryCountAfter: cacheStatsAfter.entries.length,
+          source: 'fallback',
+          ...safeAccountSummary(fallbackResult.account),
+        }));
+      }
+
+      logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        fallbackAttempts: fallbackResult.attempts,
+        fallbackLatencyMs: fallbackResult.latencyMs,
+      }));
+
+      return fallbackResult.account;
+    } catch (fallbackError) {
+      if (fallbackError instanceof HorizonError) {
+        logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl,
+          horizonUrlFallback: normalizedFallbackUrl,
+          primaryStatusCode: primaryError?.statusCode,
+          primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+          fallbackStatusCode: fallbackError.statusCode,
+          fallbackErrorMessage: redactString(fallbackError.message),
+        }));
+      }
+      throw fallbackError;
+    }
+  });
 }
 
 export interface WaitForFundedAccountOptions {
