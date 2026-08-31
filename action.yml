@@ -594,13 +594,6 @@ inputs:
     required: false
     default: ''
 
-  codeowners_path:
-    description: >-
-      Optional path to CODEOWNERS file. When omitted, checks standard locations
-      (.github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS). (Issue #241)
-    required: false
-    default: ''
-
   # Issue #306 — previously undeclared inputs (ghost inputs resolved)
   contract_id:
     description: >-

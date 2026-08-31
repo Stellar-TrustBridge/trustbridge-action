@@ -398,4 +398,131 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
     expect(schemaCount).toBe(actionCount);
   });
 
+
+// ---------------------------------------------------------------------------
+// Issue #306 — Ghost-input detection
+//
+// "Ghost inputs" are core.getInput() calls in src/index.ts that read an
+// input key that is NOT declared in action.yml `inputs:`.  A ghost input
+// means the action silently reads a parameter that consumers cannot document,
+// validate, or set via the standard action interface.
+//
+// This suite:
+//  1. Extracts every `core.getInput('key')` literal from src/index.ts.
+//  2. Compares the set against the parsed action.yml inputs.
+//  3. Fails CI if any ghost inputs are found.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract every string literal passed to `core.getInput(...)` in a
+ * TypeScript source file.  Matches:
+ *   core.getInput('foo')
+ *   core.getInput("foo")
+ *
+ * Dynamic variable calls (core.getInput(varName)) are intentionally excluded.
+ */
+function extractGetInputKeys(sourceText: string): Set<string> {
+  const keys = new Set<string>();
+  const pattern = /core\.getInput\(\s*['"]([^'"]+)['"]\s*\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(sourceText)) !== null) {
+    keys.add(match[1]!);
+  }
+  return keys;
+}
+
+describe('Issue #306 — Ghost-input detection: every core.getInput key must be declared in action.yml', () => {
+
+  const INDEX_TS_PATH = path.join(REPO_ROOT, 'src', 'index.ts');
+
+  let indexInputKeys: Set<string>;
+  let actionInputsForGhost: Map<string, { required: boolean }>;
+
+  beforeAll(() => {
+    const indexSource = fs.readFileSync(INDEX_TS_PATH, 'utf8');
+    indexInputKeys = extractGetInputKeys(indexSource);
+    const yamlText = fs.readFileSync(ACTION_YML_PATH, 'utf8');
+    actionInputsForGhost = parseActionYmlInputs(yamlText);
+  });
+
+  it('src/index.ts contains at least 20 core.getInput() calls (parser sanity)', () => {
+    expect(indexInputKeys.size).toBeGreaterThanOrEqual(20);
+  });
+
+  it('action.yml has at least 20 declared inputs (parser sanity)', () => {
+    expect(actionInputsForGhost.size).toBeGreaterThanOrEqual(20);
+  });
+
+  it('every core.getInput() key in src/index.ts is declared in action.yml inputs', () => {
+    const ghostInputs = [...indexInputKeys].filter(
+      (key) => !actionInputsForGhost.has(key),
+    );
+
+    if (ghostInputs.length > 0) {
+      const list = ghostInputs.map((k) => `  - "${k}"`).join('\n');
+      throw new Error(
+        `Ghost inputs detected — the following core.getInput() keys are read in ` +
+        `src/index.ts but are NOT declared in action.yml inputs:\n${list}\n\n` +
+        `To fix: add each ghost input to action.yml with description, required, ` +
+        `and default. Then add the matching property to ` +
+        `schemas/action-inputs.schema.json.`,
+      );
+    }
+
+    expect(ghostInputs).toHaveLength(0);
+  });
+
+  it('extractGetInputKeys helper correctly extracts single-quoted keys', () => {
+    const sample = `
+      const a = core.getInput('foo');
+      const b = core.getInput('bar');
+    `;
+    const keys = extractGetInputKeys(sample);
+    expect(keys.has('foo')).toBe(true);
+    expect(keys.has('bar')).toBe(true);
+    expect(keys.size).toBe(2);
+  });
+
+  it('extractGetInputKeys helper correctly extracts double-quoted keys', () => {
+    const sample = `const a = core.getInput("baz");`;
+    const keys = extractGetInputKeys(sample);
+    expect(keys.has('baz')).toBe(true);
+  });
+
+  it('extractGetInputKeys ignores dynamic variable calls', () => {
+    const sample = `
+      const key = 'dynamic';
+      const a = core.getInput(key);
+      const b = core.getInput('literal');
+    `;
+    const keys = extractGetInputKeys(sample);
+    expect(keys.has('literal')).toBe(true);
+    expect(keys.size).toBe(1);
+  });
+
+  it('known inputs (github_token, horizon_url) appear in both action.yml and index.ts', () => {
+    expect(indexInputKeys.has('github_token')).toBe(true);
+    expect(indexInputKeys.has('horizon_url')).toBe(true);
+    expect(actionInputsForGhost.has('github_token')).toBe(true);
+    expect(actionInputsForGhost.has('horizon_url')).toBe(true);
+  });
+
+  it('new inputs declared in action.yml appear in the schema (drift guard)', () => {
+    const schemaLocal = loadSchema(SCHEMA_PATH);
+    const schemaProps = schemaLocal.properties;
+    const driftedInputs = [...actionInputsForGhost.keys()].filter(
+      (key) => !(key in schemaProps),
+    );
+    if (driftedInputs.length > 0) {
+      const list = driftedInputs.map((k) => `  - "${k}"`).join('\n');
+      throw new Error(
+        `Schema drift detected — the following action.yml inputs are missing from ` +
+        `schemas/action-inputs.schema.json:\n${list}\n\n` +
+        `Add each entry to the schema "properties" object.`,
+      );
+    }
+    expect(driftedInputs).toHaveLength(0);
+  });
+
+});
 });
