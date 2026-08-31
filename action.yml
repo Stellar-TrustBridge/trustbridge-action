@@ -564,7 +564,7 @@ inputs:
   sep0010_dashboard_url:
     description: >-
       Optional HTTPS dashboard URL where Freighter SEP-0010 proof can be verified (Issue #252).
-      When set, the comment shows a “Verify with Freighter on dashboard” link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
+      When set, the comment shows a "Verify with Freighter on dashboard" link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
       Must be https and not a private/loopback host. Does not block `ready` unless documented.
     required: false
     default: ""
@@ -605,72 +605,11 @@ inputs:
     required: false
     default: ''
 
-  # Issue #306 — previously undeclared inputs (ghost inputs resolved)
-  contract_id:
+  federation_resolution_enabled:
     description: >-
-      Soroban contract ID to look up the contributor Stellar address on-chain
-      via the Soroban RPC registry. When set alongside soroban_rpc_url, the
-      contract registry is queried before other address resolution sources.
-    required: false
-    default: ''
-  github_username:
-    description: >-
-      GitHub username override for contract registry lookup. When empty the
-      action resolves the assignee login from the event payload automatically.
-    required: false
-    default: ''
-  milestone_allowlist:
-    description: >-
-      Comma-separated list of milestone titles that must be set on the issue
-      for TrustBridge to run. When set and the issue milestone does not match,
-      the run is skipped with a notice rather than failing. Empty means no
-      milestone gate (default).
-    required: false
-    default: ''
-  milestone_fail_on_skip:
-    description: >-
-      When true and the milestone gate (milestone_allowlist) causes a skip,
-      the step fails instead of exiting gracefully. Default false.
-    required: false
-    default: 'false'
-  preflight_only:
-    description: >-
-      When true, exit after the issues:write preflight check without running
-      account validation or posting a comment. Useful for permission checks
-      in pipeline setup jobs. Default false.
-    required: false
-    default: 'false'
-  previous_validation_path:
-    description: >-
-      Path to a previous run validation.json artifact for delta comparison.
-      When set and write_validation_json is also true, TrustBridge computes
-      and logs a diff of the two validation results. Default empty.
-    required: false
-    default: ''
-  privacy_mode:
-    description: >-
-      When true, omit the contributor Stellar address from the issue comment
-      and all log output. The address is still used for Horizon lookup but
-      never written to comment text or structured logs. Default false.
-    required: false
-    default: 'false'
-  report_output_path:
-    description: >-
-      Path where the full Markdown validation report is written when the
-      comment body exceeds the GitHub size limit. Default trustbridge-report.md.
-    required: false
-    default: 'trustbridge-report.md'
-  soroban_rpc_url:
-    description: >-
-      Soroban RPC endpoint URL for contract registry address lookup. Required
-      when contract_id is set. Must be an SSRF-safe HTTPS URL.
-    required: false
-    default: ''
-  use_check_runs:
-    description: >-
-      When true, post validation results as GitHub Check Run annotations in
-      addition to the issue comment. Requires checks:write permission.
-      Default false.
+      Enable optional federation (user*domain) address resolution. When true,
+      addresses in "user*domain" format are resolved via HTTPS stellar.toml
+      federation protocol. Default false. (Issue #257)
     required: false
     default: 'false'
 

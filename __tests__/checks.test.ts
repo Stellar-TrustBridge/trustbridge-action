@@ -1,5 +1,8 @@
 import {
   isValidStellarAddress,
+  isValidMuxedAddress,
+  decodeMuxedAddress,
+  convertMuxedToGAddress,
   normalizeStellarAddress,
   parseMinAssetBalance,
   parseMinXlmReserve,
@@ -60,111 +63,111 @@ function makeAccount(overrides: Partial<HorizonAccount> = {}): HorizonAccount {
 }
 
 describe('isValidStellarAddress', () => {
-  it('accepts a valid 56-character G-address', () => {
+  it('accepts a valid 56-character G-address', async () => {
     expect(isValidStellarAddress(TEST_ADDRESS)).toBe(true);
   });
 
-  it('rejects addresses not starting with G', () => {
+  it('rejects addresses not starting with G', async () => {
     expect(isValidStellarAddress('B' + TEST_ADDRESS.slice(1))).toBe(false);
   });
 
-  it('rejects addresses with wrong length', () => {
+  it('rejects addresses with wrong length', async () => {
     expect(isValidStellarAddress('GABC')).toBe(false);
   });
 
-  it('rejects invalid base32 characters', () => {
+  it('rejects invalid base32 characters', async () => {
     expect(isValidStellarAddress('G' + '0'.repeat(55))).toBe(false);
   });
 });
 
 describe('normalizeStellarAddress', () => {
-  it('trims surrounding whitespace', () => {
+  it('trims surrounding whitespace', async () => {
     expect(normalizeStellarAddress(`  ${TEST_ADDRESS}  `)).toBe(TEST_ADDRESS);
   });
 });
 
 describe('validateStellarAddress', () => {
-  it('throws when address is empty', () => {
+  it('throws when address is empty', async () => {
     expect(() => validateStellarAddress('')).toThrow(/required/i);
   });
 
-  it('throws for invalid format', () => {
+  it('throws for invalid format', async () => {
     expect(() => validateStellarAddress('not-a-stellar-address')).toThrow(/Invalid Stellar address/i);
   });
 });
 
 describe('parseMinXlmReserve', () => {
-  it('parses valid numeric strings', () => {
+  it('parses valid numeric strings', async () => {
     expect(parseMinXlmReserve('1.5')).toBe('1.5');
   });
 
-  it('trims valid numeric strings', () => {
+  it('trims valid numeric strings', async () => {
     expect(parseMinXlmReserve(' 2.25 ')).toBe('2.25');
   });
 
-  it('throws for non-numeric values', () => {
+  it('throws for non-numeric values', async () => {
     expect(() => parseMinXlmReserve('abc')).toThrow(/min_xlm_reserve/i);
   });
 
-  it('throws for blank values', () => {
+  it('throws for blank values', async () => {
     expect(() => parseMinXlmReserve('   ')).toThrow(/min_xlm_reserve/i);
   });
 
-  it('throws for non-finite values', () => {
+  it('throws for non-finite values', async () => {
     expect(() => parseMinXlmReserve('Infinity')).toThrow(/min_xlm_reserve/i);
   });
 
-  it('throws for negative values', () => {
+  it('throws for negative values', async () => {
     expect(() => parseMinXlmReserve('-1')).toThrow(/min_xlm_reserve/i);
   });
 });
 
 describe('parseMinAssetBalance', () => {
-  it('returns undefined for empty string', () => {
+  it('returns undefined for empty string', async () => {
     expect(parseMinAssetBalance('')).toBeUndefined();
   });
 
-  it('returns undefined for whitespace-only string', () => {
+  it('returns undefined for whitespace-only string', async () => {
     expect(parseMinAssetBalance('   ')).toBeUndefined();
   });
 
-  it('parses valid numeric strings', () => {
+  it('parses valid numeric strings', async () => {
     expect(parseMinAssetBalance('100')).toBe('100');
     expect(parseMinAssetBalance('50.5')).toBe('50.5');
   });
 
-  it('trims valid numeric strings', () => {
+  it('trims valid numeric strings', async () => {
     expect(parseMinAssetBalance(' 25.25 ')).toBe('25.25');
   });
 
-  it('throws for non-numeric values', () => {
+  it('throws for non-numeric values', async () => {
     expect(() => parseMinAssetBalance('abc')).toThrow(/min_asset_balance/i);
   });
 
-  it('throws for non-finite values', () => {
+  it('throws for non-finite values', async () => {
     expect(() => parseMinAssetBalance('Infinity')).toThrow(/min_asset_balance/i);
   });
 
-  it('throws for negative values', () => {
+  it('throws for negative values', async () => {
     expect(() => parseMinAssetBalance('-10')).toThrow(/min_asset_balance/i);
   });
 });
 
 describe('estimateTrustlineSetupCost', () => {
-  it('adds account and trustline reserves', () => {
+  it('adds account and trustline reserves', async () => {
     expect(estimateTrustlineSetupCost()).toBe(1.5);
   });
 });
 
 describe('formatXlmDeficit', () => {
-  it('formats missing reserve without going negative', () => {
+  it('formats missing reserve without going negative', async () => {
     expect(formatXlmDeficit(1.5, 1.0)).toBe('0.5000000');
     expect(formatXlmDeficit(1.5, 2.0)).toBe('0.0000000');
   });
 });
 
 describe('formatAssetDeficit', () => {
-  it('formats missing asset balance without going negative', () => {
+  it('formats missing asset balance without going negative', async () => {
     expect(formatAssetDeficit(100, 50)).toBe('50.0000000');
     expect(formatAssetDeficit(100, 150)).toBe('0.0000000');
     expect(formatAssetDeficit(0, 0)).toBe('0.0000000');
@@ -172,8 +175,8 @@ describe('formatAssetDeficit', () => {
 });
 
 describe('runAccountChecks', () => {
-  it('passes when account is funded, has trustline, and meets reserve', () => {
-    const result = runAccountChecks(makeAccount(), defaultConfig);
+  it('passes when account is funded, has trustline, and meets reserve', async () => {
+    const result = await runAccountChecks(makeAccount(), defaultConfig);
 
     expect(result.valid).toBe(true);
     expect(result.accountFunded).toBe(true);
@@ -186,9 +189,9 @@ describe('runAccountChecks', () => {
     expect(result.checks.length).toBe(3);
   });
 
-  it('passes with minAssetBalance when balance meets or exceeds the floor', () => {
+  it('passes with minAssetBalance when balance meets or exceeds the floor', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 50 };
-    const result = runAccountChecks(makeAccount(), configWithFloor);
+    const result = await runAccountChecks(makeAccount(), configWithFloor);
 
     expect(result.valid).toBe(true);
     expect(result.assetBalanceMet).toBe(true);
@@ -198,7 +201,7 @@ describe('runAccountChecks', () => {
     expect(result.checks[3].detail).toMatch(/meets the minimum of \*\*50 USDC\*\*/);
   });
 
-  it('passes with minAssetBalance exactly equal to the floor', () => {
+  it('passes with minAssetBalance exactly equal to the floor', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -218,16 +221,16 @@ describe('runAccountChecks', () => {
       ],
     });
     const configWithFloor = { ...defaultConfig, minAssetBalance: 100 };
-    const result = runAccountChecks(account, configWithFloor);
+    const result = await runAccountChecks(account, configWithFloor);
 
     expect(result.valid).toBe(true);
     expect(result.assetBalanceMet).toBe(true);
     expect(result.checks[3].passed).toBe(true);
   });
 
-  it('fails when minAssetBalance is set and balance is below the floor', () => {
+  it('fails when minAssetBalance is set and balance is below the floor', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 200 };
-    const result = runAccountChecks(makeAccount(), configWithFloor);
+    const result = await runAccountChecks(makeAccount(), configWithFloor);
 
     expect(result.valid).toBe(false);
     expect(result.assetBalanceMet).toBe(false);
@@ -240,7 +243,7 @@ describe('runAccountChecks', () => {
     expect(result.remediation).toMatch(/100\.0000000 USDC/);
   });
 
-  it('does not block on minAssetBalance when trustline is missing (balance check is informational)', () => {
+  it('does not block on minAssetBalance when trustline is missing (balance check is informational)', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -252,7 +255,7 @@ describe('runAccountChecks', () => {
       ],
     });
     const configWithFloor = { ...defaultConfig, minAssetBalance: 100 };
-    const result = runAccountChecks(account, configWithFloor);
+    const result = await runAccountChecks(account, configWithFloor);
 
     expect(result.valid).toBe(false);
     expect(result.trustlineExists).toBe(false);
@@ -263,7 +266,7 @@ describe('runAccountChecks', () => {
     expect(result.checks[3].detail).toMatch(/trustline is not configured yet/);
   });
 
-  it('fails when USDC trustline is missing', () => {
+  it('fails when USDC trustline is missing', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -275,7 +278,7 @@ describe('runAccountChecks', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     expect(result.valid).toBe(false);
     expect(result.trustlineExists).toBe(false);
@@ -284,7 +287,7 @@ describe('runAccountChecks', () => {
     expect(result.remediation).toMatch(/Stellar Laboratory/i);
   });
 
-  it('fails when account has trustlines but not for the target asset', () => {
+  it('fails when account has trustlines but not for the target asset', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -304,13 +307,13 @@ describe('runAccountChecks', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     expect(result.trustlineExists).toBe(false);
     expect(result.checks[1].detail).toMatch(/not for \*\*USDC\*\*/i);
   });
 
-  it('fails when XLM balance is below minimum reserve', () => {
+  it('fails when XLM balance is below minimum reserve', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -330,7 +333,7 @@ describe('runAccountChecks', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     expect(result.valid).toBe(false);
     expect(result.xlmReserveMet).toBe(false);
@@ -338,7 +341,7 @@ describe('runAccountChecks', () => {
     expect(result.remediation).toMatch(/Send at least/i);
   });
 
-  it('does not false-positive hasAnyTrustlines when only LP shares are present', () => {
+  it('does not false-positive hasAnyTrustlines when only LP shares are present', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -360,13 +363,13 @@ describe('runAccountChecks', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.trustlineExists).toBe(false);
     // Should say "zero trustlines" not "has trustlines but not for USDC"
     expect(result.checks[1].detail).toMatch(/zero trustlines/i);
   });
 
-  it('finds trustline in account with 100+ mixed balance entries without false negative', () => {
+  it('finds trustline in account with 100+ mixed balance entries without false negative', async () => {
     const manyBalances: import('../src/horizon').HorizonBalance[] = [
       { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
     ];
@@ -392,12 +395,12 @@ describe('runAccountChecks', () => {
     });
 
     const account = makeAccount({ balances: manyBalances });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.trustlineExists).toBe(true);
     expect(result.valid).toBe(true);
   });
 
-  it('matches asset by code and issuer exactly', () => {
+  it('matches asset by code and issuer exactly', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -417,28 +420,28 @@ describe('runAccountChecks', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.trustlineExists).toBe(false);
     expect(result.assetBalance).toBe('0');
   });
 
-  it('does not add asset balance check when minAssetBalance is 0', () => {
+  it('does not add asset balance check when minAssetBalance is 0', async () => {
     const configZero = { ...defaultConfig, minAssetBalance: 0 };
-    const result = runAccountChecks(makeAccount(), configZero);
+    const result = await runAccountChecks(makeAccount(), configZero);
 
     expect(result.checks.length).toBe(3);
     expect(result.assetBalanceMet).toBe(true);
   });
 
-  it('does not add asset balance check when minAssetBalance is undefined', () => {
+  it('does not add asset balance check when minAssetBalance is undefined', async () => {
     const configUndefined = { ...defaultConfig, minAssetBalance: undefined };
-    const result = runAccountChecks(makeAccount(), configUndefined);
+    const result = await runAccountChecks(makeAccount(), configUndefined);
 
     expect(result.checks.length).toBe(3);
     expect(result.assetBalanceMet).toBe(true);
   });
 
-  it('sponsor-aware: extra subentries raise the requirement above the flat floor and can fail a balance the flat check would have passed', () => {
+  it('sponsor-aware: extra subentries raise the requirement above the flat floor and can fail a balance the flat check would have passed', async () => {
     // protocol minimum = (2 base + 5 subentries) * 0.5 = 3.5 XLM, which exceeds
     // the configured 1.5 XLM floor. A 2.0 XLM balance would pass the old flat
     // 1.5 XLM check but correctly fails the sponsor-aware protocol minimum.
@@ -463,26 +466,26 @@ describe('runAccountChecks', () => {
         },
       ],
     });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     expect(result.reserveRequirement?.protocolMinimum).toBe(3.5);
     expect(result.reserveRequirement?.required).toBe(3.5);
     expect(result.xlmReserveMet).toBe(false);
   });
 
-  it('sponsor-aware: fully sponsored trustlines lower the protocol minimum below the flat floor', () => {
+  it('sponsor-aware: fully sponsored trustlines lower the protocol minimum below the flat floor', async () => {
     // protocol minimum = (2 base + 3 subentries + 0 sponsoring - 3 sponsored) * 0.5 = 1.0 XLM,
     // which is below the configured 1.5 XLM floor — the floor still applies.
     const account = makeAccount({ subentry_count: 3, num_sponsoring: 0, num_sponsored: 3 });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     expect(result.reserveRequirement?.protocolMinimum).toBe(1);
     expect(result.reserveRequirement?.required).toBe(1.5); // floor override
   });
 
-  it('sponsor-aware: check detail explains the computed requirement vs the floor', () => {
+  it('sponsor-aware: check detail explains the computed requirement vs the floor', async () => {
     const account = makeAccount({ subentry_count: 2, num_sponsoring: 1, num_sponsored: 0 });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     const reserveDetail = result.checks[2].detail;
     expect(reserveDetail).toMatch(/protocol minimum/i);
@@ -490,31 +493,31 @@ describe('runAccountChecks', () => {
     expect(reserveDetail).toMatch(/floor \*\*1\.5 XLM\*\*/);
   });
 
-  it('sponsor-aware: omitted sponsor fields on an account default to 0', () => {
+  it('sponsor-aware: omitted sponsor fields on an account default to 0', async () => {
     const account = makeAccount({ subentry_count: 1 });
     delete (account as { num_sponsoring?: number }).num_sponsoring;
     delete (account as { num_sponsored?: number }).num_sponsored;
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.reserveRequirement?.protocolMinimum).toBe(1.5);
   });
 });
 
 describe('getFailedCheckLabels', () => {
-  it('returns labels for failed checks only', () => {
-    const result = runAccountChecks(makeAccount({ balances: [] }), defaultConfig);
+  it('returns labels for failed checks only', async () => {
+    const result = await runAccountChecks(makeAccount({ balances: [] }), defaultConfig);
     expect(getFailedCheckLabels(result)).toEqual(['USDC trustline', 'XLM reserve']);
   });
 
-  it('includes asset balance minimum in failed labels when applicable', () => {
+  it('includes asset balance minimum in failed labels when applicable', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 500 };
-    const result = runAccountChecks(makeAccount(), configWithFloor);
+    const result = await runAccountChecks(makeAccount(), configWithFloor);
     expect(getFailedCheckLabels(result)).toEqual(['USDC minimum balance']);
   });
 });
 
 describe('unfundedAccountResult', () => {
-  it('returns all checks failed with remediation guidance', () => {
+  it('returns all checks failed with remediation guidance', async () => {
     const result = unfundedAccountResult(TEST_ADDRESS, defaultConfig);
 
     expect(result.valid).toBe(false);
@@ -531,7 +534,7 @@ describe('unfundedAccountResult', () => {
     expect(result.checks.length).toBe(3);
   });
 
-  it('includes asset balance check when minAssetBalance is configured', () => {
+  it('includes asset balance check when minAssetBalance is configured', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 100 };
     const result = unfundedAccountResult(TEST_ADDRESS, configWithFloor);
 
@@ -545,35 +548,35 @@ describe('unfundedAccountResult', () => {
 });
 
 describe('Stellar reserve constants', () => {
-  it('exports documented reserve values', () => {
+  it('exports documented reserve values', async () => {
     expect(STELLAR_BASE_RESERVE_XLM).toBe(0.5);
     expect(STELLAR_MIN_ACCOUNT_BALANCE_XLM).toBe(1);
   });
 });
 
 describe('computeProtocolMinReserve', () => {
-  it('computes 2 base reserves plus one per subentry (unsponsored account)', () => {
+  it('computes 2 base reserves plus one per subentry (unsponsored account)', async () => {
     expect(computeProtocolMinReserve({ subentry_count: 1 })).toBe(1.5);
     expect(computeProtocolMinReserve({ subentry_count: 3 })).toBe(2.5);
   });
 
-  it('defaults missing sponsor fields to 0 (older Horizon snapshots)', () => {
+  it('defaults missing sponsor fields to 0 (older Horizon snapshots)', async () => {
     expect(computeProtocolMinReserve({ subentry_count: 2 })).toBe(2);
   });
 
-  it('adds reserve for subentries this account sponsors for others', () => {
+  it('adds reserve for subentries this account sponsors for others', async () => {
     expect(
       computeProtocolMinReserve({ subentry_count: 1, num_sponsoring: 2, num_sponsored: 0 }),
     ).toBe(2.5);
   });
 
-  it('subtracts reserve for subentries sponsored on this account by someone else', () => {
+  it('subtracts reserve for subentries sponsored on this account by someone else', async () => {
     expect(
       computeProtocolMinReserve({ subentry_count: 3, num_sponsoring: 0, num_sponsored: 3 }),
     ).toBe(1);
   });
 
-  it('never goes negative even if sponsorship counts outweigh base + subentries', () => {
+  it('never goes negative even if sponsorship counts outweigh base + subentries', async () => {
     expect(
       computeProtocolMinReserve({ subentry_count: 0, num_sponsoring: 0, num_sponsored: 10 }),
     ).toBe(0);
@@ -581,7 +584,7 @@ describe('computeProtocolMinReserve', () => {
 });
 
 describe('buildReserveRequirement', () => {
-  it('summarizes reserve state using the protocol minimum when no floor override applies', () => {
+  it('summarizes reserve state using the protocol minimum when no floor override applies', async () => {
     expect(buildReserveRequirement(1.5, 1, { subentry_count: 1 })).toEqual({
       required: 1.5,
       actual: 1,
@@ -595,7 +598,7 @@ describe('buildReserveRequirement', () => {
     });
   });
 
-  it('uses the configured floor when it exceeds the protocol minimum', () => {
+  it('uses the configured floor when it exceeds the protocol minimum', async () => {
     const result = buildReserveRequirement(5, 3, { subentry_count: 1 });
     expect(result.protocolMinimum).toBe(1.5);
     expect(result.configuredFloor).toBe(5);
@@ -603,7 +606,7 @@ describe('buildReserveRequirement', () => {
     expect(result.met).toBe(false);
   });
 
-  it('uses the protocol minimum when it exceeds the configured floor (sponsored trustlines)', () => {
+  it('uses the protocol minimum when it exceeds the configured floor (sponsored trustlines)', async () => {
     const result = buildReserveRequirement(1.5, 3, {
       subentry_count: 4,
       num_sponsoring: 0,
@@ -615,7 +618,7 @@ describe('buildReserveRequirement', () => {
     expect(result.met).toBe(true);
   });
 
-  it('defaults to no account context (protocol minimum 0) when omitted', () => {
+  it('defaults to no account context (protocol minimum 0) when omitted', async () => {
     expect(buildReserveRequirement(1.5, 1)).toEqual({
       required: 1.5,
       actual: 1,
@@ -631,7 +634,7 @@ describe('buildReserveRequirement', () => {
 });
 
 describe('buildAssetBalanceRequirement', () => {
-  it('calculates deficit and met status correctly', () => {
+  it('calculates deficit and met status correctly', async () => {
     expect(buildAssetBalanceRequirement(1000000000n, 500000000n)).toEqual({
       required: 1000000000n,
       actual: 500000000n,
@@ -640,7 +643,7 @@ describe('buildAssetBalanceRequirement', () => {
     });
   });
 
-  it('shows zero missing when met', () => {
+  it('shows zero missing when met', async () => {
     expect(buildAssetBalanceRequirement(1000000000n, 2000000000n)).toEqual({
       required: 1000000000n,
       actual: 2000000000n,
@@ -649,7 +652,7 @@ describe('buildAssetBalanceRequirement', () => {
     });
   });
 
-  it('shows zero missing when exactly equal', () => {
+  it('shows zero missing when exactly equal', async () => {
     expect(buildAssetBalanceRequirement(1000000000n, 1000000000n)).toEqual({
       required: 1000000000n,
       actual: 1000000000n,
@@ -660,8 +663,8 @@ describe('buildAssetBalanceRequirement', () => {
 });
 
 describe('buildValidationGate', () => {
-  it('reports a ready gate when every check passes', () => {
-    const result = runAccountChecks(makeAccount(), defaultConfig);
+  it('reports a ready gate when every check passes', async () => {
+    const result = await runAccountChecks(makeAccount(), defaultConfig);
 
     expect(buildValidationGate(result)).toEqual({
       ready: true,
@@ -672,8 +675,8 @@ describe('buildValidationGate', () => {
     });
   });
 
-  it('reports blocked labels for failed checks', () => {
-    const result = runAccountChecks(makeAccount({ balances: [] }), defaultConfig);
+  it('reports blocked labels for failed checks', async () => {
+    const result = await runAccountChecks(makeAccount({ balances: [] }), defaultConfig);
 
     expect(buildValidationGate(result)).toEqual({
       ready: false,
@@ -684,9 +687,9 @@ describe('buildValidationGate', () => {
     });
   });
 
-  it('reports 4 total checks and asset balance failure when minAssetBalance is set and fails', () => {
+  it('reports 4 total checks and asset balance failure when minAssetBalance is set and fails', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 500 };
-    const result = runAccountChecks(makeAccount(), configWithFloor);
+    const result = await runAccountChecks(makeAccount(), configWithFloor);
 
     expect(buildValidationGate(result)).toEqual({
       ready: false,
@@ -697,9 +700,9 @@ describe('buildValidationGate', () => {
     });
   });
 
-  it('reports 4 total checks all passing when minAssetBalance is set and met', () => {
+  it('reports 4 total checks all passing when minAssetBalance is set and met', async () => {
     const configWithFloor = { ...defaultConfig, minAssetBalance: 50 };
-    const result = runAccountChecks(makeAccount(), configWithFloor);
+    const result = await runAccountChecks(makeAccount(), configWithFloor);
 
     expect(buildValidationGate(result)).toEqual({
       ready: true,
@@ -714,7 +717,7 @@ describe('buildValidationGate', () => {
 describe('runMultiAssetChecks', () => {
   const EURC_ISSUER = 'GCQTGZQQ5G4PTM2RNQRAXRJJEL5CQ5Z2OY5SUJRE763CPEKE6EJUMCU';
 
-  it('returns true for all assets when all trustlines exist', () => {
+  it('returns true for all assets when all trustlines exist', async () => {
     const account = makeAccount({
       balances: [
         { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
@@ -733,7 +736,7 @@ describe('runMultiAssetChecks', () => {
     ]);
   });
 
-  it('returns false aggregate when any trustline is missing', () => {
+  it('returns false aggregate when any trustline is missing', async () => {
     const account = makeAccount(); // only has USDC
     const { results, allTrustlinesExist } = runMultiAssetChecks(account, [
       { assetCode: 'USDC', assetIssuer: USDC_ISSUER },
@@ -744,13 +747,13 @@ describe('runMultiAssetChecks', () => {
     expect(results[1].trustlineExists).toBe(false);
   });
 
-  it('returns empty results and true aggregate for empty asset list', () => {
+  it('returns empty results and true aggregate for empty asset list', async () => {
     const { results, allTrustlinesExist } = runMultiAssetChecks(makeAccount(), []);
     expect(results).toEqual([]);
     expect(allTrustlinesExist).toBe(true);
   });
 
-  it('handles a single asset correctly', () => {
+  it('handles a single asset correctly', async () => {
     const { results, allTrustlinesExist } = runMultiAssetChecks(makeAccount(), [
       { assetCode: 'USDC', assetIssuer: USDC_ISSUER },
     ]);
@@ -760,7 +763,7 @@ describe('runMultiAssetChecks', () => {
 });
 
 describe('markdown escape hardening', () => {
-  it('escapes untrusted Horizon error text before it becomes a check detail', () => {
+  it('escapes untrusted Horizon error text before it becomes a check detail', async () => {
     const maliciousMessage =
       'Horizon down [click here](https://evil.example) *urgent* `rm -rf /` __alert__';
 
@@ -774,13 +777,13 @@ describe('markdown escape hardening', () => {
     expect(detail).toContain('\\*urgent\\*');
   });
 
-  it('escapes a backtick in the issuer so it cannot close the inline-code span early', () => {
+  it('escapes a backtick in the issuer so it cannot close the inline-code span early', async () => {
     const account = makeAccount();
     // A raw backtick here would close the surrounding `code span`, letting
     // the rest of the value render as live Markdown (e.g. a clickable link).
     const maliciousIssuer = 'GENUINE` [click me](https://evil.example) `INJECTED';
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       assetIssuer: maliciousIssuer,
     });
@@ -790,7 +793,7 @@ describe('markdown escape hardening', () => {
     expect(detail).not.toContain('GENUINE` [click me]');
   });
 
-  it('escapes backticks in the stellar address for unfunded results', () => {
+  it('escapes backticks in the stellar address for unfunded results', async () => {
     const result = unfundedAccountResult('G`INJECTED`ADDRESS', defaultConfig);
 
     expect(result.checks[0].detail).toContain('\\`INJECTED\\`');
@@ -799,7 +802,7 @@ describe('markdown escape hardening', () => {
 });
 
 describe('trustline limit validation (Issue #140)', () => {
-  it('does not add trustline limit check when minTrustlineLimit is undefined', () => {
+  it('does not add trustline limit check when minTrustlineLimit is undefined', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -820,7 +823,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
 
     // Only 3 checks: account funded, trustline exists, XLM reserve
     expect(result.checks.length).toBe(3);
@@ -828,7 +831,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('passes when trustline limit meets minimum requirement', () => {
+  it('passes when trustline limit meets minimum requirement', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -849,7 +852,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 500,
     });
@@ -862,7 +865,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.checks[3].detail).toContain('500');
   });
 
-  it('fails when trustline limit is below minimum requirement', () => {
+  it('fails when trustline limit is below minimum requirement', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -883,7 +886,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 500,
     });
@@ -898,7 +901,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.remediation).toContain('Current limit is **`100.0000000` USDC**');
   });
 
-  it('fails the trustline limit check when trustline does not exist', () => {
+  it('fails the trustline limit check when trustline does not exist', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -910,7 +913,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 500,
     });
@@ -923,7 +926,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.checks[3].detail).toContain('USDC');
   });
 
-  it('handles trustline with zero limit', () => {
+  it('handles trustline with zero limit', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -944,7 +947,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 1,
     });
@@ -954,7 +957,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.checks[3].detail).toContain('0.0000000');
   });
 
-  it('passes when trustline limit exactly equals minimum requirement', () => {
+  it('passes when trustline limit exactly equals minimum requirement', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -975,7 +978,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 250.5,
     });
@@ -984,7 +987,7 @@ describe('trustline limit validation (Issue #140)', () => {
     expect(result.checks[3].passed).toBe(true);
   });
 
-  it('includes all remediation steps when multiple checks fail', () => {
+  it('includes all remediation steps when multiple checks fail', async () => {
     const account = makeAccount({
       balances: [
         {
@@ -1005,7 +1008,7 @@ describe('trustline limit validation (Issue #140)', () => {
       ],
     });
 
-    const result = runAccountChecks(account, {
+    const result = await runAccountChecks(account, {
       ...defaultConfig,
       minTrustlineLimit: 500,
     });
@@ -1018,62 +1021,62 @@ describe('trustline limit validation (Issue #140)', () => {
 });
 
 describe('FailureReasonCode mapping (Issue #67)', () => {
-  it('assigns SUCCESS when all checks pass', () => {
-    const result = runAccountChecks(makeAccount(), defaultConfig);
+  it('assigns SUCCESS when all checks pass', async () => {
+    const result = await runAccountChecks(makeAccount(), defaultConfig);
     expect(result.reasonCode).toBe('SUCCESS');
   });
 
-  it('assigns ACCOUNT_NOT_FUNDED for unfunded accounts', () => {
+  it('assigns ACCOUNT_NOT_FUNDED for unfunded accounts', async () => {
     const result = unfundedAccountResult(TEST_ADDRESS, defaultConfig);
     expect(result.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
   });
 
-  it('assigns TRUSTLINE_MISSING when trustline is absent', () => {
+  it('assigns TRUSTLINE_MISSING when trustline is absent', async () => {
     const account = makeAccount({ balances: [{ balance: '10.0', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' }] });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.reasonCode).toBe('TRUSTLINE_MISSING');
   });
 
-  it('assigns RESERVE_TOO_LOW when XLM balance is low', () => {
+  it('assigns RESERVE_TOO_LOW when XLM balance is low', async () => {
     const account = makeAccount({
       balances: [
         { balance: '0.1', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
         { balance: '100.0', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER, buying_liabilities: '0', selling_liabilities: '0' },
       ],
     });
-    const result = runAccountChecks(account, defaultConfig);
+    const result = await runAccountChecks(account, defaultConfig);
     expect(result.reasonCode).toBe('RESERVE_TOO_LOW');
   });
 
-  it('assigns TRUSTLINE_LIMIT_TOO_LOW when trustline limit is below threshold', () => {
+  it('assigns TRUSTLINE_LIMIT_TOO_LOW when trustline limit is below threshold', async () => {
     const account = makeAccount({
       balances: [
         { balance: '10.0', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
         { balance: '100.0', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER, limit: '50.0', buying_liabilities: '0', selling_liabilities: '0' },
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, minTrustlineLimit: 100 });
+    const result = await runAccountChecks(account, { ...defaultConfig, minTrustlineLimit: 100 });
     expect(result.reasonCode).toBe('TRUSTLINE_LIMIT_TOO_LOW');
   });
 
-  it('assigns HORIZON_TIMEOUT when Horizon times out', () => {
+  it('assigns HORIZON_TIMEOUT when Horizon times out', async () => {
     const result = horizonFailureResult('Request timed out after 15000ms', defaultConfig);
     expect(result.reasonCode).toBe('HORIZON_TIMEOUT');
   });
 
-  it('assigns HORIZON_ERROR for generic Horizon failure', () => {
+  it('assigns HORIZON_ERROR for generic Horizon failure', async () => {
     const result = horizonFailureResult('Internal server error', defaultConfig);
     expect(result.reasonCode).toBe('HORIZON_ERROR');
   });
 
-  it('assigns TLS_ERROR for TLS failure', () => {
+  it('assigns TLS_ERROR for TLS failure', async () => {
     const result = tlsFailureResult('Certificate verification failed', defaultConfig);
     expect(result.reasonCode).toBe('TLS_ERROR');
   });
 });
 
 describe('claimable-balance-aware funded definition (Issue #260)', () => {
-  it('ignores claimables by default (policy ignore): funded account with claimables still funded true, no claimable check row', () => {
+  it('ignores claimables by default (policy ignore): funded account with claimables still funded true, no claimable check row', async () => {
     const account = makeAccount({
       balances: [
         { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
@@ -1081,7 +1084,7 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
         { balance: '5.0000000', asset_type: 'claimable_balance_id', claimable_balance_id: 'abc', buying_liabilities: '0', selling_liabilities: '0' } as unknown as import('../src/horizon').HorizonBalance,
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'ignore' });
+    const result = await runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'ignore' });
     expect(result.accountFunded).toBe(true);
     expect(result.hasClaimableBalances).toBe(true);
     expect(result.claimableBalanceCount).toBe(1);
@@ -1089,7 +1092,7 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
   });
 
-  it('count policy: unfunded with 2 claimables surfaces hint and remediation, empty claimables no hint', () => {
+  it('count policy: unfunded with 2 claimables surfaces hint and remediation, empty claimables no hint', async () => {
     const configCount = { ...defaultConfig, claimableBalancePolicy: 'count' as const, horizonUrl: 'https://horizon.stellar.org' };
     const resultWith = unfundedAccountResult(TEST_ADDRESS, configCount, undefined, 2);
     expect(resultWith.checks.some((c) => c.label === 'Claimable balances')).toBe(true);
@@ -1105,14 +1108,14 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(resultEmpty.hasClaimableBalances).toBe(false);
   });
 
-  it('ignore policy: unfunded with claimables still no hint (default behavior preserved)', () => {
+  it('ignore policy: unfunded with claimables still no hint (default behavior preserved)', async () => {
     const configIgnore = { ...defaultConfig, claimableBalancePolicy: 'ignore' as const };
     const result = unfundedAccountResult(TEST_ADDRESS, configIgnore, undefined, 5);
     expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
     expect(result.checks.find((c) => c.label === 'Account funded')!.detail).not.toContain('claimable');
   });
 
-  it('count policy: funded account with claimables adds informational claimable check but valid unchanged', () => {
+  it('count policy: funded account with claimables adds informational claimable check but valid unchanged', async () => {
     const account = makeAccount({
       balances: [
         { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
@@ -1120,144 +1123,257 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
         { balance: '1.0000000', asset_type: 'claimable_balance_id', claimable_balance_id: 'id1', buying_liabilities: '0', selling_liabilities: '0' } as unknown as import('../src/horizon').HorizonBalance,
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'count' });
+    const result = await runAccountChecks(account, { ...defaultConfig, claimableBalancePolicy: 'count' });
     expect(result.valid).toBe(true);
     expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(true);
     expect(result.hasClaimableBalances).toBe(true);
   });
 });
 
-describe('Asset authorization and clawback flags detection (Issue #247)', () => {
-  it('passes vanilla USDC without flags or clawback (no false failure)', () => {
-    const account = makeAccount();
-    const result = runAccountChecks(account, defaultConfig);
-    expect(result.valid).toBe(true);
-    expect(result.trustlineExists).toBe(true);
-    expect(result.trustlineAuthorized).toBe(true);
-    expect(result.clawbackEnabled).toBe(false);
-    expect(result.reasonCode).toBe('SUCCESS');
-    expect(result.checks.some((c) => c.label.includes('clawback'))).toBe(false);
-  });
+// ---------------------------------------------------------------------------
+// Issue #248 — Unauthorized AUTH_REQUIRED trustlines
+// ---------------------------------------------------------------------------
 
-  it('warns when trustline is unauthorized and unauthorizedTrustlinePolicy is warn (default)', () => {
+describe('Issue #248: unauthorized trustlines', () => {
+  it('policy=fail: unauthorized trustline blocks valid and sets trustlineExists=false', async () => {
     const account = makeAccount({
       balances: [
-        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
         {
-          balance: '0.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: USDC_ISSUER,
-          is_authorized: false,
-          buying_liabilities: '0',
-          selling_liabilities: '0',
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
         },
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'warn' });
-    expect(result.valid).toBe(true);
-    expect(result.trustlineExists).toBe(true);
-    expect(result.trustlineAuthorized).toBe(false);
-    expect(result.checks[1].detail).toContain('not yet authorized');
-    expect(result.reasonCode).toBe('SUCCESS');
-  });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
 
-  it('fails with TRUSTLINE_UNAUTHORIZED when unauthorizedTrustlinePolicy is fail', () => {
-    const account = makeAccount({
-      balances: [
-        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
-        {
-          balance: '0.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: USDC_ISSUER,
-          is_authorized: false,
-          buying_liabilities: '0',
-          selling_liabilities: '0',
-        },
-      ],
-    });
-    const result = runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
     expect(result.valid).toBe(false);
     expect(result.trustlineExists).toBe(false);
     expect(result.trustlineAuthorized).toBe(false);
-    expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
     expect(result.checks[1].passed).toBe(false);
-    expect(result.checks[1].detail).toContain('not authorized');
-    expect(result.remediation).toContain('SetTrustLineFlags');
+    expect(result.checks[1].detail).toMatch(/not authorized.*blocked by.*unauthorized_trustline_policy: fail/i);
+    expect(result.remediation).toMatch(/Ask the asset issuer/i);
+    expect(result.remediation).toMatch(/SetTrustLineFlags/i);
   });
 
-  it('surfaces informational status when clawback is enabled and clawbackStrictMode is false (default)', () => {
+  it('policy=warn (default): unauthorized trustline still passes but detail warns', async () => {
     const account = makeAccount({
       balances: [
-        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
         {
-          balance: '100.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: USDC_ISSUER,
-          is_clawback_enabled: true,
-          buying_liabilities: '0',
-          selling_liabilities: '0',
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
         },
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: false });
+    const result = await runAccountChecks(account, defaultConfig);
+
     expect(result.valid).toBe(true);
-    expect(result.clawbackEnabled).toBe(true);
-    expect(result.reasonCode).toBe('SUCCESS');
-    const clawbackCheck = result.checks.find((c) => c.label.includes('clawback status'));
-    expect(clawbackCheck).toBeDefined();
-    expect(clawbackCheck?.passed).toBe(true);
-    expect(clawbackCheck?.detail).toContain('clawback enabled');
+    expect(result.trustlineExists).toBe(true);
+    expect(result.trustlineAuthorized).toBe(false);
+    expect(result.checks[1].passed).toBe(true);
+    expect(result.checks[1].detail).toMatch(/not yet authorized/i);
+    expect(result.checks[1].detail).toMatch(/transfers will fail until authorized/i);
   });
 
-  it('fails with CLAWBACK_BLOCKED when clawback is enabled and clawbackStrictMode is true', () => {
+  it('policy=ignore: unauthorized trustline passes with no warning', async () => {
     const account = makeAccount({
       balances: [
-        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
         {
-          balance: '100.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: USDC_ISSUER,
-          is_clawback_enabled: true,
-          buying_liabilities: '0',
-          selling_liabilities: '0',
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
         },
       ],
     });
-    const result = runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
-    expect(result.valid).toBe(false);
-    expect(result.clawbackEnabled).toBe(true);
-    expect(result.reasonCode).toBe('CLAWBACK_BLOCKED');
-    const clawbackCheck = result.checks.find((c) => c.label.includes('clawback safety'));
-    expect(clawbackCheck).toBeDefined();
-    expect(clawbackCheck?.passed).toBe(false);
-    expect(clawbackCheck?.detail).toContain('blocked by `clawback_strict_mode: true`');
-    expect(result.remediation).toContain('clawback enabled');
-  });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'ignore' });
 
-  it('handles older Horizon responses where flag fields are absent without error', () => {
-    const account = makeAccount({
-      balances: [
-        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
-        {
-          balance: '100.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: USDC_ISSUER,
-          buying_liabilities: '0',
-          selling_liabilities: '0',
-        },
-      ],
-    });
-    delete (account.balances[1] as { is_authorized?: boolean }).is_authorized;
-    delete (account.balances[1] as { is_clawback_enabled?: boolean }).is_clawback_enabled;
-
-    const result = runAccountChecks(account, defaultConfig);
     expect(result.valid).toBe(true);
+    expect(result.trustlineExists).toBe(true);
+    expect(result.checks[1].passed).toBe(true);
+    expect(result.checks[1].detail).not.toMatch(/not authorized/i);
+  });
+
+  it('policy=fail: unauthorized trustline sets reasonCode=TRUSTLINE_MISSING', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
+
+    expect(result.reasonCode).toBe('TRUSTLINE_MISSING');
+  });
+
+  it('policy=warn: unauthorized trustline with auth_revocable issuer mentions revocation', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
+        },
+      ],
+      flags: { auth_required: true, auth_revocable: true },
+    });
+    const result = await runAccountChecks(account, defaultConfig);
+
+    expect(result.checks[1].detail).toMatch(/not yet authorized/i);
+    expect(result.checks[1].detail).toMatch(/AUTH_REVOCABLE/i);
+    expect(result.checks[1].detail).toMatch(/revoked/i);
+  });
+
+  it('policy=fail: authorized trustline still passes even with auth_revocable issuer', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: true,
+        },
+      ],
+      flags: { auth_required: true, auth_revocable: true },
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
+
+    expect(result.valid).toBe(true);
+    expect(result.trustlineExists).toBe(true);
     expect(result.trustlineAuthorized).toBe(true);
-    expect(result.clawbackEnabled).toBe(false);
+    expect(result.checks[1].passed).toBe(true);
+  });
+
+  it('clawback enabled (non-strict): trustline passes but detail warns about clawback', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: false });
+
+    expect(result.valid).toBe(true);
+    expect(result.trustlineExists).toBe(true);
+    expect(result.clawbackEnabled).toBe(true);
+    expect(result.checks[1].passed).toBe(true);
+    expect(result.checks[1].detail).toMatch(/clawback is enabled/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #249 — LP share trustline exclusion edge cases
+// ---------------------------------------------------------------------------
+
+describe('Issue #249: LP share edge cases', () => {
+  it('LP shares + other credit trustlines (not USDC): trustlineExists=false', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '1.0000000', asset_type: 'liquidity_pool_shares', liquidity_pool_id: 'pool1',
+          buying_liabilities: '0', selling_liabilities: '0', limit: '1000',
+          is_authorized: true, is_authorized_to_maintain_liabilities: true,
+        } as unknown as import('../src/horizon').HorizonBalance,
+        {
+          balance: '50.0000000', asset_type: 'credit_alphanum4', asset_code: 'EURC',
+          asset_issuer: 'GCQTGZQQ5G4PTM2RNQRAXRJJEL5CQ5Z2OY5SUJRE763CPEKE6EJUMCU',
+          buying_liabilities: '0', selling_liabilities: '0',
+        },
+      ],
+    });
+
+    const result = await runAccountChecks(account, defaultConfig);
+    expect(result.trustlineExists).toBe(false);
+    expect(result.checks[1].detail).toMatch(/not for \*\*USDC\*\*/i);
+  });
+
+  it('LP shares + USDC trustline: trustlineExists=true (USDC found correctly)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '1.0000000', asset_type: 'liquidity_pool_shares', liquidity_pool_id: 'pool1',
+          buying_liabilities: '0', selling_liabilities: '0', limit: '1000',
+          is_authorized: true, is_authorized_to_maintain_liabilities: true,
+        } as unknown as import('../src/horizon').HorizonBalance,
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0', selling_liabilities: '0',
+        },
+      ],
+    });
+
+    const result = await runAccountChecks(account, defaultConfig);
+    expect(result.trustlineExists).toBe(true);
+    expect(result.valid).toBe(true);
+    expect(result.assetBalance).toBe('100.0000000');
+  });
+
+  it('getAssetBalance returns 0 when only LP shares exist', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '5.0000000', asset_type: 'liquidity_pool_shares', liquidity_pool_id: 'pool1',
+          buying_liabilities: '0', selling_liabilities: '0', limit: '1000',
+          is_authorized: true, is_authorized_to_maintain_liabilities: true,
+        } as unknown as import('../src/horizon').HorizonBalance,
+      ],
+    });
+
+    const result = await runAccountChecks(account, defaultConfig);
+    expect(result.assetBalance).toBe('0');
+    expect(result.trustlineExists).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #250 — Muxed (M...) address acceptance
+// ---------------------------------------------------------------------------
+
+describe('Issue #250: Muxed address support', () => {
+  const M_ADDRESS = 'MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ';
+  const G_EXTRACTED_FROM_M = 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ';
+
+  it('isValidMuxedAddress recognizes valid M-address', () => {
+    expect(isValidMuxedAddress(M_ADDRESS)).toBe(true);
+  });
+
+  it('isValidMuxedAddress rejects G-address', () => {
+    expect(isValidMuxedAddress('G' + 'A'.repeat(68))).toBe(false);
+  });
+
+  it('isValidMuxedAddress rejects too-short M-address', () => {
+    expect(isValidMuxedAddress('MABC')).toBe(false);
+  });
+
+  it('decodeMuxedAddress extracts G-address and muxed ID', () => {
+    const result = decodeMuxedAddress(M_ADDRESS);
+    expect(result).not.toBeNull();
+    expect(result!.gAddress).toBe(G_EXTRACTED_FROM_M);
+    expect(result!.muxedId).toBe(0n);
+  });
+
+  it('decodeMuxedAddress returns null for invalid input', () => {
+    expect(decodeMuxedAddress('not-a-muxed-address')).toBeNull();
+    expect(decodeMuxedAddress(TEST_ADDRESS)).toBeNull();
+  });
+
+  it('convertMuxedToGAddress converts M to G', () => {
+    expect(convertMuxedToGAddress(M_ADDRESS)).toBe(G_EXTRACTED_FROM_M);
+  });
+
+  it('convertMuxedToGAddress throws for invalid input', () => {
+    expect(() => convertMuxedToGAddress('invalid')).toThrow(/Invalid Stellar muxed address/i);
+  });
+
+  it('validateStellarAddress accepts M-address', () => {
+    expect(() => validateStellarAddress(M_ADDRESS)).not.toThrow();
   });
 });

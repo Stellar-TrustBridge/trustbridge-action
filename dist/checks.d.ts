@@ -325,17 +325,38 @@ export declare function normalizeStellarAddress(address: string): string;
  * because their checksum bytes don't match the payload.
  */
 export declare function isValidStellarAddress(address: string): boolean;
+/**
+ * Validates a Stellar muxed ("M...") address against the full StrKey policy:
+ * 69 characters (M + 68 base32), version byte 0x60, and a matching CRC-16/XMODEM checksum.
+ *
+ * M-addresses encode: 1 version byte + 32-byte ed25519 key + 8-byte muxed ID + 2-byte checksum = 43 bytes → 69 base32 chars.
+ */
+export declare function isValidMuxedAddress(address: string): boolean;
+/**
+ * Decodes a Stellar muxed ("M...") address into the underlying G-address and muxed ID.
+ *
+ * Returns `null` if the input is not a valid M-address.
+ */
+export declare function decodeMuxedAddress(mAddress: string): {
+    gAddress: string;
+    muxedId: bigint;
+} | null;
+/**
+ * Converts a Stellar muxed ("M...") address to the underlying G-address.
+ * Throws if the input is not a valid M-address.
+ */
+export declare function convertMuxedToGAddress(address: string): string;
 export interface AddressExtractionResult {
-    /** The first valid Stellar G-address found, or undefined if none. */
+    /** The first valid Stellar address found (G or M), or undefined if none. */
     address: string | undefined;
-    /** All valid G-addresses found in the text (deduplicated, order preserved). */
+    /** All valid Stellar addresses found in the text (G and M, deduplicated, order preserved). */
     allAddresses: string[];
 }
 /**
- * Extract Stellar G-addresses from free-form text such as an issue body.
+ * Extract Stellar addresses (G-addresses and M-addresses) from free-form text such as an issue body.
  *
- * Scans the text for all 56-character sequences starting with G followed by
- * base32 characters, validates each one, and returns the first valid hit
+ * Scans the text for all 56-character G-address sequences and 69-character
+ * M-address sequences, validates each one, and returns the first valid hit
  * together with a deduplicated list of every valid address found.
  *
  * Safe to call with arbitrary untrusted input — performs no network requests
