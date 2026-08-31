@@ -303,31 +303,39 @@ validating end-to-end comment posting without touching mainnet.
 
 Mocked Horizon tests catch most issues, but integration bugs (GitHub API quirks, Horizon API
 changes, etc.) can slip through. A guarded live testnet job increases confidence before
-releases while staying opt-in to avoid flaky default CI.
+releases while staying fork-safe and opt-in for custom test accounts.
 
 ### When the job runs
 
-- ✅ **On maintainer pushes** to `main` / `master` when secrets are set
+- ✅ **On maintainer pushes** to `main` / `master`
 - ✅ **On explicit `workflow_dispatch` trigger** (manual testing)
-- ❌ **Skip on pull requests** (even from maintainers — secrets not available)
-- ❌ **Skip on forks** (no access to repository secrets)
-- ❌ **Skip on default CI** (opt-in only via secrets)
+- ❌ **Skip on forks** (blocked by `github.repository` guard)
+- ❌ **Skip on dependabot commits**
+
+> **Why not check secrets in the `if:` condition?**
+> GitHub Actions evaluates `secrets.*` as an empty string in `if:` conditions
+> regardless of whether the secret is set. Fork-safety is achieved through the
+> `github.repository` + event-name guard, not secret presence.
+
+### Test address fallback
+
+The job uses `${{ secrets.TEST_STELLAR_ADDRESS }}` when set. If the secret is not
+configured, it falls back automatically to `GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN`
+— a well-known Stellar testnet anchor that is always funded — so the job produces
+a real Horizon response even without a custom secret.
 
 ### Setup (for maintainers)
 
-1. **Create a funded testnet account**
-
+1. **Create a funded testnet account** (optional — the job works without it)
    ```bash
    # Use Stellar Laboratory (testnet mode) to create and fund a new account
    # https://laboratory.stellar.org/#account-creator?network=test
-   # Fund with friendbot or request XLM via Stellar community channels
+   # Fund with friendbot: https://friendbot.stellar.org/?addr=YOUR_ADDRESS
    ```
 
-2. **Add repository secrets** (Settings → Secrets → Actions)
-   - **`TEST_STELLAR_ADDRESS`**: The G-address of your funded testnet account
-     (if this secret is empty, the job is skipped)
-   - **`TEST_ISSUE_NUMBER`** (optional): Issue number for comment posting
-     (defaults to using a test issue; comment will be posted there)
+2. **Add repository secrets** (Settings → Secrets → Actions) — optional
+   - **`TEST_STELLAR_ADDRESS`**: The G-address of your funded testnet account.
+     If omitted, the job falls back to the well-known testnet anchor above.
 
 3. **Run manually or wait for next maintainer push**
    ```bash
@@ -339,29 +347,27 @@ releases while staying opt-in to avoid flaky default CI.
 
 ### What the job tests
 
-- ✅ Horizon connection to testnet
-- ✅ Account lookup and validation
-- ✅ Comment posting via GitHub API
+- ✅ Stellar testnet Horizon connectivity
+- ✅ Account lookup and full validation pipeline
 - ✅ Output generation (`account_funded`, `xlm_balance`, etc.)
-- ✅ Sticky comment updates (if run multiple times)
 - ✅ No accidental mainnet contact
+- ✅ No real GitHub issue comments (`comment_mode: dry-run`)
 
 ### Failure modes
 
-| Failure                  | Likely cause                                | Fix                                              |
-| ------------------------ | ------------------------------------------- | ------------------------------------------------ |
-| Job skipped entirely     | Repository secrets not set                  | Add `TEST_STELLAR_ADDRESS` to repo secrets       |
-| "account_funded: false"  | Testnet account not funded or wrong account | Use Stellar Lab to fund or verify address        |
-| "Comment posting failed" | Token or permissions issue                  | Check `GITHUB_TOKEN` has `issues: write`         |
-| Rate limit (429)         | Testnet Horizon overloaded                  | Wait a few minutes and retry                     |
-| Timeout                  | Network connectivity                        | Check internet and Horizon endpoint availability |
+| Failure | Likely cause | Fix |
+|---------|--------------|-----|
+| Outputs empty | Action failed before completing | Check job logs |
+| `account_funded: false` | Testnet account not funded | Use Stellar Lab friendbot or change address |
+| Rate limit (429) | Testnet Horizon overloaded | `continue-on-error: true` — job will not block CI |
+| Timeout | Network connectivity | `continue-on-error: true` — job will not block CI |
 
 ### Security
 
 - **Secrets are not printed** — Job uses `GITHUB_TOKEN` scoped to the repository only
 - **Testnet only** — No real XLM or production accounts involved
-- **Forks skip gracefully** — Secrets aren't available on forks, so no failures
-- **Comments posted to test issues only** — Never production workflows
+- **Forks blocked** — `github.repository == 'Stellar-TrustBridge/trustbridge-action'` guard
+- **No real comments** — `comment_mode: dry-run` prevents issue comment spam
 
 ---
 
