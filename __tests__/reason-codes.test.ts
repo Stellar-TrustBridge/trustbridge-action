@@ -86,7 +86,7 @@ describe('reason-codes.json catalog integrity', () => {
     }
   });
 
-  it('catalog contains the 9 known v1 codes', () => {
+  it('catalog contains the 10 known v1 codes', () => {
     const catalogCodes = new Set(catalog.codes.map((e) => e.code));
     const expectedV1Codes = [
       'SUCCESS',
@@ -98,6 +98,7 @@ describe('reason-codes.json catalog integrity', () => {
       'HORIZON_TIMEOUT',
       'HORIZON_ERROR',
       'TLS_ERROR',
+      'MILESTONE_GATE_SKIPPED',
     ];
     for (const code of expectedV1Codes) {
       expect(catalogCodes.has(code)).toBe(true);
@@ -132,6 +133,7 @@ const KNOWN_REASON_CODES = [
   'HORIZON_TIMEOUT',
   'HORIZON_ERROR',
   'TLS_ERROR',
+  'MILESTONE_GATE_SKIPPED',
 ] as const;
 
 describe('CI lock: all known reason_codes are in the catalog', () => {
