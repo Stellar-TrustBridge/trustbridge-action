@@ -1,7 +1,7 @@
-import * as core from '@actions/core';
-import * as github from '@actions/github';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+import * as fs from "fs";
+import * as path from "path";
 import {
   CheckConfig,
   detectNetworkMismatch,
@@ -14,10 +14,16 @@ import {
   HomeDomainCheckMode,
   LedgerFreshnessCheckResult,
   ValidationResult,
-} from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount, applyWalletLabels } from './horizon';
-import type { HorizonAccount, HorizonBalance } from './horizon';
-import { checkLedgerFreshness } from './freshness';
+} from "./checks";
+import {
+  fetchAccount,
+  HorizonError,
+  waitForFundedAccount,
+  applyWalletLabels,
+  applyReadyLabels,
+} from "./horizon";
+import type { HorizonAccount, HorizonBalance } from "./horizon";
+import { checkLedgerFreshness } from "./freshness";
 import {
   formatCommentBody,
   postIssueComment,
@@ -26,13 +32,15 @@ import {
   COMMENT_SIZE_LIMIT_BYTES,
   buildTruncatedCommentBody,
   writeFullReport,
-} from './comment';
+  isTrustBridgeSlashCommand,
+  isBotCommentAuthor,
+} from "./comment";
 import {
   normalizeAssetConfig,
   parseAssetsJson,
   getCampaignPreset,
   validateNetworkAssetCompatibility,
-} from './assets';
+} from "./assets";
 import {
   getErrorMessage,
   parseAssigneeAddressMap,
@@ -42,34 +50,34 @@ import {
   resolveAddressFromAssigneeMap,
   resolveGitHubAuthToken,
   resolveInput,
-} from './inputs';
-import { formatFailureSummary } from './summary';
-import { setValidationOutputs, writeValidationJson } from './outputs';
+} from "./inputs";
+import { formatFailureSummary } from "./summary";
+import { setValidationOutputs, writeValidationJson } from "./outputs";
 import {
   computeValidationDelta,
   loadPreviousValidationArtifact,
   discoverPreviousValidationArtifact,
-} from './delta';
-import { logger, emitInputsLogRecord } from './logger';
-import { globalMetrics, writeJobSummary } from './metrics';
-import { RateBudgetTracker, CircuitBreaker } from './resilience';
-import { validateContractAddress, clearSpans, getSpans } from './validation';
-import { parseLocaleInput } from './i18n';
-import { sendWebhookNotification } from './webhook';
-import { runIssuesPreflight } from './preflight';
-import { lookupAddressFromContract, ContractLookupError } from './soroban';
-import { registerCorePlugins } from './corePlugins';
-import { defaultRegistry } from './plugin';
-import { loadPluginsFromAllowlist } from './pluginLoader';
-import { readTrustbridgeConfig, mergeConsumerConfig } from './configReader';
+} from "./delta";
+import { logger, emitInputsLogRecord } from "./logger";
+import { globalMetrics, writeJobSummary } from "./metrics";
+import { RateBudgetTracker, CircuitBreaker } from "./resilience";
+import { validateContractAddress, clearSpans, getSpans } from "./validation";
+import { parseLocaleInput } from "./i18n";
+import { sendWebhookNotification } from "./webhook";
+import { runIssuesPreflight } from "./preflight";
+import { lookupAddressFromContract, ContractLookupError } from "./soroban";
+import { registerCorePlugins } from "./corePlugins";
+import { defaultRegistry } from "./plugin";
+import { loadPluginsFromAllowlist } from "./pluginLoader";
+import { readTrustbridgeConfig, mergeConsumerConfig } from "./configReader";
 import {
   parseBatchAddresses,
   runBatchValidation,
   buildBatchSummary,
   formatBatchSummaryMarkdown,
-} from './batch';
-import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
-import { DiagnosticsConfig } from './diagnostics';
+} from "./batch";
+import { buildSarifOutput, validateSarifSchema, serializeSarif } from "./sarif";
+import { DiagnosticsConfig } from "./diagnostics";
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -119,10 +127,10 @@ function resolveStellarAddressInput(
 
   // Source 1: Contract registry lookup
   if (contractAddress) {
-    resolvedFrom.push('contract');
-    logger.info('Address resolved from contract registry', {
-      component: 'index',
-      source: 'contract',
+    resolvedFrom.push("contract");
+    logger.info("Address resolved from contract registry", {
+      component: "index",
+      source: "contract",
     });
     return contractAddress;
   }
@@ -135,10 +143,10 @@ function resolveStellarAddressInput(
     });
     const assigneeLogin = resolveAssigneeLoginFromContext();
     const address = resolveAddressFromAssigneeMap(map, assigneeLogin);
-    resolvedFrom.push('assignee_map');
-    logger.info('Address resolved from assignee address map', {
-      component: 'index',
-      source: 'assignee_map',
+    resolvedFrom.push("assignee_map");
+    logger.info("Address resolved from assignee address map", {
+      component: "index",
+      source: "assignee_map",
       assigneeLogin,
     });
     return address;
@@ -147,18 +155,18 @@ function resolveStellarAddressInput(
   // Source 3: Direct input
   const direct = stellarAddressInput.trim();
   if (direct) {
-    resolvedFrom.push('direct_input');
-    logger.debug('Address resolved from direct input', {
-      component: 'index',
-      source: 'direct_input',
+    resolvedFrom.push("direct_input");
+    logger.debug("Address resolved from direct input", {
+      component: "index",
+      source: "direct_input",
     });
     return direct;
   }
 
   throw new Error(
-    'Provide stellar_address_input (a Stellar G-address), assignee_address_map ' +
-      '(JSON / file path mapping GitHub usernames to G-addresses), or configure ' +
-      'soroban_rpc_url + contract_id for on-chain registry lookup.',
+    "Provide stellar_address_input (a Stellar G-address), assignee_address_map " +
+      "(JSON / file path mapping GitHub usernames to G-addresses), or configure " +
+      "soroban_rpc_url + contract_id for on-chain registry lookup.",
   );
 }
 
@@ -207,35 +215,44 @@ export async function handleAutoUnassign(
   }
 
   if (options.result.valid) {
-    logger.debug('Skipping auto-unassign: readiness checks passed (valid is true)', {
-      component: 'index',
-    });
+    logger.debug(
+      "Skipping auto-unassign: readiness checks passed (valid is true)",
+      {
+        component: "index",
+      },
+    );
     return undefined;
   }
 
   // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
   if (
-    options.result.reasonCode === 'HORIZON_ERROR' ||
-    options.result.reasonCode === 'HORIZON_TIMEOUT' ||
-    options.result.reasonCode === 'TLS_ERROR'
+    options.result.reasonCode === "HORIZON_ERROR" ||
+    options.result.reasonCode === "HORIZON_TIMEOUT" ||
+    options.result.reasonCode === "TLS_ERROR"
   ) {
     core.info(
-      'Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.',
+      "Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.",
     );
     return undefined;
   }
 
-  const payload = options.payload as {
-    assignee?: { login?: string; type?: string };
-    issue?: { number?: number; assignees?: Array<{ login?: string; type?: string }> };
-  } | null | undefined;
+  const payload = options.payload as
+    | {
+        assignee?: { login?: string; type?: string };
+        issue?: {
+          number?: number;
+          assignees?: Array<{ login?: string; type?: string }>;
+        };
+      }
+    | null
+    | undefined;
 
   const issueNumber = options.issueNumber ?? payload?.issue?.number;
   if (!issueNumber) {
     logger.debug(
-      'Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)',
+      "Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)",
       {
-        component: 'index',
+        component: "index",
       },
     );
     return undefined;
@@ -243,7 +260,7 @@ export async function handleAutoUnassign(
 
   const isBot = (login?: string, type?: string): boolean => {
     if (!login) return false;
-    return type === 'Bot' || login.endsWith('[bot]');
+    return type === "Bot" || login.endsWith("[bot]");
   };
 
   const targetAssignees: string[] = [];
@@ -264,9 +281,12 @@ export async function handleAutoUnassign(
   }
 
   if (targetAssignees.length === 0) {
-    logger.debug('Skipping auto-unassign: no eligible human assignees found on issue', {
-      component: 'index',
-    });
+    logger.debug(
+      "Skipping auto-unassign: no eligible human assignees found on issue",
+      {
+        component: "index",
+      },
+    );
     return undefined;
   }
 
@@ -278,43 +298,101 @@ export async function handleAutoUnassign(
       assignees: targetAssignees,
     });
     core.info(
-      `Auto-unassigned ${targetAssignees.join(', ')} from issue #${issueNumber} because readiness checks failed.`,
+      `Auto-unassigned ${targetAssignees.join(", ")} from issue #${issueNumber} because readiness checks failed.`,
     );
     return targetAssignees;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     core.warning(
-      `Failed to unassign ${targetAssignees.join(', ')} from issue #${issueNumber} (non-fatal): ${msg}`,
+      `Failed to unassign ${targetAssignees.join(", ")} from issue #${issueNumber} (non-fatal): ${msg}`,
     );
     return undefined;
   }
 }
 
+function resolveConfiguredReadyLabels(): {
+  passLabel: string;
+  failLabel: string;
+} {
+  const passLabel = (
+    core.getInput("pass_label") ||
+    core.getInput("ready_pass_label") ||
+    core.getInput("ready_label_pass") ||
+    ""
+  ).trim();
+  const failLabel = (
+    core.getInput("fail_label") ||
+    core.getInput("ready_fail_label") ||
+    core.getInput("ready_label_fail") ||
+    ""
+  ).trim();
+  return { passLabel, failLabel };
+}
+
 async function run(): Promise<void> {
+  const payload = github.context.payload as {
+    issue?: { number?: number };
+    pull_request?: { number?: number };
+    merge_group?: { head_sha?: string; sha?: string };
+    comment?: { body?: string; user?: { login?: string; type?: string } };
+  };
+  const eventName = github.context.eventName;
+  const isMergeQueueEvent = eventName === "merge_group";
+  const eventSha =
+    process.env.GITHUB_SHA ||
+    github.context.sha ||
+    payload.merge_group?.head_sha ||
+    payload.merge_group?.sha ||
+    "";
+  if (isMergeQueueEvent) {
+    core.info(
+      `merge_group event detected; using commit SHA ${eventSha || "<missing>"}.`,
+    );
+  }
+
+  if (eventName === "issue_comment") {
+    const commentBody = payload.comment?.body ?? "";
+    const isTrustBridgeCommand = isTrustBridgeSlashCommand(commentBody);
+    const commentAuthorIsBot = isBotCommentAuthor(payload);
+    const shouldSkip = !isTrustBridgeCommand || commentAuthorIsBot;
+    if (shouldSkip) {
+      core.info(
+        "Issue comment event ignored because it is not a /trustbridge command or was posted by a bot.",
+      );
+    } else {
+      core.info(
+        "Issue comment event detected with /trustbridge command; revalidation will proceed when the commenter is authorized.",
+      );
+    }
+  }
+
   // Milestone gating (Issue #230)
-  const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
-  const milestoneFailOnSkip = parseBooleanInput(core.getInput('milestone_fail_on_skip'), false);
+  const milestoneAllowlistRaw = core.getInput("milestone_allowlist") || "";
+  const milestoneFailOnSkip = parseBooleanInput(
+    core.getInput("milestone_fail_on_skip"),
+    false,
+  );
 
   if (milestoneAllowlistRaw.trim()) {
     const allowedMilestones = milestoneAllowlistRaw
-      .split(',')
+      .split(",")
       .map((m) => m.trim().toLowerCase())
       .filter(Boolean);
     const payload = github.context.payload;
     const isIssueContext = payload.issue !== undefined;
     const isPullRequest = payload.pull_request !== undefined;
 
-    let currentMilestone = '';
-    let currentMilestoneRaw = '';
+    let currentMilestone = "";
+    let currentMilestoneRaw = "";
     if (isIssueContext && payload.issue?.milestone) {
-      currentMilestoneRaw = payload.issue.milestone.title || '';
+      currentMilestoneRaw = payload.issue.milestone.title || "";
     } else if (isPullRequest && payload.pull_request?.milestone) {
-      currentMilestoneRaw = payload.pull_request.milestone.title || '';
+      currentMilestoneRaw = payload.pull_request.milestone.title || "";
     }
     currentMilestone = currentMilestoneRaw.trim().toLowerCase();
 
     if (allowedMilestones.length > 0) {
-      let skipReason = '';
+      let skipReason = "";
       if (!currentMilestone) {
         skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
       } else if (!allowedMilestones.includes(currentMilestone)) {
@@ -329,11 +407,11 @@ async function run(): Promise<void> {
           core.info(fullMessage);
         }
 
-        core.setOutput('ready', 'false');
-        core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
-        core.setOutput('checks_json', '[]');
+        core.setOutput("ready", "false");
+        core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
+        core.setOutput("checks_json", "[]");
 
-        core.summary.addHeading('Milestone Gate Skipped', 3);
+        core.summary.addHeading("Milestone Gate Skipped", 3);
         core.summary.addRaw(fullMessage);
         await core.summary.write();
 
@@ -343,8 +421,8 @@ async function run(): Promise<void> {
   }
 
   // Campaign presets (Issue #207) — resolved first so they can provide defaults.
-  const networkInput = core.getInput('network') || '';
-  const presetInput = core.getInput('preset') || '';
+  const networkInput = core.getInput("network") || "";
+  const presetInput = core.getInput("preset") || "";
   const presetName = parsePresetInput(networkInput, presetInput);
   const campaignPreset = presetName ? getCampaignPreset(presetName) : undefined;
   if (presetName && !campaignPreset) {
@@ -354,20 +432,23 @@ async function run(): Promise<void> {
   }
 
   const horizonUrl =
-    core.getInput('horizon_url') || campaignPreset?.horizonUrl || 'https://horizon.stellar.org';
-  const assetCode = core.getInput('asset_code') || campaignPreset?.assetCode || 'USDC';
+    core.getInput("horizon_url") ||
+    campaignPreset?.horizonUrl ||
+    "https://horizon.stellar.org";
+  const assetCode =
+    core.getInput("asset_code") || campaignPreset?.assetCode || "USDC";
   const assetIssuer =
-    core.getInput('asset_issuer') ||
+    core.getInput("asset_issuer") ||
     campaignPreset?.assetIssuer ||
-    'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
   const minXlmReserveRaw =
-    core.getInput('min_xlm_reserve') || campaignPreset?.minXlmReserve || '1.5';
-  const stellarAddressInput = core.getInput('stellar_address_input');
-  const assigneeAddressMapRaw = core.getInput('assignee_address_map');
+    core.getInput("min_xlm_reserve") || campaignPreset?.minXlmReserve || "1.5";
+  const stellarAddressInput = core.getInput("stellar_address_input");
+  const assigneeAddressMapRaw = core.getInput("assignee_address_map");
 
   // Issue #219: Contract registry lookup (source 1 of address resolution).
-  const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
-  const contractId = core.getInput('contract_id') || '';
+  const sorobanRpcUrl = core.getInput("soroban_rpc_url") || "";
+  const contractId = core.getInput("contract_id") || "";
   let contractResolvedAddress: string | undefined;
   if (sorobanRpcUrl && contractId) {
     const assigneeLogin = resolveAssigneeLoginFromContext();
@@ -382,8 +463,8 @@ async function run(): Promise<void> {
         }
       } catch (err) {
         const isRetryable = err instanceof ContractLookupError && err.retryable;
-        logger.warn('Contract registry lookup failed, falling back', {
-          component: 'index',
+        logger.warn("Contract registry lookup failed, falling back", {
+          component: "index",
           error: err instanceof Error ? err.message : String(err),
           retryable: isRetryable,
         });
@@ -396,144 +477,207 @@ async function run(): Promise<void> {
     assigneeAddressMapRaw,
     contractResolvedAddress,
   );
-  const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
-  const debugMode = parseBooleanInput(core.getInput('debug_mode'), false);
-  const horizonTimeoutMs = parseNumberInput(core.getInput('horizon_timeout_ms'), 15000, {
-    min: 1000,
-    max: 60000,
-  });
-  const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
-  const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
+  const failOnMissing = parseBooleanInput(
+    core.getInput("fail_on_missing"),
+    true,
+  );
+  const debugMode = parseBooleanInput(core.getInput("debug_mode"), false);
+  const horizonTimeoutMs = parseNumberInput(
+    core.getInput("horizon_timeout_ms"),
+    15000,
+    {
+      min: 1000,
+      max: 60000,
+    },
+  );
+  const stickyComment = parseBooleanInput(
+    core.getInput("sticky_comment"),
+    true,
+  );
+  const waitUntilFunded = parseBooleanInput(
+    core.getInput("wait_until_funded"),
+    false,
+  );
   const waitUntilFundedTimeoutMs = parseNumberInput(
-    core.getInput('wait_until_funded_timeout_ms'),
+    core.getInput("wait_until_funded_timeout_ms"),
     120000,
     { min: 0, max: 600000 },
   );
   const waitUntilFundedIntervalMs = parseNumberInput(
-    core.getInput('wait_until_funded_interval_ms'),
+    core.getInput("wait_until_funded_interval_ms"),
     5000,
     { min: 1000, max: 60000 },
   );
-  const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
-  const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+  const horizonUrlFallback = core.getInput("horizon_url_fallback") || "";
+  const rpcFallbackUrlRaw = core.getInput("rpc_fallback_url") || "";
   const fallbackUrls = rpcFallbackUrlRaw
-    ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
+    ? rpcFallbackUrlRaw
+        .split(",")
+        .map((u) => u.trim())
+        .filter(Boolean)
     : horizonUrlFallback
       ? [horizonUrlFallback]
       : [];
-  const horizonCacheTtlMs = parseNumberInput(core.getInput('horizon_cache_ttl_ms'), 60000, {
-    min: 0,
-    max: 3_600_000,
-  });
-  const useCache = parseBooleanInput(core.getInput('use_cache'), false);
+  const horizonCacheTtlMs = parseNumberInput(
+    core.getInput("horizon_cache_ttl_ms"),
+    60000,
+    {
+      min: 0,
+      max: 3_600_000,
+    },
+  );
+  const useCache = parseBooleanInput(core.getInput("use_cache"), false);
   const allowCrossNetworkFallback = parseBooleanInput(
-    core.getInput('allow_cross_network_fallback'),
+    core.getInput("allow_cross_network_fallback"),
     false,
   );
-  const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
-  const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-  const githubAppToken = resolveInput('github_app_token', core.getInput('github_app_token'));
-  const rawGithubToken = core.getInput('github_token');
+  const logInputs = parseBooleanInput(core.getInput("log_inputs"), false);
+  const trustbridgeConfigPath =
+    core.getInput("trustbridge_config_path") || ".trustbridge.yml";
+  const githubAppToken = resolveInput(
+    "github_app_token",
+    core.getInput("github_app_token"),
+  );
+  const rawGithubToken = core.getInput("github_token");
   const githubToken = resolveGitHubAuthToken({
     githubToken: rawGithubToken,
     githubAppToken,
   });
   if (githubAppToken) core.setSecret(githubAppToken);
   if (rawGithubToken) core.setSecret(rawGithubToken);
-  const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
+  const autoWalletLabels = parseBooleanInput(
+    core.getInput("auto_wallet_labels"),
+    false,
+  );
+  const readyLabels = resolveConfiguredReadyLabels();
   const unassignOnNotReady = parseBooleanInput(
-    resolveInput('unassign_on_not_ready', core.getInput('unassign_on_not_ready')),
+    resolveInput(
+      "unassign_on_not_ready",
+      core.getInput("unassign_on_not_ready"),
+    ),
     false,
   );
 
   // SEP-0007 wallet deep links (Issue #44)
-  const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
-  const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+  const sep0007DeepLinks = parseBooleanInput(
+    core.getInput("sep0007_deep_links"),
+    false,
+  );
+  const sep0007OriginDomain = core.getInput("sep0007_origin_domain") || "";
 
   // #145 — issues:write preflight
-  const preflightOnly = parseBooleanInput(core.getInput('preflight_only'), false);
+  const preflightOnly = parseBooleanInput(
+    core.getInput("preflight_only"),
+    false,
+  );
 
   // Multi-asset trustline validation (Issue #4)
-  const assetsJsonRaw = core.getInput('assets_json') || '';
+  const assetsJsonRaw = core.getInput("assets_json") || "";
 
   // Soroban contract registry (Issue #7)
-  const githubUsername = core.getInput('github_username') || '';
+  const githubUsername = core.getInput("github_username") || "";
 
   // Plugin runner flag (Issue #198) — default off
-  const usePluginRunner = parseBooleanInput(core.getInput('use_plugin_runner'), false);
+  const usePluginRunner = parseBooleanInput(
+    core.getInput("use_plugin_runner"),
+    false,
+  );
 
   // Onboarding checklist in comments (Issue #154) — default on
-  const onboardingChecklist = parseBooleanInput(core.getInput('onboarding_checklist'), true);
+  const onboardingChecklist = parseBooleanInput(
+    core.getInput("onboarding_checklist"),
+    true,
+  );
 
   // Security artifacts / delta vs previous run (Issue #148)
   const writeValidationJsonEnabled = parseBooleanInput(
-    core.getInput('write_validation_json'),
+    core.getInput("write_validation_json"),
     false,
   );
-  const validationJsonPath = core.getInput('validation_json_path') || 'validation.json';
-  const previousValidationPath = core.getInput('previous_validation_path') || '';
-  const privacyMode = parseBooleanInput(core.getInput('privacy_mode'), false);
+  const validationJsonPath =
+    core.getInput("validation_json_path") || "validation.json";
+  const previousValidationPath =
+    core.getInput("previous_validation_path") || "";
+  const privacyMode = parseBooleanInput(core.getInput("privacy_mode"), false);
 
   // External plugins from workspace (allowlisted only)
-  const trustbridgePluginsPathRaw = core.getInput('trustbridge_plugins_path') || '';
+  const trustbridgePluginsPathRaw =
+    core.getInput("trustbridge_plugins_path") || "";
   const allowedPluginPaths = trustbridgePluginsPathRaw
-    .split(',')
+    .split(",")
     .map((p) => p.trim())
     .filter(Boolean);
 
   // Internationalization (Issue #59)
-  const localeInput = core.getInput('locale') || 'en';
+  const localeInput = core.getInput("locale") || "en";
   const locale = parseLocaleInput(localeInput);
 
   // Batch validation (Issue #199)
-  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+  const stellarAddressesRaw = core.getInput("stellar_addresses") || "";
 
   // Full-report artifact path (used when comment exceeds size limit)
-  const reportOutputPath = core.getInput('report_output_path') || 'trustbridge-report.md';
+  const reportOutputPath =
+    core.getInput("report_output_path") || "trustbridge-report.md";
 
   // Failure snooze window (Issue #155)
-  const snoozeWindowMinutes = parseNumberInput(core.getInput('snooze_window_minutes'), 30, {
-    min: 0,
-    max: 10080, // 7 days
-  });
-  const forceComment = parseBooleanInput(core.getInput('force_comment'), false);
+  const snoozeWindowMinutes = parseNumberInput(
+    core.getInput("snooze_window_minutes"),
+    30,
+    {
+      min: 0,
+      max: 10080, // 7 days
+    },
+  );
+  const forceComment = parseBooleanInput(core.getInput("force_comment"), false);
   const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
 
   // Wave #30 — comment posting mode: post | dry-run | off
-  const VALID_COMMENT_MODES = new Set(['post', 'dry-run', 'off']);
-  const commentModeRaw = (core.getInput('comment_mode') || 'post').trim().toLowerCase();
+  const VALID_COMMENT_MODES = new Set(["post", "dry-run", "off"]);
+  const commentModeRaw = (core.getInput("comment_mode") || "post")
+    .trim()
+    .toLowerCase();
   if (!VALID_COMMENT_MODES.has(commentModeRaw)) {
     throw new Error(
       `Invalid comment_mode "${commentModeRaw}". Expected one of: post, dry-run, off.`,
     );
   }
-  const commentMode = commentModeRaw as 'post' | 'dry-run' | 'off';
-  const shouldPostComment = commentMode === 'post';
+  const commentMode = commentModeRaw as "post" | "dry-run" | "off";
+  const shouldPostComment = commentMode === "post";
 
   // Signed dashboard webhook (Issue #101)
   // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
   const webhookUrl =
-    core.getInput('webhook_url') || core.getInput('dashboard_webhook_url') || '';
-  const webhookSecret = core.getInput('webhook_secret') || '';
-  const webhookTimeoutMs = parseNumberInput(core.getInput('webhook_timeout_ms'), 5000, {
-    min: 100,
-    max: 30000,
-  });
-  const webhookAuthModeRaw = (core.getInput('webhook_auth_mode') || 'hmac').trim().toLowerCase();
-  const webhookAuthMode: 'hmac' | 'oidc' = webhookAuthModeRaw === 'oidc' ? 'oidc' : 'hmac';
-  const webhookOidcAudience = core.getInput('webhook_oidc_audience') || 'trustbridge-dashboard';
+    core.getInput("webhook_url") ||
+    core.getInput("dashboard_webhook_url") ||
+    "";
+  const webhookSecret = core.getInput("webhook_secret") || "";
+  const webhookTimeoutMs = parseNumberInput(
+    core.getInput("webhook_timeout_ms"),
+    5000,
+    {
+      min: 100,
+      max: 30000,
+    },
+  );
+  const webhookAuthModeRaw = (core.getInput("webhook_auth_mode") || "hmac")
+    .trim()
+    .toLowerCase();
+  const webhookAuthMode: "hmac" | "oidc" =
+    webhookAuthModeRaw === "oidc" ? "oidc" : "hmac";
+  const webhookOidcAudience =
+    core.getInput("webhook_oidc_audience") || "trustbridge-dashboard";
 
   // GitHub Projects v2 integration (Issue #222)
-  const projectId = core.getInput('project_id') || '';
-  const projectStatusField = core.getInput('project_status_field') || 'Status';
-  const projectStatusPass = core.getInput('project_status_pass') || '';
-  const projectStatusFail = core.getInput('project_status_fail') || '';
-  const projectToken = core.getInput('project_token') || githubToken;
+  const projectId = core.getInput("project_id") || "";
+  const projectStatusField = core.getInput("project_status_field") || "Status";
+  const projectStatusPass = core.getInput("project_status_pass") || "";
+  const projectStatusFail = core.getInput("project_status_fail") || "";
+  const projectToken = core.getInput("project_token") || githubToken;
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
 
-  globalMetrics.stopTimer('input_parse');
+  globalMetrics.stopTimer("input_parse");
 
   // Register core plugins and load external plugins from allowlist
   registerCorePlugins();
@@ -555,7 +699,9 @@ async function run(): Promise<void> {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      core.warning(`Failed to load external plugins (proceeding with core plugins only): ${message}`);
+      core.warning(
+        `Failed to load external plugins (proceeding with core plugins only): ${message}`,
+      );
     }
   }
 
@@ -563,13 +709,12 @@ async function run(): Promise<void> {
   // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
   // environment has disabled it, surface that loudly rather than silently
   // trusting an unverified Horizon endpoint.
-  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
     logger.warn(
-      'NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.',
-      { component: 'index' },
+      "NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.",
+      { component: "index" },
     );
   }
-
 
   // ---------------------------------------------------------------------------
   // Config-file overlay (Issue #196)
@@ -582,7 +727,7 @@ async function run(): Promise<void> {
   );
 
   if (!configResult.validation.valid) {
-    const errMsg = configResult.validation.errors.join('; ');
+    const errMsg = configResult.validation.errors.join("; ");
     core.setFailed(`Trustbridge config file error: ${errMsg}`);
     return;
   }
@@ -590,8 +735,8 @@ async function run(): Promise<void> {
   if (configResult.found) {
     core.info(`Loaded trustbridge config from ${configResult.resolvedPath}`);
     if (debugMode && configResult.redactedSnapshot) {
-      logger.debug('Trustbridge config snapshot (redacted)', {
-        component: 'index',
+      logger.debug("Trustbridge config snapshot (redacted)", {
+        component: "index",
         config: configResult.redactedSnapshot,
       });
     }
@@ -602,13 +747,13 @@ async function run(): Promise<void> {
   const checkInput = (name: string, raw: string) => {
     if (raw.trim()) explicitInputs.add(name);
   };
-  checkInput('horizonUrl', horizonUrl);
-  checkInput('horizonUrlFallback', horizonUrlFallback);
-  checkInput('rpcFallbackUrl', rpcFallbackUrlRaw);
-  checkInput('assetCode', assetCode);
-  checkInput('assetIssuer', assetIssuer);
-  checkInput('minXlmReserveRaw', minXlmReserveRaw);
-  checkInput('failOnMissing', core.getInput('fail_on_missing'));
+  checkInput("horizonUrl", horizonUrl);
+  checkInput("horizonUrlFallback", horizonUrlFallback);
+  checkInput("rpcFallbackUrl", rpcFallbackUrlRaw);
+  checkInput("assetCode", assetCode);
+  checkInput("assetIssuer", assetIssuer);
+  checkInput("minXlmReserveRaw", minXlmReserveRaw);
+  checkInput("failOnMissing", core.getInput("fail_on_missing"));
 
   // Merge config file values under action inputs
   const merged = mergeConsumerConfig(
@@ -637,29 +782,37 @@ async function run(): Promise<void> {
   const effectiveResolvedAddress = stellarAddress;
   const jobController = new AbortController();
   const horizonMaxRequests = parseNumberInput(
-    core.getInput('horizon_max_requests') || '0',
+    core.getInput("horizon_max_requests") || "0",
     0,
     {
       min: 0, // 0 = unlimited (matches action.yml)
       max: 10000,
     },
   );
-  const maxRetries = parseNumberInput(core.getInput('max_retries') || '3', 3, {
+  const maxRetries = parseNumberInput(core.getInput("max_retries") || "3", 3, {
     min: 0,
     max: 20,
   });
-  const retryBaseDelayMs = parseNumberInput(core.getInput('retry_base_delay_ms') || '1000', 1000, {
-    min: 0,
-    max: 60_000,
-  });
-  const retryMaxDelayMs = parseNumberInput(core.getInput('retry_max_delay_ms') || '30000', 30000, {
-    min: 0,
-    max: 600_000,
-  });
+  const retryBaseDelayMs = parseNumberInput(
+    core.getInput("retry_base_delay_ms") || "1000",
+    1000,
+    {
+      min: 0,
+      max: 60_000,
+    },
+  );
+  const retryMaxDelayMs = parseNumberInput(
+    core.getInput("retry_max_delay_ms") || "30000",
+    30000,
+    {
+      min: 0,
+      max: 600_000,
+    },
+  );
 
   logger.setDebugMode(debugMode);
-  logger.debug('Action inputs loaded', {
-    component: 'index',
+  logger.debug("Action inputs loaded", {
+    component: "index",
     horizonUrl: effectiveHorizonUrl,
     horizonUrlFallback: effectiveHorizonUrlFallback,
     horizonCacheTtlMs,
@@ -682,9 +835,13 @@ async function run(): Promise<void> {
 
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
-  const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
-  const minTrustlineLimit = minTrustlineLimitRaw ? parseNumberInput(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
-  const minAssetBalance = parseMinAssetBalance(core.getInput('min_asset_balance') || '');
+  const minTrustlineLimitRaw = core.getInput("min_trustline_limit") || "";
+  const minTrustlineLimit = minTrustlineLimitRaw
+    ? parseNumberInput(minTrustlineLimitRaw, 0, { min: 0 })
+    : undefined;
+  const minAssetBalance = parseMinAssetBalance(
+    core.getInput("min_asset_balance") || "",
+  );
 
   // Optional multi-asset JSON — validate early so bad input fails fast.
   if (assetsJsonRaw.trim()) {
@@ -703,33 +860,57 @@ async function run(): Promise<void> {
     }
   }
   if (preflightOnly) {
-    core.info('preflight_only=true — exiting after issues:write preflight.');
+    core.info("preflight_only=true — exiting after issues:write preflight.");
     return;
   }
 
   // SEP-0001 home domain check inputs (optional, off by default)
-  const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
-  const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
-  const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
+  const homeDomainCheckEnabled = parseBooleanInput(
+    core.getInput("home_domain_check_enabled"),
+    false,
+  );
+  const expectedHomeDomain =
+    core.getInput("expected_home_domain").trim() || undefined;
+  const homeDomainCheckModeRaw = core
+    .getInput("home_domain_check_mode")
+    .trim()
+    .toLowerCase();
   const homeDomainCheckMode: HomeDomainCheckMode =
-    homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+    homeDomainCheckModeRaw === "strict" ? "strict" : "warn";
 
   // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
+  const stellarTomlFetchEnabled = parseBooleanInput(
+    core.getInput("stellar_toml_fetch_enabled"),
+    false,
+  );
   const stellarTomlCacheTtlMs = parseNumberInput(
-    core.getInput('stellar_toml_cache_ttl_ms') || '3600000',
+    core.getInput("stellar_toml_cache_ttl_ms") || "3600000",
     3600000,
     { min: 0, max: 86400000 }, // 0 = no cache, 86400000 = 24 hours max
   );
-  const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
+  const stellarTomlHashPin =
+    core.getInput("stellar_toml_hash_pin").trim() || undefined;
 
   // GitHub Checks API integration (Wave #26 — optional, off by default)
-  const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
+  const useCheckRuns = parseBooleanInput(
+    core.getInput("use_check_runs"),
+    false,
+  );
 
   // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
-  const checkLedgerFreshnessEnabled = parseBooleanInput(core.getInput('check_ledger_freshness'), false);
-  const maxLedgerLagSeconds = parseNumberInput(core.getInput('max_ledger_lag_seconds') || '60', 60, { min: 1, max: 3600 });
-  const ledgerFreshnessFailOnStale = parseBooleanInput(core.getInput('ledger_freshness_fail_on_stale'), false);
+  const checkLedgerFreshnessEnabled = parseBooleanInput(
+    core.getInput("check_ledger_freshness"),
+    false,
+  );
+  const maxLedgerLagSeconds = parseNumberInput(
+    core.getInput("max_ledger_lag_seconds") || "60",
+    60,
+    { min: 1, max: 3600 },
+  );
+  const ledgerFreshnessFailOnStale = parseBooleanInput(
+    core.getInput("ledger_freshness_fail_on_stale"),
+    false,
+  );
 
   if (logInputs) {
     emitInputsLogRecord({
@@ -774,26 +955,31 @@ async function run(): Promise<void> {
   // as their issuer instead of a classic "G..." account. Validate that
   // shape up front so a malformed contract address fails fast with a clear
   // error instead of silently reaching Horizon or the metrics/JSON output.
-  if (normalizedAsset.assetIssuer.startsWith('C')) {
+  if (normalizedAsset.assetIssuer.startsWith("C")) {
     validateContractAddress(normalizedAsset.assetIssuer);
     // If the contract address format is strictly invalid, normalizeAssetConfig
     // would have already failed fast above. We still call validateContractAddress
     // here to ensure validation spans are consistently recorded.
     globalMetrics.recordContractMetric(
-      'asset_issuer_contract_validated',
+      "asset_issuer_contract_validated",
       1,
       normalizedAsset.assetIssuer,
-      'count',
+      "count",
     );
   }
 
   // Claimable-balance policy (Issue #260) — default ignore
-  const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
-  const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' as const : 'ignore' as const;
+  const claimablePolicyRaw = (
+    core.getInput("claimable_balance_policy") || "ignore"
+  )
+    .trim()
+    .toLowerCase();
+  const claimableBalancePolicy =
+    claimablePolicyRaw === "count" ? ("count" as const) : ("ignore" as const);
 
   // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
-  const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
-  const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
+  const sep0010ChallengeXdr = core.getInput("sep0010_challenge_xdr") || "";
+  const sep0010DashboardUrl = core.getInput("sep0010_dashboard_url") || "";
 
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
@@ -828,45 +1014,67 @@ async function run(): Promise<void> {
       horizonUrl: effectiveHorizonUrl,
     };
 
-    const batchResults = await runBatchValidation(batchAddresses, batchCheckConfig, effectiveHorizonUrl, {
-      fetchOptions: {
-        timeoutMs: horizonTimeoutMs,
-        maxRetries,
-        retryBaseDelayMs,
-        retryMaxDelayMs,
+    const batchResults = await runBatchValidation(
+      batchAddresses,
+      batchCheckConfig,
+      effectiveHorizonUrl,
+      {
+        fetchOptions: {
+          timeoutMs: horizonTimeoutMs,
+          maxRetries,
+          retryBaseDelayMs,
+          retryMaxDelayMs,
+        },
       },
-    });
+    );
 
     const batchSummary = buildBatchSummary(batchResults);
-    const batchMarkdown = formatBatchSummaryMarkdown(batchSummary, effectiveAssetCode);
+    const batchMarkdown = formatBatchSummaryMarkdown(
+      batchSummary,
+      effectiveAssetCode,
+    );
 
     if (shouldPostComment) {
       try {
-        const batchCommentUrl = await postIssueComment(githubToken, batchMarkdown, {
-          sticky: stickyComment,
-          forceComment,
-          snoozeWindowMs,
-        });
+        const batchCommentUrl = await postIssueComment(
+          githubToken,
+          batchMarkdown,
+          {
+            sticky: stickyComment,
+            forceComment,
+            snoozeWindowMs,
+          },
+        );
         if (batchCommentUrl) {
-          logger.info('Batch comment created', { component: 'index', commentUrl: batchCommentUrl });
+          logger.info("Batch comment created", {
+            component: "index",
+            commentUrl: batchCommentUrl,
+          });
         }
       } catch (commentError) {
-        const message = commentError instanceof Error ? commentError.message : String(commentError);
+        const message =
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError);
         core.warning(`Failed to post batch comment (non-fatal): ${message}`);
       }
     }
 
     // Set batch-specific outputs
-    core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
-    core.setOutput('batch_passed_count', String(batchSummary.passed));
-    core.setOutput('batch_failed_count', String(batchSummary.failed));
+    core.setOutput("batch_summary_json", JSON.stringify(batchSummary));
+    core.setOutput("batch_passed_count", String(batchSummary.passed));
+    core.setOutput("batch_failed_count", String(batchSummary.failed));
 
     if (batchSummary.failed > 0 && effectiveFailOnMissing) {
-      core.setFailed(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
+      core.setFailed(
+        `Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`,
+      );
     } else if (batchSummary.failed > 0) {
-      core.warning(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
+      core.warning(
+        `Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`,
+      );
     } else {
-      core.info('Batch validation: all addresses passed.');
+      core.info("Batch validation: all addresses passed.");
     }
 
     return;
@@ -899,17 +1107,17 @@ async function run(): Promise<void> {
         lagSeconds: raw.lagSeconds,
         latestLedger: raw.latestLedger,
         message: raw.message,
-        blocksValid: raw.status === 'stale' && ledgerFreshnessFailOnStale,
+        blocksValid: raw.status === "stale" && ledgerFreshnessFailOnStale,
       };
 
-      if (raw.status === 'stale') {
+      if (raw.status === "stale") {
         const logMsg = `Ledger freshness check: STALE — ${raw.message}`;
         if (ledgerFreshnessFailOnStale) {
           core.error(logMsg);
         } else {
           core.warning(logMsg);
         }
-      } else if (raw.status === 'unknown') {
+      } else if (raw.status === "unknown") {
         core.warning(`Ledger freshness check: UNKNOWN — ${raw.message}`);
       } else {
         core.info(`Ledger freshness check: OK — ${raw.message}`);
@@ -917,9 +1125,11 @@ async function run(): Promise<void> {
     } catch (freshnessError) {
       // Fail-open: a freshness check error never blocks the account check.
       const msg = getErrorMessage(freshnessError);
-      core.warning(`Ledger freshness check failed (proceeding fail-open): ${msg}`);
+      core.warning(
+        `Ledger freshness check failed (proceeding fail-open): ${msg}`,
+      );
       freshnessResult = {
-        status: 'unknown',
+        status: "unknown",
         lagSeconds: null,
         latestLedger: null,
         message: `Freshness check error: ${msg}. Proceeding (fail-open).`,
@@ -973,62 +1183,78 @@ async function run(): Promise<void> {
             signal: jobController.signal,
             onPoll: (attempt, elapsedMs) =>
               logger.debug(`Account not yet funded — polling again`, {
-                component: 'index',
+                component: "index",
                 attempt,
                 elapsedMs,
               }),
           },
-          (hUrl, sAddr, opts) => fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
+          (hUrl, sAddr, opts) =>
+            fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
         )
       : await fetchAccount(horizonUrl, resolvedAddress, horizonOptions);
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
     horizonFetchStatusCode = 200;
-    globalMetrics.stopTimer('horizon_fetch');
+    globalMetrics.stopTimer("horizon_fetch");
     result = await runAccountChecks(account, checkConfig);
   } catch (error) {
     horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-    globalMetrics.stopTimer('horizon_fetch');
+    globalMetrics.stopTimer("horizon_fetch");
     if (error instanceof HorizonError && error.statusCode === 404) {
       horizonFetchStatusCode = 404;
       horizonFetchError = error.message;
       // #144/#266: deterministic cross-network detection — probes canonical opposite
       // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
-      const mismatchHint = await detectNetworkMismatch(horizonUrl, stellarAddress).catch(
-        () => undefined,
-      );
+      const mismatchHint = await detectNetworkMismatch(
+        horizonUrl,
+        stellarAddress,
+      ).catch(() => undefined);
       if (mismatchHint) {
         core.warning(
           `Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
-          `but horizon_url points at ${mismatchHint.configuredNetwork}.`,
+            `but horizon_url points at ${mismatchHint.configuredNetwork}.`,
         );
       }
       // #260: claimable-balance-aware funded definition — when policy is 'count',
       // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
       let claimableCount: number | undefined;
-      if (claimableBalancePolicy === 'count') {
+      if (claimableBalancePolicy === "count") {
         try {
-          const { fetchClaimableBalanceCount } = await import('./horizon');
-          claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+          const { fetchClaimableBalanceCount } = await import("./horizon");
+          claimableCount = await fetchClaimableBalanceCount(
+            horizonUrl,
+            stellarAddress,
+          );
           if (claimableCount > 0) {
-            core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+            core.info(
+              `Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`,
+            );
           }
         } catch {
           claimableCount = 0;
         }
       }
-      result = unfundedAccountResult(stellarAddress, checkConfig, mismatchHint, claimableCount);
+      result = unfundedAccountResult(
+        stellarAddress,
+        checkConfig,
+        mismatchHint,
+        claimableCount,
+      );
     } else if (error instanceof HorizonError) {
       horizonFetchStatusCode = error.statusCode;
       horizonFetchError = error.message;
       core.error(error.message);
-      globalMetrics.incrementCounter('errors');
-      globalMetrics.recordMetric('horizon_error', error.statusCode, 'http_status');
+      globalMetrics.incrementCounter("errors");
+      globalMetrics.recordMetric(
+        "horizon_error",
+        error.statusCode,
+        "http_status",
+      );
       result = horizonFailureResult(error.message, checkConfig);
     } else {
       const message = getErrorMessage(error);
       horizonFetchError = message;
       core.error(message);
-      globalMetrics.incrementCounter('errors');
+      globalMetrics.incrementCounter("errors");
       result = horizonFailureResult(message, checkConfig);
     }
   } finally {
@@ -1067,28 +1293,37 @@ async function run(): Promise<void> {
   if (assetsJsonRaw.trim()) {
     const extraAssets = parseAssetsJson(assetsJsonRaw);
     const dedupedAssets = extraAssets.filter(
-      (a) => !(a.assetCode === normalizedAsset.assetCode && a.assetIssuer === normalizedAsset.assetIssuer),
+      (a) =>
+        !(
+          a.assetCode === normalizedAsset.assetCode &&
+          a.assetIssuer === normalizedAsset.assetIssuer
+        ),
     );
     if (dedupedAssets.length > 0 && account) {
-      core.info(`Checking trustlines for ${dedupedAssets.length} additional asset(s)…`);
+      core.info(
+        `Checking trustlines for ${dedupedAssets.length} additional asset(s)…`,
+      );
       for (const asset of dedupedAssets) {
         const hasTrustline = account.balances.some(
           (b: HorizonBalance) =>
-            b.asset_type !== 'native' &&
-            'asset_code' in b &&
+            b.asset_type !== "native" &&
+            "asset_code" in b &&
             b.asset_code === asset.assetCode &&
-            'asset_issuer' in b &&
+            "asset_issuer" in b &&
             b.asset_issuer === asset.assetIssuer,
         );
         const balanceEntry = account.balances.find(
           (b: HorizonBalance) =>
-            b.asset_type !== 'native' &&
-            'asset_code' in b &&
+            b.asset_type !== "native" &&
+            "asset_code" in b &&
             b.asset_code === asset.assetCode &&
-            'asset_issuer' in b &&
+            "asset_issuer" in b &&
             b.asset_issuer === asset.assetIssuer,
         );
-        const balance = balanceEntry && 'balance' in balanceEntry ? balanceEntry.balance : '0';
+        const balance =
+          balanceEntry && "balance" in balanceEntry
+            ? balanceEntry.balance
+            : "0";
         multiAssetResults.push({
           assetCode: asset.assetCode,
           assetIssuer: asset.assetIssuer,
@@ -1096,9 +1331,13 @@ async function run(): Promise<void> {
           balance,
         });
         if (hasTrustline) {
-          core.info(`  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`);
+          core.info(
+            `  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`,
+          );
         } else {
-          core.warning(`  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`);
+          core.warning(
+            `  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`,
+          );
         }
       }
     }
@@ -1123,7 +1362,7 @@ async function run(): Promise<void> {
   // SARIF output (Issue #197)
   // Write SARIF 2.1.0 to disk when sarif_output_path is set.
   // ---------------------------------------------------------------------------
-  const sarifOutputPath = core.getInput('sarif_output_path') || '';
+  const sarifOutputPath = core.getInput("sarif_output_path") || "";
   if (sarifOutputPath.trim()) {
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
     const resolvedSarifPath = path.isAbsolute(sarifOutputPath)
@@ -1133,34 +1372,45 @@ async function run(): Promise<void> {
     // Path traversal guard
     const normalizedWorkspace = path.normalize(workspaceRoot);
     const normalizedSarif = path.normalize(resolvedSarifPath);
-    if (!normalizedSarif.startsWith(normalizedWorkspace + path.sep) && normalizedSarif !== normalizedWorkspace) {
+    if (
+      !normalizedSarif.startsWith(normalizedWorkspace + path.sep) &&
+      normalizedSarif !== normalizedWorkspace
+    ) {
       core.warning(
         `sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.`,
       );
     } else {
       try {
-        const sarif = buildSarifOutput(result, effectiveAssetCode, effectiveHorizonUrl, effectiveResolvedAddress);
+        const sarif = buildSarifOutput(
+          result,
+          effectiveAssetCode,
+          effectiveHorizonUrl,
+          effectiveResolvedAddress,
+        );
         if (!validateSarifSchema(sarif)) {
-          core.warning('Generated SARIF output failed schema validation — skipping SARIF write.');
+          core.warning(
+            "Generated SARIF output failed schema validation — skipping SARIF write.",
+          );
         } else {
           const sarifJson = serializeSarif(sarif);
           const sarifDir = path.dirname(normalizedSarif);
           if (!fs.existsSync(sarifDir)) {
             fs.mkdirSync(sarifDir, { recursive: true });
           }
-          fs.writeFileSync(normalizedSarif, sarifJson, 'utf8');
+          fs.writeFileSync(normalizedSarif, sarifJson, "utf8");
           core.info(`Wrote SARIF 2.1.0 output to ${normalizedSarif}`);
         }
       } catch (sarifError) {
-        const msg = sarifError instanceof Error ? sarifError.message : String(sarifError);
+        const msg =
+          sarifError instanceof Error ? sarifError.message : String(sarifError);
         core.warning(`Failed to write SARIF output (non-fatal): ${msg}`);
       }
     }
   }
 
   // Reserved inputs kept for forward-compatible workflows / labels / Soroban.
-  logger.debug('Optional feature flags', {
-    component: 'index',
+  logger.debug("Optional feature flags", {
+    component: "index",
     autoWalletLabels,
     sorobanRpcUrl: sorobanRpcUrl || undefined,
     contractId: contractId || undefined,
@@ -1174,13 +1424,15 @@ async function run(): Promise<void> {
   if (!previousArtifact && !previousValidationPath.trim()) {
     previousArtifact = await discoverPreviousValidationArtifact(githubToken);
     if (previousArtifact) {
-      core.info('Auto-discovered previous validation artifact from prior workflow run.');
+      core.info(
+        "Auto-discovered previous validation artifact from prior workflow run.",
+      );
     }
   }
   const delta = computeValidationDelta(previousArtifact, result);
   if (!previousArtifact && previousValidationPath.trim()) {
     core.info(
-      'No previous validation artifact found — omitting delta (first run or missing download).',
+      "No previous validation artifact found — omitting delta (first run or missing download).",
     );
   } else if (delta) {
     core.info(
@@ -1232,13 +1484,13 @@ async function run(): Promise<void> {
     sep0010DashboardUrl,
     locale,
     debugMode,
-    docsBaseUrl: core.getInput('docs_base_url') || undefined,
+    docsBaseUrl: core.getInput("docs_base_url") || undefined,
     delta,
     diagnosticsConfig,
   });
 
   // Detect oversize and write the full report to a workspace file when needed.
-  const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
+  const commentBodyBytes = Buffer.byteLength(commentBody, "utf8");
   let fullReportPath: string | undefined;
   let effectiveCommentBody: string;
 
@@ -1248,7 +1500,10 @@ async function run(): Promise<void> {
         `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`,
     );
     fullReportPath = writeFullReport(commentBody, reportOutputPath);
-    effectiveCommentBody = buildTruncatedCommentBody(commentBody, reportOutputPath);
+    effectiveCommentBody = buildTruncatedCommentBody(
+      commentBody,
+      reportOutputPath,
+    );
   } else {
     effectiveCommentBody = commentBody;
   }
@@ -1262,37 +1517,53 @@ async function run(): Promise<void> {
     // Discussion events carry a GraphQL node id, not an issue number —
     // comment via GraphQL, never the REST issues API (Issue #221).
     try {
-      commentUrl = await postDiscussionComment(githubToken, effectiveCommentBody, {
-        sticky: stickyComment,
-        forceComment,
-        snoozeWindowMs,
-      });
+      commentUrl = await postDiscussionComment(
+        githubToken,
+        effectiveCommentBody,
+        {
+          sticky: stickyComment,
+          forceComment,
+          snoozeWindowMs,
+        },
+      );
       if (commentUrl) {
-        logger.info('Discussion comment created', { component: 'index', commentUrl });
+        logger.info("Discussion comment created", {
+          component: "index",
+          commentUrl,
+        });
       } else {
-        logger.info('No discussion comment posted (no discussion context).', {
-          component: 'index',
+        logger.info("No discussion comment posted (no discussion context).", {
+          component: "index",
         });
       }
     } catch (commentError) {
-      const message = commentError instanceof Error ? commentError.message : String(commentError);
+      const message =
+        commentError instanceof Error
+          ? commentError.message
+          : String(commentError);
       core.warning(`Failed to post discussion comment (non-fatal): ${message}`);
     }
   } else {
-    globalMetrics.startTimer('comment_post');
+    globalMetrics.startTimer("comment_post");
     try {
       commentUrl = await postIssueComment(githubToken, effectiveCommentBody, {
         sticky: stickyComment,
         forceComment,
         snoozeWindowMs,
       });
-      globalMetrics.stopTimer('comment_post');
+      globalMetrics.stopTimer("comment_post");
       if (commentUrl) {
-        logger.info('Issue comment created', { component: 'index', commentUrl });
+        logger.info("Issue comment created", {
+          component: "index",
+          commentUrl,
+        });
       }
     } catch (commentError) {
-      globalMetrics.stopTimer('comment_post');
-      const message = commentError instanceof Error ? commentError.message : String(commentError);
+      globalMetrics.stopTimer("comment_post");
+      const message =
+        commentError instanceof Error
+          ? commentError.message
+          : String(commentError);
       core.warning(`Failed to post issue comment (non-fatal): ${message}`);
     }
   }
@@ -1328,8 +1599,41 @@ async function run(): Promise<void> {
           core.info(`Applied wallet label: ${labelResult.applied}`);
         }
       } catch (labelError) {
-        const msg = labelError instanceof Error ? labelError.message : String(labelError);
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
         core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
+      }
+    }
+  }
+
+  if ((readyLabels.passLabel || readyLabels.failLabel) && result) {
+    const issueNumber = github.context.payload.issue?.number;
+    if (issueNumber) {
+      const { owner, repo } = github.context.repo;
+      try {
+        const octokit = github.getOctokit(githubToken);
+        const readyLabelResult = await applyReadyLabels(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+          {
+            ready: result.valid,
+            passLabel: readyLabels.passLabel,
+            failLabel: readyLabels.failLabel,
+          },
+        );
+        if (readyLabelResult.error) {
+          core.warning(
+            `Ready label update failed (non-fatal): ${readyLabelResult.error}`,
+          );
+        } else if (readyLabelResult.applied) {
+          core.info(`Applied ready label: ${readyLabelResult.applied}`);
+        }
+      } catch (labelError) {
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
+        core.warning(`Failed to apply ready label (non-fatal): ${msg}`);
       }
     }
   }
@@ -1375,25 +1679,28 @@ async function run(): Promise<void> {
   }
 
   if (debugMode) {
-    logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+    logger.debug("Metrics summary (JSON artifact)", { component: "metrics" });
     core.debug(globalMetrics.toJSON());
 
     // Emit validation spans for observability (Issue #35)
     const spans = getSpans();
     if (spans.length > 0) {
-      logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+      logger.debug("Validation spans", {
+        component: "validation",
+        spanCount: spans.length,
+      });
       core.debug(JSON.stringify(spans, null, 2));
     }
   }
 
   // Stop total timer and collect timing metrics
-  globalMetrics.stopTimer('total');
+  globalMetrics.stopTimer("total");
 
   // Wave #27: write Job Summary with latency, failure codes, JSON artifact
   await writeJobSummary(globalMetrics.buildJobSummary());
 
   if (result.valid) {
-    core.info('All TrustBridge checks passed.');
+    core.info("All TrustBridge checks passed.");
     return;
   }
 
