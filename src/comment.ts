@@ -205,6 +205,24 @@ export function formatCommentBody(
     );
   }
 
+  // Network passphrase mismatch alert (Issue #2) — clear banner warning
+  // when the configured/inferred passphrase doesn't match Horizon
+  if (result.networkPassphraseMismatch) {
+    const mismatch = result.networkPassphraseMismatch;
+    lines.push(
+      '',
+      '> 🚨 **Network passphrase mismatch detected**',
+      '>',
+      `> ${mismatch.message}`,
+      '>',
+      '> **Expected:** `' + mismatch.expectedPassphrase + '`',
+      '> **Horizon reports:** `' + mismatch.actualPassphrase + '`',
+      '>',
+      '> This configuration error will cause 404 errors even for funded accounts.',
+      '> Update your workflow to use matching `horizon_url` and `network_passphrase` inputs.',
+    );
+  }
+
   const deltaSection = formatDeltaMarkdown(config.delta);
   if (deltaSection) {
     lines.push('', deltaSection);
@@ -295,19 +313,60 @@ export function formatCommentBody(
 
   // Sponsorship info explainer (Issue #141)
   if (result.sponsorshipInfo && (result.sponsorshipInfo.numSponsoring > 0 || result.sponsorshipInfo.numSponsored > 0)) {
+    const { numSponsoring, numSponsored } = result.sponsorshipInfo;
+    const netSponsorship = numSponsoring - numSponsored;
+    
     lines.push(
       '',
       '### Sponsorship status',
       '',
-      result.sponsorshipInfo.numSponsored > 0
+      numSponsored > 0
         ? `**This account is sponsored.** Another account is covering some or all of its reserve requirements.`
         : '**This account sponsors other accounts** and may have reduced available balance.',
       '',
-      `- Accounts this account sponsors: **${result.sponsorshipInfo.numSponsoring}**`,
-      `- Accounts sponsoring this account: **${result.sponsorshipInfo.numSponsored}**`,
+      `- Accounts this account sponsors: **${numSponsoring}**`,
+      `- Accounts sponsoring this account: **${numSponsored}**`,
+      `- Net sponsorship effect: **${netSponsorship > 0 ? '+' : ''}${netSponsorship}** ${netSponsorship > 0 ? 'reserve entries (increases requirement)' : netSponsorship < 0 ? 'reserve entries (reduces requirement)' : 'entries (balanced)'}`,
       '',
-      '**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost. [Learn more about sponsorship.](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships)',
-  );
+    );
+
+    // Show reserve math breakdown when reserve data is available
+    if (result.reserveRequirement) {
+      const baseReserve = 2 * 0.5; // 2 base reserves @ 0.5 XLM each
+      const subentryReserve = result.reserveRequirement.subentryCount * 0.5;
+      const sponsorshipAdjustment = netSponsorship * 0.5;
+      
+      lines.push(
+        '**Reserve calculation breakdown:**',
+        '',
+        '```',
+        `Base reserves (2):           ${baseReserve.toFixed(1)} XLM`,
+        `Subentries (${result.reserveRequirement.subentryCount}):            ${subentryReserve > 0 ? '+' : ' '}${subentryReserve.toFixed(1)} XLM`,
+        numSponsoring > 0 || numSponsored > 0 
+          ? `Sponsorship (${numSponsoring} - ${numSponsored}):    ${sponsorshipAdjustment >= 0 ? '+' : ''}${sponsorshipAdjustment.toFixed(1)} XLM` 
+          : '',
+        '─────────────────────────────────',
+        `Protocol minimum:            ${result.reserveRequirement.protocolMinimum.toFixed(1)} XLM`,
+        result.reserveRequirement.configuredFloor > result.reserveRequirement.protocolMinimum
+          ? `Configured floor:            ${result.reserveRequirement.configuredFloor.toFixed(1)} XLM`
+          : '',
+        `Required (final):            ${result.reserveRequirement.required.toFixed(1)} XLM`,
+        '```',
+        '',
+      ).filter(line => line !== '');
+    }
+
+    lines.push(
+      '**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost.',
+      '',
+      numSponsored > 0 && numSponsoring === 0
+        ? `> ℹ️ **For contributors:** Since this account is fully sponsored, you may need less XLM than the displayed requirement. However, the sponsor must maintain sufficient reserves.`
+        : numSponsoring > 0
+        ? `> ⚠️ **Sponsoring ${numSponsoring} account${numSponsoring > 1 ? 's' : ''} adds ${(numSponsoring * 0.5).toFixed(1)} XLM to your reserve requirement.** Deep sponsorship chains (sponsor-of-sponsor patterns) can cause unexpected reserve exhaustion if intermediate sponsors become underfunded.`
+        : '',
+      '',
+      '[Learn more about sponsorship](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships) | [CAP-0033 spec](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0033.md)',
+    ).filter(line => line !== '');
   }
 
   if (remediation) {
