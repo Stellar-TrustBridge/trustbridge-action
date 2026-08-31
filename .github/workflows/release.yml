@@ -18,7 +18,7 @@ jobs:
       attestations: write  # Publish provenance to GitHub's attestations API
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enforce immutable release tag policy
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -121,7 +121,7 @@ jobs:
     name: dry-run-smoke
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
