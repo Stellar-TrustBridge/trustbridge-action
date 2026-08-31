@@ -71,6 +71,36 @@ jobs:
             exit 1
           fi
 
+  # ── Mutation testing (validation.ts only) ───────────────────────────────
+  # Runs Stryker on src/validation.ts to verify that security-critical
+  # checks (SSRF block-list, StrKey address gate) cannot be silently weakened
+  # without breaking a test.
+  #
+  # Scope is intentionally bounded to validation.ts to keep run time short.
+  # Run locally: npm run mutation
+  # See CONTRIBUTING.md § "Mutation testing" for details.
+  mutation-ci:
+    name: Mutation testing (validation.ts)
+    runs-on: ubuntu-latest
+    # Only on pull requests — avoids cost on every push to main.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run mutation tests
+        run: npm run mutation:ci
+
   # ── Opt-in mock Horizon smoke tests ─────────────────────────────────────
   # This job runs the smoke test suite against a local WireMock container.
   # It is DISABLED in the default CI pipeline (if: false) to keep standard

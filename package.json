@@ -12,7 +12,9 @@
     "lint": "eslint src __tests__ --ext .ts",
     "prepare": "npm run build",
     "mock:start": "docker compose -f mock/horizon/docker-compose.yml up -d --wait",
-    "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down"
+    "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down",
+    "mutation": "stryker run",
+    "mutation:ci": "stryker run --reporters clear-text,progress"
   },
   "repository": {
     "type": "git",
@@ -34,6 +36,8 @@
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/jest-runner": "^10.0.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.2",
     "@types/node-fetch": "^2.6.12",
