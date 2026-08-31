@@ -175,3 +175,126 @@ export function parseAddressFromSimulateResult(json: unknown): string | null {
 
   return null;
 }
+
+export function buildGetPublicPaginatedXdr(contractId: string, cursor?: number, limit?: number): string {
+  const args = [];
+  if (cursor !== undefined) args.push(cursor);
+  if (limit !== undefined) args.push(limit);
+  const payload = JSON.stringify({ contractId, fn: 'get_public_paginated', args });
+  return Buffer.from(payload).toString('base64');
+}
+
+export interface ContractRosterPage {
+  map: Record<string, string>;
+  nextCursor?: number;
+}
+
+export function parseRosterPageFromSimulateResult(json: unknown): ContractRosterPage {
+  if (typeof json !== 'object' || json === null || !('result' in json)) return { map: {} };
+  const result = (json as Record<string, unknown>)['result'];
+  if (typeof result !== 'object' || result === null) return { map: {} };
+
+  const retval = (result as Record<string, unknown>)['retval'];
+  if (typeof retval !== 'object' || retval === null) return { map: {} };
+
+  const retvalObj = retval as Record<string, unknown>;
+  if (retvalObj['type'] !== 'tuple' || !Array.isArray(retvalObj['value']) || retvalObj['value'].length < 1) {
+    return { map: {} };
+  }
+
+  const mapData = retvalObj['value'][0];
+  if (mapData?.type !== 'map' || !Array.isArray(mapData.value)) {
+    return { map: {} };
+  }
+
+  const parsedMap: Record<string, string> = {};
+  for (const entry of mapData.value) {
+    if (
+      entry?.key?.type === 'string' && typeof entry.key.value === 'string' &&
+      entry?.val?.type === 'address' && typeof entry.val.value === 'string'
+    ) {
+      if (/^G[A-Z2-7]{55}$/.test(entry.val.value)) {
+        parsedMap[entry.key.value.toLowerCase()] = entry.val.value;
+      }
+    }
+  }
+
+  let nextCursor: number | undefined;
+  if (retvalObj['value'].length > 1) {
+    const cursorData = retvalObj['value'][1];
+    if (cursorData?.type === 'u32' && typeof cursorData.value === 'number') {
+      nextCursor = cursorData.value;
+    }
+  }
+
+  return { map: parsedMap, nextCursor };
+}
+
+export interface FetchFullRosterConfig extends ContractConfig {
+  pageLimit: number;
+}
+
+export async function fetchFullContractRoster(
+  githubUsername: string,
+  config: FetchFullRosterConfig,
+): Promise<Record<string, string>> {
+  const { sorobanRpcUrl, contractId, timeoutMs = 15000, pageLimit } = config;
+
+  const rosterMap: Record<string, string> = {};
+  let currentCursor: number | undefined;
+
+  for (let page = 0; page < pageLimit; page++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'simulateTransaction',
+      params: {
+        transaction: buildGetPublicPaginatedXdr(contractId, currentCursor, 100), // Default limit per page
+      },
+    });
+
+    let response: import('node-fetch').Response;
+    try {
+      response = await fetch(sorobanRpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal as never,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isAbort = message.includes('abort') || message.includes('timeout');
+      throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (RETRYABLE_STATUS_CODES.has(response.status)) {
+      throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
+    }
+
+    if (!response.ok) {
+      throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
+    }
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
+    }
+
+    const { map, nextCursor } = parseRosterPageFromSimulateResult(json);
+    Object.assign(rosterMap, map);
+
+    if (nextCursor === undefined || nextCursor === currentCursor) {
+      break;
+    }
+    currentCursor = nextCursor;
+  }
+
+  return rosterMap;
+}

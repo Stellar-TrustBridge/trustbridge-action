@@ -39,79 +39,13 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
   - Raw private keys (PEM files) must **never** be passed directly into action inputs or environment variables; instead, use an isolated token minting step (`actions/create-github-app-token`).
   - Tokens and private keys are registered as GitHub Actions secrets (`core.setSecret`) and stripped by the logger (`[REDACTED]`) to prevent credential leakage into CI logs.
 
+## Security Policies (SSRF & Input Guardrails)
 
----
+- **`horizon_url_allowlist`**: Enforces strict URL matching for Horizon endpoints. When set (as a comma-separated list of domains), any `horizon_url` or fallback URL must exactly match one of the allowed hostnames. This provides a strong defense-in-depth layer against Server-Side Request Forgery (SSRF) and prevents the action from inadvertently contacting rogue endpoints even if the SSRF blocklist is bypassed.
+- **SSRF Blocklist**: Even without the allowlist, TrustBridge strictly prevents consumer-supplied Horizon and Dashboard URLs from targeting private IP ranges, loopback addresses (127.x.x.x, ::1), cloud metadata endpoints (169.254.x.x), and the `file://` protocol.
 
-## Horizon SSRF blocklist (Issue #308)
+## Config & Rosters
 
-TrustBridge enforces a strict server-side-request-forgery (SSRF) block-list on
-every Horizon and RPC URL it accepts — from action inputs, consumer
-`.trustbridge.yml` config files, and fallback URL inputs.
-
-### Blocked categories
-
-| Category | Example blocked addresses |
-|----------|--------------------------|
-| IPv4 loopback | `127.0.0.1`, `127.x.x.x` |
-| IPv4 link-local | `169.254.x.x` |
-| AWS instance metadata | `169.254.169.254` |
-| GCP metadata | `metadata.google.internal` |
-| Private class-A | `10.x.x.x` |
-| Private class-B | `172.16.x.x` – `172.31.x.x` |
-| Private class-C | `192.168.x.x` |
-| IPv6 loopback | `::1`, `[::1]` |
-| IPv6 link-local | `fe80::`, `[fe80::1]` |
-| Bare localhost | `localhost` (any port, any case) |
-| `file://` protocol | `file:///etc/passwd` |
-
-### Known bypass patterns and how they are handled
-
-The blocklist is tested against a **fuzz corpus** (`__tests__/ssrf-fuzz.test.ts`)
-that generates dozens of host variants per category. Known bypass patterns and
-how the implementation handles them:
-
-| Bypass pattern | Example | Defence |
-|----------------|---------|---------|
-| Credential prefix | `http://user:pass@192.168.1.1/` | URL is credential-stripped before pattern matching |
-| Non-standard port | `http://localhost:9999/` | Port is not part of the match; hostname checked independently |
-| IPv6 uppercase | `http://[FE80::1]/` | Patterns use case-insensitive flag (`/i`) |
-| IPv6 zone ID | `http://[fe80::1%25eth0]/` | Covered by the `fe80:` prefix pattern |
-| Trailing dot | `http://localhost./` | URL() normalizes or rejects trailing-dot hostnames |
-| Embedded credentials | `http://ignored@10.0.0.1/` | Stripped with `replace(/^(https?:\/\/)[^@/]*@/, '$1')` |
-| `172.15.x.x` (public) | `http://172.15.0.1/` | `172.(16-31)` pattern does NOT block 172.15 — correctly allowed |
-| Decimal IP (`2130706433`) | `http://2130706433/` | URL() may not normalize; documented gap — use network egress controls for defense-in-depth |
-| Hex IP (`0x7f000001`) | `http://0x7f000001/` | Same as decimal — URL() behavior is platform-dependent |
-
-### SSRF fuzz test suite (Issue #308)
-
-`__tests__/ssrf-fuzz.test.ts` provides a generator-based fuzz corpus:
-
-- **IPv4 loopback**: 6 addresses × http/https/port/credential = 24+ cases
-- **IPv4 link-local**: 6 addresses × variants = 12+ cases
-- **IPv4 class-A**: 6 addresses × variants = 12+ cases
-- **IPv4 class-B**: all 16 private subnets (172.16–31) × variants = 32+ cases
-- **IPv4 class-C**: 5 addresses × variants = 10+ cases
-- **IPv6 loopback**: 6 canonical + abbreviated forms
-- **IPv6 link-local**: 6 forms including uppercase and zone ID
-- **localhost variants**: 8 forms including case and ports
-- **credential bypass**: 7 userinfo@host forms
-- **cloud metadata**: 8 forms (AWS, GCP, Azure)
-- **file://**: 6 path forms
-- **allowlist regression**: 13 legitimate public Horizon endpoints that MUST pass
-
-Run the SSRF fuzz suite independently:
-
-```bash
-npm test -- --testPathPattern 'ssrf'
-```
-
-The CI `ssrf-audit` job runs this suite on every push and pull request. A
-regression that removes or weakens any blocklist entry will break the build
-before a release is cut.
-
-### Fail-closed policy
-
-When URL validation fails, the action **fails immediately** with a clear error
-message identifying the blocked address. There is no fallback to an unvalidated
-URL. Fixture mode (`fixture_mode: true`) bypasses Horizon HTTP calls entirely but
-never disables the blocklist for non-fixture runs.
+- **`trustbridge_config_path`**: Can point to `.github/trustbridge.yml`. Supports repository-level overrides of organization-level policies (`.github/trustbridge.yml`).
+- **Dashboard Roster (#317)**: Configured via `dashboard_roster_url`, `dashboard_roster_secret`, and `dashboard_roster_timeout_ms`. Pulls assignee roster dynamically via HTTP GET. The request URL is validated against SSRF blocklist rules and requests include `X-TrustBridge-Signature` (HMAC-SHA256) and `X-TrustBridge-Timestamp` headers when `dashboard_roster_secret` is configured. Expects a JSON dictionary response mapping GitHub logins to Stellar G-addresses (`{ "login": "G..." }`).
+- **Soroban Roster (#318)**: Configured via `contract_id`, `soroban_full_roster`, and `soroban_roster_page_limit`. Normal single-address resolution looks up the contract page containing the assignee. Setting `soroban_full_roster: "true"` retrieves the complete roster page-by-page from the contract state, bounded by `soroban_roster_page_limit`.

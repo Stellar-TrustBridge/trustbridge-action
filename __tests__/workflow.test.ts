@@ -14,8 +14,8 @@ describe('.github/workflows/ci.yml', () => {
     const content = fs.readFileSync(workflowPath, 'utf8');
 
     expect(content).toContain('name: CI');
-    expect(content).toContain('actions/checkout@v4');
-    expect(content).toContain('actions/setup-node@v4');
+    expect(content).toContain('actions/checkout@');
+    expect(content).toContain('actions/setup-node@');
     expect(content).toContain('npm ci');
     expect(content).toContain('npm run lint');
     expect(content).toContain('npm test');

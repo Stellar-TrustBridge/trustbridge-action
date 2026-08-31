@@ -185,18 +185,19 @@ describe('detectNetworkMismatch', () => {
     expect(result.checks[0].detail).toContain('not found');
   });
 
-  it('SSRF guard: invalid alt URL would return undefined without fetch', async () => {
-    // Canonical URLs are always valid, but we test the guard by ensuring fetch is not called
-    // when we manually block via validation logic — indirectly tested via canonical validity.
-    // Here we verify that a timeout still returns undefined (defensive)
-    const slowFetch = async (): Promise<{ status: number }> => {
-      await new Promise((r) => setTimeout(r, 6000));
-      return { status: 200 };
-    };
-    // With AbortSignal.timeout(5000), a slow fetch should timeout and return undefined
-    const hint = await detectNetworkMismatch(MAINNET_HORIZON, VALID_ADDRESS, slowFetch);
-    // Either undefined or hint depending on timing; ensure no throw
-    expect(hint === undefined || hint !== undefined).toBe(true);
+  it('returns undefined when the opposite-network fetch fails', async () => {
+    const fetchMock = jest.fn(async () => {
+      throw new Error('The operation was aborted');
+    });
+
+    const hint = await detectNetworkMismatch(
+      MAINNET_HORIZON,
+      VALID_ADDRESS,
+      fetchMock,
+    );
+
+    expect(hint).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

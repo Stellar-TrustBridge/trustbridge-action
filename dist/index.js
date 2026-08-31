@@ -572,8 +572,8 @@ class OidcClient {
             const res = yield httpclient
                 .getJson(id_token_url)
                 .catch(error => {
-                throw new Error(`Failed to get ID Token. \n 
-        Error Code : ${error.statusCode}\n 
+                throw new Error(`Failed to get ID Token. \n
+        Error Code : ${error.statusCode}\n
         Error Message: ${error.message}`);
             });
             const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
@@ -34636,7 +34636,6 @@ const assets_1 = __nccwpck_require__(5462);
 const markdown_1 = __nccwpck_require__(3758);
 const links_1 = __nccwpck_require__(3346);
 const metrics_1 = __nccwpck_require__(5670);
-const toml_1 = __nccwpck_require__(5887);
 const validation_1 = __nccwpck_require__(4344);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -36215,7 +36214,7 @@ function formatCommentBody(result, config) {
             ? `- ${strings.readyToProceed}`
             : `- ${strings.blockedBy} ${gate.failedLabels.join(', ')}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, '', `### ${strings.balancesHeading}`, '', `- **Native XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
             ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``, 
+            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``,
         // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
         (() => {
             const asset = config.assetCode;
@@ -36966,6 +36965,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseSimpleYaml = parseSimpleYaml;
+exports.readTrustbridgeConfigs = readTrustbridgeConfigs;
 exports.readTrustbridgeConfig = readTrustbridgeConfig;
 exports.mergeConsumerConfig = mergeConsumerConfig;
 const fs = __importStar(__nccwpck_require__(9896));
@@ -37030,6 +37030,44 @@ function parseYamlValue(raw) {
         return num;
     // Plain string
     return raw;
+}
+/**
+ * Reads and merges organization-level and repository-level configuration files.
+ * Organization config (.github/trustbridge.yml) is loaded first.
+ * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
+ */
+function readTrustbridgeConfigs(repoConfigPath, workspaceRoot) {
+    const root = workspaceRoot ?? process.cwd();
+    const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
+    // Use the explicit repo path, or fallback to default repo path
+    const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
+    const repoResult = readTrustbridgeConfig(targetRepoPath, root);
+    const valid = orgResult.validation.valid && repoResult.validation.valid;
+    const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
+    const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
+    // Merge configs (repo overrides org)
+    let config = null;
+    if (orgResult.config || repoResult.config) {
+        config = { ...orgResult.config };
+        if (repoResult.config) {
+            for (const [key, value] of Object.entries(repoResult.config)) {
+                if (value !== undefined) {
+                    config[key] = value;
+                }
+            }
+        }
+    }
+    let redactedSnapshot = null;
+    if (orgResult.redactedSnapshot || repoResult.redactedSnapshot) {
+        redactedSnapshot = { ...orgResult.redactedSnapshot, ...repoResult.redactedSnapshot };
+    }
+    return {
+        config,
+        validation: { valid, errors, warnings },
+        redactedSnapshot,
+        resolvedPath: repoResult.resolvedPath,
+        found: orgResult.found || repoResult.found,
+    };
 }
 /**
  * Read and validate a consumer trustbridge.yml config file.
@@ -40051,6 +40089,7 @@ const i18n_1 = __nccwpck_require__(4859);
 const webhook_1 = __nccwpck_require__(8378);
 const preflight_1 = __nccwpck_require__(4504);
 const soroban_1 = __nccwpck_require__(3597);
+const roster_1 = __nccwpck_require__(6260);
 const corePlugins_1 = __nccwpck_require__(4098);
 const plugin_1 = __nccwpck_require__(2375);
 const pluginLoader_1 = __nccwpck_require__(2259);
@@ -40090,7 +40129,7 @@ function resolveAssigneeLoginFromContext() {
  * Each source is tried in order; the first non-empty result wins.
  * Conflicts are logged as warnings so maintainers know which source won.
  */
-function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractAddress) {
+function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractAddress, dashboardAddress) {
     const resolvedFrom = [];
     // Source 1: Contract registry lookup
     if (contractAddress) {
@@ -40100,6 +40139,15 @@ function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, 
             source: 'contract',
         });
         return contractAddress;
+    }
+    // Source 2: Dashboard roster API
+    if (dashboardAddress) {
+        resolvedFrom.push('dashboard_roster');
+        logger_1.logger.info('Address resolved from dashboard roster', {
+            component: 'index',
+            source: 'dashboard_roster',
+        });
+        return dashboardAddress;
     }
     // Source 2: Assignee address map
     const mapRaw = assigneeAddressMapRaw.trim();
@@ -40313,7 +40361,14 @@ async function run() {
     const minXlmReserveRaw = core.getInput('min_xlm_reserve') || campaignPreset?.minXlmReserve || '1.5';
     const stellarAddressInput = core.getInput('stellar_address_input');
     const assigneeAddressMapRaw = core.getInput('assignee_address_map');
-    // Issue #219: Contract registry lookup (source 1 of address resolution).
+    // Issue #317: Dashboard roster API inputs
+    const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
+    const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
+    const dashboardRosterTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
+    // Issue #318: Soroban full roster inputs
+    const sorobanFullRoster = (0, inputs_1.parseBooleanInput)(core.getInput('soroban_full_roster'), false);
+    const sorobanRosterPageLimit = (0, inputs_1.parseNumberInput)(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
+    // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
     const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
     const contractId = core.getInput('contract_id') || '';
     let contractResolvedAddress;
@@ -40321,12 +40376,24 @@ async function run() {
         const assigneeLogin = resolveAssigneeLoginFromContext();
         if (assigneeLogin) {
             try {
-                const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
-                    sorobanRpcUrl,
-                    contractId,
-                });
-                if (lookup.address) {
-                    contractResolvedAddress = lookup.address;
+                if (sorobanFullRoster) {
+                    const map = await (0, soroban_1.fetchFullContractRoster)(assigneeLogin, {
+                        sorobanRpcUrl,
+                        contractId,
+                        pageLimit: sorobanRosterPageLimit,
+                    });
+                    const found = map[assigneeLogin.toLowerCase()];
+                    if (found)
+                        contractResolvedAddress = found;
+                }
+                else {
+                    const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
+                        sorobanRpcUrl,
+                        contractId,
+                    });
+                    if (lookup.address) {
+                        contractResolvedAddress = lookup.address;
+                    }
                 }
             }
             catch (err) {
@@ -40339,7 +40406,24 @@ async function run() {
             }
         }
     }
-    const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress);
+    // Issue #317: Dashboard roster lookup (source 2 of address resolution).
+    let dashboardResolvedAddress;
+    if (dashboardRosterUrl) {
+        const assigneeLogin = resolveAssigneeLoginFromContext();
+        if (assigneeLogin) {
+            try {
+                const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs);
+                const found = map[assigneeLogin.toLowerCase()];
+                if (found)
+                    dashboardResolvedAddress = found;
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger_1.logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
+            }
+        }
+    }
+    const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress, dashboardResolvedAddress);
     const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
     const issueNumberInputRaw = core.getInput('issue_number') || '';
     const issueNumberInput = issueNumberInputRaw.trim()
@@ -40487,7 +40571,7 @@ async function run() {
     // Read the consumer .trustbridge.yml and merge values into action inputs.
     // Explicit non-empty action inputs always win over config-file values.
     // ---------------------------------------------------------------------------
-    const configResult = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
+    const configResult = (0, configReader_1.readTrustbridgeConfigs)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
     if (!configResult.validation.valid) {
         const errMsg = configResult.validation.errors.join('; ');
         core.setFailed(`Trustbridge config file error: ${errMsg}`);
@@ -40604,9 +40688,6 @@ async function run() {
     const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
     const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
     // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-    const stellarTomlFetchEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('stellar_toml_fetch_enabled'), false);
-    const stellarTomlCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('stellar_toml_cache_ttl_ms') || '3600000', 3600000, { min: 0, max: 86400000 });
-    const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
     // GitHub Checks API integration (Wave #26 — optional, off by default)
     const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
     // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
@@ -44238,6 +44319,158 @@ exports.HttpMockMatrix = HttpMockMatrix;
 
 /***/ }),
 
+/***/ 6260:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchDashboardRoster = fetchDashboardRoster;
+const crypto = __importStar(__nccwpck_require__(6982));
+const validation_1 = __nccwpck_require__(4344);
+const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
+async function fetchDashboardRoster(url, secret, timeoutMs, fetchFn = fetch) {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+        throw new Error('Dashboard roster URL cannot be empty.');
+    }
+    const ssrfCheck = (0, validation_1.validateSsrfSafeUrl)(trimmedUrl, 'dashboard_roster_url', { allowHttp: true });
+    if (!ssrfCheck.valid) {
+        throw new Error(`Dashboard roster URL failed security validation: ${ssrfCheck.errors.join(', ')}`);
+    }
+    const timestamp = Date.now().toString();
+    const signature = secret
+        ? crypto.createHmac('sha256', secret).update(timestamp).digest('hex')
+        : '';
+    const headers = {
+        'Accept': 'application/json',
+    };
+    if (signature) {
+        headers['X-TrustBridge-Timestamp'] = timestamp;
+        headers['X-TrustBridge-Signature'] = `sha256=${signature}`;
+    }
+    let currentResponse;
+    let targetUrl = trimmedUrl;
+    let redirects = 0;
+    while (true) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            currentResponse = await fetchFn(targetUrl, {
+                method: 'GET',
+                headers,
+                signal: controller.signal,
+                redirect: 'manual', // We handle redirects manually for SSRF validation
+            });
+        }
+        catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to fetch dashboard roster: ${msg}`);
+        }
+        finally {
+            clearTimeout(timeoutId);
+        }
+        if ([301, 302, 303, 307, 308].includes(currentResponse.status)) {
+            if (redirects >= 5)
+                throw new Error('Too many redirects');
+            redirects++;
+            const location = currentResponse.headers.get('location');
+            if (!location)
+                throw new Error('Redirect missing location');
+            const redirectUrl = new URL(location, targetUrl).toString();
+            const redirectSsrf = (0, validation_1.validateSsrfSafeUrl)(redirectUrl, 'dashboard_roster_redirect', { allowHttp: true });
+            if (!redirectSsrf.valid) {
+                throw new Error(`Dashboard roster redirect failed security validation: ${redirectSsrf.errors.join(', ')}`);
+            }
+            targetUrl = redirectUrl;
+            continue;
+        }
+        break;
+    }
+    if (!currentResponse.ok) {
+        throw new Error(`Dashboard roster returned HTTP ${currentResponse.status}`);
+    }
+    if (!currentResponse.body) {
+        throw new Error('Response body is empty');
+    }
+    // Stream body to enforce size limit safely
+    const reader = currentResponse.body.getReader();
+    let receivedBytes = 0;
+    const chunks = [];
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            if (value) {
+                receivedBytes += value.length;
+                if (receivedBytes > MAX_ROSTER_SIZE_BYTES) {
+                    throw new Error('Response exceeded size limit');
+                }
+                chunks.push(value);
+            }
+        }
+    }
+    finally {
+        reader.releaseLock();
+    }
+    const text = Buffer.concat(chunks).toString('utf-8');
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        throw new Error('Dashboard roster returned invalid JSON');
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Dashboard roster JSON must be an object');
+    }
+    const result = {};
+    for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value !== 'string') {
+            throw new Error(`Dashboard roster entry for "${key}" must be a string Stellar G-address.`);
+        }
+        result[key.trim().toLowerCase()] = value.trim();
+    }
+    return result;
+}
+
+
+/***/ }),
+
 /***/ 866:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -44674,6 +44907,9 @@ exports.ContractLookupError = void 0;
 exports.lookupAddressFromContract = lookupAddressFromContract;
 exports.buildGetAddressXdr = buildGetAddressXdr;
 exports.parseAddressFromSimulateResult = parseAddressFromSimulateResult;
+exports.buildGetPublicPaginatedXdr = buildGetPublicPaginatedXdr;
+exports.parseRosterPageFromSimulateResult = parseRosterPageFromSimulateResult;
+exports.fetchFullContractRoster = fetchFullContractRoster;
 const node_fetch_1 = __importDefault(__nccwpck_require__(6705));
 /** Errors thrown by the contract registry client. */
 class ContractLookupError extends Error {
@@ -44795,6 +45031,104 @@ function parseAddressFromSimulateResult(json) {
         }
     }
     return null;
+}
+function buildGetPublicPaginatedXdr(contractId, cursor, limit) {
+    const args = [];
+    if (cursor !== undefined)
+        args.push(cursor);
+    if (limit !== undefined)
+        args.push(limit);
+    const payload = JSON.stringify({ contractId, fn: 'get_public_paginated', args });
+    return Buffer.from(payload).toString('base64');
+}
+function parseRosterPageFromSimulateResult(json) {
+    if (typeof json !== 'object' || json === null || !('result' in json))
+        return { map: {} };
+    const result = json['result'];
+    if (typeof result !== 'object' || result === null)
+        return { map: {} };
+    const retval = result['retval'];
+    if (typeof retval !== 'object' || retval === null)
+        return { map: {} };
+    const retvalObj = retval;
+    if (retvalObj['type'] !== 'tuple' || !Array.isArray(retvalObj['value']) || retvalObj['value'].length < 1) {
+        return { map: {} };
+    }
+    const mapData = retvalObj['value'][0];
+    if (mapData?.type !== 'map' || !Array.isArray(mapData.value)) {
+        return { map: {} };
+    }
+    const parsedMap = {};
+    for (const entry of mapData.value) {
+        if (entry?.key?.type === 'string' && typeof entry.key.value === 'string' &&
+            entry?.val?.type === 'address' && typeof entry.val.value === 'string') {
+            if (/^G[A-Z2-7]{55}$/.test(entry.val.value)) {
+                parsedMap[entry.key.value.toLowerCase()] = entry.val.value;
+            }
+        }
+    }
+    let nextCursor;
+    if (retvalObj['value'].length > 1) {
+        const cursorData = retvalObj['value'][1];
+        if (cursorData?.type === 'u32' && typeof cursorData.value === 'number') {
+            nextCursor = cursorData.value;
+        }
+    }
+    return { map: parsedMap, nextCursor };
+}
+async function fetchFullContractRoster(githubUsername, config) {
+    const { sorobanRpcUrl, contractId, timeoutMs = 15000, pageLimit } = config;
+    const rosterMap = {};
+    let currentCursor;
+    for (let page = 0; page < pageLimit; page++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const body = JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'simulateTransaction',
+            params: {
+                transaction: buildGetPublicPaginatedXdr(contractId, currentCursor, 100), // Default limit per page
+            },
+        });
+        let response;
+        try {
+            response = await (0, node_fetch_1.default)(sorobanRpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                signal: controller.signal,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const isAbort = message.includes('abort') || message.includes('timeout');
+            throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+        if (RETRYABLE_STATUS_CODES.has(response.status)) {
+            throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
+        }
+        if (!response.ok) {
+            throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
+        }
+        let json;
+        try {
+            json = await response.json();
+        }
+        catch {
+            throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
+        }
+        const { map, nextCursor } = parseRosterPageFromSimulateResult(json);
+        Object.assign(rosterMap, map);
+        if (nextCursor === undefined || nextCursor === currentCursor) {
+            break;
+        }
+        currentCursor = nextCursor;
+    }
+    return rosterMap;
 }
 
 
@@ -47338,7 +47672,7 @@ const CONTRACT_ADDRESS_REGEX = /^C[A-Z2-7]{55}$/;
  * Records an OTel-style span for every call (success and failure).
  */
 function validateContractAddress(address) {
-    return withSpan('validateContractAddress', 
+    return withSpan('validateContractAddress',
     // Redact the raw address — only record structural metadata in the span.
     { inputLength: address.trim().length, startsWithC: address.trim().startsWith('C') }, () => {
         const errors = [];
@@ -47586,6 +47920,40 @@ function validateHorizonUrl(url, fieldName = 'horizon_url', options = {}) {
     for (const w of [...urlCheck.warnings, ...ssrf.warnings]) {
         if (!warnings.includes(w))
             warnings.push(w);
+    }
+    // Issue #315: Strict allowlist check
+    if (options.allowlist && options.allowlist.length > 0 && urlCheck.valid) {
+        try {
+            const parsedTarget = new URL(trimmed);
+            const targetHost = parsedTarget.host.toLowerCase();
+            let matched = false;
+            for (const allowed of options.allowlist) {
+                const cleanAllowed = allowed.trim();
+                if (!cleanAllowed)
+                    continue;
+                try {
+                    // If the allowlist entry is a full URL, parse and compare hosts
+                    const parsedAllowed = new URL(cleanAllowed);
+                    if (targetHost === parsedAllowed.host.toLowerCase()) {
+                        matched = true;
+                        break;
+                    }
+                }
+                catch {
+                    // If the allowlist entry is just a hostname/port
+                    if (targetHost === cleanAllowed.toLowerCase() || parsedTarget.hostname.toLowerCase() === cleanAllowed.toLowerCase()) {
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+            if (!matched) {
+                errors.push(`${fieldName} host "${targetHost}" is not in the allowlist`);
+            }
+        }
+        catch {
+            // Ignore URL parse errors here, let urlCheck handle invalid format
+        }
     }
     const normalizedErrors = errors.map((e) => {
         if (e.toLowerCase().includes('protocol'))
@@ -49988,7 +50356,7 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /************************************************************************/
 /******/ 	// The module cache
 /******/ 	var __webpack_module_cache__ = {};
-/******/ 	
+/******/
 /******/ 	// The require function
 /******/ 	function __nccwpck_require__(moduleId) {
 /******/ 		// Check if module is in cache
@@ -50002,7 +50370,7 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 			// no module.loaded needed
 /******/ 			exports: {}
 /******/ 		};
-/******/ 	
+/******/
 /******/ 		// Execute the module function
 /******/ 		var threw = true;
 /******/ 		try {
@@ -50011,24 +50379,24 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 		} finally {
 /******/ 			if(threw) delete __webpack_module_cache__[moduleId];
 /******/ 		}
-/******/ 	
+/******/
 /******/ 		// Return the exports of the module
 /******/ 		return module.exports;
 /******/ 	}
-/******/ 	
+/******/
 /************************************************************************/
 /******/ 	/* webpack/runtime/compat */
-/******/ 	
+/******/
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
-/******/ 	
+/******/
 /************************************************************************/
-/******/ 	
+/******/
 /******/ 	// startup
 /******/ 	// Load entry module and return exports
 /******/ 	// This entry module is referenced by other modules so it can't be inlined
 /******/ 	var __webpack_exports__ = __nccwpck_require__(9407);
 /******/ 	module.exports = __webpack_exports__;
-/******/ 	
+/******/
 /******/ })()
 ;
 //# sourceMappingURL=index.js.map

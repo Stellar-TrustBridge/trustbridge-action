@@ -22,7 +22,6 @@ import {
 import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
-import { fetchTomlWithCache } from './toml';
 import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
@@ -103,27 +102,6 @@ export interface CheckConfig {
    * tightened.
    */
   homeDomainCheckMode?: HomeDomainCheckMode;
-
-  /**
-   * When true, TrustBridge fetches stellar.toml from the issuer's home_domain
-   * (https://{home_domain}/.well-known/stellar.toml) with SSRF protection and
-   * TTL caching. Only used when homeDomainCheckEnabled is true. Default: false.
-   */
-  stellarTomlFetchEnabled?: boolean;
-
-  /**
-   * Time-to-live for stellar.toml fetch cache in milliseconds.
-   * Default: 3600000 (1 hour). Only used when stellarTomlFetchEnabled is true.
-   */
-  stellarTomlCacheTtlMs?: number;
-
-  /**
-   * Optional integrity hash for stellar.toml content validation.
-   * Format: "algorithm:hexvalue" (e.g. "sha256:abc123...").
-   * When set, the fetched TOML content is hashed and compared; a mismatch fails
-   * the check and blocks valid. Only used when stellarTomlFetchEnabled is true.
-   */
-  stellarTomlHashPin?: string;
 
   // ---------------------------------------------------------------------------
   // Ledger lag / freshness guard (Issue #107 â€” optional, off by default)
@@ -377,17 +355,6 @@ export interface HomeDomainCheckResult {
    * this flag is true to indicate the failure should block `valid`.
    */
   blocksValid: boolean;
-
-  /**
-   * Optional SEP-0001 stellar.toml fetch result. Only populated when
-   * stellarTomlFetchEnabled is true and a fetch was attempted.
-   */
-  tomlFetch?: {
-    ok: boolean;
-    error?: string;
-    hash?: string;
-    cached: boolean; // true if served from cache
-  };
 }
 
 /**
@@ -457,97 +424,6 @@ export function evaluateHomeDomain(
     detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` âœ“`,
     blocksValid: false,
   };
-}
-
-/**
- * Asynchronously fetch and validate stellar.toml for a home_domain.
- *
- * This function:
- *  - Only runs if stellarTomlFetchEnabled is true in config
- *  - Skips fetch if on-chain home domain check failed
- *  - Fetches with SSRF protection and TTL caching
- *  - Validates hash (if pin provided)
- *  - Appends tomlFetch result to the existing HomeDomainCheckResult
- *  - Fails the check if fetch/hash validation fails in strict mode
- *
- * @param result The existing HomeDomainCheckResult from evaluateHomeDomain
- * @param config The CheckConfig with TOML options
- * @returns Potentially updated result with tomlFetch populated
- */
-export async function enrichHomeDomainCheckWithToml(
-  result: HomeDomainCheckResult,
-  config: CheckConfig,
-): Promise<HomeDomainCheckResult> {
-  // Only fetch TOML if enabled
-  if (!config.stellarTomlFetchEnabled) {
-    return result;
-  }
-
-  // Only fetch if we have a valid on-chain domain
-  if (result.outcome !== "valid" || !result.actualHomeDomain) {
-    return result;
-  }
-
-  const domain = result.actualHomeDomain;
-  const cacheTtlMs = config.stellarTomlCacheTtlMs ?? 3600000;
-  const hashPin = config.stellarTomlHashPin ?? "";
-
-  try {
-    const fetchResult = await fetchTomlWithCache(domain, {
-      cacheTtlMs,
-      hashPin: hashPin || undefined,
-    });
-
-    if (!fetchResult.ok) {
-      const detail = `Stellar.toml fetch failed: ${fetchResult.error}`;
-
-      // In strict mode, TOML fetch failure blocks valid
-      const shouldBlock = config.homeDomainCheckMode === "strict";
-
-      return {
-        ...result,
-        tomlFetch: {
-          ok: false,
-          error: fetchResult.error,
-          cached: false,
-        },
-        // Only block if in strict mode
-        blocksValid: result.blocksValid || shouldBlock,
-        detail: `${result.detail}\n${detail}`,
-      };
-    }
-
-    // TOML fetch succeeded
-    globalMetrics.incrementCounter("home_domain_toml_success");
-
-    return {
-      ...result,
-      tomlFetch: {
-        ok: true,
-        hash: fetchResult.hash,
-        cached: !fetchResult.fetched,
-      },
-    };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const detail = `Stellar.toml fetch error: ${msg}`;
-
-    // In strict mode, unexpected errors block valid
-    const shouldBlock = config.homeDomainCheckMode === "strict";
-
-    globalMetrics.incrementCounter("home_domain_toml_error");
-
-    return {
-      ...result,
-      tomlFetch: {
-        ok: false,
-        error: detail,
-        cached: false,
-      },
-      blocksValid: result.blocksValid || shouldBlock,
-      detail: `${result.detail}\n${detail}`,
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +774,7 @@ function explainReserveRequirement(reserve: ReserveRequirement): string {
 export function runAccountChecks(
   account: HorizonAccount,
   config: CheckConfig,
-): ValidationResult | Promise<ValidationResult> {
+): ValidationResult {
   const xlmBalance = getNativeBalance(account);
   const xlmNumeric = parseHorizonBalance(xlmBalance);
   const trustlineBalance = findTrustlineBalance(
@@ -1034,6 +910,20 @@ export function runAccountChecks(
   let homeDomainCheck: HomeDomainCheckResult | undefined;
   if (config.homeDomainCheckEnabled) {
     homeDomainCheck = evaluateHomeDomain(account, config);
+
+    // Emit metrics tag for dashboards and payout automation.
+    globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
+    globalMetrics.recordMetric('home_domain_check', 1, 'count', {
+      outcome: homeDomainCheck.outcome,
+      mode: config.homeDomainCheckMode ?? 'warn',
+    });
+
+    const homeDomainPassed = !homeDomainCheck.blocksValid || homeDomainCheck.outcome === 'valid';
+    checks.push({
+      passed: homeDomainPassed,
+      label: 'SEP-0001 home domain',
+      detail: homeDomainCheck.detail,
+    });
   }
 
   const buildResult = (): ValidationResult => {
@@ -1713,7 +1603,7 @@ export function validateStrKeyFormat(address: string): boolean {
   if (trimmed.length !== 56) return false;
 
   const prefix = trimmed.charAt(0);
-  if (prefix !== "G" && prefix !== "C") return false;
+  if (prefix !== 'G' && prefix !== 'C') return false;
 
   // StrKey uses base32 alphabet: A-Z, 2-7
   const strKeyRegex = /^[GC][A-Z2-7]{55}$/;
@@ -1731,8 +1621,8 @@ export interface MultiAssetConfig {
 
 /**
  * Reusable workflow: verify multiple asset trustlines in a single check.
- * Returns an array of results â€” one per asset â€” with pass/fail status.
- * 
+ * Returns an array of results — one per asset — with pass/fail status.
+ *
  * Usage in workflows:
  * ```yaml
  * - name: Verify multi-asset trustlines
@@ -1759,8 +1649,8 @@ export function checkMultiAssetTrustlines(
 
 /**
  * Reusable workflow: calculate recommended XLM reserve for an account.
- * Formula: base account reserve (1 XLM) + (trustline count Ã— 0.5 XLM per entry).
- * 
+ * Formula: base account reserve (1 XLM) + (trustline count × 0.5 XLM per entry).
+ *
  * Usage in workflows:
  * ```yaml
  * - name: Calculate reserve requirement
@@ -1841,10 +1731,9 @@ export function generateValidationReport(
     exists: hasTrustline(account, config.assetCode, config.assetIssuer),
   };
 
-  const additionalTrustlineResults = checkMultiAssetTrustlines(
-    account,
-    additionalAssets,
-  ).map((r) => ({ asset: r.asset, issuer: r.issuer, exists: r.exists }));
+  const additionalTrustlineResults = checkMultiAssetTrustlines(account, additionalAssets).map(
+    (r) => ({ asset: r.asset, issuer: r.issuer, exists: r.exists }),
+  );
 
   return {
     address: account.account_id,

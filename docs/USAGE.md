@@ -238,6 +238,30 @@ jobs:
 
 ---
 
+## Assignee Roster Resolution
+
+By default, TrustBridge expects the `stellar_address_input` to be passed directly. However, it can also resolve GitHub usernames to Stellar addresses dynamically:
+
+### Dashboard Roster API (Issue #317)
+```yaml
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
+```
+When configured, TrustBridge issues an HTTP GET request to `dashboard_roster_url`. When `dashboard_roster_secret` is set, requests include `X-TrustBridge-Timestamp` and `X-TrustBridge-Signature: sha256=<hex_hmac>` headers. The API must return a JSON dictionary mapping logins to addresses (e.g. `{"alice": "G...", "bob": "G..."}`).
+
+### Soroban Contract Roster (Issue #318)
+```yaml
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
+```
+TrustBridge queries a Soroban contract page-by-page to resolve assignee addresses. Single-address lookup remains default behavior; setting `soroban_full_roster: "true"` retrieves the complete roster page-by-page from contract state up to `soroban_roster_page_limit`.
+
+---
+
 ## Combined trigger (assigned + manual)
 
 Matches the action design target. Use `issue_number` on `workflow_dispatch` runs to target a specific issue for the result comment (Wave #29):
@@ -3078,131 +3102,45 @@ jobs:
 
 ---
 
-## Unauthorized trustline policy (Issue #248)
+## Roster & Security Policy Configuration (#314, #315, #317, #318)
 
-When an issuer has `AUTHORIZATION_REQUIRED` enabled, trustlines must be explicitly authorized before they can receive assets. TrustBridge handles this via the `unauthorized_trustline_policy` input:
+### Org-Level Policy Discovery & Overrides (#314)
+TrustBridge automatically discovers organization-level policy configuration files located at `.github/trustbridge.yml`. Any settings declared in the local repository configuration override organization defaults.
 
-```yaml
-      - uses: Stellar-TrustBridge/trustbridge-action@v1
-        with:
-          stellar_address_input: ${{ steps.resolve.outputs.stellar_address }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          unauthorized_trustline_policy: 'fail'   # or 'warn' (default) or 'ignore'
-```
-
-### Policy options
-
-| Policy | Trustline check | Behavior |
-|--------|----------------|----------|
-| `fail` (recommended for treasuries) | **Fails** when trustline exists but is not authorized | Blocks readiness; remediation advises issuer to authorize via SetTrustLineFlags |
-| `warn` (default) | **Passes** but adds a warning | Trustline check passes; detail notes "transfers will fail until authorized" |
-| `ignore` | **Passes** silently | No mention of authorization state |
-
-### Auth-revocable and clawback awareness
-
-- When the issuer has `AUTH_REVOCABLE` enabled and the trustline is unauthorized, the detail message notes that authorized trustlines can be revoked.
-- When clawback is enabled (non-strict mode), the trustline detail warns that the issuer can reclaim assets.
-
-### Reason codes
-
-- `TRUSTLINE_UNAUTHORIZED` — trustline exists but is not authorized (policy=fail or policy=warn with informational note)
-- `TRUSTLINE_MISSING` — trustline does not exist or is blocked by policy=fail
-
-### Dashboard parity note
-
-Dashboard readiness checks should maintain parity with this policy. The `trustlineAuthorized` field in the validation result provides the authorization state for dashboard consumption.
-
----
-
-## Liquidity pool share trustlines (Issue #249)
-
-TrustBridge **never** treats liquidity pool (LP) share trustlines as asset trustlines. This is enforced at the code level via `isCreditBalance()`, which only matches `credit_alphanum4` and `credit_alphanum12` balance types — explicitly excluding `liquidity_pool_shares`.
-
-### What this means
-
-- If your account holds LP shares for a pool containing USDC, you **still need a direct USDC trustline** to pass readiness checks.
-- LP shares are ignored in the `hasAnyTrustlines` check — an account with only LP shares shows "zero trustlines".
-- `getAssetBalance()` returns `'0'` when only LP shares exist (no matching credit trustline).
-
-### Example
+### Horizon URL Allowlist (#315)
+To prevent unauthorized Horizon endpoint usage, specify `horizon_url_allowlist`:
 
 ```yaml
-# Account with:
-#   - 10 XLM (native)
-#   - 5 LP shares (liquidity_pool_shares)
-#   - No USDC trustline
-#
-# Result: trustlineExists=false, detail="Account has zero trustlines"
+with:
+  horizon_url: 'https://horizon.stellar.org'
+  horizon_url_allowlist: 'horizon.stellar.org,horizon-testnet.stellar.org'
 ```
 
----
-
-## Muxed (M-) address support (Issue #250)
-
-TrustBridge accepts Stellar muxed addresses (M-addresses) and automatically converts them to the underlying G-address for Horizon checks.
-
-### How it works
-
-1. **Input**: You can pass an M-address as `stellar_address_input` or in issue body text.
-2. **Conversion**: The M-address is decoded to extract the underlying G-address and muxed ID.
-3. **Horizon lookup**: The G-address is used for all Horizon API calls (Horizon only accepts G-addresses).
-4. **Output**: The validation result uses the G-address; the original M-address is preserved in comments when useful.
-
-### Example
+### Dashboard Assignee Roster API with HMAC (#317)
+Fetch the assignee address roster dynamically from a remote API endpoint via HTTP GET:
 
 ```yaml
-      - uses: Stellar-TrustBridge/trustbridge-action@v1
-        with:
-          # M-addresses are accepted directly
-          stellar_address_input: 'MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
 ```
 
-### Validation
+When `dashboard_roster_secret` is set, requests include:
+- `X-TrustBridge-Signature`: `sha256=<hex_hmac>`
+- `X-TrustBridge-Timestamp`: Unix timestamp (seconds)
 
-- Valid M-addresses: 69 characters (M + 68 base32), version byte `0x60`, valid CRC-16 checksum.
-- Invalid M-addresses are rejected with a clear error message.
-- The underlying G-address is always used for Horizon checks — the muxed ID is not exposed in logs.
+Expects JSON payload mapping logins to addresses: `{ "alice": "G...", "bob": "G..." }`.
 
----
-
-## Federation address resolution (Issue #257)
-
-TrustBridge supports optional federation address resolution for addresses in `user*domain` format.
-
-### Enabling federation resolution
+### Paginated Soroban Contract Roster (#318)
+To retrieve the complete roster page-by-page from a Soroban contract:
 
 ```yaml
-      - uses: Stellar-TrustBridge/trustbridge-action@v1
-        with:
-          stellar_address_input: 'alice*stellar.org'
-          federation_resolution_enabled: 'true'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
 ```
-
-### How it works
-
-1. **Parse**: The federation address is split into `username` and `domain`.
-2. **Validate**: Username (alphanumeric + limited special chars, max 32 chars) and domain (not private/loopback) are validated.
-3. **Fetch TOML**: `https://{domain}/.well-known/stellar.toml` is fetched with SSRF protection.
-4. **Parse federation server**: The `[[FEDERATION_SERVER]]` entry's `forward_url` is extracted.
-5. **Resolve**: The federation server is queried with `?type=name&addr=user*domain`.
-6. **Validate G-address**: The returned `account_id` is validated as a Stellar G-address.
-
-### Security measures
-
-- **HTTPS-only**: All fetches use HTTPS (via `fetchSSRFSafe`).
-- **SSRF protection**: Private IPs, loopback, metadata endpoints are blocked.
-- **Safe redirects**: Only same-origin HTTPS redirects are followed.
-- **Timeout**: 10-second timeout on all fetches.
-- **Body size limits**: 256 KB for TOML, 64 KB for federation response.
-- **Domain validation**: Private/loopback domains are rejected before any fetch.
-
-### Policy
-
-- Federation resolution is **off by default** (`federation_resolution_enabled: false`).
-- When disabled, federation addresses are treated as invalid input.
-- Full SEP-0002 client functionality is out of scope.
 
 ---
 

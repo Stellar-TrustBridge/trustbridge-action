@@ -142,6 +142,7 @@ export declare function validateSsrfSafeUrl(url: string, fieldName: string, opti
  */
 export declare function validateHorizonUrl(url: string, fieldName?: string, options?: {
     allowHttp?: boolean;
+    allowlist?: string[];
 }): ValidationResult;
 /**
  * Sanitizes a single string field read from a consumer trustbridge.yml,

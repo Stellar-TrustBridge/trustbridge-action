@@ -188,9 +188,8 @@ describe('buildSep0010ChallengeSnippet', () => {
   it('rejects private/loopback dashboard URLs (SSRF guard)', () => {
     const snippet = buildSep0010ChallengeSnippet({
       dashboardUrl: 'https://127.0.0.1/verify',
-      challengeXdr: 'AAAAAQ',
     });
-    expect(snippet).toBeUndefined(); // invalid dashboard falls back to no snippet (or would need XDR fallback but we return undefined to avoid broken link)
+    expect(snippet).toBeUndefined(); // invalid dashboard falls back to no snippet
   });
 
   it('does not block ready — informational only', () => {

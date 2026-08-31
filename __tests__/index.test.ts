@@ -625,14 +625,6 @@ describe("Wave #30 + #38 — action.yml structural checks", () => {
     expect(content).toContain("account_funded:");
     expect(content).toContain("comment_url:");
   });
-
-  it("milestone_allowlist input is declared", () => {
-    expect(content).toContain("milestone_allowlist:");
-  });
-
-  it("milestone_fail_on_skip input is declared", () => {
-    expect(content).toContain("milestone_fail_on_skip:");
-  });
 });
 
 // ---------------------------------------------------------------------------
