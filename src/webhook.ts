@@ -183,6 +183,9 @@ export async function deliverWebhook(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'User-Agent': 'trustbridge-action/1',
+    // Schema version header allows receivers to route/validate without parsing the body first.
+    // Updated whenever schema_version in the payload changes (Issue #296).
+    'X-TrustBridge-Schema-Version': payload.schema_version,
   };
 
   if (config.authMode === 'oidc' || config.oidcToken) {
@@ -237,7 +240,7 @@ export async function sendWebhookNotification(
   // Redact the URL for log output so any embedded credentials are masked.
   const safeUrl = redactHorizonUrl(config.webhookUrl);
 
-  let effectiveConfig = { ...config };
+  const effectiveConfig: WebhookConfig = { ...config };
   if (config.authMode === 'oidc' && !config.oidcToken) {
     const audience = config.oidcAudience || 'trustbridge-dashboard';
     try {

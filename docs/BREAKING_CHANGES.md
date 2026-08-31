@@ -206,4 +206,73 @@ Initial public release. No breaking changes from a prior major.
 
 ---
 
+## Webhook payload versioning policy (Issue #296)
+
+The signed webhook payload emitted by `src/webhook.ts` is a **public API surface** — dashboard receivers and downstream automation switch on its field names and types. Renames and removals are breaking changes even when the action's workflow-level inputs/outputs are otherwise untouched.
+
+### v1 schema is frozen
+
+The fields listed in `schemas/webhook-payload.schema.json` under `schema_version: "1"` are **immutable**:
+
+| Field | Frozen since | Notes |
+|-------|-------------|-------|
+| `schema_version` | v1 | Always the string `"1"` for v1 payloads |
+| `event` | v1 | Always `"validation_complete"` |
+| `timestamp` | v1 | ISO-8601 UTC string |
+| `repository` | v1 | `"owner/repo"` format |
+| `issue_number` | v1 | Integer ≥ 1 or `null` |
+| `stellar_address` | v1 | Redacted first-4…last-4 |
+| `result.valid` | v1 | Boolean |
+| `result.account_funded` | v1 | Boolean |
+| `result.trustline_exists` | v1 | Boolean |
+| `result.xlm_balance` | v1 | 7-decimal string |
+| `result.checks[].label` | v1 | String |
+| `result.checks[].passed` | v1 | Boolean |
+
+**No field in this table may be renamed, removed, or have its type changed in any v1.x release.**
+
+### What is allowed in v1.x (additive changes)
+
+- Adding new **optional** top-level fields to the payload (e.g. `run_id`, `reason_code`).
+- Adding new items to `result.checks[]` — the array length is not contractually fixed.
+- Adding new **optional** fields to each `result.checks[]` item.
+- Adding new allowed values to `schema_version` (handled by upgrading to a new schema version alongside the old).
+
+Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additionalProperties: false` validation on the receiver side against the v1 schema — use it only as a minimum-field check).
+
+### What requires a MAJOR version bump (v2+)
+
+| Change | Reason |
+|--------|--------|
+| Removing any field from the frozen list above | Breaks receivers that read it |
+| Renaming any field (e.g. `result.valid` → `result.is_valid`) | Breaks receivers |
+| Changing `result.valid` from boolean to string | Type mismatch breaks typed receivers |
+| Changing `stellar_address` format (e.g. full address instead of redacted) | PII leak + format change |
+| Changing the HMAC header name from `X-TrustBridge-Signature` | Breaks receiver signature verification |
+| Changing the HMAC algorithm from SHA-256 | Breaks receiver verification |
+
+When introducing a breaking payload change, increment `schema_version` in the payload **and** publish the new JSON Schema as `schemas/webhook-payload-v2.schema.json`. Run both schemas simultaneously for a deprecation window before removing v1 support.
+
+### Header versioning
+
+The HTTP header `X-TrustBridge-Schema-Version: 1` is sent with every webhook delivery alongside `X-TrustBridge-Signature`. Dashboard receivers can use this header for version routing without parsing the body first:
+
+```
+POST /webhook HTTP/1.1
+Content-Type: application/json
+X-TrustBridge-Signature: sha256=<hex>
+X-TrustBridge-Schema-Version: 1
+User-Agent: trustbridge-action/1
+```
+
+### Checklist for maintainers touching webhook.ts
+
+- [ ] Is the change additive only? If yes — no schema version bump needed.
+- [ ] Does the change rename or remove a frozen field? If yes — this is a MAJOR bump.
+- [ ] Is a new optional field added? Update `schemas/webhook-payload.schema.json` (mark as not-required).
+- [ ] Run `npm test -- --testPathPattern 'webhook'` — the contract tests must pass.
+- [ ] If introducing a new `schema_version`, add a new frozen-fields table above and update `buildWebhookPayload` to emit the new version for new consumers while keeping backward compatibility.
+
+---
+
 [← Back to README](../README.md)

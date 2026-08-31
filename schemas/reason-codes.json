@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Stellar-TrustBridge/trustbridge-action/main/schemas/reason-codes.json",
+  "title": "TrustBridge reason_code Catalog",
+  "description": "Canonical catalog of all reason_code values emitted by the trustbridge-action `reason_code` output and the `reasonCode` field in ValidationResult. These codes are a public API surface: dashboard automations and workflow gates switch on them. Renames and removals are BREAKING CHANGES requiring a MAJOR version bump. New codes are ADDITIVE and safe in any minor/patch release. Source of truth: src/checks.ts. See docs/USAGE.md#reason-code-reference for the full documentation table.",
+  "version": "1",
+  "codes": [
+    {
+      "code": "SUCCESS",
+      "description": "All checks passed — the account is funded, holds the required asset trustline, and meets the minimum XLM reserve.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": true,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_MISSING",
+      "description": "The account is funded and meets the XLM reserve, but the required asset trustline is not present.",
+      "accountFunded": true,
+      "trustlineExists": false,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "RESERVE_TOO_LOW",
+      "description": "The account is funded and has a trustline, but the native XLM balance is below the required minimum reserve.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_LIMIT_TOO_LOW",
+      "description": "The account is funded and has a trustline, but the trustline limit is below the configured minimum (`min_trustline_limit`).",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks, only when min_trustline_limit is set)",
+      "since": "v1"
+    },
+    {
+      "code": "ACCOUNT_NOT_FUNDED",
+      "description": "Horizon returned 404 for the account — the account does not exist on the Stellar network (not yet funded).",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (unfundedAccountResult)",
+      "since": "v1"
+    },
+    {
+      "code": "HORIZON_TIMEOUT",
+      "description": "The Horizon request timed out or was aborted. The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, when error message contains 'timeout' or 'timed out')",
+      "since": "v1"
+    },
+    {
+      "code": "HORIZON_ERROR",
+      "description": "Horizon returned a non-404 non-timeout error (e.g. 429, 502, 503, 504, or a non-retryable HTTP error). The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, for all non-timeout errors)",
+      "since": "v1"
+    },
+    {
+      "code": "TLS_ERROR",
+      "description": "TLS/certificate verification failed for the configured Horizon endpoint. The account state could not be determined. Most common with private/enterprise Horizon mirrors using self-signed certificates.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (tlsFailureResult)",
+      "since": "v1"
+    },
+    {
+      "code": "FAILED",
+      "description": "A generic failure catch-all: the account was funded and the trustline exists and the reserve was met, but some other check (e.g. asset balance minimum) caused the validation to fail.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks fallback when no specific code applies)",
+      "since": "v1"
+    }
+  ]
+}
