@@ -387,6 +387,17 @@ export declare function horizonFailureResult(message: string, config: CheckConfi
  * is easy to misdiagnose as "the account isn't set up right."
  */
 export declare function tlsFailureResult(message: string, config: CheckConfig): ValidationResult;
+/**
+ * Builds a result for a rate-budget exhaustion failure (horizon_max_requests
+ * exceeded). This is intentionally distinct from both:
+ * - `horizonFailureResult` (Horizon API error or outage) — reason_code: HORIZON_ERROR
+ * - `unfundedAccountResult` (Horizon 404) — reason_code: ACCOUNT_NOT_FUNDED
+ *
+ * A RATE_BUDGET_EXHAUSTED result always means the run was stopped by the
+ * local request cap, *not* by any signal from Horizon about the account.
+ * The account state is therefore genuinely unknown — fail closed.
+ */
+export declare function rateBudgetExhaustedResult(message: string, config: CheckConfig): ValidationResult;
 /** Subset of `HorizonAccount` needed to compute the protocol-accurate minimum balance. */
 export interface SponsorAwareAccountFields {
     subentry_count: number;

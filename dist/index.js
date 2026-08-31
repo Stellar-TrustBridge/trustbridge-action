@@ -34619,6 +34619,7 @@ exports.unfundedAccountResult = unfundedAccountResult;
 exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
 exports.tlsFailureResult = tlsFailureResult;
+exports.rateBudgetExhaustedResult = rateBudgetExhaustedResult;
 exports.computeProtocolMinReserve = computeProtocolMinReserve;
 exports.buildReserveRequirement = buildReserveRequirement;
 exports.runMultiAssetChecks = runMultiAssetChecks;
@@ -35634,6 +35635,72 @@ function tlsFailureResult(message, config) {
         checks,
         remediation: 'TLS/certificate verification failed for the configured Horizon endpoint. ' +
             'Check the endpoint certificate chain (especially for private mirrors) and retry.',
+        failedCheckLabels: toFailedCheckCodes(checks),
+        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+    };
+}
+/**
+ * Builds a result for a rate-budget exhaustion failure (horizon_max_requests
+ * exceeded). This is intentionally distinct from both:
+ * - `horizonFailureResult` (Horizon API error or outage) — reason_code: HORIZON_ERROR
+ * - `unfundedAccountResult` (Horizon 404) — reason_code: ACCOUNT_NOT_FUNDED
+ *
+ * A RATE_BUDGET_EXHAUSTED result always means the run was stopped by the
+ * local request cap, *not* by any signal from Horizon about the account.
+ * The account state is therefore genuinely unknown — fail closed.
+ */
+function rateBudgetExhaustedResult(message, config) {
+    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
+    const checks = [
+        {
+            passed: false,
+            label: 'Horizon availability',
+            detail: `Rate budget exhausted: ${safeMessage}`,
+        },
+        {
+            passed: false,
+            label: `${safeAssetCode} trustline`,
+            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+        },
+        {
+            passed: false,
+            label: 'XLM reserve',
+            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+        },
+    ];
+    if (assetBalanceCheckEnabled) {
+        checks.push({
+            passed: false,
+            label: `${safeAssetCode} minimum balance`,
+            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+        });
+    }
+    if (config.homeDomainCheckEnabled) {
+        metrics_1.globalMetrics.incrementCounter('home_domain_skipped');
+        metrics_1.globalMetrics.recordMetric('home_domain_check', 1, 'count', {
+            outcome: 'skipped',
+            mode: config.homeDomainCheckMode ?? 'warn',
+        });
+        checks.push({
+            passed: true,
+            label: 'SEP-0001 home domain',
+            detail: 'Cannot verify issuer home domain — the rate budget was exhausted.',
+        });
+    }
+    return {
+        valid: false,
+        reasonCode: 'RATE_BUDGET_EXHAUSTED',
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: 'unknown',
+        xlmReserveMet: false,
+        assetBalance: 'unknown',
+        assetBalanceMet: false,
+        checks,
+        remediation: 'The configured `horizon_max_requests` budget was exhausted before the account check could complete. ' +
+            'Increase `horizon_max_requests`, reduce polling frequency, or enable caching to avoid hitting the cap.',
         failedCheckLabels: toFailedCheckCodes(checks),
         sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     };
@@ -40215,7 +40282,8 @@ async function handleAutoUnassign(options) {
     // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
     if (options.result.reasonCode === 'HORIZON_ERROR' ||
         options.result.reasonCode === 'HORIZON_TIMEOUT' ||
-        options.result.reasonCode === 'TLS_ERROR') {
+        options.result.reasonCode === 'TLS_ERROR' ||
+        options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED') {
         core.info('Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.');
         return undefined;
     }
@@ -41013,7 +41081,29 @@ async function run() {
             // Ensure the controller is not leaked if the function returns early.
             jobController.abort();
         }
-    } // end else (normal Horizon fetch path — fixtureMode === false)
+        else if (error instanceof resilience_1.RateBudgetExhaustedError) {
+            // Fail closed: the rate budget was exhausted (horizon_max_requests exceeded).
+            // The account state is unknown — do NOT emit an unfunded/404 result.
+            // This is a distinct reason_code so dashboards and downstream jobs can
+            // differentiate "account not found" from "budget exhausted before we asked".
+            horizonFetchError = error.message;
+            core.error(error.message);
+            metrics_1.globalMetrics.incrementCounter('errors');
+            metrics_1.globalMetrics.recordMetric('horizon_rate_budget_exhausted', 1, 'count');
+            result = (0, checks_1.rateBudgetExhaustedResult)(error.message, checkConfig);
+        }
+        else {
+            const message = (0, inputs_1.getErrorMessage)(error);
+            horizonFetchError = message;
+            core.error(message);
+            metrics_1.globalMetrics.incrementCounter('errors');
+            result = (0, checks_1.horizonFailureResult)(message, checkConfig);
+        }
+    }
+    finally {
+        // Ensure the controller is not leaked if the function returns early.
+        jobController.abort();
+    }
     // result is undefined only when the run was cancelled and we returned early above.
     if (result == null) {
         return;
@@ -45427,6 +45517,245 @@ async function fetchSSRFSafe(urlStr, options = {}) {
 
 /***/ }),
 
+/***/ 9681:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @file ssrf.ts
+ * SSRF-safe HTTP fetch utilities for TrustBridge.
+ *
+ * This module provides helpers for making HTTP requests with built-in
+ * protections against Server-Side Request Forgery (SSRF) attacks:
+ * - HTTPS-only (no HTTP, file://, ftp://, etc.)
+ * - No private/internal IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+ * - Request size and timeout limits
+ * - No redirect chains to different origins
+ *
+ * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
+ * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SSRF_BLOCKED_RANGES = void 0;
+exports.isSSRFBlocked = isSSRFBlocked;
+exports.validateSSRFSafeUrl = validateSSRFSafeUrl;
+exports.fetchSSRFSafe = fetchSSRFSafe;
+/**
+ * SSRF blocklist: IP ranges that should never be fetched from inside a
+ * GitHub Actions workflow.
+ *
+ * Covers:
+ * - Loopback: 127.0.0.0/8
+ * - Private RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ * - Link-local: 169.254.0.0/16
+ * - Multicast: 224.0.0.0/4
+ * - Reserved: 240.0.0.0/4
+ * - Localhost IPv6: ::1
+ * - Link-local IPv6: fe80::/10
+ */
+exports.SSRF_BLOCKED_RANGES = [
+    { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
+    { name: 'private_10', pattern: /^10\./ },
+    { name: 'private_172', pattern: /^172\.(1[6-9]|2[0-9]|3[01])\./ },
+    { name: 'private_192', pattern: /^192\.168\./ },
+    { name: 'link_local_169', pattern: /^169\.254\./ },
+    { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
+    { name: 'reserved_240', pattern: /^240\./ },
+    { name: 'ipv6_link_local', pattern: /^fe80:/i },
+];
+/**
+ * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * Returns `{ blocked: true, reason }` if the host should be rejected,
+ * or `{ blocked: false }` if it's safe to fetch from.
+ */
+function isSSRFBlocked(host) {
+    const normalized = host.toLowerCase();
+    for (const range of exports.SSRF_BLOCKED_RANGES) {
+        if (range.pattern.test(normalized)) {
+            return { blocked: true, reason: `Host matches SSRF blocklist: ${range.name}` };
+        }
+    }
+    return { blocked: false };
+}
+/**
+ * Validate that a URL is safe for SSRF-protected HTTP fetch.
+ *
+ * Checks:
+ * - Scheme is HTTPS (no HTTP, file://, ftp://, etc.)
+ * - Hostname is not in the SSRF blocklist
+ * - URL has a valid hostname (not relative, not localhost, etc.)
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }`.
+ */
+function validateSSRFSafeUrl(urlStr) {
+    const errors = [];
+    let parsed;
+    try {
+        parsed = new URL(urlStr);
+    }
+    catch {
+        errors.push('Invalid URL format');
+        return { valid: false, errors };
+    }
+    // Only HTTPS allowed
+    if (parsed.protocol !== 'https:') {
+        errors.push(`Scheme must be HTTPS, got: ${parsed.protocol}`);
+    }
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+        errors.push('URL must not contain credentials (username/password)');
+    }
+    // Hostname must be present and not empty
+    if (!parsed.hostname) {
+        errors.push('URL must have a non-empty hostname');
+    }
+    // Check SSRF blocklist
+    if (parsed.hostname) {
+        const blocked = isSSRFBlocked(parsed.hostname);
+        if (blocked.blocked) {
+            errors.push(`Hostname blocked by SSRF policy: ${blocked.reason}`);
+        }
+    }
+    if (errors.length > 0) {
+        return { valid: false, errors };
+    }
+    return { valid: true };
+}
+/**
+ * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ *
+ * NOT currently called by TrustBridge, but available for future enhancements
+ * that need to safely fetch HTTP resources from URLs in Horizon data.
+ *
+ * Usage:
+ * ```ts
+ * const result = await fetchSSRFSafe(homeDomainUrl, { maxBodyBytes: 256 * 1024 });
+ * if (!result.ok) {
+ *   logger.warn(`Fetch failed: ${result.error}`);
+ *   return;
+ * }
+ * const text = await result.text();
+ * ```
+ */
+async function fetchSSRFSafe(urlStr, options = {}) {
+    const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const maxRedirects = options.maxRedirects ?? 5;
+    let currentUrl = urlStr;
+    const seenRedirects = new Set();
+    let redirectCount = 0;
+    while (true) {
+        const validation = validateSSRFSafeUrl(currentUrl);
+        if (!validation.valid) {
+            return { ok: false, error: validation.errors.join('; ') };
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            const response = await fetch(currentUrl, {
+                signal: controller.signal,
+                redirect: 'manual',
+                headers: {
+                    'User-Agent': 'TrustBridge/1.0',
+                    Accept: 'application/toml, text/plain, */*',
+                },
+            });
+            clearTimeout(timeout);
+            if (response.status >= 300 && response.status < 400) {
+                if (!options.followRedirects) {
+                    return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+                }
+                const locationHeader = response.headers.get('location');
+                if (!locationHeader) {
+                    return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+                }
+                if (redirectCount >= maxRedirects) {
+                    return {
+                        ok: false,
+                        error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+                        status: response.status,
+                    };
+                }
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                const nextTarget = new URL(nextUrl);
+                const hopValidation = validateSSRFSafeUrl(nextUrl);
+                if (!hopValidation.valid) {
+                    return {
+                        ok: false,
+                        error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+                        status: response.status,
+                    };
+                }
+                const currentOrigin = new URL(currentUrl).origin;
+                const nextOrigin = nextTarget.origin;
+                if (nextTarget.protocol !== 'https:') {
+                    return {
+                        ok: false,
+                        error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (currentOrigin !== nextOrigin) {
+                    return {
+                        ok: false,
+                        error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (seenRedirects.has(nextUrl)) {
+                    return {
+                        ok: false,
+                        error: `Redirect loop detected: ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                seenRedirects.add(nextUrl);
+                redirectCount += 1;
+                currentUrl = nextUrl;
+                continue;
+            }
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) {
+                const bytes = parseInt(contentLength, 10);
+                if (bytes > maxBodyBytes) {
+                    return {
+                        ok: false,
+                        error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+                        status: response.status,
+                    };
+                }
+            }
+            if (!response.ok) {
+                return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+            }
+            const textData = await response.text();
+            if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
+                return {
+                    ok: false,
+                    error: `Response body exceeds limit after decompression`,
+                    status: response.status,
+                };
+            }
+            return {
+                ok: true,
+                status: response.status,
+                text: async () => textData,
+                headers: response.headers,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isTimeout = message.includes('signal') || message.includes('timeout');
+            return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+        }
+    }
+}
+
+
+/***/ }),
+
 /***/ 8855:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -45798,6 +46127,300 @@ function formatDigestComment(report) {
     }
     lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
     return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
 }
 
 

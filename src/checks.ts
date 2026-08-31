@@ -23,7 +23,7 @@ import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
 import { fetchTomlWithCache } from './toml';
-import { validateContractAddress, validateHorizonUrl } from './validation';
+import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -1429,6 +1429,81 @@ export function tlsFailureResult(
     remediation:
       "TLS/certificate verification failed for the configured Horizon endpoint. " +
       "Check the endpoint certificate chain (especially for private mirrors) and retry.",
+    failedCheckLabels: toFailedCheckCodes(checks),
+    sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+  };
+}
+
+/**
+ * Builds a result for a rate-budget exhaustion failure (horizon_max_requests
+ * exceeded). This is intentionally distinct from both:
+ * - `horizonFailureResult` (Horizon API error or outage) — reason_code: HORIZON_ERROR
+ * - `unfundedAccountResult` (Horizon 404) — reason_code: ACCOUNT_NOT_FUNDED
+ *
+ * A RATE_BUDGET_EXHAUSTED result always means the run was stopped by the
+ * local request cap, *not* by any signal from Horizon about the account.
+ * The account state is therefore genuinely unknown — fail closed.
+ */
+export function rateBudgetExhaustedResult(
+  message: string,
+  config: CheckConfig,
+): ValidationResult {
+  const safeMessage = escapeMarkdownInline(sanitizeErrorMessageForComment(message));
+  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
+
+  const checks: CheckResultItem[] = [
+    {
+      passed: false,
+      label: 'Horizon availability',
+      detail: `Rate budget exhausted: ${safeMessage}`,
+    },
+    {
+      passed: false,
+      label: `${safeAssetCode} trustline`,
+      detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+    },
+    {
+      passed: false,
+      label: 'XLM reserve',
+      detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+    },
+  ];
+
+  if (assetBalanceCheckEnabled) {
+    checks.push({
+      passed: false,
+      label: `${safeAssetCode} minimum balance`,
+      detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
+    });
+  }
+
+  if (config.homeDomainCheckEnabled) {
+    globalMetrics.incrementCounter('home_domain_skipped');
+    globalMetrics.recordMetric('home_domain_check', 1, 'count', {
+      outcome: 'skipped',
+      mode: config.homeDomainCheckMode ?? 'warn',
+    });
+    checks.push({
+      passed: true,
+      label: 'SEP-0001 home domain',
+      detail: 'Cannot verify issuer home domain — the rate budget was exhausted.',
+    });
+  }
+
+  return {
+    valid: false,
+    reasonCode: 'RATE_BUDGET_EXHAUSTED',
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    assetBalance: 'unknown',
+    assetBalanceMet: false,
+    checks,
+    remediation:
+      'The configured `horizon_max_requests` budget was exhausted before the account check could complete. ' +
+      'Increase `horizon_max_requests`, reduce polling frequency, or enable caching to avoid hitting the cap.',
     failedCheckLabels: toFailedCheckCodes(checks),
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
   };
