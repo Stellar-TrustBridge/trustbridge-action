@@ -2207,3 +2207,97 @@ Tests validate:
 - **Impact:** Zero; these modules were not part of the public API
 - **Verify:** `npm run build && npm test` confirm no imports of deleted modules
 
+
+---
+
+## Webhook Dashboard Integration (Issue #295)
+
+TrustBridge can dispatch a signed HTTP POST to a consumer-controlled dashboard endpoint after every validation run. The payload is a structured JSON object whose shape is governed by the JSON Schema at [`schemas/webhook-payload.schema.json`](../schemas/webhook-payload.schema.json).
+
+### Enabling webhooks
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    webhook_url: ${{ secrets.TRUSTBRIDGE_WEBHOOK_URL }}
+    webhook_secret: ${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET }}
+```
+
+### Payload schema (`schema_version: "1"`)
+
+The webhook body is a JSON object that satisfies the JSON Schema at `schemas/webhook-payload.schema.json`. The canonical shape:
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-08-31T07:05:25.189Z",
+  "repository": "my-org/my-repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5000000",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true },
+      { "label": "XLM reserve", "passed": true }
+    ]
+  }
+}
+```
+
+#### Field reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `"1"` (string) | Always `"1"` in the current release. Bump on breaking schema changes only. |
+| `event` | `"validation_complete"` | Always `"validation_complete"`. |
+| `timestamp` | ISO-8601 string | UTC time the webhook was dispatched. |
+| `repository` | `"owner/repo"` | Repository where the action ran. |
+| `issue_number` | integer ≥ 1 or `null` | GitHub issue number, or `null` for `workflow_dispatch` runs. |
+| `stellar_address` | `"GABC...XYZ"` | Redacted Stellar address (first-4…last-4). The full address is never sent. |
+| `result.valid` | boolean | `true` when all checks passed and the account is payout-ready. |
+| `result.account_funded` | boolean | `true` when Horizon confirmed the account exists. |
+| `result.trustline_exists` | boolean | `true` when the configured asset trustline is present. |
+| `result.xlm_balance` | string | Native XLM balance (7-decimal Horizon string) or `"0"`. |
+| `result.checks` | array | Per-check results (`label` + `passed`). Stable in v1; new checks are additive. |
+
+### PII policy
+
+- The full Stellar address is **never** included. Only the redacted `first-4…last-4` form appears.
+- `github_token` and other secrets are **never** included.
+- `result.checks[].detail` (internal diagnostic text) is **stripped** from the webhook payload.
+
+### Signature verification
+
+Every request carries an `X-TrustBridge-Signature: sha256=<hex>` header when `webhook_secret` is set. Verification (Node.js example):
+
+```js
+const crypto = require('crypto');
+
+function verifyWebhook(rawBody, secret, header) {
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(header));
+}
+```
+
+### Dashboard implementation checklist
+
+Dashboard receivers **MUST**:
+
+1. Check `schema_version` on every request and return HTTP 400 for unknown versions.
+2. Verify the `X-TrustBridge-Signature` header before processing the body.
+3. Respond with `2xx` within the webhook timeout (default 5 s) to avoid retry noise.
+4. Not rely on `result.checks[]` array length or order — new checks may be appended additively.
+5. Treat `issue_number: null` as a non-issue-triggered run (e.g. `workflow_dispatch`).
+
+Dashboard receivers **MUST NOT**:
+
+- Attempt to reconstruct the full Stellar address from the redacted `stellar_address` field.
+- Treat `result.valid: false` as an error — it is a valid terminal state.
+- Cache or persist the `timestamp` as a unique event ID — use `repository` + `issue_number` + `timestamp` together as a composite key.

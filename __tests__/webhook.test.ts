@@ -225,7 +225,7 @@ describe('deliverWebhook', () => {
 
     await deliverWebhook(makePayload(), CONFIG, mockFetch as any);
 
-    const expected = computeWebhookSignature(capturedBody!, CONFIG.webhookSecret);
+    const expected = computeWebhookSignature(capturedBody!, CONFIG.webhookSecret!);
     expect(capturedHeaders!['X-TrustBridge-Signature']).toBe(expected);
   });
 });
