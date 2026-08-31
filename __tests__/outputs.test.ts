@@ -157,3 +157,324 @@ describe('toActionOutputs', () => {
     expect(outputs.asset_balance).toBe('unknown');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Matrix-friendly outputs (Issue #3)
+// ---------------------------------------------------------------------------
+
+describe('Matrix-friendly outputs', () => {
+  it('includes empty JSON maps when assignee info not provided', () => {
+    const outputs = toActionOutputs(result);
+    
+    expect(outputs.assignee_results_json).toBe('{}');
+    expect(outputs.matrix_ready_map).toBe('{}');
+  });
+
+  it('includes assignee result in JSON map when assignee info provided', () => {
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      assigneeLogin: 'alice',
+      stellarAddress: 'GALICE123...',
+      validatedAt: '2024-01-15T10:00:00Z',
+    });
+    
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults).toHaveProperty('alice');
+    expect(assigneeResults.alice).toMatchObject({
+      ready: true,
+      stellar_address: 'GALICE123...',
+      xlm_balance: '5.0000000',
+      account_funded: true,
+      trustline_exists: true,
+      reason_code: 'SUCCESS',
+      validated_at: '2024-01-15T10:00:00Z',
+    });
+  });
+
+  it('includes ready status in matrix_ready_map', () => {
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      assigneeLogin: 'bob',
+      stellarAddress: 'GBOB456...',
+    });
+    
+    const readyMap = JSON.parse(outputs.matrix_ready_map);
+    expect(readyMap).toEqual({ bob: true });
+  });
+
+  it('includes failure status in matrix outputs', () => {
+    const failResult: ValidationResult = {
+      valid: false,
+      accountFunded: false,
+      trustlineExists: false,
+      xlmBalance: '0',
+      xlmReserveMet: false,
+      checks: [],
+      reasonCode: 'ACCOUNT_NOT_FUNDED',
+    };
+    
+    const outputs = toActionOutputs(failResult, undefined, undefined, {
+      assigneeLogin: 'charlie',
+      stellarAddress: 'GCHARLIE789...',
+    });
+    
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults.charlie.ready).toBe(false);
+    expect(assigneeResults.charlie.reason_code).toBe('ACCOUNT_NOT_FUNDED');
+    
+    const readyMap = JSON.parse(outputs.matrix_ready_map);
+    expect(readyMap.charlie).toBe(false);
+  });
+
+  it('generates valid JSON even with special characters in assignee login', () => {
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      assigneeLogin: 'user-with-hyphens',
+      stellarAddress: 'GUSER...',
+    });
+    
+    // Should parse without error
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults['user-with-hyphens']).toBeDefined();
+    
+    const readyMap = JSON.parse(outputs.matrix_ready_map);
+    expect(readyMap['user-with-hyphens']).toBe(true);
+  });
+});
+
+describe('buildMatrixOutputs', () => {
+  const { buildMatrixOutputs } = require('../src/outputs');
+
+  it('builds JSON maps from multiple validation results', () => {
+    const results = [
+      {
+        assigneeLogin: 'alice',
+        stellarAddress: 'GALICE...',
+        validationResult: result,
+        validatedAt: '2024-01-15T10:00:00Z',
+      },
+      {
+        assigneeLogin: 'bob',
+        stellarAddress: 'GBOB...',
+        validationResult: {
+          valid: false,
+          accountFunded: true,
+          trustlineExists: false,
+          xlmBalance: '2.0',
+          xlmReserveMet: true,
+          checks: [],
+          reasonCode: 'TRUSTLINE_MISSING',
+        },
+        validatedAt: '2024-01-15T10:00:05Z',
+      },
+    ];
+    
+    const { assigneeResultsJson, matrixReadyMap } = buildMatrixOutputs(results);
+    
+    const assigneeResults = JSON.parse(assigneeResultsJson);
+    expect(assigneeResults).toHaveProperty('alice');
+    expect(assigneeResults).toHaveProperty('bob');
+    expect(assigneeResults.alice.ready).toBe(true);
+    expect(assigneeResults.bob.ready).toBe(false);
+    expect(assigneeResults.bob.reason_code).toBe('TRUSTLINE_MISSING');
+    
+    const readyMap = JSON.parse(matrixReadyMap);
+    expect(readyMap).toEqual({ alice: true, bob: false });
+  });
+
+  it('handles empty results array', () => {
+    const { assigneeResultsJson, matrixReadyMap } = buildMatrixOutputs([]);
+    
+    expect(JSON.parse(assigneeResultsJson)).toEqual({});
+    expect(JSON.parse(matrixReadyMap)).toEqual({});
+  });
+
+  it('defaults validatedAt to current time if not provided', () => {
+    const before = new Date().toISOString();
+    
+    const { assigneeResultsJson } = buildMatrixOutputs([
+      {
+        assigneeLogin: 'alice',
+        stellarAddress: 'GALICE...',
+        validationResult: result,
+      },
+    ]);
+    
+    const after = new Date().toISOString();
+    const assigneeResults = JSON.parse(assigneeResultsJson);
+    
+    // validated_at should be between before and after
+    expect(assigneeResults.alice.validated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(assigneeResults.alice.validated_at >= before).toBe(true);
+    expect(assigneeResults.alice.validated_at <= after).toBe(true);
+  });
+
+  it('preserves all assignees even if some fail', () => {
+    const results = [
+      {
+        assigneeLogin: 'alice',
+        stellarAddress: 'GALICE...',
+        validationResult: result,
+      },
+      {
+        assigneeLogin: 'bob',
+        stellarAddress: 'GBOB...',
+        validationResult: { ...result, valid: false, reasonCode: 'RESERVE_TOO_LOW' },
+      },
+      {
+        assigneeLogin: 'charlie',
+        stellarAddress: 'GCHARLIE...',
+        validationResult: result,
+      },
+    ];
+    
+    const { assigneeResultsJson, matrixReadyMap } = buildMatrixOutputs(results);
+    
+    const assigneeResults = JSON.parse(assigneeResultsJson);
+    expect(Object.keys(assigneeResults)).toHaveLength(3);
+    
+    const readyMap = JSON.parse(matrixReadyMap);
+    expect(readyMap.alice).toBe(true);
+    expect(readyMap.bob).toBe(false);
+    expect(readyMap.charlie).toBe(true);
+  });
+});
+
+describe('sanitizeUsernameForMatrix', () => {
+  const { sanitizeUsernameForMatrix } = require('../src/outputs');
+
+  it('preserves alphanumeric, hyphens, and underscores', () => {
+    expect(sanitizeUsernameForMatrix('alice-123_test')).toBe('alice-123_test');
+    expect(sanitizeUsernameForMatrix('Bob_456')).toBe('Bob_456');
+  });
+
+  it('replaces special characters with underscores', () => {
+    expect(sanitizeUsernameForMatrix('user@example')).toBe('user_example');
+    expect(sanitizeUsernameForMatrix('test.user')).toBe('test_user');
+    expect(sanitizeUsernameForMatrix('user+plus')).toBe('user_plus');
+  });
+
+  it('prefixes usernames starting with digits', () => {
+    expect(sanitizeUsernameForMatrix('123user')).toBe('_123user');
+    expect(sanitizeUsernameForMatrix('42charlie')).toBe('_42charlie');
+  });
+
+  it('returns "unknown" for empty or whitespace-only strings', () => {
+    expect(sanitizeUsernameForMatrix('')).toBe('unknown');
+    expect(sanitizeUsernameForMatrix('   ')).toBe('unknown');
+    expect(sanitizeUsernameForMatrix('\t\n')).toBe('unknown');
+  });
+
+  it('trims whitespace before sanitization', () => {
+    expect(sanitizeUsernameForMatrix('  alice  ')).toBe('alice');
+    expect(sanitizeUsernameForMatrix('\talice\n')).toBe('alice');
+  });
+
+  it('handles multiple consecutive special characters', () => {
+    expect(sanitizeUsernameForMatrix('user@@##test')).toBe('user____test');
+  });
+
+  it('preserves mixed case', () => {
+    expect(sanitizeUsernameForMatrix('AlIcE')).toBe('AlIcE');
+    expect(sanitizeUsernameForMatrix('BobCAMEL')).toBe('BobCAMEL');
+  });
+
+  it('handles edge case usernames', () => {
+    expect(sanitizeUsernameForMatrix('a')).toBe('a');
+    expect(sanitizeUsernameForMatrix('_')).toBe('_');
+    expect(sanitizeUsernameForMatrix('-')).toBe('-');
+    expect(sanitizeUsernameForMatrix('_-_')).toBe('_-_');
+  });
+
+  it('returns "unknown" when sanitization produces empty string', () => {
+    // Edge case: username with only special chars becomes empty after replacement
+    expect(sanitizeUsernameForMatrix('###')).toBe('___');
+    expect(sanitizeUsernameForMatrix('@')).toBe('_');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: Matrix outputs with sponsorship and network mismatch
+// ---------------------------------------------------------------------------
+
+describe('Matrix outputs integration with other features', () => {
+  it('includes sponsorship info in assignee results', () => {
+    const resultWithSponsorship: ValidationResult = {
+      ...result,
+      sponsorshipInfo: {
+        numSponsoring: 2,
+        numSponsored: 1,
+      },
+    };
+    
+    const outputs = toActionOutputs(resultWithSponsorship, undefined, undefined, {
+      assigneeLogin: 'alice',
+      stellarAddress: 'GALICE...',
+    });
+    
+    expect(outputs.num_sponsoring).toBe('2');
+    expect(outputs.num_sponsored).toBe('1');
+    
+    // Sponsorship info not directly in assignee_results_json
+    // but available via separate outputs
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults.alice.ready).toBe(true);
+  });
+
+  it('includes network passphrase mismatch in outputs alongside matrix outputs', () => {
+    const resultWithMismatch: ValidationResult = {
+      ...result,
+      networkPassphraseMismatch: {
+        expectedPassphrase: 'Test SDF Network ; September 2015',
+        actualPassphrase: 'Public Global Stellar Network ; September 2015',
+        message: 'Mismatch detected',
+      },
+    };
+    
+    const outputs = toActionOutputs(resultWithMismatch, undefined, undefined, {
+      assigneeLogin: 'bob',
+      stellarAddress: 'GBOB...',
+    });
+    
+    expect(outputs.network_passphrase_mismatch).toBe('true');
+    expect(outputs.expected_network_passphrase).toBe('Test SDF Network ; September 2015');
+    
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults.bob).toBeDefined();
+  });
+
+  it('handles all output types together', () => {
+    const complexResult: ValidationResult = {
+      ...result,
+      sponsorshipInfo: { numSponsoring: 3, numSponsored: 0 },
+      networkPassphraseMismatch: {
+        expectedPassphrase: 'Custom',
+        actualPassphrase: 'Public',
+        message: 'Mismatch',
+      },
+    };
+    
+    const outputs = toActionOutputs(complexResult, 'https://comment', '/report.md', {
+      assigneeLogin: 'alice',
+      stellarAddress: 'GALICE...',
+      horizonUrl: 'https://horizon.stellar.org',
+      assetCode: 'USDC',
+      assetIssuer: 'GA5Z...',
+      timings: { total_ms: 150 },
+    });
+    
+    // Standard outputs
+    expect(outputs.ready).toBe('true');
+    expect(outputs.comment_url).toBe('https://comment');
+    
+    // Sponsorship outputs
+    expect(outputs.num_sponsoring).toBe('3');
+    
+    // Network mismatch outputs
+    expect(outputs.network_passphrase_mismatch).toBe('true');
+    
+    // Matrix outputs
+    const assigneeResults = JSON.parse(outputs.assignee_results_json);
+    expect(assigneeResults.alice).toBeDefined();
+    
+    const readyMap = JSON.parse(outputs.matrix_ready_map);
+    expect(readyMap.alice).toBe(true);
+  });
+});
