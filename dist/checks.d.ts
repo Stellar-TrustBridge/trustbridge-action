@@ -373,7 +373,7 @@ export declare function parseTrustlineLimit(value: string): number;
 export declare function estimateTrustlineSetupCost(): number;
 export declare function formatXlmDeficit(required: number, actual: number): string;
 export declare function formatAssetDeficit(required: number, actual: number): string;
-export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): ValidationResult;
+export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): Promise<ValidationResult>;
 export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint, claimableCount?: number): ValidationResult;
 export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;

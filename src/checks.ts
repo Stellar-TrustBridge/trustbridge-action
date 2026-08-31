@@ -22,7 +22,8 @@ import {
 import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
-import { validateHorizonUrl } from './validation';
+import { fetchTomlWithCache } from './toml';
+import { validateContractAddress, validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -517,6 +518,11 @@ export function normalizeStellarAddress(address: string): string {
  */
 export function isValidStellarAddress(address: string): boolean {
   const trimmed = normalizeStellarAddress(address);
+
+  if (trimmed.startsWith('C')) {
+    return validateContractAddress(trimmed).valid;
+  }
+
   if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
     return false;
   }
@@ -700,7 +706,17 @@ export function validateStellarAddress(address: string): void {
   if (!address || !address.trim()) {
     throw new Error("stellar_address_input is required.");
   }
-  if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
+
+  if (address.trim().startsWith('C')) {
+    if (!isValidStellarAddress(address)) {
+      throw new Error(
+        `Invalid Stellar address "${address}". Expected a valid Soroban contract C-address "C" + 55 base32 chars.`,
+      );
+    }
+    return;
+  }
+
+  if (!isValidStellarAddress(address)) {
     throw new Error(
       `Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
         'with a valid StrKey checksum.',

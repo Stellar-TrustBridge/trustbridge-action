@@ -27,7 +27,7 @@ inputs:
     required: false
     default: "USDC"
   asset_issuer:
-    description: "Asset issuer Stellar address (G-address)"
+    description: 'Asset issuer Stellar address (G-address or Soroban contract C-address)'
     required: false
     default: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
   min_xlm_reserve:
@@ -50,9 +50,11 @@ inputs:
     default: ""
   stellar_address_input:
     description: >-
-      Stellar account address (G-address) to validate. Required unless
-      assignee_address_map is set, in which case the address is resolved
-      from the map using the GitHub assignee login.
+      Stellar destination address (G-address or Soroban contract C-address)
+      to validate. Required unless assignee_address_map is set, in which case
+      the address is resolved from the map using the GitHub assignee login.
+      C-address destinations are checked via Soroban RPC and skip Horizon
+      account/trustline balance checks.
     required: false
     default: ""
   assignee_address_map:

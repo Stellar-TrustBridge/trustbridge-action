@@ -176,125 +176,123 @@ export function parseAddressFromSimulateResult(json: unknown): string | null {
   return null;
 }
 
-export function buildGetPublicPaginatedXdr(contractId: string, cursor?: number, limit?: number): string {
-  const args = [];
-  if (cursor !== undefined) args.push(cursor);
-  if (limit !== undefined) args.push(limit);
-  const payload = JSON.stringify({ contractId, fn: 'get_public_paginated', args });
-  return Buffer.from(payload).toString('base64');
-}
-
-export interface ContractRosterPage {
-  map: Record<string, string>;
-  nextCursor?: number;
-}
-
-export function parseRosterPageFromSimulateResult(json: unknown): ContractRosterPage {
-  if (typeof json !== 'object' || json === null || !('result' in json)) return { map: {} };
-  const result = (json as Record<string, unknown>)['result'];
-  if (typeof result !== 'object' || result === null) return { map: {} };
-
-  const retval = (result as Record<string, unknown>)['retval'];
-  if (typeof retval !== 'object' || retval === null) return { map: {} };
-
-  const retvalObj = retval as Record<string, unknown>;
-  if (retvalObj['type'] !== 'tuple' || !Array.isArray(retvalObj['value']) || retvalObj['value'].length < 1) {
-    return { map: {} };
+/**
+ * Verifies that a Soroban contract address exists on a configured RPC endpoint.
+ *
+ * This is a bounded, fail-closed check used for C-address payout destinations.
+ * A C-address is treated as a contract payout target only when the Soroban RPC
+ * confirms the contract exists; no Horizon account fetch is attempted for C-addresses.
+ */
+export async function contractExistsOnChain(
+  contractAddress: string,
+  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>,
+): Promise<boolean> {
+  const trimmed = contractAddress.trim();
+  if (!trimmed) {
+    return false;
   }
 
-  const mapData = retvalObj['value'][0];
-  if (mapData?.type !== 'map' || !Array.isArray(mapData.value)) {
-    return { map: {} };
+  if (!trimmed.startsWith('C') || trimmed.length !== 56 || !/^C[A-Z2-7]{55}$/.test(trimmed)) {
+    throw new ContractLookupError(
+      `Expected a valid Soroban C-address contract destination, got: "${trimmed}"`,
+      false,
+    );
   }
 
-  const parsedMap: Record<string, string> = {};
-  for (const entry of mapData.value) {
-    if (
-      entry?.key?.type === 'string' && typeof entry.key.value === 'string' &&
-      entry?.val?.type === 'address' && typeof entry.val.value === 'string'
-    ) {
-      if (/^G[A-Z2-7]{55}$/.test(entry.val.value)) {
-        parsedMap[entry.key.value.toLowerCase()] = entry.val.value;
-      }
-    }
+  const { sorobanRpcUrl, timeoutMs = 15000 } = config;
+  if (!sorobanRpcUrl || !sorobanRpcUrl.trim()) {
+    throw new ContractLookupError(
+      'Soroban RPC URL is required to verify a C-address payout destination. Configure soroban_rpc_url before using a C-address as stellar_address_input.',
+      false,
+    );
   }
 
-  let nextCursor: number | undefined;
-  if (retvalObj['value'].length > 1) {
-    const cursorData = retvalObj['value'][1];
-    if (cursorData?.type === 'u32' && typeof cursorData.value === 'number') {
-      nextCursor = cursorData.value;
-    }
-  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  return { map: parsedMap, nextCursor };
-}
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'getContractCode',
+    params: [trimmed],
+  });
 
-export interface FetchFullRosterConfig extends ContractConfig {
-  pageLimit: number;
-}
+  let response: import('node-fetch').Response;
 
-export async function fetchFullContractRoster(
-  githubUsername: string,
-  config: FetchFullRosterConfig,
-): Promise<Record<string, string>> {
-  const { sorobanRpcUrl, contractId, timeoutMs = 15000, pageLimit } = config;
-
-  const rosterMap: Record<string, string> = {};
-  let currentCursor: number | undefined;
-
-  for (let page = 0; page < pageLimit; page++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'simulateTransaction',
-      params: {
-        transaction: buildGetPublicPaginatedXdr(contractId, currentCursor, 100), // Default limit per page
-      },
+  try {
+    response = await fetch(sorobanRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: controller.signal as never,
     });
-
-    let response: import('node-fetch').Response;
-    try {
-      response = await fetch(sorobanRpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: controller.signal as never,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const isAbort = message.includes('abort') || message.includes('timeout');
-      throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (RETRYABLE_STATUS_CODES.has(response.status)) {
-      throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
-    }
-
-    if (!response.ok) {
-      throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
-    }
-
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch {
-      throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
-    }
-
-    const { map, nextCursor } = parseRosterPageFromSimulateResult(json);
-    Object.assign(rosterMap, map);
-
-    if (nextCursor === undefined || nextCursor === currentCursor) {
-      break;
-    }
-    currentCursor = nextCursor;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isAbort = message.includes('abort') || message.includes('timeout');
+    throw new ContractLookupError(
+      `Soroban RPC request failed: ${message}`,
+      isAbort,
+    );
+  } finally {
+    clearTimeout(timer);
   }
 
-  return rosterMap;
+  if (RETRYABLE_STATUS_CODES.has(response.status)) {
+    throw new ContractLookupError(
+      `Soroban RPC returned retryable status ${response.status}`,
+      true,
+    );
+  }
+
+  if (!response.ok) {
+    throw new ContractLookupError(
+      `Soroban RPC returned non-retryable status ${response.status}`,
+      false,
+    );
+  }
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
+  }
+
+  return parseContractExistsResult(json);
+}
+
+export function parseContractExistsResult(json: unknown): boolean {
+  if (typeof json !== 'object' || json === null) {
+    return false;
+  }
+
+  const record = json as Record<string, unknown>;
+  if ('error' in record && record.error !== undefined) {
+    return false;
+  }
+
+  if (!('result' in record) || record.result === undefined || record.result === null) {
+    return false;
+  }
+
+  const rawResult = record.result;
+  if (typeof rawResult === 'string') {
+    return rawResult.trim().length > 0;
+  }
+
+  if (typeof rawResult !== 'object' || rawResult === null) {
+    return false;
+  }
+
+  const result = rawResult as Record<string, unknown>;
+  const checks = [
+    result['exists'],
+    result['code'],
+    result['wasm'],
+    result['contract'],
+    result['contract_id'],
+    result['contractId'],
+  ];
+
+  return checks.some((value) => value === true || (typeof value === 'string' && value.trim().length > 0));
 }

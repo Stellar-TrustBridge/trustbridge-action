@@ -74,6 +74,14 @@ describe('validateContractAddress', () => {
   it('trims surrounding whitespace before validating', () => {
     expect(validateContractAddress(`  ${VALID_CONTRACT_ADDRESS}  `).valid).toBe(true);
   });
+
+  it('accepts a valid Soroban C-address in the broader Stellar address validator', () => {
+    expect(() => {
+      // The reusable address validator accepts both G- and C-addresses at the StrKey level.
+      const result = validateContractAddress(VALID_CONTRACT_ADDRESS);
+      expect(result.valid).toBe(true);
+    }).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

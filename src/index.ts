@@ -66,12 +66,7 @@ import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { parseLocaleInput } from './i18n';
 import { sendWebhookNotification } from './webhook';
 import { runIssuesPreflight } from './preflight';
-import {
-  ContractLookupError,
-  lookupAddressFromContract,
-  fetchFullContractRoster,
-} from './soroban';
-import { fetchDashboardRoster } from './roster';
+import { lookupAddressFromContract, ContractLookupError, contractExistsOnChain } from './soroban';
 import { registerCorePlugins } from './corePlugins';
 import { defaultRegistry } from './plugin';
 import { loadPluginsFromAllowlist } from './pluginLoader';
@@ -940,6 +935,65 @@ async function run(): Promise<void> {
   });
 
   validateStellarAddress(stellarAddress);
+
+  const isContractDestination = /^C[A-Z2-7]{55}$/.test(stellarAddress.trim());
+  if (isContractDestination) {
+    if (!sorobanRpcUrl) {
+      throw new Error(
+        `stellar_address_input resolves to a Soroban C-address "${stellarAddress}", but soroban_rpc_url is unset. Configure soroban_rpc_url to verify the contract exists on-chain before payout validation continues.`,
+      );
+    }
+
+    const contractExists = await contractExistsOnChain(stellarAddress, {
+      sorobanRpcUrl,
+      timeoutMs: horizonTimeoutMs,
+    });
+
+    const result: ValidationResult = contractExists
+      ? {
+          valid: true,
+          accountFunded: true,
+          trustlineExists: true,
+          xlmBalance: '0',
+          xlmReserveMet: true,
+          assetBalance: '0',
+          assetBalanceMet: true,
+          checks: [
+            {
+              passed: true,
+              label: 'Contract destination exists',
+              detail: `Contract ${stellarAddress} was confirmed on Soroban RPC and is eligible for payout. Horizon account/trustline balance checks are intentionally skipped for C-address destinations.`,
+            },
+          ],
+          reasonCode: 'CONTRACT_DESTINATION_OK',
+        }
+      : {
+          valid: false,
+          accountFunded: false,
+          trustlineExists: false,
+          xlmBalance: '0',
+          xlmReserveMet: false,
+          assetBalance: '0',
+          assetBalanceMet: false,
+          checks: [
+            {
+              passed: false,
+              label: 'Contract destination exists',
+              detail: `Contract ${stellarAddress} was not found on the configured Soroban RPC. C-address payout destinations must exist on-chain before they are eligible for payout.`,
+            },
+          ],
+          reasonCode: 'CONTRACT_NOT_FOUND',
+        };
+
+    core.setOutput('ready', result.valid ? 'true' : 'false');
+    core.setOutput('reason_code', result.reasonCode ?? 'CONTRACT_DESTINATION');
+    core.setOutput('checks_json', JSON.stringify(result.checks));
+    core.summary.addHeading('C-address destination check', 3);
+    core.summary.addRaw(result.valid ? 'Contract destination validated on Soroban RPC.' : 'Contract destination missing from Soroban RPC.');
+    await core.summary.write();
+    return;
+  }
+
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
   const minTrustlineLimitRaw = core.getInput("min_trustline_limit") || "";
   const minTrustlineLimit = minTrustlineLimitRaw
