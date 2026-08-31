@@ -43,6 +43,7 @@ import * as crypto from 'crypto';
 import * as core from '@actions/core';
 import { redactStellarAddress, redactHorizonUrl } from './logger';
 import type { ValidationResult } from './checks';
+import { traceWebhookDeliver } from './tracing';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -183,6 +184,9 @@ export async function deliverWebhook(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'User-Agent': 'trustbridge-action/1',
+    // Schema version header allows receivers to route/validate without parsing the body first.
+    // Updated whenever schema_version in the payload changes (Issue #296).
+    'X-TrustBridge-Schema-Version': payload.schema_version,
   };
 
   if (config.authMode === 'oidc' || config.oidcToken) {
@@ -234,36 +238,38 @@ export async function sendWebhookNotification(
 ): Promise<void> {
   if (!config.webhookUrl) return;
 
-  // Redact the URL for log output so any embedded credentials are masked.
-  const safeUrl = redactHorizonUrl(config.webhookUrl);
+  return traceWebhookDeliver(config.webhookUrl, config.authMode || 'hmac', async () => {
+    // Redact the URL for log output so any embedded credentials are masked.
+    const safeUrl = redactHorizonUrl(config.webhookUrl);
 
-  let effectiveConfig = { ...config };
-  if (config.authMode === 'oidc' && !config.oidcToken) {
-    const audience = config.oidcAudience || 'trustbridge-dashboard';
-    try {
-      const token = await core.getIDToken(audience);
-      if (token) {
-        core.setSecret(token);
-        effectiveConfig.oidcToken = token;
+    const effectiveConfig: WebhookConfig = { ...config };
+    if (config.authMode === 'oidc' && !config.oidcToken) {
+      const audience = config.oidcAudience || 'trustbridge-dashboard';
+      try {
+        const token = await core.getIDToken(audience);
+        if (token) {
+          core.setSecret(token);
+          effectiveConfig.oidcToken = token;
+        }
+      } catch (oidcError) {
+        const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+        core.warning(
+          `[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`,
+        );
       }
-    } catch (oidcError) {
-      const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+    }
+
+    const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
+    const delivery = await deliverWebhook(payload, effectiveConfig);
+
+    if (delivery.sent) {
+      core.info(
+        `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
+      );
+    } else {
       core.warning(
-        `[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`,
+        `[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`,
       );
     }
-  }
-
-  const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
-  const delivery = await deliverWebhook(payload, effectiveConfig);
-
-  if (delivery.sent) {
-    core.info(
-      `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
-    );
-  } else {
-    core.warning(
-      `[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`,
-    );
-  }
+  });
 }

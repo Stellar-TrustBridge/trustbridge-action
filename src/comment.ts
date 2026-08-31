@@ -31,7 +31,7 @@ import {
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
-import { loadCommentTemplate, buildTemplateContext } from './template';
+import { traceCommentPost } from './tracing';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -955,53 +955,42 @@ export async function postIssueComment(
 
   if (!issueNumber) {
     core.warning(
-      "No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.",
+      'No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.',
     );
     return undefined;
   }
 
-  // `github.getOctokit` defaults to `https://api.github.com` unless a
-  // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
-  // `GITHUB_API_URL` to the enterprise API base (e.g.
-  // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
-  // Passing it explicitly here is what makes comment posting work on GHES
-  // instead of silently calling the wrong (public) API host.
-  const proxyOpts = getOctokitProxyOptions(context.apiUrl);
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl, ...proxyOpts });
-  const { owner, repo } = context.repo;
+  return traceCommentPost(issueNumber, 'create', async () => {
+    // `github.getOctokit` defaults to `https://api.github.com` unless a
+    // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
+    // `GITHUB_API_URL` to the enterprise API base (e.g.
+    // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
+    // Passing it explicitly here is what makes comment posting work on GHES
+    // instead of silently calling the wrong (public) API host.
+    const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+    const { owner, repo } = context.repo;
 
-  let existingCommentId: number | undefined;
-  let existingCommentBody: string | undefined;
-  let existingCommentReactions: CommentReaction[] = [];
+    let existingCommentId: number | undefined;
+    let existingCommentBody: string | undefined;
+    let existingCommentReactions: CommentReaction[] = [];
 
-  if (sticky) {
-    try {
-      existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-      
-      // Fetch the existing comment body whenever a sticky comment is found.
-      //
-      // We always need the body because:
-      //   1. `bodyFactory` uses it to preserve checklist state (Issue #311).
-      //   2. Snooze evaluation reads the prior snooze marker (Issue #155 / #227).
-      //
-      // Skipping this fetch would force two separate API round-trips (one in
-      // the caller to fetch the body, one here to update the comment), so we
-      // centralise it here.  A fetch failure is non-fatal — we fall back to
-      // the supplied `body` / factory-with-undefined.
-      if (existingCommentId) {
-        try {
-          const commentResponse = await octokit.rest.issues.getComment({
-            owner,
-            repo,
-            comment_id: existingCommentId,
-          });
-          existingCommentBody = commentResponse.data.body;
-        } catch (error) {
-          core.debug(`Could not fetch existing comment body: ${error}`);
-        }
+    if (sticky) {
+      try {
+        existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
 
-        // Reactions are only needed for snooze evaluation.
-        if (snoozeWindowMs > 0 && !forceComment) {
+        // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
+        if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+          try {
+            const commentResponse = await octokit.rest.issues.getComment({
+              owner,
+              repo,
+              comment_id: existingCommentId,
+            });
+            existingCommentBody = commentResponse.data.body;
+          } catch (error) {
+            core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
+          }
+
           try {
             if (octokit.rest?.reactions?.listForIssueComment) {
               const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
@@ -1018,105 +1007,65 @@ export async function postIssueComment(
             core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
           }
         }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        core.warning(
+          `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
+        );
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      core.warning(
-        `Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`,
-      );
     }
-  }
 
-  // When a bodyFactory is provided, use it to build the final body now that
-  // we have the existing comment body (Issue #311).  This lets callers
-  // incorporate the previous comment content (e.g. preserved checklist state)
-  // without a second findStickyComment round-trip.
-  const effectiveBody =
-    options.bodyFactory ? options.bodyFactory(existingCommentBody) : body;
+    // Check snooze state (Issue #155, Issue #227)
+    if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+      const lastMarker = parseSnoozeMarker(existingCommentBody);
 
-  // Check snooze state (Issue #155, Issue #227)
-  if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-    const lastMarker = parseSnoozeMarker(existingCommentBody);
-    
-    // Determine if current check is passing by looking at the effective body
-    // content. The snooze marker added to the body indicates 'pass' or 'fail'.
-    const currentPassed = effectiveBody.includes('<!-- trustbridge-action:snooze:status=pass');
-    
-    const snoozeState = evaluateCombinedSnoozeState(
-      currentPassed,
-      lastMarker,
-      existingCommentReactions,
-      snoozeWindowMs,
-    );
+      // Determine if current check is passing by looking at body content
+      // The snooze marker we just added to body indicates 'pass' or 'fail'
+      const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
 
-    if (snoozeState.isSnoozed) {
-      core.info(
-        `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
+      const snoozeState = evaluateCombinedSnoozeState(
+        currentPassed,
+        lastMarker,
+        existingCommentReactions,
+        snoozeWindowMs,
       );
-      return existingCommentId
-        ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`
-        : undefined;
-    }
-  }
 
-  if (existingCommentId) {
-    try {
-      const response = await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existingCommentId,
-        body: effectiveBody,
-      });
-      core.info(
-        `Updated existing TrustBridge comment on issue #${issueNumber}.`,
-      );
-      return response.data.html_url;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      core.warning(
-        `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
-      );
+      if (snoozeState.isSnoozed) {
+        core.info(
+          `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
+        );
+        return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+      }
     }
-  }
 
-  // reply mode (#322): find the first TrustBridge comment and post a new
-  // top-level comment that references it. GitHub's issue comment API does not
-  // have a native `in_reply_to` for issue comments (only PR review comments
-  // support that), so we prepend a contextual reference line so readers can
-  // follow the chain. When no prior comment exists, falls through to a plain
-  // new comment.
-  if (effectiveMode === 'reply') {
-    let parentId: number | undefined;
-    try {
-      parentId = await findStickyComment(octokit, owner, repo, issueNumber);
-    } catch (error) {
-      core.debug(`reply mode: could not find parent comment: ${error}`);
+    if (existingCommentId) {
+      try {
+        const response = await octokit.rest.issues.updateComment({
+          owner,
+          repo,
+          comment_id: existingCommentId,
+          body,
+        });
+        core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+        return response.data.html_url;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        core.warning(
+          `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
+        );
+      }
     }
-    const replyBody = parentId
-      ? `> _Reply to [TrustBridge check #${parentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentId})_\n\n${body}`
-      : body;
 
-    const replyResponse = await octokit.rest.issues.createComment({
+    const response = await octokit.rest.issues.createComment({
       owner,
       repo,
       issue_number: issueNumber,
-      body: replyBody,
+      body,
     });
-    core.info(
-      `Posted TrustBridge reply comment on issue #${issueNumber}${parentId ? ` (reply to #${parentId})` : ''}.`,
-    );
-    return replyResponse.data.html_url;
-  }
 
-  const response = await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: issueNumber,
-    body: effectiveBody,
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    return response.data.html_url;
   });
-
-  core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
-  return response.data.html_url;
 }
 
 // ---------------------------------------------------------------------------

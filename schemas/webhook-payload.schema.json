@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Stellar-TrustBridge/trustbridge-action/main/schemas/webhook-payload.schema.json",
+  "title": "TrustBridge Webhook Payload v1",
+  "description": "JSON Schema for the signed webhook payload emitted by trustbridge-action after every validation run. Consumed by the TrustBridge dashboard and any third-party webhook receivers. See docs/USAGE.md#webhook-dashboard-integration for implementation notes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event",
+    "timestamp",
+    "repository",
+    "issue_number",
+    "stellar_address",
+    "result"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1"],
+      "description": "Webhook payload schema version. Currently always '1'. Dashboard receivers MUST check this field and reject or handle unknown versions gracefully."
+    },
+    "event": {
+      "type": "string",
+      "enum": ["validation_complete"],
+      "description": "Event type. Currently always 'validation_complete', emitted after every TrustBridge validation run."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of when the webhook was dispatched (e.g. '2026-08-31T07:05:25.189Z')."
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[^/]+/[^/]+$",
+      "description": "GitHub repository in 'owner/repo' format where the validation run occurred.",
+      "examples": ["Stellar-TrustBridge/trustbridge-action"]
+    },
+    "issue_number": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "GitHub issue number that triggered the validation, or null when the run was triggered by workflow_dispatch or another non-issue event."
+    },
+    "stellar_address": {
+      "type": "string",
+      "pattern": "^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$",
+      "description": "Redacted Stellar address of the validated account (first-4…last-4). The full address is never included in the payload — PII redaction happens in the action before dispatch. Example: 'GA5Z...KZVN'.",
+      "examples": ["GA5Z...KZVN"]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valid",
+        "account_funded",
+        "trustline_exists",
+        "xlm_balance",
+        "checks"
+      ],
+      "description": "Structured validation outcome. All boolean fields are native JSON booleans (not strings).",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "true when all required checks passed and the account is ready for payout."
+        },
+        "account_funded": {
+          "type": "boolean",
+          "description": "true when Horizon returned a 200 response for the account (account exists on the Stellar network)."
+        },
+        "trustline_exists": {
+          "type": "boolean",
+          "description": "true when the configured asset trustline is present on the account."
+        },
+        "xlm_balance": {
+          "type": "string",
+          "description": "Native XLM balance as reported by Horizon (7-decimal string), or '0' when the account is unfunded.",
+          "examples": ["10.5000000", "1.5000000", "0"]
+        },
+        "checks": {
+          "type": "array",
+          "description": "Per-check results. Stable across schema_version '1'; new checks are additive.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "passed"],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Human-readable check label (e.g. 'Account funded', 'USDC trustline', 'XLM reserve')."
+              },
+              "passed": {
+                "type": "boolean",
+                "description": "true when this individual check passed."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1",
+      "event": "validation_complete",
+      "timestamp": "2026-08-31T07:05:25.189Z",
+      "repository": "my-org/my-repo",
+      "issue_number": 42,
+      "stellar_address": "GA5Z...KZVN",
+      "result": {
+        "valid": true,
+        "account_funded": true,
+        "trustline_exists": true,
+        "xlm_balance": "10.5000000",
+        "checks": [
+          { "label": "Account funded", "passed": true },
+          { "label": "USDC trustline", "passed": true },
+          { "label": "XLM reserve", "passed": true }
+        ]
+      }
+    }
+  ]
+}

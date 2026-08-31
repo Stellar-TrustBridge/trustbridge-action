@@ -74,7 +74,7 @@ import {
 } from './batch';
 import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
 import { DiagnosticsConfig } from './diagnostics';
-import { getOctokitProxyOptions } from './proxy';
+import { traceActionRun, emitTraceSummary, clearTraceSpans } from './tracing';
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -339,42 +339,10 @@ function resolveConfiguredReadyLabels(): {
 }
 
 async function run(): Promise<void> {
-  const payload = github.context.payload as {
-    issue?: { number?: number };
-    pull_request?: { number?: number };
-    merge_group?: { head_sha?: string; sha?: string };
-    comment?: { body?: string; user?: { login?: string; type?: string } };
-  };
-  const eventName = github.context.eventName;
-  const isMergeQueueEvent = eventName === "merge_group";
-  const eventSha =
-    process.env.GITHUB_SHA ||
-    github.context.sha ||
-    payload.merge_group?.head_sha ||
-    payload.merge_group?.sha ||
-    "";
-  if (isMergeQueueEvent) {
-    core.info(
-      `merge_group event detected; using commit SHA ${eventSha || "<missing>"}.`,
-    );
-  }
+  // Clear any trace spans from previous runs (safety)
+  clearTraceSpans();
 
-  if (eventName === "issue_comment") {
-    const commentBody = payload.comment?.body ?? "";
-    const isTrustBridgeCommand = isTrustBridgeSlashCommand(commentBody);
-    const commentAuthorIsBot = isBotCommentAuthor(payload);
-    const shouldSkip = !isTrustBridgeCommand || commentAuthorIsBot;
-    if (shouldSkip) {
-      core.info(
-        "Issue comment event ignored because it is not a /trustbridge command or was posted by a bot.",
-      );
-    } else {
-      core.info(
-        "Issue comment event detected with /trustbridge command; revalidation will proceed when the commenter is authorized.",
-      );
-    }
-  }
-
+  return traceActionRun('trustbridge-action', async () => {
   // Milestone gating (Issue #230)
   const milestoneAllowlistRaw = core.getInput("milestone_allowlist") || "";
   const milestoneFailOnSkip = parseBooleanInput(
@@ -1886,6 +1854,9 @@ async function run(): Promise<void> {
   // Stop total timer and collect timing metrics
   globalMetrics.stopTimer("total");
 
+  // Emit OpenTelemetry trace summary when tracing is enabled
+  emitTraceSummary();
+
   // Wave #27: write Job Summary with latency, failure codes, JSON artifact
   await writeJobSummary(globalMetrics.buildJobSummary());
 
@@ -1903,6 +1874,7 @@ async function run(): Promise<void> {
   } else {
     core.warning(failureMessage);
   }
+  });
 }
 
 // Skip auto-run under Jest so performance / integration tests can import `run`.

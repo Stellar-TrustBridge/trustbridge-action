@@ -36253,7 +36253,7 @@ const snooze_1 = __nccwpck_require__(3286);
 const diagnostics_1 = __nccwpck_require__(4851);
 const i18n_1 = __nccwpck_require__(4859);
 const delta_1 = __nccwpck_require__(1493);
-const template_1 = __nccwpck_require__(5237);
+const tracing_1 = __nccwpck_require__(7145);
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
  * Bump when the comment body structure (sections, markers, remediation
@@ -36787,44 +36787,34 @@ async function postIssueComment(token, body, options = {}) {
         core.warning('No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.');
         return undefined;
     }
-    // `github.getOctokit` defaults to `https://api.github.com` unless a
-    // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
-    // `GITHUB_API_URL` to the enterprise API base (e.g.
-    // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
-    // Passing it explicitly here is what makes comment posting work on GHES
-    // instead of silently calling the wrong (public) API host.
-    const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
-    const { owner, repo } = context.repo;
-    let existingCommentId;
-    let existingCommentBody;
-    let existingCommentReactions = [];
-    if (sticky) {
-        try {
-            existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-            // Fetch the existing comment body whenever a sticky comment is found.
-            //
-            // We always need the body because:
-            //   1. `bodyFactory` uses it to preserve checklist state (Issue #311).
-            //   2. Snooze evaluation reads the prior snooze marker (Issue #155 / #227).
-            //
-            // Skipping this fetch would force two separate API round-trips (one in
-            // the caller to fetch the body, one here to update the comment), so we
-            // centralise it here.  A fetch failure is non-fatal — we fall back to
-            // the supplied `body` / factory-with-undefined.
-            if (existingCommentId) {
-                try {
-                    const commentResponse = await octokit.rest.issues.getComment({
-                        owner,
-                        repo,
-                        comment_id: existingCommentId,
-                    });
-                    existingCommentBody = commentResponse.data.body;
-                }
-                catch (error) {
-                    core.debug(`Could not fetch existing comment body: ${error}`);
-                }
-                // Reactions are only needed for snooze evaluation.
-                if (snoozeWindowMs > 0 && !forceComment) {
+    return (0, tracing_1.traceCommentPost)(issueNumber, 'create', async () => {
+        // `github.getOctokit` defaults to `https://api.github.com` unless a
+        // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
+        // `GITHUB_API_URL` to the enterprise API base (e.g.
+        // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
+        // Passing it explicitly here is what makes comment posting work on GHES
+        // instead of silently calling the wrong (public) API host.
+        const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+        const { owner, repo } = context.repo;
+        let existingCommentId;
+        let existingCommentBody;
+        let existingCommentReactions = [];
+        if (sticky) {
+            try {
+                existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
+                // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
+                if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+                    try {
+                        const commentResponse = await octokit.rest.issues.getComment({
+                            owner,
+                            repo,
+                            comment_id: existingCommentId,
+                        });
+                        existingCommentBody = commentResponse.data.body;
+                    }
+                    catch (error) {
+                        core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
+                    }
                     try {
                         if (octokit.rest?.reactions?.listForIssueComment) {
                             const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
@@ -36843,79 +36833,48 @@ async function postIssueComment(token, body, options = {}) {
                     }
                 }
             }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
+            }
         }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
+        // Check snooze state (Issue #155, Issue #227)
+        if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
+            const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
+            // Determine if current check is passing by looking at body content
+            // The snooze marker we just added to body indicates 'pass' or 'fail'
+            const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
+            const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
+            if (snoozeState.isSnoozed) {
+                core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
+                return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+            }
         }
-    }
-    // When a bodyFactory is provided, use it to build the final body now that
-    // we have the existing comment body (Issue #311).  This lets callers
-    // incorporate the previous comment content (e.g. preserved checklist state)
-    // without a second findStickyComment round-trip.
-    const effectiveBody = options.bodyFactory ? options.bodyFactory(existingCommentBody) : body;
-    // Check snooze state (Issue #155, Issue #227)
-    if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-        const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
-        // Determine if current check is passing by looking at the effective body
-        // content. The snooze marker added to the body indicates 'pass' or 'fail'.
-        const currentPassed = effectiveBody.includes('<!-- trustbridge-action:snooze:status=pass');
-        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
-        if (snoozeState.isSnoozed) {
-            core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
-            return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+        if (existingCommentId) {
+            try {
+                const response = await octokit.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: existingCommentId,
+                    body,
+                });
+                core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+                return response.data.html_url;
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                core.warning(`Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`);
+            }
         }
-    }
-    if (existingCommentId) {
-        try {
-            const response = await octokit.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existingCommentId,
-                body: effectiveBody,
-            });
-            core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-            return response.data.html_url;
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.warning(`Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`);
-        }
-    }
-    // reply mode (#322): find the first TrustBridge comment and post a new
-    // top-level comment that references it. GitHub's issue comment API does not
-    // have a native `in_reply_to` for issue comments (only PR review comments
-    // support that), so we prepend a contextual reference line so readers can
-    // follow the chain. When no prior comment exists, falls through to a plain
-    // new comment.
-    if (effectiveMode === 'reply') {
-        let parentId;
-        try {
-            parentId = await findStickyComment(octokit, owner, repo, issueNumber);
-        }
-        catch (error) {
-            core.debug(`reply mode: could not find parent comment: ${error}`);
-        }
-        const replyBody = parentId
-            ? `> _Reply to [TrustBridge check #${parentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentId})_\n\n${body}`
-            : body;
-        const replyResponse = await octokit.rest.issues.createComment({
+        const response = await octokit.rest.issues.createComment({
             owner,
             repo,
             issue_number: issueNumber,
-            body: replyBody,
+            body,
         });
-        core.info(`Posted TrustBridge reply comment on issue #${issueNumber}${parentId ? ` (reply to #${parentId})` : ''}.`);
-        return replyResponse.data.html_url;
-    }
-    const response = await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        body: effectiveBody,
+        core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+        return response.data.html_url;
     });
-    core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
-    return response.data.html_url;
 }
 // ---------------------------------------------------------------------------
 // GitHub Discussions comment path (Issue #221)
@@ -38661,6 +38620,7 @@ const links_1 = __nccwpck_require__(3346);
 const metrics_1 = __nccwpck_require__(5670);
 const resilience_1 = __nccwpck_require__(2334);
 const validation_1 = __nccwpck_require__(4344);
+const tracing_1 = __nccwpck_require__(7145);
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
         super(message);
@@ -39220,206 +39180,201 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
 async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
-    const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
-    const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
-    const cache = options.cache ?? cache_1.defaultCache;
-    const horizonMaxRequests = options.horizonMaxRequests ?? 0;
-    const rateBudgetTracker = options.rateBudgetTracker ?? new resilience_1.RateBudgetTracker(horizonMaxRequests);
-    const signal = options.signal;
-    const allowCrossNetwork = options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
-    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-    const candidateFallbacks = [
-        options.secondaryHorizonUrl,
-        options.horizonUrlFallback,
-        ...(options.fallbackUrls ?? []),
-    ].filter((u) => Boolean(u && u.trim()));
-    const fallbackCandidate = candidateFallbacks[0];
-    const normalizedFallbackUrl = fallbackCandidate
-        ? normalizeHorizonUrl(fallbackCandidate)
-        : '';
-    if (!normalizedHorizonUrl) {
-        throw new HorizonError('horizon_url is required.', 0, false);
-    }
-    // Bail out immediately if the job was already cancelled before we start.
-    if (signal?.aborted) {
-        throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
-    }
-    // Certificate pinning pre-flight (Issue #303).
-    // Performed once before the cache or any Horizon request. A mismatch is
-    // not retried — it means the endpoint's certificate has changed or is not
-    // what was configured, so the run must stop immediately.
-    if (options.pinFingerprint && options.pinFingerprint.trim()) {
-        await checkCertificatePin(normalizedHorizonUrl, options.pinFingerprint.trim());
-    }
-    const cachingEnabled = cacheTtlMs > 0;
-    const cacheKey = cachingEnabled
-        ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
-        : '';
-    if (cachingEnabled) {
-        const cacheStatsBefore = redactCacheStats(cache.getStats());
-        logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
-            component: 'horizon',
-            stellarAddress,
-            horizonUrl,
-            horizonUrlFallback: normalizedFallbackUrl,
-            cacheKey,
-            cacheTtlMs,
-            cacheSizeBefore: cacheStatsBefore.size,
-            cacheEntryCountBefore: cacheStatsBefore.entries.length,
-        }));
-        const cached = cache.get(cacheKey);
-        if (cached) {
-            logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
-                cacheKey,
-                cacheTtlMs,
-                ...safeAccountSummary(cached),
-            }));
-            recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
-            return cached;
+    return (0, tracing_1.traceHorizonFetch)(horizonUrl, stellarAddress, async () => {
+        const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+        const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+        const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+        const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+        const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+        const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
+        const cache = options.cache ?? cache_1.defaultCache;
+        const horizonMaxRequests = options.horizonMaxRequests ?? 0;
+        const rateBudgetTracker = options.rateBudgetTracker ?? new resilience_1.RateBudgetTracker(horizonMaxRequests);
+        const signal = options.signal;
+        const allowCrossNetwork = options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
+        const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+        const candidateFallbacks = [
+            options.secondaryHorizonUrl,
+            options.horizonUrlFallback,
+            ...(options.fallbackUrls ?? []),
+        ].filter((u) => Boolean(u && u.trim()));
+        const fallbackCandidate = candidateFallbacks[0];
+        const normalizedFallbackUrl = fallbackCandidate
+            ? normalizeHorizonUrl(fallbackCandidate)
+            : '';
+        if (!normalizedHorizonUrl) {
+            throw new HorizonError('horizon_url is required.', 0, false);
         }
-        logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
-            component: 'horizon',
-            stellarAddress,
-            horizonUrl,
-            horizonUrlFallback: normalizedFallbackUrl,
-            cacheKey,
-            cacheTtlMs,
-        }));
-        recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
-    }
-    else {
-        logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
-            component: 'horizon',
-            stellarAddress,
-            horizonUrl,
-            horizonUrlFallback: normalizedFallbackUrl,
-            cacheTtlMs: 0,
-        }));
-    }
-    let primaryError;
-    const circuitBreaker = options.circuitBreaker;
-    try {
-        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
-        result.account._servedByUrl = normalizedHorizonUrl;
+        // Bail out immediately if the job was already cancelled before we start.
+        if (signal?.aborted) {
+            throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
+        }
+        const cachingEnabled = cacheTtlMs > 0;
+        const cacheKey = cachingEnabled
+            ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+            : '';
         if (cachingEnabled) {
-            cache.set(cacheKey, result.account, cacheTtlMs);
-            const cacheStatsAfter = redactCacheStats(cache.getStats());
-            logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+            const cacheStatsBefore = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
                 component: 'horizon',
                 stellarAddress,
                 horizonUrl,
                 horizonUrlFallback: normalizedFallbackUrl,
                 cacheKey,
                 cacheTtlMs,
-                cacheSizeAfter: cacheStatsAfter.size,
-                cacheEntryCountAfter: cacheStatsAfter.entries.length,
-                source: 'primary',
-                ...safeAccountSummary(result.account),
+                cacheSizeBefore: cacheStatsBefore.size,
+                cacheEntryCountBefore: cacheStatsBefore.entries.length,
+            }));
+            const cached = cache.get(cacheKey);
+            if (cached) {
+                logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl,
+                    horizonUrlFallback: normalizedFallbackUrl,
+                    cacheKey,
+                    cacheTtlMs,
+                    ...safeAccountSummary(cached),
+                }));
+                recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+                return cached;
+            }
+            logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+            }));
+            recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
+        }
+        else {
+            logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheTtlMs: 0,
             }));
         }
-        return result.account;
-    }
-    catch (error) {
-        if (error instanceof HorizonError) {
-            primaryError = error;
-            if (error.statusCode === 404) {
+        let primaryError;
+        const circuitBreaker = options.circuitBreaker;
+        try {
+            const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+            result.account._servedByUrl = normalizedHorizonUrl;
+            if (cachingEnabled) {
+                cache.set(cacheKey, result.account, cacheTtlMs);
+                const cacheStatsAfter = redactCacheStats(cache.getStats());
+                logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl,
+                    horizonUrlFallback: normalizedFallbackUrl,
+                    cacheKey,
+                    cacheTtlMs,
+                    cacheSizeAfter: cacheStatsAfter.size,
+                    cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                    source: 'primary',
+                    ...safeAccountSummary(result.account),
+                }));
+            }
+            return result.account;
+        }
+        catch (error) {
+            if (error instanceof HorizonError) {
+                primaryError = error;
+                if (error.statusCode === 404) {
+                    throw error;
+                }
+            }
+            else {
                 throw error;
             }
         }
-        else {
-            throw error;
+        if (!normalizedFallbackUrl) {
+            throw primaryError;
         }
-    }
-    if (!normalizedFallbackUrl) {
-        throw primaryError;
-    }
-    // Network binding rule: a G-address is valid on every Stellar network, so
-    // a fallback URL that resolves to a different network than the primary
-    // could silently return funded/trustline/reserve data for the *wrong*
-    // ledger instead of failing loudly. Compare the inferred networks and
-    // refuse the fallback unless the caller explicitly opted in.
-    const primaryNetwork = (0, links_1.inferStellarNetwork)(normalizedHorizonUrl);
-    const fallbackNetwork = (0, links_1.inferStellarNetwork)(normalizedFallbackUrl);
-    const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
-    if (crossNetworkFallback && !allowCrossNetwork) {
-        logger_1.logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
-            component: 'horizon',
-            stellarAddress,
-            horizonUrl,
-            horizonUrlFallback: normalizedFallbackUrl,
-            primaryNetwork,
-            fallbackNetwork,
-            primaryStatusCode: primaryError?.statusCode,
-            primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
-        }));
-        throw primaryError;
-    }
-    logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
-        component: 'horizon',
-        stellarAddress,
-        horizonUrl,
-        horizonUrlFallback: normalizedFallbackUrl,
-        cacheKey: cachingEnabled ? cacheKey : undefined,
-        primaryNetwork,
-        fallbackNetwork,
-        crossNetworkFallback,
-        primaryStatusCode: primaryError?.statusCode,
-        primaryRetryable: primaryError?.retryable,
-        primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
-    }));
-    try {
-        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
-        fallbackResult.account._servedByUrl = normalizedFallbackUrl;
-        if (cachingEnabled) {
-            cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
-            const cacheStatsAfter = redactCacheStats(cache.getStats());
-            logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+        // Network binding rule: a G-address is valid on every Stellar network, so
+        // a fallback URL that resolves to a different network than the primary
+        // could silently return funded/trustline/reserve data for the *wrong*
+        // ledger instead of failing loudly. Compare the inferred networks and
+        // refuse the fallback unless the caller explicitly opted in.
+        const primaryNetwork = (0, links_1.inferStellarNetwork)(normalizedHorizonUrl);
+        const fallbackNetwork = (0, links_1.inferStellarNetwork)(normalizedFallbackUrl);
+        const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
+        if (crossNetworkFallback && !allowCrossNetwork) {
+            logger_1.logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
                 component: 'horizon',
                 stellarAddress,
                 horizonUrl,
                 horizonUrlFallback: normalizedFallbackUrl,
-                cacheKey,
-                cacheTtlMs,
-                cacheSizeAfter: cacheStatsAfter.size,
-                cacheEntryCountAfter: cacheStatsAfter.entries.length,
-                source: 'fallback',
-                ...safeAccountSummary(fallbackResult.account),
-            }));
-        }
-        logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
-            component: 'horizon',
-            stellarAddress,
-            horizonUrl,
-            horizonUrlFallback: normalizedFallbackUrl,
-            fallbackAttempts: fallbackResult.attempts,
-            fallbackLatencyMs: fallbackResult.latencyMs,
-        }));
-        return fallbackResult.account;
-    }
-    catch (fallbackError) {
-        if (fallbackError instanceof HorizonError) {
-            logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
+                primaryNetwork,
+                fallbackNetwork,
                 primaryStatusCode: primaryError?.statusCode,
                 primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
-                fallbackStatusCode: fallbackError.statusCode,
-                fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
             }));
+            throw primaryError;
         }
-        throw fallbackError;
-    }
+        logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey: cachingEnabled ? cacheKey : undefined,
+            primaryNetwork,
+            fallbackNetwork,
+            crossNetworkFallback,
+            primaryStatusCode: primaryError?.statusCode,
+            primaryRetryable: primaryError?.retryable,
+            primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+        }));
+        try {
+            const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+            fallbackResult.account._servedByUrl = normalizedFallbackUrl;
+            if (cachingEnabled) {
+                cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+                const cacheStatsAfter = redactCacheStats(cache.getStats());
+                logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl,
+                    horizonUrlFallback: normalizedFallbackUrl,
+                    cacheKey,
+                    cacheTtlMs,
+                    cacheSizeAfter: cacheStatsAfter.size,
+                    cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                    source: 'fallback',
+                    ...safeAccountSummary(fallbackResult.account),
+                }));
+            }
+            logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                fallbackAttempts: fallbackResult.attempts,
+                fallbackLatencyMs: fallbackResult.latencyMs,
+            }));
+            return fallbackResult.account;
+        }
+        catch (fallbackError) {
+            if (fallbackError instanceof HorizonError) {
+                logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl,
+                    horizonUrlFallback: normalizedFallbackUrl,
+                    primaryStatusCode: primaryError?.statusCode,
+                    primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+                    fallbackStatusCode: fallbackError.statusCode,
+                    fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
+                }));
+            }
+            throw fallbackError;
+        }
+    });
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 120000;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -40279,7 +40234,7 @@ const pluginLoader_1 = __nccwpck_require__(2259);
 const configReader_1 = __nccwpck_require__(6094);
 const batch_1 = __nccwpck_require__(2983);
 const sarif_1 = __nccwpck_require__(866);
-const codeowners_1 = __nccwpck_require__(3586);
+const tracing_1 = __nccwpck_require__(7145);
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
  * Prefers `payload.assignee` (issues.assigned), then the first issue assignee.
@@ -40445,132 +40400,79 @@ async function handleAutoUnassign(options) {
     }
 }
 async function run() {
-    // Milestone gating (Issue #230)
-    const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
-    const milestoneFailOnSkip = (0, inputs_1.parseBooleanInput)(core.getInput('milestone_fail_on_skip'), false);
-    if (milestoneAllowlistRaw.trim()) {
-        const allowedMilestones = milestoneAllowlistRaw
-            .split(',')
-            .map((m) => m.trim().toLowerCase())
-            .filter(Boolean);
-        const payload = github.context.payload;
-        const isIssueContext = payload.issue !== undefined;
-        const isPullRequest = payload.pull_request !== undefined;
-        let currentMilestone = '';
-        let currentMilestoneRaw = '';
-        if (isIssueContext && payload.issue?.milestone) {
-            currentMilestoneRaw = payload.issue.milestone.title || '';
-        }
-        else if (isPullRequest && payload.pull_request?.milestone) {
-            currentMilestoneRaw = payload.pull_request.milestone.title || '';
-        }
-        currentMilestone = currentMilestoneRaw.trim().toLowerCase();
-        if (allowedMilestones.length > 0) {
-            let skipReason = '';
-            if (!currentMilestone) {
-                skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
+    // Clear any trace spans from previous runs (safety)
+    (0, tracing_1.clearTraceSpans)();
+    return (0, tracing_1.traceActionRun)('trustbridge-action', async () => {
+        // Milestone gating (Issue #230)
+        const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
+        const milestoneFailOnSkip = (0, inputs_1.parseBooleanInput)(core.getInput('milestone_fail_on_skip'), false);
+        if (milestoneAllowlistRaw.trim()) {
+            const allowedMilestones = milestoneAllowlistRaw
+                .split(',')
+                .map((m) => m.trim().toLowerCase())
+                .filter(Boolean);
+            const payload = github.context.payload;
+            const isIssueContext = payload.issue !== undefined;
+            const isPullRequest = payload.pull_request !== undefined;
+            let currentMilestone = '';
+            let currentMilestoneRaw = '';
+            if (isIssueContext && payload.issue?.milestone) {
+                currentMilestoneRaw = payload.issue.milestone.title || '';
             }
-            else if (!allowedMilestones.includes(currentMilestone)) {
-                skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+            else if (isPullRequest && payload.pull_request?.milestone) {
+                currentMilestoneRaw = payload.pull_request.milestone.title || '';
             }
-            if (skipReason) {
-                const fullMessage = `${skipReason} Skipping validation.`;
-                if (milestoneFailOnSkip) {
-                    core.setFailed(fullMessage);
+            currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+            if (allowedMilestones.length > 0) {
+                let skipReason = '';
+                if (!currentMilestone) {
+                    skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
                 }
-                else {
-                    core.info(fullMessage);
+                else if (!allowedMilestones.includes(currentMilestone)) {
+                    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
                 }
-                core.setOutput('ready', 'false');
-                core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
-                core.setOutput('checks_json', '[]');
-                core.summary.addHeading('Milestone Gate Skipped', 3);
-                core.summary.addRaw(fullMessage);
-                await core.summary.write();
-                return;
+                if (skipReason) {
+                    const fullMessage = `${skipReason} Skipping validation.`;
+                    if (milestoneFailOnSkip) {
+                        core.setFailed(fullMessage);
+                    }
+                    else {
+                        core.info(fullMessage);
+                    }
+                    core.setOutput('ready', 'false');
+                    core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+                    core.setOutput('checks_json', '[]');
+                    core.summary.addHeading('Milestone Gate Skipped', 3);
+                    core.summary.addRaw(fullMessage);
+                    await core.summary.write();
+                    return;
+                }
             }
         }
-    }
-    // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in)
-    const skipForMaintainers = (0, inputs_1.parseBooleanInput)(core.getInput('skip_for_maintainers') || core.getInput('skip_if_maintainer'), false);
-    if (skipForMaintainers) {
-        const actor = github.context.actor ||
-            github.context.payload.sender?.login ||
-            '';
-        const maintainersAllowlistRaw = core.getInput('maintainers_allowlist') || '';
-        const maintainersAllowlist = maintainersAllowlistRaw
-            .split(',')
-            .map((m) => m.trim())
-            .filter(Boolean);
-        const customCodeownersPath = core.getInput('codeowners_path') || '';
-        const rawGithubToken = core.getInput('github_token');
-        const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
-        const token = (0, inputs_1.resolveGitHubAuthToken)({
-            githubToken: rawGithubToken,
-            githubAppToken,
-        });
-        const codeowners = await (0, codeowners_1.loadCodeowners)({
-            customPath: customCodeownersPath || undefined,
-            githubToken: token || undefined,
-        });
-        const isMaintainer = (0, codeowners_1.isMaintainerActor)(actor, codeowners, maintainersAllowlist);
-        if (isMaintainer) {
-            const skipMessage = `Actor @${actor} is a maintainer (matched in CODEOWNERS / maintainers_allowlist). Skipping TrustBridge validation checks (skip_for_maintainers=true).`;
-            core.info(skipMessage);
-            core.setOutput('ready', 'true');
-            core.setOutput('reason_code', 'MAINTAINER_SKIPPED');
-            core.setOutput('checks_json', '[]');
-            core.setOutput('account_funded', 'true');
-            core.setOutput('trustline_exists', 'true');
-            core.setOutput('xlm_balance', '0');
-            core.summary.addHeading('Maintainer Validation Skipped', 3);
-            core.summary.addRaw(skipMessage);
-            await core.summary.write();
-            return;
+        // Campaign presets (Issue #207) — resolved first so they can provide defaults.
+        const networkInput = core.getInput('network') || '';
+        const presetInput = core.getInput('preset') || '';
+        const presetName = (0, inputs_1.parsePresetInput)(networkInput, presetInput);
+        const campaignPreset = presetName ? (0, assets_1.getCampaignPreset)(presetName) : undefined;
+        if (presetName && !campaignPreset) {
+            throw new Error(`Unknown campaign preset "${presetName}". Valid presets: testnet, testnet-usdc, public, mainnet.`);
         }
-    }
-    // Campaign presets (Issue #207) — resolved first so they can provide defaults.
-    const networkInput = core.getInput('network') || '';
-    const presetInput = core.getInput('preset') || '';
-    const presetName = (0, inputs_1.parsePresetInput)(networkInput, presetInput);
-    const campaignPreset = presetName ? (0, assets_1.getCampaignPreset)(presetName) : undefined;
-    if (presetName && !campaignPreset) {
-        throw new Error(`Unknown campaign preset "${presetName}". Valid presets: testnet, testnet-usdc, public, mainnet.`);
-    }
-    const horizonUrl = core.getInput('horizon_url') || campaignPreset?.horizonUrl || 'https://horizon.stellar.org';
-    const assetCode = core.getInput('asset_code') || campaignPreset?.assetCode || 'USDC';
-    const assetIssuer = core.getInput('asset_issuer') ||
-        campaignPreset?.assetIssuer ||
-        'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
-    const minXlmReserveRaw = core.getInput('min_xlm_reserve') || campaignPreset?.minXlmReserve || '1.5';
-    const stellarAddressInput = core.getInput('stellar_address_input');
-    const assigneeAddressMapRaw = core.getInput('assignee_address_map');
-    // Issue #317: Dashboard roster API inputs
-    const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
-    const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
-    const dashboardRosterTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
-    // Issue #318: Soroban full roster inputs
-    const sorobanFullRoster = (0, inputs_1.parseBooleanInput)(core.getInput('soroban_full_roster'), false);
-    const sorobanRosterPageLimit = (0, inputs_1.parseNumberInput)(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
-    // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
-    const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
-    const contractId = core.getInput('contract_id') || '';
-    let contractResolvedAddress;
-    if (sorobanRpcUrl && contractId) {
-        const assigneeLogin = resolveAssigneeLoginFromContext();
-        if (assigneeLogin) {
-            try {
-                if (sorobanFullRoster) {
-                    const map = await (0, soroban_1.fetchFullContractRoster)(assigneeLogin, {
-                        sorobanRpcUrl,
-                        contractId,
-                        pageLimit: sorobanRosterPageLimit,
-                    });
-                    const found = map[assigneeLogin.toLowerCase()];
-                    if (found)
-                        contractResolvedAddress = found;
-                }
-                else {
+        const horizonUrl = core.getInput('horizon_url') || campaignPreset?.horizonUrl || 'https://horizon.stellar.org';
+        const assetCode = core.getInput('asset_code') || campaignPreset?.assetCode || 'USDC';
+        const assetIssuer = core.getInput('asset_issuer') ||
+            campaignPreset?.assetIssuer ||
+            'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+        const minXlmReserveRaw = core.getInput('min_xlm_reserve') || campaignPreset?.minXlmReserve || '1.5';
+        const stellarAddressInput = core.getInput('stellar_address_input');
+        const assigneeAddressMapRaw = core.getInput('assignee_address_map');
+        // Issue #219: Contract registry lookup (source 1 of address resolution).
+        const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
+        const contractId = core.getInput('contract_id') || '';
+        let contractResolvedAddress;
+        if (sorobanRpcUrl && contractId) {
+            const assigneeLogin = resolveAssigneeLoginFromContext();
+            if (assigneeLogin) {
+                try {
                     const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
                         sorobanRpcUrl,
                         contractId,
@@ -40579,957 +40481,868 @@ async function run() {
                         contractResolvedAddress = lookup.address;
                     }
                 }
+                catch (err) {
+                    const isRetryable = err instanceof soroban_1.ContractLookupError && err.retryable;
+                    logger_1.logger.warn('Contract registry lookup failed, falling back', {
+                        component: 'index',
+                        error: err instanceof Error ? err.message : String(err),
+                        retryable: isRetryable,
+                    });
+                }
             }
-            catch (err) {
-                const isRetryable = err instanceof soroban_1.ContractLookupError && err.retryable;
-                logger_1.logger.warn('Contract registry lookup failed, falling back', {
+        }
+        const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress);
+        const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
+        const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
+        const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
+            min: 1000,
+            max: 60000,
+        });
+        const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
+        const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
+        const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
+        const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
+        const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
+        const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+        const fallbackUrls = rpcFallbackUrlRaw
+            ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
+            : horizonUrlFallback
+                ? [horizonUrlFallback]
+                : [];
+        const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_cache_ttl_ms'), 60000, {
+            min: 0,
+            max: 3600000,
+        });
+        const useCache = (0, inputs_1.parseBooleanInput)(core.getInput('use_cache'), false);
+        const allowCrossNetworkFallback = (0, inputs_1.parseBooleanInput)(core.getInput('allow_cross_network_fallback'), false);
+        const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
+        const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+        const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
+        const rawGithubToken = core.getInput('github_token');
+        const githubToken = (0, inputs_1.resolveGitHubAuthToken)({
+            githubToken: rawGithubToken,
+            githubAppToken,
+        });
+        if (githubAppToken)
+            core.setSecret(githubAppToken);
+        if (rawGithubToken)
+            core.setSecret(rawGithubToken);
+        const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
+        const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)('unassign_on_not_ready', core.getInput('unassign_on_not_ready')), false);
+        // SEP-0007 wallet deep links (Issue #44)
+        const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
+        const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+        // #145 — issues:write preflight
+        const preflightOnly = (0, inputs_1.parseBooleanInput)(core.getInput('preflight_only'), false);
+        // Multi-asset trustline validation (Issue #4)
+        const assetsJsonRaw = core.getInput('assets_json') || '';
+        // Soroban contract registry (Issue #7)
+        const githubUsername = core.getInput('github_username') || '';
+        // Plugin runner flag (Issue #198) — default off
+        const usePluginRunner = (0, inputs_1.parseBooleanInput)(core.getInput('use_plugin_runner'), false);
+        // Onboarding checklist in comments (Issue #154) — default on
+        const onboardingChecklist = (0, inputs_1.parseBooleanInput)(core.getInput('onboarding_checklist'), true);
+        // Security artifacts / delta vs previous run (Issue #148)
+        const writeValidationJsonEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('write_validation_json'), false);
+        const validationJsonPath = core.getInput('validation_json_path') || 'validation.json';
+        const previousValidationPath = core.getInput('previous_validation_path') || '';
+        const privacyMode = (0, inputs_1.parseBooleanInput)(core.getInput('privacy_mode'), false);
+        // External plugins from workspace (allowlisted only)
+        const trustbridgePluginsPathRaw = core.getInput('trustbridge_plugins_path') || '';
+        const allowedPluginPaths = trustbridgePluginsPathRaw
+            .split(',')
+            .map((p) => p.trim())
+            .filter(Boolean);
+        // Internationalization (Issue #59)
+        const localeInput = core.getInput('locale') || 'en';
+        const locale = (0, i18n_1.parseLocaleInput)(localeInput);
+        // Batch validation (Issue #199)
+        const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+        // Full-report artifact path (used when comment exceeds size limit)
+        const reportOutputPath = core.getInput('report_output_path') || 'trustbridge-report.md';
+        // Failure snooze window (Issue #155)
+        const snoozeWindowMinutes = (0, inputs_1.parseNumberInput)(core.getInput('snooze_window_minutes'), 30, {
+            min: 0,
+            max: 10080, // 7 days
+        });
+        const forceComment = (0, inputs_1.parseBooleanInput)(core.getInput('force_comment'), false);
+        const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
+        // Wave #30 — comment posting mode: post | dry-run | off
+        const VALID_COMMENT_MODES = new Set(['post', 'dry-run', 'off']);
+        const commentModeRaw = (core.getInput('comment_mode') || 'post').trim().toLowerCase();
+        if (!VALID_COMMENT_MODES.has(commentModeRaw)) {
+            throw new Error(`Invalid comment_mode "${commentModeRaw}". Expected one of: post, dry-run, off.`);
+        }
+        const commentMode = commentModeRaw;
+        const shouldPostComment = commentMode === 'post';
+        // Signed dashboard webhook (Issue #101)
+        // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
+        const webhookUrl = core.getInput('webhook_url') || core.getInput('dashboard_webhook_url') || '';
+        const webhookSecret = core.getInput('webhook_secret') || '';
+        const webhookTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('webhook_timeout_ms'), 5000, {
+            min: 100,
+            max: 30000,
+        });
+        const webhookAuthModeRaw = (core.getInput('webhook_auth_mode') || 'hmac').trim().toLowerCase();
+        const webhookAuthMode = webhookAuthModeRaw === 'oidc' ? 'oidc' : 'hmac';
+        const webhookOidcAudience = core.getInput('webhook_oidc_audience') || 'trustbridge-dashboard';
+        // GitHub Projects v2 integration (Issue #222)
+        const projectId = core.getInput('project_id') || '';
+        const projectStatusField = core.getInput('project_status_field') || 'Status';
+        const projectStatusPass = core.getInput('project_status_pass') || '';
+        const projectStatusFail = core.getInput('project_status_fail') || '';
+        const projectToken = core.getInput('project_token') || githubToken;
+        // Clear validation spans from any prior run in the same process (safety).
+        (0, validation_1.clearSpans)();
+        metrics_1.globalMetrics.stopTimer('input_parse');
+        // Register core plugins and load external plugins from allowlist
+        (0, corePlugins_1.registerCorePlugins)();
+        if (allowedPluginPaths.length > 0) {
+            try {
+                const externalPlugins = await (0, pluginLoader_1.loadPluginsFromAllowlist)({
+                    workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
+                    allowedPluginPaths,
+                    debugMode,
+                });
+                for (const plugin of externalPlugins) {
+                    plugin_1.defaultRegistry.register(plugin);
+                }
+                if (externalPlugins.length > 0) {
+                    core.info(`Loaded ${externalPlugins.length} external plugin(s)`);
+                }
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                core.warning(`Failed to load external plugins (proceeding with core plugins only): ${message}`);
+            }
+        }
+        // Never weaken TLS verification by default (Issue #71). TrustBridge does
+        // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
+        // environment has disabled it, surface that loudly rather than silently
+        // trusting an unverified Horizon endpoint.
+        if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+            logger_1.logger.warn('NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.', { component: 'index' });
+        }
+        // ---------------------------------------------------------------------------
+        // Config-file overlay (Issue #196)
+        // Read the consumer .trustbridge.yml and merge values into action inputs.
+        // Explicit non-empty action inputs always win over config-file values.
+        // ---------------------------------------------------------------------------
+        const configResult = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
+        if (!configResult.validation.valid) {
+            const errMsg = configResult.validation.errors.join('; ');
+            core.setFailed(`Trustbridge config file error: ${errMsg}`);
+            return;
+        }
+        if (configResult.found) {
+            core.info(`Loaded trustbridge config from ${configResult.resolvedPath}`);
+            if (debugMode && configResult.redactedSnapshot) {
+                logger_1.logger.debug('Trustbridge config snapshot (redacted)', {
                     component: 'index',
-                    error: err instanceof Error ? err.message : String(err),
-                    retryable: isRetryable,
+                    config: configResult.redactedSnapshot,
                 });
             }
         }
-    }
-    // Issue #317: Dashboard roster lookup (source 2 of address resolution).
-    let dashboardResolvedAddress;
-    if (dashboardRosterUrl) {
-        const assigneeLogin = resolveAssigneeLoginFromContext();
-        if (assigneeLogin) {
-            try {
-                const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs);
-                const found = map[assigneeLogin.toLowerCase()];
-                if (found)
-                    dashboardResolvedAddress = found;
-            }
-            catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                logger_1.logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
-            }
-        }
-    }
-    const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress, dashboardResolvedAddress);
-    const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
-    const issueNumberInputRaw = core.getInput('issue_number') || '';
-    const issueNumberInput = issueNumberInputRaw.trim()
-        ? (0, inputs_1.parseNumberInput)(issueNumberInputRaw, 0, { min: 1 })
-        : undefined;
-    const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
-    const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
-        min: 1000,
-        max: 60000,
-    });
-    const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
-    const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
-    const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
-    const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
-    const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
-    const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
-    const fallbackUrls = rpcFallbackUrlRaw
-        ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
-        : horizonUrlFallback
-            ? [horizonUrlFallback]
-            : [];
-    const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_cache_ttl_ms'), 60000, {
-        min: 0,
-        max: 3600000,
-    });
-    const useCache = (0, inputs_1.parseBooleanInput)(core.getInput('use_cache'), false);
-    const allowCrossNetworkFallback = (0, inputs_1.parseBooleanInput)(core.getInput('allow_cross_network_fallback'), false);
-    const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
-    const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-    const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
-    const rawGithubToken = core.getInput('github_token');
-    const githubToken = (0, inputs_1.resolveGitHubAuthToken)({
-        githubToken: rawGithubToken,
-        githubAppToken,
-    });
-    if (githubAppToken)
-        core.setSecret(githubAppToken);
-    if (rawGithubToken)
-        core.setSecret(rawGithubToken);
-    const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
-    const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)('unassign_on_not_ready', core.getInput('unassign_on_not_ready')), false);
-    // SEP-0007 wallet deep links (Issue #44)
-    const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
-    const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
-    // #145 — issues:write preflight
-    const preflightOnly = (0, inputs_1.parseBooleanInput)(core.getInput('preflight_only'), false);
-    // Multi-asset trustline validation (Issue #4)
-    const assetsJsonRaw = core.getInput('assets_json') || '';
-    // Soroban contract registry (Issue #7)
-    const githubUsername = core.getInput('github_username') || '';
-    // Plugin runner flag (Issue #198) — default off
-    const usePluginRunner = (0, inputs_1.parseBooleanInput)(core.getInput('use_plugin_runner'), false);
-    // Onboarding checklist in comments (Issue #154) — default on
-    const onboardingChecklist = (0, inputs_1.parseBooleanInput)(core.getInput('onboarding_checklist'), true);
-    // Security artifacts / delta vs previous run (Issue #148)
-    const writeValidationJsonEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('write_validation_json'), false);
-    const validationJsonPath = core.getInput('validation_json_path') || 'validation.json';
-    const previousValidationPath = core.getInput('previous_validation_path') || '';
-    const privacyMode = (0, inputs_1.parseBooleanInput)(core.getInput('privacy_mode'), false);
-    // External plugins from workspace (allowlisted only)
-    const trustbridgePluginsPathRaw = core.getInput('trustbridge_plugins_path') || '';
-    const allowedPluginPaths = trustbridgePluginsPathRaw
-        .split(',')
-        .map((p) => p.trim())
-        .filter(Boolean);
-    // Internationalization (Issue #59)
-    const localeInput = core.getInput('locale') || 'en';
-    const locale = (0, i18n_1.parseLocaleInput)(localeInput);
-    // Batch validation (Issue #199)
-    const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
-    // Full-report artifact path (used when comment exceeds size limit)
-    const reportOutputPath = core.getInput('report_output_path') || 'trustbridge-report.md';
-    // Failure snooze window (Issue #155)
-    const snoozeWindowMinutes = (0, inputs_1.parseNumberInput)(core.getInput('snooze_window_minutes'), 30, {
-        min: 0,
-        max: 10080, // 7 days
-    });
-    const forceComment = (0, inputs_1.parseBooleanInput)(core.getInput('force_comment'), false);
-    const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
-    // Asset authorization & clawback policies (Issue #247)
-    const unauthorizedTrustlinePolicy = (0, inputs_1.parseUnauthorizedTrustlinePolicy)(core.getInput('unauthorized_trustline_policy') || 'warn');
-    const clawbackStrictMode = (0, inputs_1.parseBooleanInput)(core.getInput('clawback_strict_mode'), false);
-    // Wave #30 — comment posting mode: post | dry-run | off
-    const VALID_COMMENT_MODES = new Set(['post', 'dry-run', 'off']);
-    const commentModeRaw = (core.getInput('comment_mode') || 'post').trim().toLowerCase();
-    if (!VALID_COMMENT_MODES.has(commentModeRaw)) {
-        throw new Error(`Invalid comment_mode "${commentModeRaw}". Expected one of: post, dry-run, off.`);
-    }
-    const commentMode = commentModeRaw;
-    const shouldPostComment = commentMode === 'post';
-    // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
-    // instead of calling live Horizon. No network call is made.
-    const fixtureMode = (0, inputs_1.parseBooleanInput)(core.getInput('fixture_mode'), false);
-    const fixturePath = core.getInput('fixture_path') || '';
-    // Signed dashboard webhook (Issue #101)
-    // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
-    const webhookUrl = core.getInput('webhook_url') || core.getInput('dashboard_webhook_url') || '';
-    const webhookSecret = core.getInput('webhook_secret') || '';
-    const webhookTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('webhook_timeout_ms'), 5000, {
-        min: 100,
-        max: 30000,
-    });
-    const webhookAuthModeRaw = (core.getInput('webhook_auth_mode') || 'hmac').trim().toLowerCase();
-    const webhookAuthMode = webhookAuthModeRaw === 'oidc' ? 'oidc' : 'hmac';
-    const webhookOidcAudience = core.getInput('webhook_oidc_audience') || 'trustbridge-dashboard';
-    // GitHub Projects v2 integration (Issue #222)
-    const projectId = core.getInput('project_id') || '';
-    const projectStatusField = core.getInput('project_status_field') || 'Status';
-    const projectStatusPass = core.getInput('project_status_pass') || '';
-    const projectStatusFail = core.getInput('project_status_fail') || '';
-    const projectToken = core.getInput('project_token') || githubToken;
-    // Clear validation spans from any prior run in the same process (safety).
-    (0, validation_1.clearSpans)();
-    metrics_1.globalMetrics.stopTimer('input_parse');
-    // Register core plugins and load external plugins from allowlist
-    (0, corePlugins_1.registerCorePlugins)();
-    if (allowedPluginPaths.length > 0) {
-        try {
-            const externalPlugins = await (0, pluginLoader_1.loadPluginsFromAllowlist)({
-                workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-                allowedPluginPaths,
-                debugMode,
-            });
-            for (const plugin of externalPlugins) {
-                plugin_1.defaultRegistry.register(plugin);
-            }
-            if (externalPlugins.length > 0) {
-                core.info(`Loaded ${externalPlugins.length} external plugin(s)`);
-            }
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.warning(`Failed to load external plugins (proceeding with core plugins only): ${message}`);
-        }
-    }
-    // Never weaken TLS verification by default (Issue #71). TrustBridge does
-    // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
-    // environment has disabled it, surface that loudly rather than silently
-    // trusting an unverified Horizon endpoint.
-    if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
-        logger_1.logger.warn('NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.', { component: 'index' });
-    }
-    // ---------------------------------------------------------------------------
-    // Config-file overlay (Issue #196)
-    // Read the consumer .trustbridge.yml and merge values into action inputs.
-    // Explicit non-empty action inputs always win over config-file values.
-    // ---------------------------------------------------------------------------
-    const configResult = (0, configReader_1.readTrustbridgeConfigs)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
-    if (!configResult.validation.valid) {
-        const errMsg = configResult.validation.errors.join('; ');
-        core.setFailed(`Trustbridge config file error: ${errMsg}`);
-        return;
-    }
-    if (configResult.found) {
-        core.info(`Loaded trustbridge config from ${configResult.resolvedPath}`);
-        if (debugMode && configResult.redactedSnapshot) {
-            logger_1.logger.debug('Trustbridge config snapshot (redacted)', {
-                component: 'index',
-                config: configResult.redactedSnapshot,
-            });
-        }
-    }
-    // Build set of inputs that were explicitly provided by the workflow author
-    const explicitInputs = new Set();
-    const checkInput = (name, raw) => {
-        if (raw.trim())
-            explicitInputs.add(name);
-    };
-    checkInput('horizonUrl', horizonUrl);
-    checkInput('horizonUrlFallback', horizonUrlFallback);
-    checkInput('rpcFallbackUrl', rpcFallbackUrlRaw);
-    checkInput('assetCode', assetCode);
-    checkInput('assetIssuer', assetIssuer);
-    checkInput('minXlmReserveRaw', minXlmReserveRaw);
-    checkInput('failOnMissing', core.getInput('fail_on_missing'));
-    // Merge config file values under action inputs
-    const merged = (0, configReader_1.mergeConsumerConfig)({
-        horizonUrl,
-        horizonUrlFallback,
-        rpcFallbackUrl: rpcFallbackUrlRaw,
-        assetCode,
-        assetIssuer,
-        minXlmReserveRaw,
-        failOnMissing,
-    }, configResult.config, explicitInputs);
-    // Effective values (config-file overlays applied; explicit inputs win)
-    const effectiveHorizonUrl = merged.horizonUrl;
-    const effectiveHorizonUrlFallback = merged.horizonUrlFallback;
-    const effectiveAssetCode = merged.assetCode;
-    const effectiveAssetIssuer = merged.assetIssuer;
-    const effectiveMinXlmReserveRaw = merged.minXlmReserveRaw;
-    const effectiveRpcFallbackUrl = merged.rpcFallbackUrl;
-    const effectiveFailOnMissing = merged.failOnMissing;
-    const resolvedAddress = stellarAddress;
-    const effectiveResolvedAddress = stellarAddress;
-    const jobController = new AbortController();
-    const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput('horizon_max_requests') || '0', 0, {
-        min: 0, // 0 = unlimited (matches action.yml)
-        max: 10000,
-    });
-    const maxRetries = (0, inputs_1.parseNumberInput)(core.getInput('max_retries') || '3', 3, {
-        min: 0,
-        max: 20,
-    });
-    const retryBaseDelayMs = (0, inputs_1.parseNumberInput)(core.getInput('retry_base_delay_ms') || '1000', 1000, {
-        min: 0,
-        max: 60000,
-    });
-    const retryMaxDelayMs = (0, inputs_1.parseNumberInput)(core.getInput('retry_max_delay_ms') || '30000', 30000, {
-        min: 0,
-        max: 600000,
-    });
-    logger_1.logger.setDebugMode(debugMode);
-    logger_1.logger.debug('Action inputs loaded', {
-        component: 'index',
-        horizonUrl: effectiveHorizonUrl,
-        horizonUrlFallback: effectiveHorizonUrlFallback,
-        horizonCacheTtlMs,
-        assetCode: effectiveAssetCode,
-        assetIssuer: effectiveAssetIssuer,
-        minXlmReserveRaw: effectiveMinXlmReserveRaw,
-        debugMode,
-        horizonTimeoutMs,
-        stickyComment,
-        waitUntilFunded,
-        waitUntilFundedTimeoutMs,
-        waitUntilFundedIntervalMs,
-        rpcFallbackUrl: effectiveRpcFallbackUrl,
-        useCache,
-        allowCrossNetworkFallback,
-        sep0007DeepLinks,
-        onboardingChecklist,
-        trustbridgeConfigPath,
-    });
-    (0, checks_1.validateStellarAddress)(stellarAddress);
-    const isContractDestination = /^C[A-Z2-7]{55}$/.test(stellarAddress.trim());
-    if (isContractDestination) {
-        if (!sorobanRpcUrl) {
-            throw new Error(`stellar_address_input resolves to a Soroban C-address "${stellarAddress}", but soroban_rpc_url is unset. Configure soroban_rpc_url to verify the contract exists on-chain before payout validation continues.`);
-        }
-        const contractExists = await (0, soroban_1.contractExistsOnChain)(stellarAddress, {
-            sorobanRpcUrl,
-            timeoutMs: horizonTimeoutMs,
-        });
-        const result = contractExists
-            ? {
-                valid: true,
-                accountFunded: true,
-                trustlineExists: true,
-                xlmBalance: '0',
-                xlmReserveMet: true,
-                assetBalance: '0',
-                assetBalanceMet: true,
-                checks: [
-                    {
-                        passed: true,
-                        label: 'Contract destination exists',
-                        detail: `Contract ${stellarAddress} was confirmed on Soroban RPC and is eligible for payout. Horizon account/trustline balance checks are intentionally skipped for C-address destinations.`,
-                    },
-                ],
-                reasonCode: 'CONTRACT_DESTINATION_OK',
-            }
-            : {
-                valid: false,
-                accountFunded: false,
-                trustlineExists: false,
-                xlmBalance: '0',
-                xlmReserveMet: false,
-                assetBalance: '0',
-                assetBalanceMet: false,
-                checks: [
-                    {
-                        passed: false,
-                        label: 'Contract destination exists',
-                        detail: `Contract ${stellarAddress} was not found on the configured Soroban RPC. C-address payout destinations must exist on-chain before they are eligible for payout.`,
-                    },
-                ],
-                reasonCode: 'CONTRACT_NOT_FOUND',
-            };
-        core.setOutput('ready', result.valid ? 'true' : 'false');
-        core.setOutput('reason_code', result.reasonCode ?? 'CONTRACT_DESTINATION');
-        core.setOutput('checks_json', JSON.stringify(result.checks));
-        core.summary.addHeading('C-address destination check', 3);
-        core.summary.addRaw(result.valid ? 'Contract destination validated on Soroban RPC.' : 'Contract destination missing from Soroban RPC.');
-        await core.summary.write();
-        return;
-    }
-    const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
-    const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
-    const minTrustlineLimit = minTrustlineLimitRaw ? (0, inputs_1.parseNumberInput)(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
-    const minAssetBalance = (0, checks_1.parseMinAssetBalance)(core.getInput('min_asset_balance') || '');
-    // Optional multi-asset JSON — validate early so bad input fails fast.
-    if (assetsJsonRaw.trim()) {
-        (0, assets_1.parseAssetsJson)(assetsJsonRaw);
-    }
-    // #145 — issues:write preflight (optional early exit)
-    // Skip when comment_mode won't post — dry-run/off don't need issues:write.
-    // Skip for discussion events too: discussions use the GraphQL path which
-    // requires `discussions: write`, not `issues: write` (Issue #221).
-    const discussionNodeId = (0, comment_1.resolveDiscussionNodeId)(github.context.payload);
-    if (shouldPostComment && !discussionNodeId) {
-        const preflight = await (0, preflight_1.runIssuesPreflight)(githubToken);
-        if (preflight.skip) {
-            core.info(preflight.message);
-        }
-    }
-    if (preflightOnly) {
-        core.info('preflight_only=true — exiting after issues:write preflight.');
-        return;
-    }
-    // SEP-0001 home domain check inputs (optional, off by default)
-    const homeDomainCheckEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('home_domain_check_enabled'), false);
-    const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
-    const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
-    const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
-    // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-    const stellarTomlFetchEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('stellar_toml_fetch_enabled'), false);
-    const stellarTomlCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('stellar_toml_cache_ttl_ms') || '3600000', 3600000, { min: 0, max: 86400000 });
-    const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
-    // GitHub Checks API integration (Wave #26 — optional, off by default)
-    const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
-    // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
-    const checkLedgerFreshnessEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('check_ledger_freshness'), false);
-    const maxLedgerLagSeconds = (0, inputs_1.parseNumberInput)(core.getInput('max_ledger_lag_seconds') || '60', 60, { min: 1, max: 3600 });
-    const ledgerFreshnessFailOnStale = (0, inputs_1.parseBooleanInput)(core.getInput('ledger_freshness_fail_on_stale'), false);
-    if (logInputs) {
-        (0, logger_1.emitInputsLogRecord)({
+        // Build set of inputs that were explicitly provided by the workflow author
+        const explicitInputs = new Set();
+        const checkInput = (name, raw) => {
+            if (raw.trim())
+                explicitInputs.add(name);
+        };
+        checkInput('horizonUrl', horizonUrl);
+        checkInput('horizonUrlFallback', horizonUrlFallback);
+        checkInput('rpcFallbackUrl', rpcFallbackUrlRaw);
+        checkInput('assetCode', assetCode);
+        checkInput('assetIssuer', assetIssuer);
+        checkInput('minXlmReserveRaw', minXlmReserveRaw);
+        checkInput('failOnMissing', core.getInput('fail_on_missing'));
+        // Merge config file values under action inputs
+        const merged = (0, configReader_1.mergeConsumerConfig)({
             horizonUrl,
             horizonUrlFallback,
             rpcFallbackUrl: rpcFallbackUrlRaw,
             assetCode,
             assetIssuer,
-            minXlmReserve: minXlmReserveRaw,
-            minTrustlineLimit: minTrustlineLimitRaw,
-            stellarAddress,
-            failOnMissing: effectiveFailOnMissing,
+            minXlmReserveRaw,
+            failOnMissing,
+        }, configResult.config, explicitInputs);
+        // Effective values (config-file overlays applied; explicit inputs win)
+        const effectiveHorizonUrl = merged.horizonUrl;
+        const effectiveHorizonUrlFallback = merged.horizonUrlFallback;
+        const effectiveAssetCode = merged.assetCode;
+        const effectiveAssetIssuer = merged.assetIssuer;
+        const effectiveMinXlmReserveRaw = merged.minXlmReserveRaw;
+        const effectiveRpcFallbackUrl = merged.rpcFallbackUrl;
+        const effectiveFailOnMissing = merged.failOnMissing;
+        const resolvedAddress = stellarAddress;
+        const effectiveResolvedAddress = stellarAddress;
+        const jobController = new AbortController();
+        const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput('horizon_max_requests') || '0', 0, {
+            min: 0, // 0 = unlimited (matches action.yml)
+            max: 10000,
+        });
+        const maxRetries = (0, inputs_1.parseNumberInput)(core.getInput('max_retries') || '3', 3, {
+            min: 0,
+            max: 20,
+        });
+        const retryBaseDelayMs = (0, inputs_1.parseNumberInput)(core.getInput('retry_base_delay_ms') || '1000', 1000, {
+            min: 0,
+            max: 60000,
+        });
+        const retryMaxDelayMs = (0, inputs_1.parseNumberInput)(core.getInput('retry_max_delay_ms') || '30000', 30000, {
+            min: 0,
+            max: 600000,
+        });
+        logger_1.logger.setDebugMode(debugMode);
+        logger_1.logger.debug('Action inputs loaded', {
+            component: 'index',
+            horizonUrl: effectiveHorizonUrl,
+            horizonUrlFallback: effectiveHorizonUrlFallback,
+            horizonCacheTtlMs,
+            assetCode: effectiveAssetCode,
+            assetIssuer: effectiveAssetIssuer,
+            minXlmReserveRaw: effectiveMinXlmReserveRaw,
             debugMode,
             horizonTimeoutMs,
             stickyComment,
             waitUntilFunded,
             waitUntilFundedTimeoutMs,
             waitUntilFundedIntervalMs,
-            horizonCacheTtlMs,
+            rpcFallbackUrl: effectiveRpcFallbackUrl,
             useCache,
-            horizonMaxRequests,
-            maxRetries,
-            retryBaseDelayMs,
-            retryMaxDelayMs,
             allowCrossNetworkFallback,
-            logInputs,
+            sep0007DeepLinks,
+            onboardingChecklist,
+            trustbridgeConfigPath,
         });
-    }
-    const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
-    // Validate network/asset compatibility using the campaign preset (Issue #207).
-    // Catches testnet issuer on public Horizon (or vice versa) and preset conflicts.
-    (0, assets_1.validateNetworkAssetCompatibility)(horizonUrl, normalizedAsset.assetCode, normalizedAsset.assetIssuer, presetName || undefined);
-    // Soroban fungible token contracts (SEP-41) use a "C..." contract address
-    // as their issuer instead of a classic "G..." account. Validate that
-    // shape up front so a malformed contract address fails fast with a clear
-    // error instead of silently reaching Horizon or the metrics/JSON output.
-    if (normalizedAsset.assetIssuer.startsWith('C')) {
-        (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
-        // If the contract address format is strictly invalid, normalizeAssetConfig
-        // would have already failed fast above. We still call validateContractAddress
-        // here to ensure validation spans are consistently recorded.
-        metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
-    }
-    // Claimable-balance policy (Issue #260) — default ignore
-    const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
-    const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' : 'ignore';
-    // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
-    const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
-    const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
-    const checkConfig = {
-        ...normalizedAsset,
-        minXlmReserve: Number(minXlmReserve),
-        minAssetBalance,
-        minTrustlineLimit,
-        horizonUrl,
-        homeDomainCheckEnabled,
-        expectedHomeDomain,
-        homeDomainCheckMode,
-        stellarTomlFetchEnabled,
-        stellarTomlCacheTtlMs,
-        stellarTomlHashPin,
-        checkLedgerFreshness: checkLedgerFreshnessEnabled,
-        maxLedgerLagSeconds,
-        ledgerFreshnessFailOnStale,
-        claimableBalancePolicy,
-    };
-    // ---------------------------------------------------------------------------
-    // Batch mode (Issue #199)
-    // When stellar_addresses is set, validate all addresses and post a batch
-    // summary comment instead of the single-address flow.
-    // ---------------------------------------------------------------------------
-    if (stellarAddressesRaw.trim()) {
-        const batchAddresses = (0, batch_1.parseBatchAddresses)(stellarAddressesRaw);
-        core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
-        const batchCheckConfig = {
-            ...normalizedAsset,
-            minXlmReserve: Number(effectiveMinXlmReserveRaw),
-            horizonUrl: effectiveHorizonUrl,
-        };
-        const batchResults = await (0, batch_1.runBatchValidation)(batchAddresses, batchCheckConfig, effectiveHorizonUrl, {
-            fetchOptions: {
-                timeoutMs: horizonTimeoutMs,
+        (0, checks_1.validateStellarAddress)(stellarAddress);
+        const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
+        const minTrustlineLimitRaw = core.getInput('min_trustline_limit') || '';
+        const minTrustlineLimit = minTrustlineLimitRaw ? (0, inputs_1.parseNumberInput)(minTrustlineLimitRaw, 0, { min: 0 }) : undefined;
+        const minAssetBalance = (0, checks_1.parseMinAssetBalance)(core.getInput('min_asset_balance') || '');
+        // Optional multi-asset JSON — validate early so bad input fails fast.
+        if (assetsJsonRaw.trim()) {
+            (0, assets_1.parseAssetsJson)(assetsJsonRaw);
+        }
+        // #145 — issues:write preflight (optional early exit)
+        // Skip when comment_mode won't post — dry-run/off don't need issues:write.
+        // Skip for discussion events too: discussions use the GraphQL path which
+        // requires `discussions: write`, not `issues: write` (Issue #221).
+        const discussionNodeId = (0, comment_1.resolveDiscussionNodeId)(github.context.payload);
+        if (shouldPostComment && !discussionNodeId) {
+            const preflight = await (0, preflight_1.runIssuesPreflight)(githubToken);
+            if (preflight.skip) {
+                core.info(preflight.message);
+            }
+        }
+        if (preflightOnly) {
+            core.info('preflight_only=true — exiting after issues:write preflight.');
+            return;
+        }
+        // SEP-0001 home domain check inputs (optional, off by default)
+        const homeDomainCheckEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('home_domain_check_enabled'), false);
+        const expectedHomeDomain = core.getInput('expected_home_domain').trim() || undefined;
+        const homeDomainCheckModeRaw = core.getInput('home_domain_check_mode').trim().toLowerCase();
+        const homeDomainCheckMode = homeDomainCheckModeRaw === 'strict' ? 'strict' : 'warn';
+        // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
+        const stellarTomlFetchEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('stellar_toml_fetch_enabled'), false);
+        const stellarTomlCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('stellar_toml_cache_ttl_ms') || '3600000', 3600000, { min: 0, max: 86400000 });
+        const stellarTomlHashPin = core.getInput('stellar_toml_hash_pin').trim() || undefined;
+        // GitHub Checks API integration (Wave #26 — optional, off by default)
+        const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
+        // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
+        const checkLedgerFreshnessEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('check_ledger_freshness'), false);
+        const maxLedgerLagSeconds = (0, inputs_1.parseNumberInput)(core.getInput('max_ledger_lag_seconds') || '60', 60, { min: 1, max: 3600 });
+        const ledgerFreshnessFailOnStale = (0, inputs_1.parseBooleanInput)(core.getInput('ledger_freshness_fail_on_stale'), false);
+        if (logInputs) {
+            (0, logger_1.emitInputsLogRecord)({
+                horizonUrl,
+                horizonUrlFallback,
+                rpcFallbackUrl: rpcFallbackUrlRaw,
+                assetCode,
+                assetIssuer,
+                minXlmReserve: minXlmReserveRaw,
+                minTrustlineLimit: minTrustlineLimitRaw,
+                stellarAddress,
+                failOnMissing: effectiveFailOnMissing,
+                debugMode,
+                horizonTimeoutMs,
+                stickyComment,
+                waitUntilFunded,
+                waitUntilFundedTimeoutMs,
+                waitUntilFundedIntervalMs,
+                horizonCacheTtlMs,
+                useCache,
+                horizonMaxRequests,
                 maxRetries,
                 retryBaseDelayMs,
                 retryMaxDelayMs,
-            },
-        });
-        const batchSummary = (0, batch_1.buildBatchSummary)(batchResults);
-        const batchMarkdown = (0, batch_1.formatBatchSummaryMarkdown)(batchSummary, effectiveAssetCode);
-        if (shouldPostComment) {
-            try {
-                const batchCommentUrl = await (0, comment_1.postIssueComment)(githubToken, batchMarkdown, {
-                    sticky: stickyComment,
-                    forceComment,
-                    snoozeWindowMs,
-                });
-                if (batchCommentUrl) {
-                    logger_1.logger.info('Batch comment created', { component: 'index', commentUrl: batchCommentUrl });
-                }
-            }
-            catch (commentError) {
-                const message = commentError instanceof Error ? commentError.message : String(commentError);
-                core.warning(`Failed to post batch comment (non-fatal): ${message}`);
-            }
-        }
-        // Set batch-specific outputs
-        core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
-        core.setOutput('batch_passed_count', String(batchSummary.passed));
-        core.setOutput('batch_failed_count', String(batchSummary.failed));
-        if (batchSummary.failed > 0 && effectiveFailOnMissing) {
-            core.setFailed(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
-        }
-        else if (batchSummary.failed > 0) {
-            core.warning(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
-        }
-        else {
-            core.info('Batch validation: all addresses passed.');
-        }
-        return;
-    }
-    core.info(`Checking Stellar account ${resolvedAddress} via ${horizonUrl}`);
-    if (waitUntilFunded) {
-        core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
-    }
-    // ---------------------------------------------------------------------------
-    // Ledger freshness / lag guard (Issue #107)
-    // Run before the account fetch so a stale Horizon is flagged before we trust
-    // the balance/trustline data it returns.
-    // ---------------------------------------------------------------------------
-    let freshnessResult;
-    if (checkLedgerFreshnessEnabled) {
-        core.info(`Checking ledger freshness (max lag: ${maxLedgerLagSeconds}s)…`);
-        try {
-            const raw = await (0, freshness_1.checkLedgerFreshness)(horizonUrl, {
-                maxLagSeconds: maxLedgerLagSeconds,
-                timeoutMs: Math.min(horizonTimeoutMs, 10000),
+                allowCrossNetworkFallback,
+                logInputs,
             });
-            freshnessResult = {
-                status: raw.status,
-                lagSeconds: raw.lagSeconds,
-                latestLedger: raw.latestLedger,
-                message: raw.message,
-                blocksValid: raw.status === 'stale' && ledgerFreshnessFailOnStale,
-            };
-            if (raw.status === 'stale') {
-                const logMsg = `Ledger freshness check: STALE — ${raw.message}`;
-                if (ledgerFreshnessFailOnStale) {
-                    core.error(logMsg);
-                }
-                else {
-                    core.warning(logMsg);
-                }
-            }
-            else if (raw.status === 'unknown') {
-                core.warning(`Ledger freshness check: UNKNOWN — ${raw.message}`);
-            }
-            else {
-                core.info(`Ledger freshness check: OK — ${raw.message}`);
-            }
         }
-        catch (freshnessError) {
-            // Fail-open: a freshness check error never blocks the account check.
-            const msg = (0, inputs_1.getErrorMessage)(freshnessError);
-            core.warning(`Ledger freshness check failed (proceeding fail-open): ${msg}`);
-            freshnessResult = {
-                status: 'unknown',
-                lagSeconds: null,
-                latestLedger: null,
-                message: `Freshness check error: ${msg}. Proceeding (fail-open).`,
-                blocksValid: false,
-            };
+        const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
+        // Validate network/asset compatibility using the campaign preset (Issue #207).
+        // Catches testnet issuer on public Horizon (or vice versa) and preset conflicts.
+        (0, assets_1.validateNetworkAssetCompatibility)(horizonUrl, normalizedAsset.assetCode, normalizedAsset.assetIssuer, presetName || undefined);
+        // Soroban fungible token contracts (SEP-41) use a "C..." contract address
+        // as their issuer instead of a classic "G..." account. Validate that
+        // shape up front so a malformed contract address fails fast with a clear
+        // error instead of silently reaching Horizon or the metrics/JSON output.
+        if (normalizedAsset.assetIssuer.startsWith('C')) {
+            (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
+            // If the contract address format is strictly invalid, normalizeAssetConfig
+            // would have already failed fast above. We still call validateContractAddress
+            // here to ensure validation spans are consistently recorded.
+            metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
         }
-    }
-    let result;
-    const rateBudgetTracker = new resilience_1.RateBudgetTracker(horizonMaxRequests);
-    // Issue #209: Circuit breaker for Horizon fetches.
-    // Trips after 5 consecutive failures; recovers after 30s.
-    const horizonCircuitBreaker = new resilience_1.CircuitBreaker({
-        failureThreshold: 5,
-        recoveryTimeoutMs: 30000,
-        successThreshold: 2,
-    });
-    const horizonOptions = {
-        timeoutMs: horizonTimeoutMs,
-        maxRetries,
-        retryBaseDelayMs,
-        retryMaxDelayMs,
-        horizonUrlFallback: horizonUrlFallback || undefined,
-        fallbackUrls,
-        cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
-        useCache,
-        allowCrossNetworkFallback,
-        rateBudgetTracker,
-        horizonMaxRequests,
-        circuitBreaker: horizonCircuitBreaker,
-        pinFingerprint: core.getInput('horizon_pin_fingerprint').trim() || undefined,
-    };
-    let account = null;
-    let horizonFetchStartMs = Date.now();
-    let horizonFetchLatencyMs = 0;
-    let horizonFetchStatusCode;
-    let horizonFetchError;
-    try {
-        account = waitUntilFunded
-            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
-                timeoutMs: waitUntilFundedTimeoutMs,
-                pollIntervalMs: waitUntilFundedIntervalMs,
-                requestTimeoutMs: horizonTimeoutMs,
-                signal: jobController.signal,
-                onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
-                    component: 'index',
-                    attempt,
-                    elapsedMs,
-                }),
-            }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
-            : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
-        horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-        horizonFetchStatusCode = 200;
-        metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        result = await (0, checks_1.runAccountChecks)(account, checkConfig);
-    }
-    catch (error) {
-        horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-        metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-            horizonFetchStatusCode = 404;
-            horizonFetchError = error.message;
-            // #144/#266: deterministic cross-network detection — probes canonical opposite
-            // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
-            const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
-            if (mismatchHint) {
-                core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
-                    `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
-            }
-            // #260: claimable-balance-aware funded definition — when policy is 'count',
-            // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
-            let claimableCount;
-            if (claimableBalancePolicy === 'count') {
+        // Claimable-balance policy (Issue #260) — default ignore
+        const claimablePolicyRaw = (core.getInput('claimable_balance_policy') || 'ignore').trim().toLowerCase();
+        const claimableBalancePolicy = claimablePolicyRaw === 'count' ? 'count' : 'ignore';
+        // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
+        const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
+        const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
+        const checkConfig = {
+            ...normalizedAsset,
+            minXlmReserve: Number(minXlmReserve),
+            minAssetBalance,
+            minTrustlineLimit,
+            horizonUrl,
+            homeDomainCheckEnabled,
+            expectedHomeDomain,
+            homeDomainCheckMode,
+            stellarTomlFetchEnabled,
+            stellarTomlCacheTtlMs,
+            stellarTomlHashPin,
+            checkLedgerFreshness: checkLedgerFreshnessEnabled,
+            maxLedgerLagSeconds,
+            ledgerFreshnessFailOnStale,
+            claimableBalancePolicy,
+        };
+        // ---------------------------------------------------------------------------
+        // Batch mode (Issue #199)
+        // When stellar_addresses is set, validate all addresses and post a batch
+        // summary comment instead of the single-address flow.
+        // ---------------------------------------------------------------------------
+        if (stellarAddressesRaw.trim()) {
+            const batchAddresses = (0, batch_1.parseBatchAddresses)(stellarAddressesRaw);
+            core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
+            const batchCheckConfig = {
+                ...normalizedAsset,
+                minXlmReserve: Number(effectiveMinXlmReserveRaw),
+                horizonUrl: effectiveHorizonUrl,
+            };
+            const batchResults = await (0, batch_1.runBatchValidation)(batchAddresses, batchCheckConfig, effectiveHorizonUrl, {
+                fetchOptions: {
+                    timeoutMs: horizonTimeoutMs,
+                    maxRetries,
+                    retryBaseDelayMs,
+                    retryMaxDelayMs,
+                },
+            });
+            const batchSummary = (0, batch_1.buildBatchSummary)(batchResults);
+            const batchMarkdown = (0, batch_1.formatBatchSummaryMarkdown)(batchSummary, effectiveAssetCode);
+            if (shouldPostComment) {
                 try {
-                    const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
-                    claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
-                    if (claimableCount > 0) {
-                        core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+                    const batchCommentUrl = await (0, comment_1.postIssueComment)(githubToken, batchMarkdown, {
+                        sticky: stickyComment,
+                        forceComment,
+                        snoozeWindowMs,
+                    });
+                    if (batchCommentUrl) {
+                        logger_1.logger.info('Batch comment created', { component: 'index', commentUrl: batchCommentUrl });
                     }
                 }
-                catch {
-                    claimableCount = 0;
+                catch (commentError) {
+                    const message = commentError instanceof Error ? commentError.message : String(commentError);
+                    core.warning(`Failed to post batch comment (non-fatal): ${message}`);
                 }
             }
-            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
+            // Set batch-specific outputs
+            core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
+            core.setOutput('batch_passed_count', String(batchSummary.passed));
+            core.setOutput('batch_failed_count', String(batchSummary.failed));
+            if (batchSummary.failed > 0 && effectiveFailOnMissing) {
+                core.setFailed(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
+            }
+            else if (batchSummary.failed > 0) {
+                core.warning(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
+            }
+            else {
+                core.info('Batch validation: all addresses passed.');
+            }
+            return;
+        }
+        core.info(`Checking Stellar account ${resolvedAddress} via ${horizonUrl}`);
+        if (waitUntilFunded) {
+            core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
+        }
+        // ---------------------------------------------------------------------------
+        // Ledger freshness / lag guard (Issue #107)
+        // Run before the account fetch so a stale Horizon is flagged before we trust
+        // the balance/trustline data it returns.
+        // ---------------------------------------------------------------------------
+        let freshnessResult;
+        if (checkLedgerFreshnessEnabled) {
+            core.info(`Checking ledger freshness (max lag: ${maxLedgerLagSeconds}s)…`);
+            try {
+                const raw = await (0, freshness_1.checkLedgerFreshness)(horizonUrl, {
+                    maxLagSeconds: maxLedgerLagSeconds,
+                    timeoutMs: Math.min(horizonTimeoutMs, 10000),
+                });
+                freshnessResult = {
+                    status: raw.status,
+                    lagSeconds: raw.lagSeconds,
+                    latestLedger: raw.latestLedger,
+                    message: raw.message,
+                    blocksValid: raw.status === 'stale' && ledgerFreshnessFailOnStale,
+                };
+                if (raw.status === 'stale') {
+                    const logMsg = `Ledger freshness check: STALE — ${raw.message}`;
+                    if (ledgerFreshnessFailOnStale) {
+                        core.error(logMsg);
+                    }
+                    else {
+                        core.warning(logMsg);
+                    }
+                }
+                else if (raw.status === 'unknown') {
+                    core.warning(`Ledger freshness check: UNKNOWN — ${raw.message}`);
+                }
+                else {
+                    core.info(`Ledger freshness check: OK — ${raw.message}`);
+                }
+            }
+            catch (freshnessError) {
+                // Fail-open: a freshness check error never blocks the account check.
+                const msg = (0, inputs_1.getErrorMessage)(freshnessError);
+                core.warning(`Ledger freshness check failed (proceeding fail-open): ${msg}`);
+                freshnessResult = {
+                    status: 'unknown',
+                    lagSeconds: null,
+                    latestLedger: null,
+                    message: `Freshness check error: ${msg}. Proceeding (fail-open).`,
+                    blocksValid: false,
+                };
+            }
+        }
+        let result;
+        const rateBudgetTracker = new resilience_1.RateBudgetTracker(horizonMaxRequests);
+        // Issue #209: Circuit breaker for Horizon fetches.
+        // Trips after 5 consecutive failures; recovers after 30s.
+        const horizonCircuitBreaker = new resilience_1.CircuitBreaker({
+            failureThreshold: 5,
+            recoveryTimeoutMs: 30000,
+            successThreshold: 2,
+        });
+        const horizonOptions = {
+            timeoutMs: horizonTimeoutMs,
+            maxRetries,
+            retryBaseDelayMs,
+            retryMaxDelayMs,
+            horizonUrlFallback: horizonUrlFallback || undefined,
+            fallbackUrls,
+            cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
+            useCache,
+            allowCrossNetworkFallback,
+            rateBudgetTracker,
+            horizonMaxRequests,
+            circuitBreaker: horizonCircuitBreaker,
+        };
+        let account = null;
+        let horizonFetchStartMs = Date.now();
+        let horizonFetchLatencyMs = 0;
+        let horizonFetchStatusCode;
+        let horizonFetchError;
+        try {
+            account = waitUntilFunded
+                ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
+                    timeoutMs: waitUntilFundedTimeoutMs,
+                    pollIntervalMs: waitUntilFundedIntervalMs,
+                    requestTimeoutMs: horizonTimeoutMs,
+                    signal: jobController.signal,
+                    onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
+                        component: 'index',
+                        attempt,
+                        elapsedMs,
+                    }),
+                }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
+                : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
+            horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
+            horizonFetchStatusCode = 200;
+            metrics_1.globalMetrics.stopTimer('horizon_fetch');
+            result = await (0, checks_1.runAccountChecks)(account, checkConfig);
+        }
+        catch (error) {
+            horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
+            metrics_1.globalMetrics.stopTimer('horizon_fetch');
+            if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
+                horizonFetchStatusCode = 404;
+                horizonFetchError = error.message;
+                // #144/#266: deterministic cross-network detection — probes canonical opposite
+                // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
+                const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
+                if (mismatchHint) {
+                    core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
+                        `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
+                }
+                // #260: claimable-balance-aware funded definition — when policy is 'count',
+                // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+                let claimableCount;
+                if (claimableBalancePolicy === 'count') {
+                    try {
+                        const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
+                        claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+                        if (claimableCount > 0) {
+                            core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+                        }
+                    }
+                    catch {
+                        claimableCount = 0;
+                    }
+                }
+                result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
+            }
+            else if (error instanceof horizon_1.HorizonError) {
+                horizonFetchStatusCode = error.statusCode;
+                horizonFetchError = error.message;
+                core.error(error.message);
+                metrics_1.globalMetrics.incrementCounter('errors');
+                metrics_1.globalMetrics.recordMetric('horizon_error', error.statusCode, 'http_status');
+                result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
+            }
+            else {
+                const message = (0, inputs_1.getErrorMessage)(error);
+                horizonFetchError = message;
+                core.error(message);
+                metrics_1.globalMetrics.incrementCounter('errors');
+                result = (0, checks_1.horizonFailureResult)(message, checkConfig);
+            }
         }
         finally {
             // Ensure the controller is not leaked if the function returns early.
             jobController.abort();
         }
-        else if (error instanceof resilience_1.RateBudgetExhaustedError) {
-            // Fail closed: the rate budget was exhausted (horizon_max_requests exceeded).
-            // The account state is unknown — do NOT emit an unfunded/404 result.
-            // This is a distinct reason_code so dashboards and downstream jobs can
-            // differentiate "account not found" from "budget exhausted before we asked".
-            horizonFetchError = error.message;
-            core.error(error.message);
-            metrics_1.globalMetrics.incrementCounter('errors');
-            metrics_1.globalMetrics.recordMetric('horizon_rate_budget_exhausted', 1, 'count');
-            result = (0, checks_1.rateBudgetExhaustedResult)(error.message, checkConfig);
+        // result is undefined only when the run was cancelled and we returned early above.
+        if (result == null) {
+            return;
         }
-        else {
-            const message = (0, inputs_1.getErrorMessage)(error);
-            horizonFetchError = message;
-            core.error(message);
-            metrics_1.globalMetrics.incrementCounter('errors');
-            result = (0, checks_1.horizonFailureResult)(message, checkConfig);
-        }
-    }
-    finally {
-        // Ensure the controller is not leaked if the function returns early.
-        jobController.abort();
-    }
-    // result is undefined only when the run was cancelled and we returned early above.
-    if (result == null) {
-        return;
-    }
-    // Capture the validation timestamp once, used for validated_at output and delta.
-    const validatedAt = new Date().toISOString();
-    // Attach the freshness result to every result path so comment.ts can render it.
-    if (freshnessResult !== undefined) {
-        result = { ...result, ledgerFreshnessResult: freshnessResult };
-        // When stale AND fail-on-stale is enabled, override valid so the gate fires.
-        if (freshnessResult.blocksValid && result.valid) {
-            result = { ...result, valid: false };
-        }
-    }
-    let multiAssetResults = [];
-    if (assetsJsonRaw.trim()) {
-        const extraAssets = (0, assets_1.parseAssetsJson)(assetsJsonRaw);
-        const dedupedAssets = extraAssets.filter((a) => !(a.assetCode === normalizedAsset.assetCode && a.assetIssuer === normalizedAsset.assetIssuer));
-        if (dedupedAssets.length > 0 && account) {
-            core.info(`Checking trustlines for ${dedupedAssets.length} additional asset(s)…`);
-            for (const asset of dedupedAssets) {
-                const hasTrustline = account.balances.some((b) => b.asset_type !== 'native' &&
-                    'asset_code' in b &&
-                    b.asset_code === asset.assetCode &&
-                    'asset_issuer' in b &&
-                    b.asset_issuer === asset.assetIssuer);
-                const balanceEntry = account.balances.find((b) => b.asset_type !== 'native' &&
-                    'asset_code' in b &&
-                    b.asset_code === asset.assetCode &&
-                    'asset_issuer' in b &&
-                    b.asset_issuer === asset.assetIssuer);
-                const balance = balanceEntry && 'balance' in balanceEntry ? balanceEntry.balance : '0';
-                multiAssetResults.push({
-                    assetCode: asset.assetCode,
-                    assetIssuer: asset.assetIssuer,
-                    trustlineExists: hasTrustline,
-                    balance,
-                });
-                if (hasTrustline) {
-                    core.info(`  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`);
-                }
-                else {
-                    core.warning(`  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`);
-                }
+        // Capture the validation timestamp once, used for validated_at output and delta.
+        const validatedAt = new Date().toISOString();
+        // Attach the freshness result to every result path so comment.ts can render it.
+        if (freshnessResult !== undefined) {
+            result = { ...result, ledgerFreshnessResult: freshnessResult };
+            // When stale AND fail-on-stale is enabled, override valid so the gate fires.
+            if (freshnessResult.blocksValid && result.valid) {
+                result = { ...result, valid: false };
             }
         }
-    }
-    (0, outputs_1.setValidationOutputs)(result);
-    if (writeValidationJsonEnabled) {
-        (0, outputs_1.writeValidationJson)({
-            result,
-            stellarAddress: effectiveResolvedAddress,
-            assetCode: effectiveAssetCode,
-            assetIssuer: effectiveAssetIssuer,
-            horizonUrl: effectiveHorizonUrl,
-            outputPath: validationJsonPath,
-            privacyMode,
-        });
-        core.info(`Wrote validation JSON artifact to ${validationJsonPath}`);
-    }
-    // ---------------------------------------------------------------------------
-    // SARIF output (Issue #197)
-    // Write SARIF 2.1.0 to disk when sarif_output_path is set.
-    // ---------------------------------------------------------------------------
-    const sarifOutputPath = core.getInput('sarif_output_path') || '';
-    if (sarifOutputPath.trim()) {
-        const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-        const resolvedSarifPath = path.isAbsolute(sarifOutputPath)
-            ? sarifOutputPath
-            : path.join(workspaceRoot, sarifOutputPath.trim());
-        // Path traversal guard
-        const normalizedWorkspace = path.normalize(workspaceRoot);
-        const normalizedSarif = path.normalize(resolvedSarifPath);
-        if (!normalizedSarif.startsWith(normalizedWorkspace + path.sep) && normalizedSarif !== normalizedWorkspace) {
-            core.warning(`sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.`);
-        }
-        else {
-            try {
-                const sarif = (0, sarif_1.buildSarifOutput)(result, effectiveAssetCode, effectiveHorizonUrl, effectiveResolvedAddress);
-                if (!(0, sarif_1.validateSarifSchema)(sarif)) {
-                    core.warning('Generated SARIF output failed schema validation — skipping SARIF write.');
-                }
-                else {
-                    const sarifJson = (0, sarif_1.serializeSarif)(sarif);
-                    const sarifDir = path.dirname(normalizedSarif);
-                    if (!fs.existsSync(sarifDir)) {
-                        fs.mkdirSync(sarifDir, { recursive: true });
+        let multiAssetResults = [];
+        if (assetsJsonRaw.trim()) {
+            const extraAssets = (0, assets_1.parseAssetsJson)(assetsJsonRaw);
+            const dedupedAssets = extraAssets.filter((a) => !(a.assetCode === normalizedAsset.assetCode && a.assetIssuer === normalizedAsset.assetIssuer));
+            if (dedupedAssets.length > 0 && account) {
+                core.info(`Checking trustlines for ${dedupedAssets.length} additional asset(s)…`);
+                for (const asset of dedupedAssets) {
+                    const hasTrustline = account.balances.some((b) => b.asset_type !== 'native' &&
+                        'asset_code' in b &&
+                        b.asset_code === asset.assetCode &&
+                        'asset_issuer' in b &&
+                        b.asset_issuer === asset.assetIssuer);
+                    const balanceEntry = account.balances.find((b) => b.asset_type !== 'native' &&
+                        'asset_code' in b &&
+                        b.asset_code === asset.assetCode &&
+                        'asset_issuer' in b &&
+                        b.asset_issuer === asset.assetIssuer);
+                    const balance = balanceEntry && 'balance' in balanceEntry ? balanceEntry.balance : '0';
+                    multiAssetResults.push({
+                        assetCode: asset.assetCode,
+                        assetIssuer: asset.assetIssuer,
+                        trustlineExists: hasTrustline,
+                        balance,
+                    });
+                    if (hasTrustline) {
+                        core.info(`  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`);
                     }
-                    fs.writeFileSync(normalizedSarif, sarifJson, 'utf8');
-                    core.info(`Wrote SARIF 2.1.0 output to ${normalizedSarif}`);
+                    else {
+                        core.warning(`  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`);
+                    }
                 }
             }
-            catch (sarifError) {
-                const msg = sarifError instanceof Error ? sarifError.message : String(sarifError);
-                core.warning(`Failed to write SARIF output (non-fatal): ${msg}`);
-            }
         }
-    }
-    // Reserved inputs kept for forward-compatible workflows / labels / Soroban.
-    logger_1.logger.debug('Optional feature flags', {
-        component: 'index',
-        autoWalletLabels,
-        sorobanRpcUrl: sorobanRpcUrl || undefined,
-        contractId: contractId || undefined,
-        githubUsername: githubUsername || undefined,
-        trustbridgeConfigPath,
-    });
-    // Issue #212: Load previous validation artifact for delta computation.
-    // Try local path first; fall back to auto-discovery via Actions API.
-    let previousArtifact = (0, delta_1.loadPreviousValidationArtifact)(previousValidationPath);
-    if (!previousArtifact && !previousValidationPath.trim()) {
-        previousArtifact = await (0, delta_1.discoverPreviousValidationArtifact)(githubToken);
-        if (previousArtifact) {
-            core.info('Auto-discovered previous validation artifact from prior workflow run.');
-        }
-    }
-    const delta = (0, delta_1.computeValidationDelta)(previousArtifact, result);
-    if (!previousArtifact && previousValidationPath.trim()) {
-        core.info('No previous validation artifact found — omitting delta (first run or missing download).');
-    }
-    else if (delta) {
-        core.info(`Validation delta vs previous run: newlyPassed=${delta.newlyPassed.length}, newlyFailed=${delta.newlyFailed.length}, unchanged=${delta.unchanged.length}`);
-    }
-    // Build diagnostics config when debug_mode is on (Issue #205).
-    // Never includes secrets; addresses are redacted in the block builder.
-    let diagnosticsConfig;
-    if (debugMode) {
-        diagnosticsConfig = {
-            inputs: {
-                horizonUrl,
-                horizonUrlFallback: horizonUrlFallback || undefined,
+        (0, outputs_1.setValidationOutputs)(result);
+        if (writeValidationJsonEnabled) {
+            (0, outputs_1.writeValidationJson)({
+                result,
+                stellarAddress: effectiveResolvedAddress,
                 assetCode: effectiveAssetCode,
                 assetIssuer: effectiveAssetIssuer,
-                minXlmReserve: effectiveMinXlmReserveRaw,
-                horizonTimeoutMs,
-                useCache,
-                cacheTtlMs: horizonCacheTtlMs,
-                allowCrossNetworkFallback,
-                maxRetries,
-                retryBaseDelayMs,
-                retryMaxDelayMs,
-                debugMode,
-            },
-            runInfo: {
-                horizonStatusCode: horizonFetchStatusCode,
-                horizonLatencyMs: horizonFetchLatencyMs,
-                horizonError: horizonFetchError,
-            },
-        };
-    }
-    const commentBody = (0, comment_1.formatCommentBody)(result, {
-        ...checkConfig,
-        stellarAddress: effectiveResolvedAddress,
-        horizonUrl,
-        failOnMissing,
-        stickyComment,
-        waitUntilFunded,
-        waitUntilFundedTimeoutMs,
-        waitUntilFundedIntervalMs,
-        onboardingChecklist,
-        sep0007DeepLinks,
-        sep0007OriginDomain,
-        sep0010ChallengeXdr,
-        sep0010DashboardUrl,
-        locale,
-        debugMode,
-        docsBaseUrl: core.getInput('docs_base_url') || undefined,
-        delta,
-        diagnosticsConfig,
-        customCommentTemplatePath: customCommentTemplatePath || undefined,
-    });
-    // Detect oversize and write the full report to a workspace file when needed.
-    const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
-    let fullReportPath;
-    if (baselineBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
-        core.warning(`Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
-            `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`);
-        fullReportPath = (0, comment_1.writeFullReport)(buildCommentBody(undefined), reportOutputPath);
-    }
-    let commentUrl;
-    if (!shouldPostComment) {
-        core.info(`comment_mode=${commentMode} — skipping issue comment post (outputs still set).`);
-    }
-    else if (discussionNodeId) {
-        // Discussion events carry a GraphQL node id, not an issue number —
-        // comment via GraphQL, never the REST issues API (Issue #221).
-        // Checklist persistence for discussions passes undefined for the existing
-        // body; the factory still runs through the full format path.
-        const discussionBody = buildCommentBody(undefined);
-        try {
-            commentUrl = await (0, comment_1.postDiscussionComment)(githubToken, discussionBody, {
-                sticky: stickyComment,
-                forceComment,
-                snoozeWindowMs,
+                horizonUrl: effectiveHorizonUrl,
+                outputPath: validationJsonPath,
+                privacyMode,
             });
-            if (commentUrl) {
-                logger_1.logger.info('Discussion comment created', { component: 'index', commentUrl });
+            core.info(`Wrote validation JSON artifact to ${validationJsonPath}`);
+        }
+        // ---------------------------------------------------------------------------
+        // SARIF output (Issue #197)
+        // Write SARIF 2.1.0 to disk when sarif_output_path is set.
+        // ---------------------------------------------------------------------------
+        const sarifOutputPath = core.getInput('sarif_output_path') || '';
+        if (sarifOutputPath.trim()) {
+            const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
+            const resolvedSarifPath = path.isAbsolute(sarifOutputPath)
+                ? sarifOutputPath
+                : path.join(workspaceRoot, sarifOutputPath.trim());
+            // Path traversal guard
+            const normalizedWorkspace = path.normalize(workspaceRoot);
+            const normalizedSarif = path.normalize(resolvedSarifPath);
+            if (!normalizedSarif.startsWith(normalizedWorkspace + path.sep) && normalizedSarif !== normalizedWorkspace) {
+                core.warning(`sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.`);
             }
             else {
-                logger_1.logger.info('No discussion comment posted (no discussion context).', {
-                    component: 'index',
-                });
+                try {
+                    const sarif = (0, sarif_1.buildSarifOutput)(result, effectiveAssetCode, effectiveHorizonUrl, effectiveResolvedAddress);
+                    if (!(0, sarif_1.validateSarifSchema)(sarif)) {
+                        core.warning('Generated SARIF output failed schema validation — skipping SARIF write.');
+                    }
+                    else {
+                        const sarifJson = (0, sarif_1.serializeSarif)(sarif);
+                        const sarifDir = path.dirname(normalizedSarif);
+                        if (!fs.existsSync(sarifDir)) {
+                            fs.mkdirSync(sarifDir, { recursive: true });
+                        }
+                        fs.writeFileSync(normalizedSarif, sarifJson, 'utf8');
+                        core.info(`Wrote SARIF 2.1.0 output to ${normalizedSarif}`);
+                    }
+                }
+                catch (sarifError) {
+                    const msg = sarifError instanceof Error ? sarifError.message : String(sarifError);
+                    core.warning(`Failed to write SARIF output (non-fatal): ${msg}`);
+                }
             }
         }
-        catch (commentError) {
-            const message = commentError instanceof Error ? commentError.message : String(commentError);
-            core.warning(`Failed to post discussion comment (non-fatal): ${message}`);
-        }
-    }
-    else {
-        metrics_1.globalMetrics.startTimer('comment_post');
-        try {
-            // Use bodyFactory so postIssueComment passes the fetched existing
-            // comment body to buildCommentBody — preserving checklist state (Issue #311)
-            // without a second findStickyComment round-trip.
-            commentUrl = await (0, comment_1.postIssueComment)(githubToken, baselineBody, {
-                sticky: stickyComment,
-                forceComment,
-                snoozeWindowMs,
-                bodyFactory: buildCommentBody,
-            });
-            metrics_1.globalMetrics.stopTimer('comment_post');
-            if (commentUrl) {
-                logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
+        // Reserved inputs kept for forward-compatible workflows / labels / Soroban.
+        logger_1.logger.debug('Optional feature flags', {
+            component: 'index',
+            autoWalletLabels,
+            sorobanRpcUrl: sorobanRpcUrl || undefined,
+            contractId: contractId || undefined,
+            githubUsername: githubUsername || undefined,
+            trustbridgeConfigPath,
+        });
+        // Issue #212: Load previous validation artifact for delta computation.
+        // Try local path first; fall back to auto-discovery via Actions API.
+        let previousArtifact = (0, delta_1.loadPreviousValidationArtifact)(previousValidationPath);
+        if (!previousArtifact && !previousValidationPath.trim()) {
+            previousArtifact = await (0, delta_1.discoverPreviousValidationArtifact)(githubToken);
+            if (previousArtifact) {
+                core.info('Auto-discovered previous validation artifact from prior workflow run.');
             }
         }
-        catch (commentError) {
-            metrics_1.globalMetrics.stopTimer('comment_post');
-            const message = commentError instanceof Error ? commentError.message : String(commentError);
-            core.warning(`Failed to post issue comment (non-fatal): ${message}`);
+        const delta = (0, delta_1.computeValidationDelta)(previousArtifact, result);
+        if (!previousArtifact && previousValidationPath.trim()) {
+            core.info('No previous validation artifact found — omitting delta (first run or missing download).');
         }
-    }
-    (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath, { validatedAt });
-    // ---------------------------------------------------------------------------
-    // Wallet labels (Issue #200)
-    // When auto_wallet_labels is true and we're in an issue context, apply
-    // the appropriate wallet state label to the issue.
-    // ---------------------------------------------------------------------------
-    if (autoWalletLabels && result) {
-        const issueNumber = github.context.payload.issue?.number;
-        if (issueNumber) {
-            const { owner, repo } = github.context.repo;
+        else if (delta) {
+            core.info(`Validation delta vs previous run: newlyPassed=${delta.newlyPassed.length}, newlyFailed=${delta.newlyFailed.length}, unchanged=${delta.unchanged.length}`);
+        }
+        // Build diagnostics config when debug_mode is on (Issue #205).
+        // Never includes secrets; addresses are redacted in the block builder.
+        let diagnosticsConfig;
+        if (debugMode) {
+            diagnosticsConfig = {
+                inputs: {
+                    horizonUrl,
+                    horizonUrlFallback: horizonUrlFallback || undefined,
+                    assetCode: effectiveAssetCode,
+                    assetIssuer: effectiveAssetIssuer,
+                    minXlmReserve: effectiveMinXlmReserveRaw,
+                    horizonTimeoutMs,
+                    useCache,
+                    cacheTtlMs: horizonCacheTtlMs,
+                    allowCrossNetworkFallback,
+                    maxRetries,
+                    retryBaseDelayMs,
+                    retryMaxDelayMs,
+                    debugMode,
+                },
+                runInfo: {
+                    horizonStatusCode: horizonFetchStatusCode,
+                    horizonLatencyMs: horizonFetchLatencyMs,
+                    horizonError: horizonFetchError,
+                },
+            };
+        }
+        const commentBody = (0, comment_1.formatCommentBody)(result, {
+            ...checkConfig,
+            stellarAddress: effectiveResolvedAddress,
+            horizonUrl,
+            failOnMissing,
+            stickyComment,
+            waitUntilFunded,
+            waitUntilFundedTimeoutMs,
+            waitUntilFundedIntervalMs,
+            onboardingChecklist,
+            sep0007DeepLinks,
+            sep0007OriginDomain,
+            sep0010ChallengeXdr,
+            sep0010DashboardUrl,
+            locale,
+            debugMode,
+            docsBaseUrl: core.getInput('docs_base_url') || undefined,
+            delta,
+            diagnosticsConfig,
+        });
+        // Detect oversize and write the full report to a workspace file when needed.
+        const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
+        let fullReportPath;
+        let effectiveCommentBody;
+        if (commentBodyBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
+            core.warning(`Comment body is ${commentBodyBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
+                `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`);
+            fullReportPath = (0, comment_1.writeFullReport)(commentBody, reportOutputPath);
+            effectiveCommentBody = (0, comment_1.buildTruncatedCommentBody)(commentBody, reportOutputPath);
+        }
+        else {
+            effectiveCommentBody = commentBody;
+        }
+        let commentUrl;
+        if (!shouldPostComment) {
+            core.info(`comment_mode=${commentMode} — skipping issue comment post (outputs still set).`);
+        }
+        else if (discussionNodeId) {
+            // Discussion events carry a GraphQL node id, not an issue number —
+            // comment via GraphQL, never the REST issues API (Issue #221).
             try {
-                const octokit = github.getOctokit(githubToken);
-                const labelResult = await (0, horizon_1.applyWalletLabels)(octokit, owner, repo, issueNumber, {
-                    accountFunded: result.accountFunded,
-                    trustlineExists: result.trustlineExists,
-                    xlmReserveMet: result.xlmReserveMet,
-                }, { removeStale: true });
-                if (labelResult.error) {
-                    core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
+                commentUrl = await (0, comment_1.postDiscussionComment)(githubToken, effectiveCommentBody, {
+                    sticky: stickyComment,
+                    forceComment,
+                    snoozeWindowMs,
+                });
+                if (commentUrl) {
+                    logger_1.logger.info('Discussion comment created', { component: 'index', commentUrl });
                 }
                 else {
-                    core.info(`Applied wallet label: ${labelResult.applied}`);
+                    logger_1.logger.info('No discussion comment posted (no discussion context).', {
+                        component: 'index',
+                    });
                 }
             }
-            catch (labelError) {
-                const msg = labelError instanceof Error ? labelError.message : String(labelError);
-                core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
+            catch (commentError) {
+                const message = commentError instanceof Error ? commentError.message : String(commentError);
+                core.warning(`Failed to post discussion comment (non-fatal): ${message}`);
             }
         }
-    }
-    // ---------------------------------------------------------------------------
-    // Auto-unassign on not-ready (Issue #228)
-    // When unassign_on_not_ready is true and readiness checks fail, automatically
-    // unassign the GitHub assignee(s) from the issue.
-    // ---------------------------------------------------------------------------
-    if (unassignOnNotReady && result && !result.valid) {
-        const issueNumber = github.context.payload.issue?.number;
-        const { owner, repo } = github.context.repo;
-        const octokit = github.getOctokit(githubToken);
-        await handleAutoUnassign({
-            octokit,
-            owner,
-            repo,
-            issueNumber: issueNumberInput ?? issueNumber,
-            payload: github.context.payload,
-            result,
-            unassignOnNotReady,
-        });
-    }
-    // Signed dashboard webhook notification (Issue #101)
-    // Fires after comment posting; failures are isolated and never block the run.
-    if (webhookUrl) {
-        const { owner, repo } = github.context.repo;
-        const issueNumber = github.context.payload.issue?.number ?? null;
-        await (0, webhook_1.sendWebhookNotification)(result, effectiveResolvedAddress, {
-            webhookUrl,
-            webhookSecret,
-            timeoutMs: webhookTimeoutMs,
-            authMode: webhookAuthMode,
-            oidcAudience: webhookOidcAudience,
-        }, `${owner}/${repo}`, issueNumber);
-    }
-    if (debugMode) {
-        logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
-        core.debug(metrics_1.globalMetrics.toJSON());
-        // Emit validation spans for observability (Issue #35)
-        const spans = (0, validation_1.getSpans)();
-        if (spans.length > 0) {
-            logger_1.logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
-            core.debug(JSON.stringify(spans, null, 2));
+        else {
+            metrics_1.globalMetrics.startTimer('comment_post');
+            try {
+                commentUrl = await (0, comment_1.postIssueComment)(githubToken, effectiveCommentBody, {
+                    sticky: stickyComment,
+                    forceComment,
+                    snoozeWindowMs,
+                });
+                metrics_1.globalMetrics.stopTimer('comment_post');
+                if (commentUrl) {
+                    logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
+                }
+            }
+            catch (commentError) {
+                metrics_1.globalMetrics.stopTimer('comment_post');
+                const message = commentError instanceof Error ? commentError.message : String(commentError);
+                core.warning(`Failed to post issue comment (non-fatal): ${message}`);
+            }
         }
-    }
-    // Stop total timer and collect timing metrics
-    metrics_1.globalMetrics.stopTimer('total');
-    // Wave #27: write Job Summary with latency, failure codes, JSON artifact
-    await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary());
-    if (result.valid) {
-        core.info('All TrustBridge checks passed.');
-        return;
-    }
-    const summary = (0, summary_1.formatFailureSummary)(result);
-    const failureMessage = `TrustBridge checks failed: ${summary}`;
-    if (effectiveFailOnMissing) {
-        core.setFailed(failureMessage);
-    }
-    else {
-        core.warning(failureMessage);
-    }
+        (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath, { validatedAt });
+        // ---------------------------------------------------------------------------
+        // Wallet labels (Issue #200)
+        // When auto_wallet_labels is true and we're in an issue context, apply
+        // the appropriate wallet state label to the issue.
+        // ---------------------------------------------------------------------------
+        if (autoWalletLabels && result) {
+            const issueNumber = github.context.payload.issue?.number;
+            if (issueNumber) {
+                const { owner, repo } = github.context.repo;
+                try {
+                    const octokit = github.getOctokit(githubToken);
+                    const labelResult = await (0, horizon_1.applyWalletLabels)(octokit, owner, repo, issueNumber, {
+                        accountFunded: result.accountFunded,
+                        trustlineExists: result.trustlineExists,
+                        xlmReserveMet: result.xlmReserveMet,
+                    }, { removeStale: true });
+                    if (labelResult.error) {
+                        core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
+                    }
+                    else {
+                        core.info(`Applied wallet label: ${labelResult.applied}`);
+                    }
+                }
+                catch (labelError) {
+                    const msg = labelError instanceof Error ? labelError.message : String(labelError);
+                    core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
+                }
+            }
+        }
+        // ---------------------------------------------------------------------------
+        // Auto-unassign on not-ready (Issue #228)
+        // When unassign_on_not_ready is true and readiness checks fail, automatically
+        // unassign the GitHub assignee(s) from the issue.
+        // ---------------------------------------------------------------------------
+        if (unassignOnNotReady && result && !result.valid) {
+            const issueNumber = github.context.payload.issue?.number;
+            const { owner, repo } = github.context.repo;
+            const octokit = github.getOctokit(githubToken);
+            await handleAutoUnassign({
+                octokit,
+                owner,
+                repo,
+                issueNumber,
+                payload: github.context.payload,
+                result,
+                unassignOnNotReady,
+            });
+        }
+        // Signed dashboard webhook notification (Issue #101)
+        // Fires after comment posting; failures are isolated and never block the run.
+        if (webhookUrl) {
+            const { owner, repo } = github.context.repo;
+            const issueNumber = github.context.payload.issue?.number ?? null;
+            await (0, webhook_1.sendWebhookNotification)(result, effectiveResolvedAddress, {
+                webhookUrl,
+                webhookSecret,
+                timeoutMs: webhookTimeoutMs,
+                authMode: webhookAuthMode,
+                oidcAudience: webhookOidcAudience,
+            }, `${owner}/${repo}`, issueNumber);
+        }
+        if (debugMode) {
+            logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+            core.debug(metrics_1.globalMetrics.toJSON());
+            // Emit validation spans for observability (Issue #35)
+            const spans = (0, validation_1.getSpans)();
+            if (spans.length > 0) {
+                logger_1.logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+                core.debug(JSON.stringify(spans, null, 2));
+            }
+        }
+        // Stop total timer and collect timing metrics
+        metrics_1.globalMetrics.stopTimer('total');
+        // Emit OpenTelemetry trace summary when tracing is enabled
+        (0, tracing_1.emitTraceSummary)();
+        // Wave #27: write Job Summary with latency, failure codes, JSON artifact
+        await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary());
+        if (result.valid) {
+            core.info('All TrustBridge checks passed.');
+            return;
+        }
+        const summary = (0, summary_1.formatFailureSummary)(result);
+        const failureMessage = `TrustBridge checks failed: ${summary}`;
+        if (effectiveFailOnMissing) {
+            core.setFailed(failureMessage);
+        }
+        else {
+            core.warning(failureMessage);
+        }
+    });
 }
 if (process.env.JEST_WORKER_ID === undefined) {
     run().catch((error) => {
@@ -45494,6 +45307,245 @@ function parseContractExistsResult(json) {
         result['contractId'],
     ];
     return checks.some((value) => value === true || (typeof value === 'string' && value.trim().length > 0));
+}
+
+
+/***/ }),
+
+/***/ 9681:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @file ssrf.ts
+ * SSRF-safe HTTP fetch utilities for TrustBridge.
+ *
+ * This module provides helpers for making HTTP requests with built-in
+ * protections against Server-Side Request Forgery (SSRF) attacks:
+ * - HTTPS-only (no HTTP, file://, ftp://, etc.)
+ * - No private/internal IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+ * - Request size and timeout limits
+ * - No redirect chains to different origins
+ *
+ * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
+ * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SSRF_BLOCKED_RANGES = void 0;
+exports.isSSRFBlocked = isSSRFBlocked;
+exports.validateSSRFSafeUrl = validateSSRFSafeUrl;
+exports.fetchSSRFSafe = fetchSSRFSafe;
+/**
+ * SSRF blocklist: IP ranges that should never be fetched from inside a
+ * GitHub Actions workflow.
+ *
+ * Covers:
+ * - Loopback: 127.0.0.0/8
+ * - Private RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ * - Link-local: 169.254.0.0/16
+ * - Multicast: 224.0.0.0/4
+ * - Reserved: 240.0.0.0/4
+ * - Localhost IPv6: ::1
+ * - Link-local IPv6: fe80::/10
+ */
+exports.SSRF_BLOCKED_RANGES = [
+    { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
+    { name: 'private_10', pattern: /^10\./ },
+    { name: 'private_172', pattern: /^172\.(1[6-9]|2[0-9]|3[01])\./ },
+    { name: 'private_192', pattern: /^192\.168\./ },
+    { name: 'link_local_169', pattern: /^169\.254\./ },
+    { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
+    { name: 'reserved_240', pattern: /^240\./ },
+    { name: 'ipv6_link_local', pattern: /^fe80:/i },
+];
+/**
+ * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * Returns `{ blocked: true, reason }` if the host should be rejected,
+ * or `{ blocked: false }` if it's safe to fetch from.
+ */
+function isSSRFBlocked(host) {
+    const normalized = host.toLowerCase();
+    for (const range of exports.SSRF_BLOCKED_RANGES) {
+        if (range.pattern.test(normalized)) {
+            return { blocked: true, reason: `Host matches SSRF blocklist: ${range.name}` };
+        }
+    }
+    return { blocked: false };
+}
+/**
+ * Validate that a URL is safe for SSRF-protected HTTP fetch.
+ *
+ * Checks:
+ * - Scheme is HTTPS (no HTTP, file://, ftp://, etc.)
+ * - Hostname is not in the SSRF blocklist
+ * - URL has a valid hostname (not relative, not localhost, etc.)
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }`.
+ */
+function validateSSRFSafeUrl(urlStr) {
+    const errors = [];
+    let parsed;
+    try {
+        parsed = new URL(urlStr);
+    }
+    catch {
+        errors.push('Invalid URL format');
+        return { valid: false, errors };
+    }
+    // Only HTTPS allowed
+    if (parsed.protocol !== 'https:') {
+        errors.push(`Scheme must be HTTPS, got: ${parsed.protocol}`);
+    }
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+        errors.push('URL must not contain credentials (username/password)');
+    }
+    // Hostname must be present and not empty
+    if (!parsed.hostname) {
+        errors.push('URL must have a non-empty hostname');
+    }
+    // Check SSRF blocklist
+    if (parsed.hostname) {
+        const blocked = isSSRFBlocked(parsed.hostname);
+        if (blocked.blocked) {
+            errors.push(`Hostname blocked by SSRF policy: ${blocked.reason}`);
+        }
+    }
+    if (errors.length > 0) {
+        return { valid: false, errors };
+    }
+    return { valid: true };
+}
+/**
+ * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ *
+ * NOT currently called by TrustBridge, but available for future enhancements
+ * that need to safely fetch HTTP resources from URLs in Horizon data.
+ *
+ * Usage:
+ * ```ts
+ * const result = await fetchSSRFSafe(homeDomainUrl, { maxBodyBytes: 256 * 1024 });
+ * if (!result.ok) {
+ *   logger.warn(`Fetch failed: ${result.error}`);
+ *   return;
+ * }
+ * const text = await result.text();
+ * ```
+ */
+async function fetchSSRFSafe(urlStr, options = {}) {
+    const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const maxRedirects = options.maxRedirects ?? 5;
+    let currentUrl = urlStr;
+    const seenRedirects = new Set();
+    let redirectCount = 0;
+    while (true) {
+        const validation = validateSSRFSafeUrl(currentUrl);
+        if (!validation.valid) {
+            return { ok: false, error: validation.errors.join('; ') };
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            const response = await fetch(currentUrl, {
+                signal: controller.signal,
+                redirect: 'manual',
+                headers: {
+                    'User-Agent': 'TrustBridge/1.0',
+                    Accept: 'application/toml, text/plain, */*',
+                },
+            });
+            clearTimeout(timeout);
+            if (response.status >= 300 && response.status < 400) {
+                if (!options.followRedirects) {
+                    return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+                }
+                const locationHeader = response.headers.get('location');
+                if (!locationHeader) {
+                    return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+                }
+                if (redirectCount >= maxRedirects) {
+                    return {
+                        ok: false,
+                        error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+                        status: response.status,
+                    };
+                }
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                const nextTarget = new URL(nextUrl);
+                const hopValidation = validateSSRFSafeUrl(nextUrl);
+                if (!hopValidation.valid) {
+                    return {
+                        ok: false,
+                        error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+                        status: response.status,
+                    };
+                }
+                const currentOrigin = new URL(currentUrl).origin;
+                const nextOrigin = nextTarget.origin;
+                if (nextTarget.protocol !== 'https:') {
+                    return {
+                        ok: false,
+                        error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (currentOrigin !== nextOrigin) {
+                    return {
+                        ok: false,
+                        error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (seenRedirects.has(nextUrl)) {
+                    return {
+                        ok: false,
+                        error: `Redirect loop detected: ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                seenRedirects.add(nextUrl);
+                redirectCount += 1;
+                currentUrl = nextUrl;
+                continue;
+            }
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) {
+                const bytes = parseInt(contentLength, 10);
+                if (bytes > maxBodyBytes) {
+                    return {
+                        ok: false,
+                        error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+                        status: response.status,
+                    };
+                }
+            }
+            if (!response.ok) {
+                return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+            }
+            const textData = await response.text();
+            if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
+                return {
+                    ok: false,
+                    error: `Response body exceeds limit after decompression`,
+                    status: response.status,
+                };
+            }
+            return {
+                ok: true,
+                status: response.status,
+                text: async () => textData,
+                headers: response.headers,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isTimeout = message.includes('signal') || message.includes('timeout');
+            return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+        }
+    }
 }
 
 
@@ -51641,6 +51693,742 @@ async function fetchTomlWithCache(domain, options = {}) {
 
 /***/ }),
 
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
+}
+
+
+/***/ }),
+
+/***/ 7145:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * Lightweight opt-in OpenTelemetry-compatible tracing for TrustBridge Action.
+ * (Issue #299)
+ *
+ * ## Design goals
+ * - Default OFF: zero overhead when tracing is not enabled.
+ * - No required SaaS or external collector.
+ * - Zero new production dependencies: uses only Node.js built-ins.
+ * - PII safe: Stellar addresses are redacted to first-4…last-4 before any
+ *   span attribute is recorded or exported.
+ * - Compatible with the OTel data model (Span, SpanStatus, Attributes) so
+ *   a future upgrade to @opentelemetry/sdk-trace-node is a drop-in swap.
+ *
+ * ## Enabling tracing
+ *
+ * Set the environment variable before running the action:
+ *
+ *   OTEL_TRACES_ENABLED=true   # opt in to trace collection
+ *   OTEL_TRACES_EXPORTER=log   # (default) emit spans as core.debug JSON lines
+ *   OTEL_TRACES_EXPORTER=console  # emit to process.stdout (local dev)
+ *   OTEL_TRACES_EXPORTER=none  # collect but do not export (for tests)
+ *
+ * All options are case-insensitive for the value.
+ *
+ * ## Instrumented phases
+ *
+ * | Phase | Span name |
+ * |-------|-----------|
+ * | Horizon account fetch | `horizon.fetch_account` |
+ * | GitHub issue comment post/update | `github.post_comment` |
+ * | Dashboard webhook delivery | `webhook.deliver` |
+ * | Full action run | `trustbridge.run` |
+ *
+ * ## PII redaction
+ *
+ * - `stellar_address` attributes are masked to `first4…last4`.
+ * - `horizon_url` attributes have the path stripped (host only).
+ * - `webhook_url` attributes have the path stripped.
+ * - `github_token` and `webhook_secret` are NEVER placed in any attribute.
+ *
+ * ## Exporting to a real collector
+ *
+ * When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, TrustBridge will attempt to
+ * export spans via HTTP/JSON OTLP to that endpoint. The payload follows the
+ * OTLP/HTTP JSON format so any standard OpenTelemetry collector can receive
+ * it. Requires `OTEL_TRACES_EXPORTER=otlp` as well.
+ *
+ * Example for a local collector:
+ * ```yaml
+ * env:
+ *   OTEL_TRACES_ENABLED: 'true'
+ *   OTEL_TRACES_EXPORTER: 'otlp'
+ *   OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
+ * ```
+ *
+ * See docs/USAGE.md#opentelemetry-tracing for the full guide.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isTracingEnabled = isTracingEnabled;
+exports.getExporterType = getExporterType;
+exports.getTraceSpans = getTraceSpans;
+exports.clearTraceSpans = clearTraceSpans;
+exports.redactSpanAttributes = redactSpanAttributes;
+exports.withSpan = withSpan;
+exports.withSpanSync = withSpanSync;
+exports.exportSpan = exportSpan;
+exports.traceHorizonFetch = traceHorizonFetch;
+exports.traceCommentPost = traceCommentPost;
+exports.traceWebhookDeliver = traceWebhookDeliver;
+exports.traceActionRun = traceActionRun;
+exports.emitTraceSummary = emitTraceSummary;
+const core = __importStar(__nccwpck_require__(7484));
+const logger_1 = __nccwpck_require__(6999);
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+/**
+ * Whether tracing is enabled.
+ * Reads `OTEL_TRACES_ENABLED` environment variable.
+ * Default: false.
+ */
+function isTracingEnabled() {
+    const val = process.env['OTEL_TRACES_ENABLED'] ?? '';
+    return val.toLowerCase() === 'true' || val === '1';
+}
+function getExporterType() {
+    const val = (process.env['OTEL_TRACES_EXPORTER'] ?? 'log').toLowerCase();
+    if (val === 'console')
+        return 'console';
+    if (val === 'none')
+        return 'none';
+    if (val === 'otlp')
+        return 'otlp';
+    return 'log';
+}
+// ---------------------------------------------------------------------------
+// In-process span store
+// ---------------------------------------------------------------------------
+const _traceSpans = [];
+/**
+ * Return all recorded trace spans (for testing).
+ * Returns a shallow copy so callers cannot mutate the internal store.
+ */
+function getTraceSpans() {
+    return [..._traceSpans];
+}
+/**
+ * Clear all recorded trace spans.
+ * Call at the start of each test or action run.
+ */
+function clearTraceSpans() {
+    _traceSpans.length = 0;
+}
+/** Internal: record a completed span into the store. */
+function storeSpan(span) {
+    try {
+        _traceSpans.push(span);
+    }
+    catch {
+        // Observability must never break the action.
+    }
+}
+// ---------------------------------------------------------------------------
+// PII redaction for span attributes
+// ---------------------------------------------------------------------------
+/**
+ * Redact a span attributes record so no PII escapes into exported spans.
+ * - Stellar addresses (G…/C…, 56 chars) → first4…last4.
+ * - Horizon / webhook URLs → host only (path stripped).
+ * - Token / secret fields → [REDACTED].
+ */
+function redactSpanAttributes(attrs) {
+    const safe = {};
+    const SECRET_KEYS = new Set(['token', 'secret', 'password', 'api_key', 'private_key', 'github_token', 'webhook_secret']);
+    for (const [key, value] of Object.entries(attrs)) {
+        if (SECRET_KEYS.has(key.toLowerCase())) {
+            safe[key] = '[REDACTED]';
+            continue;
+        }
+        if (typeof value === 'string') {
+            // Redact embedded Stellar addresses
+            let v = value.replace(/\b[GC][A-Z2-7]{55}\b/g, (addr) => (0, logger_1.redactStellarAddress)(addr));
+            // Redact Horizon/webhook URL paths (keep scheme + host only)
+            if (key.toLowerCase().includes('url')) {
+                v = (0, logger_1.redactHorizonUrl)(v);
+            }
+            safe[key] = v;
+        }
+        else {
+            safe[key] = value;
+        }
+    }
+    return safe;
+}
+// ---------------------------------------------------------------------------
+// Span recording
+// ---------------------------------------------------------------------------
+/**
+ * Execute an async operation within a named trace span.
+ *
+ * When tracing is disabled, `fn` is called directly with zero overhead.
+ * When enabled, the span is recorded and exported after `fn` completes.
+ *
+ * @param opts  Span options (name, attributes, parentName).
+ * @param fn    The async operation to trace.
+ * @returns     The resolved value from `fn`.
+ */
+async function withSpan(opts, fn) {
+    if (!isTracingEnabled()) {
+        return fn();
+    }
+    const startTimeMs = Date.now();
+    let status = 'OK';
+    let error;
+    try {
+        const result = await fn();
+        return result;
+    }
+    catch (err) {
+        status = 'ERROR';
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+    }
+    finally {
+        const durationMs = Date.now() - startTimeMs;
+        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
+        const span = {
+            name: opts.name,
+            startTimeMs,
+            durationMs,
+            status,
+            attributes: safeAttrs,
+            error,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+}
+/**
+ * Record a synchronous operation within a named trace span.
+ *
+ * @param opts  Span options.
+ * @param fn    Synchronous operation to trace.
+ * @returns     The value returned by `fn`.
+ */
+function withSpanSync(opts, fn) {
+    if (!isTracingEnabled()) {
+        return fn();
+    }
+    const startTimeMs = Date.now();
+    let status = 'OK';
+    let error;
+    try {
+        const result = fn();
+        return result;
+    }
+    catch (err) {
+        status = 'ERROR';
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+    }
+    finally {
+        const durationMs = Date.now() - startTimeMs;
+        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
+        const span = {
+            name: opts.name,
+            startTimeMs,
+            durationMs,
+            status,
+            attributes: safeAttrs,
+            error,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+}
+// ---------------------------------------------------------------------------
+// Span export
+// ---------------------------------------------------------------------------
+/**
+ * Export a completed span to the configured exporter.
+ * Never throws — observability must not break the action.
+ */
+function exportSpan(span) {
+    try {
+        const exporter = getExporterType();
+        switch (exporter) {
+            case 'log':
+                core.debug(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+                break;
+            case 'console':
+                console.log(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+                break;
+            case 'none':
+                // Collect but do not emit (used in tests to inspect spans without log noise).
+                break;
+            case 'otlp':
+                // OTLP export is fire-and-forget — errors are swallowed so they never
+                // affect the action result. The collector must be running at
+                // OTEL_EXPORTER_OTLP_ENDPOINT for this to have any effect.
+                void exportOtlp(span).catch(() => {
+                    // Silently ignore export failures.
+                });
+                break;
+        }
+    }
+    catch {
+        // Swallow all export errors.
+    }
+}
+/**
+ * Fire-and-forget OTLP/HTTP JSON export for a single span.
+ * Only called when OTEL_TRACES_EXPORTER=otlp and OTEL_EXPORTER_OTLP_ENDPOINT is set.
+ */
+async function exportOtlp(span) {
+    const endpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
+    if (!endpoint)
+        return;
+    // Minimal OTLP/JSON payload for a single span
+    const otlpPayload = {
+        resourceSpans: [
+            {
+                resource: { attributes: [{ key: 'service.name', value: { stringValue: 'trustbridge-action' } }] },
+                scopeSpans: [
+                    {
+                        scope: { name: 'trustbridge-action', version: '1' },
+                        spans: [
+                            {
+                                name: span.name,
+                                kind: 1, // SPAN_KIND_INTERNAL
+                                startTimeUnixNano: String(span.startTimeMs * 1000000),
+                                endTimeUnixNano: String((span.startTimeMs + span.durationMs) * 1000000),
+                                status: {
+                                    code: span.status === 'OK' ? 1 : span.status === 'ERROR' ? 2 : 0,
+                                    message: span.error ?? '',
+                                },
+                                attributes: Object.entries(span.attributes).map(([k, v]) => ({
+                                    key: k,
+                                    value: typeof v === 'boolean'
+                                        ? { boolValue: v }
+                                        : typeof v === 'number'
+                                            ? { intValue: String(v) }
+                                            : { stringValue: String(v) },
+                                })),
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    };
+    const url = endpoint.replace(/\/$/, '') + '/v1/traces';
+    await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(otlpPayload),
+        signal: AbortSignal.timeout(3000),
+    });
+}
+// ---------------------------------------------------------------------------
+// Named span helpers for the three instrumented phases
+// ---------------------------------------------------------------------------
+/**
+ * Trace the Horizon account fetch phase.
+ * Attributes: endpoint kind (primary/fallback), redacted URL, redacted address.
+ */
+async function traceHorizonFetch(horizonUrl, stellarAddress, fn) {
+    return withSpan({
+        name: 'horizon.fetch_account',
+        attributes: {
+            'horizon_url': horizonUrl,
+            'stellar_address': stellarAddress,
+        },
+    }, fn);
+}
+/**
+ * Trace the GitHub issue comment post/update phase.
+ * Attributes: comment action (create/update), issue number.
+ */
+async function traceCommentPost(issueNumber, action, fn) {
+    return withSpan({
+        name: 'github.post_comment',
+        attributes: {
+            'issue_number': issueNumber ?? 0,
+            'comment_action': action,
+        },
+    }, fn);
+}
+/**
+ * Trace the dashboard webhook delivery phase.
+ * Attributes: redacted webhook URL, auth mode.
+ */
+async function traceWebhookDeliver(webhookUrl, authMode, fn) {
+    return withSpan({
+        name: 'webhook.deliver',
+        attributes: {
+            'webhook_url': webhookUrl,
+            'auth_mode': authMode,
+        },
+    }, fn);
+}
+/**
+ * Trace the full action run (root span).
+ * Attributes: redacted address, reason code, valid flag.
+ */
+async function traceActionRun(stellarAddress, fn) {
+    return withSpan({
+        name: 'trustbridge.run',
+        attributes: {
+            'stellar_address': stellarAddress,
+        },
+    }, fn);
+}
+// ---------------------------------------------------------------------------
+// Summary export
+// ---------------------------------------------------------------------------
+/**
+ * Emit a human-readable summary of all collected spans to `core.info`.
+ * Called at the end of a run when tracing is enabled.
+ * Never throws.
+ */
+function emitTraceSummary() {
+    if (!isTracingEnabled())
+        return;
+    try {
+        const spans = getTraceSpans();
+        if (spans.length === 0)
+            return;
+        const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
+        const errorCount = spans.filter((s) => s.status === 'ERROR').length;
+        core.info(`[TrustBridge][trace] Run complete — ${spans.length} span(s), ` +
+            `${totalMs}ms total, ${errorCount} error(s). ` +
+            `Set OTEL_TRACES_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT to forward to a collector.`);
+    }
+    catch {
+        // Never throw from observability.
+    }
+}
+
+
+/***/ }),
+
 /***/ 4344:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -52430,6 +53218,7 @@ exports.sendWebhookNotification = sendWebhookNotification;
 const crypto = __importStar(__nccwpck_require__(6982));
 const core = __importStar(__nccwpck_require__(7484));
 const logger_1 = __nccwpck_require__(6999);
+const tracing_1 = __nccwpck_require__(7145);
 // ---------------------------------------------------------------------------
 // HMAC signing
 // ---------------------------------------------------------------------------
@@ -52502,6 +53291,9 @@ async function deliverWebhook(payload, config, fetchFn = fetch) {
     const headers = {
         'Content-Type': 'application/json',
         'User-Agent': 'trustbridge-action/1',
+        // Schema version header allows receivers to route/validate without parsing the body first.
+        // Updated whenever schema_version in the payload changes (Issue #296).
+        'X-TrustBridge-Schema-Version': payload.schema_version,
     };
     if (config.authMode === 'oidc' || config.oidcToken) {
         if (config.oidcToken) {
@@ -52545,31 +53337,33 @@ async function deliverWebhook(payload, config, fetchFn = fetch) {
 async function sendWebhookNotification(result, stellarAddress, config, repository, issueNumber) {
     if (!config.webhookUrl)
         return;
-    // Redact the URL for log output so any embedded credentials are masked.
-    const safeUrl = (0, logger_1.redactHorizonUrl)(config.webhookUrl);
-    let effectiveConfig = { ...config };
-    if (config.authMode === 'oidc' && !config.oidcToken) {
-        const audience = config.oidcAudience || 'trustbridge-dashboard';
-        try {
-            const token = await core.getIDToken(audience);
-            if (token) {
-                core.setSecret(token);
-                effectiveConfig.oidcToken = token;
+    return (0, tracing_1.traceWebhookDeliver)(config.webhookUrl, config.authMode || 'hmac', async () => {
+        // Redact the URL for log output so any embedded credentials are masked.
+        const safeUrl = (0, logger_1.redactHorizonUrl)(config.webhookUrl);
+        const effectiveConfig = { ...config };
+        if (config.authMode === 'oidc' && !config.oidcToken) {
+            const audience = config.oidcAudience || 'trustbridge-dashboard';
+            try {
+                const token = await core.getIDToken(audience);
+                if (token) {
+                    core.setSecret(token);
+                    effectiveConfig.oidcToken = token;
+                }
+            }
+            catch (oidcError) {
+                const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
+                core.warning(`[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`);
             }
         }
-        catch (oidcError) {
-            const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
-            core.warning(`[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`);
+        const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
+        const delivery = await deliverWebhook(payload, effectiveConfig);
+        if (delivery.sent) {
+            core.info(`[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`);
         }
-    }
-    const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
-    const delivery = await deliverWebhook(payload, effectiveConfig);
-    if (delivery.sent) {
-        core.info(`[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`);
-    }
-    else {
-        core.warning(`[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`);
-    }
+        else {
+            core.warning(`[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`);
+        }
+    });
 }
 
 

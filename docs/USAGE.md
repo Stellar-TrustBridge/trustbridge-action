@@ -3230,3 +3230,232 @@ Tests validate:
 - **Removed:** `src/validator.ts` (duplicate of `src/metrics.ts`)
 - **Impact:** Zero; these modules were not part of the public API
 - **Verify:** `npm run build && npm test` confirm no imports of deleted modules
+
+
+---
+
+## Webhook Dashboard Integration (Issue #295)
+
+TrustBridge can dispatch a signed HTTP POST to a consumer-controlled dashboard endpoint after every validation run. The payload is a structured JSON object whose shape is governed by the JSON Schema at [`schemas/webhook-payload.schema.json`](../schemas/webhook-payload.schema.json).
+
+### Enabling webhooks
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    webhook_url: ${{ secrets.TRUSTBRIDGE_WEBHOOK_URL }}
+    webhook_secret: ${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET }}
+```
+
+### Payload schema (`schema_version: "1"`)
+
+The webhook body is a JSON object that satisfies the JSON Schema at `schemas/webhook-payload.schema.json`. The canonical shape:
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-08-31T07:05:25.189Z",
+  "repository": "my-org/my-repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5000000",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true },
+      { "label": "XLM reserve", "passed": true }
+    ]
+  }
+}
+```
+
+#### Field reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `"1"` (string) | Always `"1"` in the current release. Bump on breaking schema changes only. |
+| `event` | `"validation_complete"` | Always `"validation_complete"`. |
+| `timestamp` | ISO-8601 string | UTC time the webhook was dispatched. |
+| `repository` | `"owner/repo"` | Repository where the action ran. |
+| `issue_number` | integer ≥ 1 or `null` | GitHub issue number, or `null` for `workflow_dispatch` runs. |
+| `stellar_address` | `"GABC...XYZ"` | Redacted Stellar address (first-4…last-4). The full address is never sent. |
+| `result.valid` | boolean | `true` when all checks passed and the account is payout-ready. |
+| `result.account_funded` | boolean | `true` when Horizon confirmed the account exists. |
+| `result.trustline_exists` | boolean | `true` when the configured asset trustline is present. |
+| `result.xlm_balance` | string | Native XLM balance (7-decimal Horizon string) or `"0"`. |
+| `result.checks` | array | Per-check results (`label` + `passed`). Stable in v1; new checks are additive. |
+
+### PII policy
+
+- The full Stellar address is **never** included. Only the redacted `first-4…last-4` form appears.
+- `github_token` and other secrets are **never** included.
+- `result.checks[].detail` (internal diagnostic text) is **stripped** from the webhook payload.
+
+### Signature verification
+
+Every request carries an `X-TrustBridge-Signature: sha256=<hex>` header when `webhook_secret` is set. Verification (Node.js example):
+
+```js
+const crypto = require('crypto');
+
+function verifyWebhook(rawBody, secret, header) {
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(header));
+}
+```
+
+### Dashboard implementation checklist
+
+Dashboard receivers **MUST**:
+
+1. Check `schema_version` on every request and return HTTP 400 for unknown versions.
+2. Verify the `X-TrustBridge-Signature` header before processing the body.
+3. Respond with `2xx` within the webhook timeout (default 5 s) to avoid retry noise.
+4. Not rely on `result.checks[]` array length or order — new checks may be appended additively.
+5. Treat `issue_number: null` as a non-issue-triggered run (e.g. `workflow_dispatch`).
+
+Dashboard receivers **MUST NOT**:
+
+- Attempt to reconstruct the full Stellar address from the redacted `stellar_address` field.
+- Treat `result.valid: false` as an error — it is a valid terminal state.
+- Cache or persist the `timestamp` as a unique event ID — use `repository` + `issue_number` + `timestamp` together as a composite key.
+
+---
+
+## reason_code Reference (Issue #297)
+
+The `reason_code` output is a machine-readable string that identifies why a validation run produced its result. Dashboard automations and workflow gates that switch on this value are protected by the catalog at [`schemas/reason-codes.json`](../schemas/reason-codes.json) — any rename or removal of a code is a breaking change detected by CI.
+
+### Catalog (v1)
+
+| `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
+|---------------|---------|-----------------|-------------------|-------------------|-------------|
+| `SUCCESS` | ✅ `true` | ✅ | ✅ | ✅ | All checks passed — the account is ready for payout. |
+| `TRUSTLINE_MISSING` | ❌ `false` | ✅ | ❌ | ✅ | Account is funded and meets the reserve, but the required asset trustline is missing. |
+| `RESERVE_TOO_LOW` | ❌ `false` | ✅ | ✅ | ❌ | Account is funded and has a trustline, but the native XLM balance is below the minimum reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ | ✅ | ✅ | Account has the trustline but its limit is below `min_trustline_limit`. Only emitted when `min_trustline_limit` is set. |
+| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned 404 — account does not exist on the network yet. |
+| `HORIZON_TIMEOUT` | ❌ `false` | ❌ | ❌ | ❌ | The Horizon request timed out. Account state could not be determined. |
+| `HORIZON_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned a non-404, non-timeout error (429, 502, 503, 504, etc.). |
+| `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
+| `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
+
+### Switching on reason_code in downstream jobs
+
+```yaml
+- name: TrustBridge check
+  id: tb
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Handle result
+  run: |
+    case "${{ steps.tb.outputs.reason_code }}" in
+      SUCCESS)             echo "Account ready for payout" ;;
+      TRUSTLINE_MISSING)   echo "Contributor needs to add a USDC trustline" ;;
+      RESERVE_TOO_LOW)     echo "Contributor needs more XLM" ;;
+      ACCOUNT_NOT_FUNDED)  echo "Contributor has not funded their account yet" ;;
+      HORIZON_TIMEOUT|HORIZON_ERROR) echo "Horizon unavailable — retry later" ;;
+      TLS_ERROR)           echo "Horizon TLS issue — check the endpoint certificate" ;;
+      *)                   echo "Unknown code: ${{ steps.tb.outputs.reason_code }}" ;;
+    esac
+```
+
+### Versioning guarantee
+
+- `reason_code` values in the catalog above are **immutable** for all v1.x releases.
+- New codes are **additive** — your switch/case should have a `default`/`*` branch.
+- A rename or removal is a **MAJOR** version bump and will appear in [docs/BREAKING_CHANGES.md](BREAKING_CHANGES.md).
+- The CI lock test at `__tests__/reason-codes.test.ts` fails if any known code is renamed in `src/checks.ts` without updating the catalog.
+
+---
+
+## OpenTelemetry Tracing (Issue #299)
+
+TrustBridge ships a lightweight, opt-in tracing layer that wraps the three main phases of every run — Horizon fetch, GitHub comment post, and dashboard webhook delivery — with structured spans compatible with the OpenTelemetry Traces data model.
+
+**Tracing is off by default.** There is no overhead, no vendor dependency, and no required collector unless you explicitly enable it.
+
+### Enabling tracing
+
+Set these environment variables in your workflow:
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'log'     # emit spans as core.debug JSON lines (default)
+```
+
+Or forward to a real collector (e.g. OpenTelemetry Collector, Jaeger, Honeycomb):
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://your-collector.example.com'
+```
+
+### Exporter options
+
+| `OTEL_TRACES_EXPORTER` | Behavior |
+|------------------------|----------|
+| `log` (default) | Spans emitted as `core.debug` JSON lines — visible in GitHub Actions logs when debug logging is enabled. |
+| `console` | Spans written to `process.stdout` — useful for local development and shell scripts. |
+| `none` | Spans collected in-process but not exported — used in tests to inspect spans without log noise. |
+| `otlp` | Spans exported via OTLP/HTTP JSON to `OTEL_EXPORTER_OTLP_ENDPOINT` — compatible with any standard OTel collector. |
+
+### Instrumented phases
+
+| Phase | Span name | Key attributes |
+|-------|-----------|----------------|
+| Horizon account fetch | `horizon.fetch_account` | `horizon_url` (host only), `stellar_address` (redacted) |
+| GitHub comment post/update | `github.post_comment` | `issue_number`, `comment_action` (create/update/skip) |
+| Dashboard webhook delivery | `webhook.deliver` | `webhook_url` (host only), `auth_mode` |
+| Full action run | `trustbridge.run` | `stellar_address` (redacted) |
+
+### PII redaction
+
+All span attributes are scrubbed before export:
+
+- **Stellar addresses** (`G…` / `C…`, 56 chars) are masked to `first-4…last-4` (e.g. `GA5Z…KZVN`).
+- **URL paths** are stripped — only the scheme and hostname are exported (e.g. `https://horizon.stellar.org`).
+- **Secret fields** (`github_token`, `webhook_secret`, `api_key`, etc.) are replaced with `[REDACTED]` and **never** appear in any span attribute.
+
+### Forwarding to a vendor
+
+Any OTLP/HTTP-compatible collector works. Examples:
+
+```yaml
+# Honeycomb
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io'
+  OTEL_EXPORTER_OTLP_HEADERS: 'x-honeycomb-team=${{ secrets.HONEYCOMB_API_KEY }}'
+
+# Local OpenTelemetry Collector (docker-compose or similar)
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
+```
+
+OTLP export is fire-and-forget — a collector outage never fails the action.
+
+### Notes for test authors
+
+Tests that assert span behavior should:
+1. Set `process.env['OTEL_TRACES_ENABLED'] = 'true'` before the call under test.
+2. Set `process.env['OTEL_TRACES_EXPORTER'] = 'none'` to suppress log output.
+3. Call `clearTraceSpans()` in `beforeEach`.
+4. Inspect collected spans via `getTraceSpans()`.
+
+No live collector is required at any point.
