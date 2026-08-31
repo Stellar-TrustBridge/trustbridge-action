@@ -86,6 +86,19 @@ The smoke test file (`__tests__/horizon-mock-smoke.test.ts`) skips all suites
 automatically when `HORIZON_MOCK_URL` is not set — so `npm test` is never
 affected by whether Docker is running.
 
+### CI integration
+
+The `mock-horizon-smoke` job in `.github/workflows/ci.yml` runs automatically
+on every PR and push to `main`. It starts the WireMock container, waits for it
+to be healthy, runs the smoke test suite, and tears down the container
+regardless of test outcome.
+
+Docker is available on `ubuntu-latest` GitHub-hosted runners — no extra setup
+is needed in CI. A secondary health-check loop (`curl` probe × 20, 3 s sleep)
+handles the rare race where `docker compose up --wait` exits before WireMock's
+HTTP listener is fully bound. The `if: always()` on the cleanup step ensures
+the container is always removed even when tests fail.
+
 ---
 
 ## Live testnet integration job (Issue #156)

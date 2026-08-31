@@ -218,6 +218,20 @@ export interface HorizonFetchOptions {
     retryBaseDelayMs?: number;
 }
 /**
+ * Fetch the number of claimable balances for a claimant address.
+ *
+ * Used only when `claimableBalancePolicy === 'count'` and the account is 404.
+ * Returns 0 on any error (404, network, timeout) so callers can treat the
+ * absence as "no evidence" without failing the run. The request is bounded to
+ * 5s and validated for SSRF so private Horizon mirrors are never probed
+ * with an attacker-controlled claimant.
+ *
+ * Horizon endpoint: `GET /claimable_balances?claimant=<G-address>&limit=5`
+ * The limit is intentionally small — we only need to know if >0 exist and
+ * at most a count up to 5 for the informational comment.
+ */
+export declare function fetchClaimableBalanceCount(horizonUrl: string, stellarAddress: string, fetchFn?: FetchLike, timeoutMs?: number): Promise<number>;
+/**
  * Labels automatically applied to a GitHub issue based on the Stellar
  * wallet state discovered during an account check.
  *
