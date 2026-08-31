@@ -61,60 +61,80 @@ Every value maps 1-to-1 to a heading in `docs/FAQ.md` that uses the explicit `{#
 | `horizon` | `horizon-error` |
 
 
-## Comment threading / reply mode (#322)
+## Locale-aware comments (i18n) — Issue #291
 
-By default TrustBridge uses `comment_mode: sticky` (equivalent to the legacy `sticky_comment: true`). You can change the threading strategy per-run without changing anything else:
+TrustBridge renders issue comments in the contributor's preferred language using
+the `locale` config input. Three locales are currently supported:
 
-| Mode | Behavior | When to use |
-|------|----------|-------------|
-| `sticky` (default) | Update TrustBridge's previous comment in place. | Normal re-validation; avoids spam. |
-| `new` | Always post a brand-new top-level comment. | Audit trail — full history of every check result. |
-| `reply` | Post a new comment that references the first TrustBridge comment. | Teams that want a chronological reply chain while keeping the original summary intact. |
+| Locale | Language |
+|--------|----------|
+| `en` | English (default) |
+| `es` | Spanish |
+| `pt` | Portuguese |
+
+### How locale selection works
+
+Set `locale` in the workflow step:
 
 ```yaml
 - uses: Stellar-TrustBridge/trustbridge-action@v1
   with:
     stellar_address_input: ${{ steps.address.outputs.address }}
-    github_token:          ${{ secrets.GITHUB_TOKEN }}
-    comment_mode:          reply     # sticky | new | reply
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    locale: es   # 'en' | 'es' | 'pt'
 ```
 
-**Notes:**
-- `comment_mode` takes precedence over the legacy `sticky_comment` input when both are set.
-- Invalid values fall back to `sticky` with a `core.warning`.
-- GitHub's issue comment API does not support native in-reply-to for issue comments (only PR review comments). The `reply` mode therefore posts a normal top-level comment that includes a quoted link back to the first TrustBridge comment so reviewers can follow the chain.
-- The `reply` mode still uses `findStickyComment` to locate the parent; if no prior comment is found the new comment is posted normally without a reference.
+Unknown or unset locales fall back to `en` automatically — the action never fails
+due to an unsupported locale value.
 
-## Address-change detection (#321)
+### String architecture
 
-When a `validation.json` artifact from a previous run is available (via `previous_validation_path` or auto-discovery), TrustBridge can detect whether the Stellar address being validated has changed since the last run.
+All locale strings are defined in `src/i18n.ts` as `CommentStrings` objects:
+- Plain string keys (headings, labels, column names) are static strings.
+- Function keys (detail messages, remediation copy) accept address/balance args
+  and return translated strings with interpolated values.
 
-### How it works
+The `getStrings(locale)` function returns the correct `CommentStrings` object
+for the requested locale, falling back to `EN` when the locale is unsupported.
 
-1. The current address is normalised (muxed M-addresses are reduced to their base G-address).
-2. The previous address is loaded from the stored artifact.
-3. If they differ, an `⚠️ Stellar address changed` section is prepended to the comment body.
+### Adding a new locale
 
-### Privacy handling
+1. Add the new locale code to `export type Locale` in `src/i18n.ts`.
+2. Create a new `const XX: CommentStrings = { ... }` object implementing every
+   key in the `CommentStrings` interface (TypeScript enforces completeness).
+3. Register it in the `LOCALES` map at the bottom of `src/i18n.ts`.
+4. Run `npm test -- --testPathPattern 'i18n-comment-snapshots' --updateSnapshot`
+   to generate golden snapshots for the new locale.
+5. Verify key parity: `npm test -- --testPathPattern 'i18n'` — the key parity
+   tests in `__tests__/i18n-comment-snapshots.test.ts` will fail if any key is
+   missing or empty.
 
-When `privacy_mode: true` is set, **both** the previous and current addresses are hashed with SHA-256 before comparison. The hashes are safe to embed in a public comment. Raw address values are never stored or logged.
+### Golden snapshots for i18n comment rendering
 
-If a previous artifact was stored under privacy mode (address is a `sha256:` hash) and the current run is not using privacy mode, TrustBridge conservatively reports a potential change (the hash cannot be reversed) and shows the stored hash as the previous value.
+`__tests__/i18n-comment-snapshots.test.ts` stores golden snapshots for each
+supported locale × scenario (success / unfunded-failure). These snapshots live in
+`__tests__/__snapshots__/i18n-comment-snapshots.test.ts.snap`.
 
-### Muxed addresses
+If a translation changes or the comment template is updated, regenerate:
 
-Muxed M-addresses encode an underlying G-address plus a memo ID. TrustBridge strips the muxed prefix and compares only the base G-address, so rotating the memo ID without changing the underlying account is not flagged as an address change.
-
-### Comment section example
-
-```markdown
-### ⚠️ Stellar address changed
-
-> **The Stellar address being validated has changed since the last run.**
-> Previous: `GAAA…AWHF`
-> Current:  `GBBB…BBUA`
->
-> If this change was intentional (e.g. you rotated your wallet), no action
-> is required — the new address will be validated normally.
-> If unexpected, verify that the correct address is submitted in the issue.
+```bash
+npm test -- --testPathPattern 'i18n-comment-snapshots' --updateSnapshot
 ```
+
+Always commit the updated snapshot alongside the translation change so CI stays
+green. A snapshot mismatch in CI means a locale string or comment template
+changed without updating the golden file.
+
+### Key parity enforcement
+
+The key parity tests verify that every string key defined in the English
+`CommentStrings` interface is also present and non-empty in every other locale.
+A missing translation key causes a descriptive test failure:
+
+```
+Locale "es" is missing 2 key(s): newHeading, newLabel
+```
+
+This ensures that adding a new string to `CommentStrings` without translating
+it into all locales fails fast in CI rather than silently rendering an empty
+string in contributors' issue comments.
