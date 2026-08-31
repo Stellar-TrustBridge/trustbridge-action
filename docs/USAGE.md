@@ -546,7 +546,7 @@ with:
 
 When Horizon returns 404 for the configured `horizon_url`, TrustBridge deterministically probes the **canonical opposite network** (`https://horizon.stellar.org` ↔ `https://horizon-testnet.stellar.org`) with a 5s timeout to see if the same `G…` address is funded elsewhere:
 
-- `404` on public + `200` on testnet (or reverse) → comment shows a clear mismatch: “was not found on **public** but **is active on testnet** (https://horizon-testnet.stellar.org) — ensure `horizon_url` points at the correct network.” Remediation suggests either funding on the configured network or updating `horizon_url` to the opposite canonical URL.
+- `404` on public + `200` on testnet (or reverse) → comment names both networks and both canonical URLs: the account was not found on the configured network but is active on the other network. Remediation suggests either funding on the configured network or updating `horizon_url` to the active network URL if that is the intended target.
 - `404` on both networks → genuinely unfunded, no mismatch hint.
 - Opposite returns `503/429/500` or network error/timeout → no hint (avoids false positives when the other Horizon is temporarily unavailable).
 - The opposite URL is SSRF-validated; an invalid URL never gets probed.
@@ -2107,7 +2107,7 @@ TrustBridge automatically runs a **preflight check** before any Horizon calls to
 
 ### Preflight-only mode
 
-Set `preflight_only: true` to run only the permission check and exit without calling Horizon. Useful when setting up TrustBridge for the first time:
+Set `preflight_only: true` to run only the permission check and exit without calling Horizon. This is a first-class action input and defaults to `false`. Useful when setting up TrustBridge for the first time:
 
 ```yaml
 - uses: Stellar-TrustBridge/trustbridge-action@v1
@@ -2697,6 +2697,8 @@ To simplify adoption across multiple repositories and prevent permission misconf
 
 Organizations can invoke this reusable workflow with `workflow_call` and configure it as a **required status check** in GitHub Branch Protection rules.
 
+The reusable workflow should resolve the target issue or PR number in the caller and pass it through as `issue_number`. TrustBridge will use that explicit number for comment posting instead of reading a number from the event payload body or any untrusted PR text.
+
 ### Reusable Workflow Caller Example
 
 Create a workflow file in your repository (e.g. `.github/workflows/wallet-check.yml`):
@@ -2715,6 +2717,9 @@ on:
       stellar_address:
         description: "Stellar G-address"
         required: true
+      issue_number:
+        description: 'Target issue or pull request number for the reusable workflow'
+        required: false
 
 permissions:
   contents: read
@@ -2729,6 +2734,7 @@ jobs:
     secrets: inherit
     with:
       stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
       fail_on_missing: true
 ```
 
@@ -2746,6 +2752,7 @@ jobs:
 - **Minimal Permissions:** The reusable workflow requests only `contents: read`, `issues: write`, `pull-requests: read`, and `id-token: write`.
 - **Pinned Version:** Always pin the reusable workflow to a major version tag (e.g. `@v1`) or a specific commit SHA.
 - **Pass-through Secrets:** Using `secrets: inherit` automatically forwards `GITHUB_TOKEN` to post/update sticky issue comments without hardcoding personal access tokens.
+- **Explicit comment target:** Pass `issue_number` from the caller workflow when the reusable workflow needs to comment on an issue or PR. This keeps TrustBridge away from untrusted body text and makes the target deterministic for `workflow_call` consumers.
 - **Merge Queue Support:** Works seamlessly with `merge_group` trigger events.
 
 ---
@@ -2976,73 +2983,3 @@ Tests validate:
 - **Removed:** `src/validator.ts` (duplicate of `src/metrics.ts`)
 - **Impact:** Zero; these modules were not part of the public API
 - **Verify:** `npm run build && npm test` confirm no imports of deleted modules
-
-
----
-
-## Merge-resolution conflict report (#319)
-
-When multiple sources provide a value for the same input field (e.g. `stellar_address_input` is set in the workflow step *and* `assignee_address_map` resolves to a different address), TrustBridge records the disagreement in a structured **conflict report** instead of silently using one value.
-
-### How precedence works
-
-Sources are resolved in this order (first wins):
-
-1. `workflow_input` — explicit value set directly in the workflow step.
-2. `assignee_map` — resolved from `assignee_address_map` using the event assignee login.
-3. `contract` — resolved from an on-chain or Soroban contract source (when integrated).
-4. `config_file` — resolved from the `.trustbridge.yml` consumer config file.
-
-### Outputs
-
-| Output | Type | When set |
-|--------|------|----------|
-| `has_conflicts` | `'true'` / `'false'` | Every run |
-| `conflict_report` | JSON string | Every run (empty when no conflicts) |
-
-```yaml
-- name: TrustBridge check
-  id: trustbridge
-  uses: Stellar-TrustBridge/trustbridge-action@v1
-  with:
-    stellar_address_input: ${{ steps.address.outputs.address }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-
-- name: Fail if conflicting sources disagree
-  if: steps.trustbridge.outputs.has_conflicts == 'true'
-  run: |
-    echo "Conflict report:"
-    echo '${{ steps.trustbridge.outputs.conflict_report }}' | jq .
-    exit 1
-```
-
-### Comment section
-
-When a conflict is detected the issue comment includes a `⚠️ Input source conflicts detected` table showing every field, the resolved value, and all contributing sources:
-
-```markdown
-### ⚠️ Input source conflicts detected
-
-> Two or more sources provided different values for the same input field.
-> The value with the highest precedence (workflow_input > assignee_map > contract > config_file) was used.
-
-| Field | Resolved value | Sources |
-| --- | --- | --- |
-| `stellar_address` | `GAAA…AWHF` | `workflow_input`: `GAAA…AWHF`, `assignee_map`: `GBBB…BBUA` |
-```
-
-### Privacy
-
-When `privacy_mode: true` is set, address values in the conflict report are redacted to first4…last4 (`GAAA…AWHF`) before being placed in the comment or JSON output. Non-address values (asset codes, boolean flags) are never redacted.
-
-### Policy
-
-By default, detecting a conflict does **not** fail the run — TrustBridge validates the winning address and sets `has_conflicts: true` for downstream steps to gate on. To hard-fail on any conflict, add:
-
-```yaml
-- name: Fail on conflict
-  if: steps.trustbridge.outputs.has_conflicts == 'true'
-  run: |
-    echo "::error::Conflicting input sources detected. Review conflict_report output."
-    exit 1
-```

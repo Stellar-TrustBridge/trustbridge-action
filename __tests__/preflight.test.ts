@@ -191,3 +191,27 @@ describe('PreflightError', () => {
     expect(err instanceof Error).toBe(true);
   });
 });
+
+describe('preflight_only input contract', () => {
+  it('action.yml declares preflight_only with default false', () => {
+    const content = require('fs').readFileSync(
+      require('path').join(__dirname, '../action.yml'),
+      'utf8',
+    );
+
+    expect(content).toContain('preflight_only:');
+    expect(content).toContain('Run only the issues:write preflight check');
+    expect(content).toContain("default: 'false'");
+  });
+
+  it('schema declares preflight_only with default false', () => {
+    const schema = JSON.parse(
+      require('fs').readFileSync(
+        require('path').join(__dirname, '../schemas/action-inputs.schema.json'),
+        'utf8',
+      ),
+    ) as { properties?: Record<string, { default?: string }> };
+
+    expect(schema.properties?.preflight_only?.default).toBe('false');
+  });
+});

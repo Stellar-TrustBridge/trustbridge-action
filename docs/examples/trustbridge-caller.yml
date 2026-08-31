@@ -60,6 +60,7 @@ jobs:
     secrets: inherit
     with:
       stellar_address_input: ${{ needs.resolve-address.outputs.address }}
+      issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
       fail_on_missing: true
       sticky_comment: true
 

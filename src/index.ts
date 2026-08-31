@@ -529,27 +529,18 @@ async function run(): Promise<void> {
     assigneeAddressMapRaw,
     contractResolvedAddress,
   );
-  const failOnMissing = parseBooleanInput(
-    core.getInput("fail_on_missing"),
-    true,
-  );
-  const debugMode = parseBooleanInput(core.getInput("debug_mode"), false);
-  const horizonTimeoutMs = parseNumberInput(
-    core.getInput("horizon_timeout_ms"),
-    15000,
-    {
-      min: 1000,
-      max: 60000,
-    },
-  );
-  const stickyComment = parseBooleanInput(
-    core.getInput("sticky_comment"),
-    true,
-  );
-  const waitUntilFunded = parseBooleanInput(
-    core.getInput("wait_until_funded"),
-    false,
-  );
+  const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
+  const issueNumberInputRaw = core.getInput('issue_number') || '';
+  const issueNumberInput = issueNumberInputRaw.trim()
+    ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
+    : undefined;
+  const debugMode = parseBooleanInput(core.getInput('debug_mode'), false);
+  const horizonTimeoutMs = parseNumberInput(core.getInput('horizon_timeout_ms'), 15000, {
+    min: 1000,
+    max: 60000,
+  });
+  const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
+  const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
     core.getInput("wait_until_funded_timeout_ms"),
     120000,
@@ -1643,6 +1634,7 @@ async function run(): Promise<void> {
         sticky: stickyComment,
         forceComment,
         snoozeWindowMs,
+        issueNumber: issueNumberInput,
       });
       globalMetrics.stopTimer("comment_post");
       if (commentUrl) {
@@ -1744,7 +1736,7 @@ async function run(): Promise<void> {
       octokit,
       owner,
       repo,
-      issueNumber,
+      issueNumber: issueNumberInput ?? issueNumber,
       payload: github.context.payload,
       result,
       unassignOnNotReady,
