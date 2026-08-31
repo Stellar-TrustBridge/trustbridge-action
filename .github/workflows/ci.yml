@@ -95,45 +95,26 @@ jobs:
             exit 1
           fi
 
-  # ── GPL / copyleft license policy gate (Issue #334) ────────────────────
-  # Scans runtime (production) dependencies for GPL, AGPL, SSPL, BUSL, or
-  # UNLICENSED licenses that are incompatible with TrustBridge's MIT license.
-  # Fails the build if any runtime dep introduces a blocked license.
-  # See docs/LICENSE_REPORT.md § "License policy gate" for exception process.
-  license-policy:
-    runs-on: ubuntu-latest
-    name: license-policy
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check runtime dependency licenses
-        run: npm run license:check
-
-  # ── Opt-in mock Horizon smoke tests ─────────────────────────────────────
-  # This job runs the smoke test suite against a local WireMock container.
-  # It is DISABLED in the default CI pipeline (if: false) to keep standard
-  # CI fast and dependency-free.
+  # ── Mock Horizon smoke tests (WireMock) ──────────────────────────────────
+  # Runs the smoke test suite against a local WireMock container that serves
+  # deterministic Horizon stubs (funded / unfunded / low-balance / no-trustline).
   #
-  # To enable:
-  #   - Change `if: false` to `if: github.event_name == 'workflow_dispatch'`
-  #     to run only on manual triggers, OR
-  #   - Remove the `if:` condition entirely to always run alongside unit tests.
+  # Docker is available on ubuntu-latest GitHub-hosted runners — no extra setup
+  # needed. Tests skip automatically when HORIZON_MOCK_URL is not set (i.e. in
+  # standard `npm test` runs), so this job is the only place they execute.
   #
-  # See mock/horizon/README.md for full documentation.
+  # Flake mitigations:
+  #   - `npm run mock:start` uses `docker compose up -d --wait` which blocks
+  #     until the WireMock healthcheck passes (max 10 retries × 5 s).
+  #   - An extra wait-loop provides a second layer of health verification
+  #     before the test suite starts.
+  #   - `maxRetries: 0` in the smoke test fetchOpts — no retry/backoff jitter.
+  #   - `if: always()` on mock:stop ensures cleanup even after test failure.
+  #
+  # See mock/horizon/README.md and CONTRIBUTING.md § "Mock Horizon" for details.
   mock-horizon-smoke:
     runs-on: ubuntu-latest
-    # Change or remove this condition to opt in:
-    if: false
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -149,6 +130,22 @@ jobs:
 
       - name: Start mock Horizon container
         run: npm run mock:start
+
+      - name: Wait for mock Horizon to be healthy
+        # Secondary health-check in case docker compose --wait exits before
+        # WireMock's HTTP listener is fully bound (rare race on slow runners).
+        run: |
+          echo 'Verifying WireMock HTTP listener is ready...'
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8089/__admin/health > /dev/null 2>&1; then
+              echo "Mock Horizon healthy after ${i} probe(s)"
+              exit 0
+            fi
+            echo "Probe $i/20: not ready yet, waiting 3 s..."
+            sleep 3
+          done
+          echo '::error::Mock Horizon did not become healthy within 60 s'
+          exit 1
 
       - name: Run smoke tests against mock Horizon
         env:

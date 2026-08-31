@@ -76,21 +76,6 @@ export interface CommentConfig extends CheckConfig {
      */
     sep0010ChallengeXdr?: string;
     sep0010DashboardUrl?: string;
-    /**
-     * Optional workspace-relative (or absolute) path to a Markdown partial
-     * file that is appended to the comment just before the footer (#312).
-     *
-     * The partial supports `{{variable}}` interpolation for safe substitution
-     * of account, asset, issuer, network, horizon, status, and i18n strings
-     * (`{{locale:KEY}}`). All substituted values are escaped through
-     * `escapeMarkdownInline` to prevent Markdown injection. Dangerous patterns
-     * (prototype-chain keys, <script>, javascript:, inline event handlers) are
-     * rejected before interpolation. The file must reside inside the workspace
-     * root (path traversal is blocked) and must not exceed 8 KB.
-     *
-     * Leave unset or empty to disable the feature entirely.
-     */
-    customCommentTemplatePath?: string;
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**
