@@ -2351,3 +2351,87 @@ The `reason_code` output is a machine-readable string that identifies why a vali
 - New codes are **additive** — your switch/case should have a `default`/`*` branch.
 - A rename or removal is a **MAJOR** version bump and will appear in [docs/BREAKING_CHANGES.md](BREAKING_CHANGES.md).
 - The CI lock test at `__tests__/reason-codes.test.ts` fails if any known code is renamed in `src/checks.ts` without updating the catalog.
+
+---
+
+## OpenTelemetry Tracing (Issue #299)
+
+TrustBridge ships a lightweight, opt-in tracing layer that wraps the three main phases of every run — Horizon fetch, GitHub comment post, and dashboard webhook delivery — with structured spans compatible with the OpenTelemetry Traces data model.
+
+**Tracing is off by default.** There is no overhead, no vendor dependency, and no required collector unless you explicitly enable it.
+
+### Enabling tracing
+
+Set these environment variables in your workflow:
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'log'     # emit spans as core.debug JSON lines (default)
+```
+
+Or forward to a real collector (e.g. OpenTelemetry Collector, Jaeger, Honeycomb):
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://your-collector.example.com'
+```
+
+### Exporter options
+
+| `OTEL_TRACES_EXPORTER` | Behavior |
+|------------------------|----------|
+| `log` (default) | Spans emitted as `core.debug` JSON lines — visible in GitHub Actions logs when debug logging is enabled. |
+| `console` | Spans written to `process.stdout` — useful for local development and shell scripts. |
+| `none` | Spans collected in-process but not exported — used in tests to inspect spans without log noise. |
+| `otlp` | Spans exported via OTLP/HTTP JSON to `OTEL_EXPORTER_OTLP_ENDPOINT` — compatible with any standard OTel collector. |
+
+### Instrumented phases
+
+| Phase | Span name | Key attributes |
+|-------|-----------|----------------|
+| Horizon account fetch | `horizon.fetch_account` | `horizon_url` (host only), `stellar_address` (redacted) |
+| GitHub comment post/update | `github.post_comment` | `issue_number`, `comment_action` (create/update/skip) |
+| Dashboard webhook delivery | `webhook.deliver` | `webhook_url` (host only), `auth_mode` |
+| Full action run | `trustbridge.run` | `stellar_address` (redacted) |
+
+### PII redaction
+
+All span attributes are scrubbed before export:
+
+- **Stellar addresses** (`G…` / `C…`, 56 chars) are masked to `first-4…last-4` (e.g. `GA5Z…KZVN`).
+- **URL paths** are stripped — only the scheme and hostname are exported (e.g. `https://horizon.stellar.org`).
+- **Secret fields** (`github_token`, `webhook_secret`, `api_key`, etc.) are replaced with `[REDACTED]` and **never** appear in any span attribute.
+
+### Forwarding to a vendor
+
+Any OTLP/HTTP-compatible collector works. Examples:
+
+```yaml
+# Honeycomb
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io'
+  OTEL_EXPORTER_OTLP_HEADERS: 'x-honeycomb-team=${{ secrets.HONEYCOMB_API_KEY }}'
+
+# Local OpenTelemetry Collector (docker-compose or similar)
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
+```
+
+OTLP export is fire-and-forget — a collector outage never fails the action.
+
+### Notes for test authors
+
+Tests that assert span behavior should:
+1. Set `process.env['OTEL_TRACES_ENABLED'] = 'true'` before the call under test.
+2. Set `process.env['OTEL_TRACES_EXPORTER'] = 'none'` to suppress log output.
+3. Call `clearTraceSpans()` in `beforeEach`.
+4. Inspect collected spans via `getTraceSpans()`.
+
+No live collector is required at any point.
