@@ -64,6 +64,8 @@ The Docker-based mock Horizon remains optional for contributors who want local i
 | `npm run test:coverage` | Coverage report in `coverage/` |
 | `npm run test:mock` | Smoke tests against local mock Horizon (requires `npm run mock:start` first) |
 | `npm run lint` | ESLint on `src/` and `__tests__/` |
+| `npm run typecheck` | Type-check `src/` only (matches `tsconfig.json`) |
+| `npm run typecheck:tests` | Type-check `src/` + `__tests__/` together (uses `tsconfig.test.json`) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run mock:start` | Start mock Horizon container on `http://localhost:8089` |
 | `npm run mock:stop` | Stop and remove mock Horizon container |
@@ -71,6 +73,26 @@ The Docker-based mock Horizon remains optional for contributors who want local i
 | `npm run mutation:ci` | Run Stryker mutation tests in CI mode (text report only, faster output) |
 
 All commands except `mock:*` and `test:mock` must pass before opening a PR. CI runs the same pipeline (see `.github/workflows/ci.yml`).
+
+### Typechecking test files
+
+Jest uses `ts-jest` for transpilation, which means test files that import
+broken types or call async functions without `await` can silently pass `npm test`.
+To catch these issues at the type level, run:
+
+```bash
+npm run typecheck:tests
+```
+
+This invokes `tsc --project tsconfig.test.json --noEmit`, which type-checks
+both `src/**/*` and `__tests__/**/*` together using a relaxed strict configuration
+(see `tsconfig.test.json`). CI runs both the source typecheck and the test typecheck
+steps on every push and pull request.
+
+**Writing new test files**: New test files must be type-clean. Do not add
+`// @ts-nocheck` to new files — use proper `await` on async calls and ensure
+imported types match. The `@ts-nocheck` comments in existing test files mark
+pre-existing `await`-omission patterns that are tracked for future cleanup.
 
 ---
 
