@@ -2301,3 +2301,53 @@ Dashboard receivers **MUST NOT**:
 - Attempt to reconstruct the full Stellar address from the redacted `stellar_address` field.
 - Treat `result.valid: false` as an error — it is a valid terminal state.
 - Cache or persist the `timestamp` as a unique event ID — use `repository` + `issue_number` + `timestamp` together as a composite key.
+
+---
+
+## reason_code Reference (Issue #297)
+
+The `reason_code` output is a machine-readable string that identifies why a validation run produced its result. Dashboard automations and workflow gates that switch on this value are protected by the catalog at [`schemas/reason-codes.json`](../schemas/reason-codes.json) — any rename or removal of a code is a breaking change detected by CI.
+
+### Catalog (v1)
+
+| `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
+|---------------|---------|-----------------|-------------------|-------------------|-------------|
+| `SUCCESS` | ✅ `true` | ✅ | ✅ | ✅ | All checks passed — the account is ready for payout. |
+| `TRUSTLINE_MISSING` | ❌ `false` | ✅ | ❌ | ✅ | Account is funded and meets the reserve, but the required asset trustline is missing. |
+| `RESERVE_TOO_LOW` | ❌ `false` | ✅ | ✅ | ❌ | Account is funded and has a trustline, but the native XLM balance is below the minimum reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ | ✅ | ✅ | Account has the trustline but its limit is below `min_trustline_limit`. Only emitted when `min_trustline_limit` is set. |
+| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned 404 — account does not exist on the network yet. |
+| `HORIZON_TIMEOUT` | ❌ `false` | ❌ | ❌ | ❌ | The Horizon request timed out. Account state could not be determined. |
+| `HORIZON_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned a non-404, non-timeout error (429, 502, 503, 504, etc.). |
+| `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
+| `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
+
+### Switching on reason_code in downstream jobs
+
+```yaml
+- name: TrustBridge check
+  id: tb
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Handle result
+  run: |
+    case "${{ steps.tb.outputs.reason_code }}" in
+      SUCCESS)             echo "Account ready for payout" ;;
+      TRUSTLINE_MISSING)   echo "Contributor needs to add a USDC trustline" ;;
+      RESERVE_TOO_LOW)     echo "Contributor needs more XLM" ;;
+      ACCOUNT_NOT_FUNDED)  echo "Contributor has not funded their account yet" ;;
+      HORIZON_TIMEOUT|HORIZON_ERROR) echo "Horizon unavailable — retry later" ;;
+      TLS_ERROR)           echo "Horizon TLS issue — check the endpoint certificate" ;;
+      *)                   echo "Unknown code: ${{ steps.tb.outputs.reason_code }}" ;;
+    esac
+```
+
+### Versioning guarantee
+
+- `reason_code` values in the catalog above are **immutable** for all v1.x releases.
+- New codes are **additive** — your switch/case should have a `default`/`*` branch.
+- A rename or removal is a **MAJOR** version bump and will appear in [docs/BREAKING_CHANGES.md](BREAKING_CHANGES.md).
+- The CI lock test at `__tests__/reason-codes.test.ts` fails if any known code is renamed in `src/checks.ts` without updating the catalog.
