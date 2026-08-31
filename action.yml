@@ -103,6 +103,25 @@ inputs:
       (1000-60000). Only used when wait_until_funded is true.
     required: false
     default: '5000'
+  use_friendbot:
+    description: >-
+      Automatically call Stellar Friendbot to fund unfunded testnet accounts (Issue #4).
+      Only works when horizon_url points to testnet. Mainnet always refuses friendbot.
+      Requires friendbot_url to be set. Default false (opt-in).
+    required: false
+    default: 'false'
+  friendbot_url:
+    description: >-
+      Friendbot endpoint URL for testnet funding (Issue #4). Must be on the allowlist:
+      https://friendbot.stellar.org, https://horizon-testnet.stellar.org/friendbot.
+      Only used when use_friendbot is true. Leave empty to disable friendbot.
+    required: false
+    default: ''
+  friendbot_timeout_ms:
+    description: >-
+      Friendbot request timeout in milliseconds. Default 15000 (15 seconds).
+    required: false
+    default: '15000'
   horizon_url_fallback:
     description: >-
       Optional fallback Horizon API base URL. When the primary Horizon URL
@@ -573,6 +592,14 @@ outputs:
     description: 'Execution duration of comment posting phase in milliseconds'
   timing_total_ms:
     description: 'Total execution duration in milliseconds'
+
+  # ── Friendbot outputs (Issue #4) ──────────────────────────────────────────
+  friendbot_called:
+    description: 'Whether Friendbot was called during this run (true/false)'
+  friendbot_success:
+    description: 'Whether Friendbot successfully funded the account (true/false)'
+  friendbot_transaction_hash:
+    description: 'Transaction hash from successful Friendbot call, or empty if not called/failed'
 
 runs:
   using: 'node20'
