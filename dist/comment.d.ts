@@ -153,14 +153,53 @@ export declare function buildTruncatedCommentBody(fullBody: string, reportPath: 
  * @internal Exported for testing.
  */
 export declare function writeFullReport(fullBody: string, outputPath: string): string | undefined;
+/**
+ * Explicit comment threading strategy.
+ *
+ * - `'sticky'` — update the existing TrustBridge comment in place (default).
+ * - `'new'`    — always post a fresh top-level comment (full audit trail).
+ * - `'reply'`  — post a reply to the *first* TrustBridge comment in the
+ *                thread, building a chronological chain without overwriting
+ *                the original summary comment.
+ */
+export type CommentMode = 'sticky' | 'new' | 'reply';
+/**
+ * Valid `CommentMode` values — used for input validation.
+ */
+export declare const VALID_COMMENT_MODES: CommentMode[];
+/**
+ * Resolve the effective `CommentMode` from action inputs.
+ *
+ * Priority: `commentMode` input > derive from `sticky` boolean > default `'sticky'`.
+ * Invalid values fall back to `'sticky'` with a warning so the action
+ * never hard-fails due to a misconfigured `comment_mode`.
+ */
+export declare function resolveCommentMode(commentMode: string | undefined, sticky: boolean | undefined): CommentMode;
 export interface UpsertCommentOptions {
     /**
      * When true (default), find and update TrustBridge's previous comment on
      * the issue instead of posting a new one every run. Falls back to
      * creating a new comment when no prior comment is found, or when the
      * lookup itself fails (e.g. transient GitHub API error).
+     *
+     * @deprecated Prefer `commentMode` for explicit control.
      */
     sticky?: boolean;
+    /**
+     * Comment threading strategy (#322).
+     *
+     * - `'sticky'` (default): update the previous TrustBridge comment in place.
+     *   Equivalent to `sticky: true`.
+     * - `'new'`: always post a fresh comment for a full audit trail.
+     *   Equivalent to `sticky: false`.
+     * - `'reply'`: post a reply to the first TrustBridge comment in the thread
+     *   (using `in_reply_to` if the API supports it, else a top-level comment
+     *   that references the parent). Useful when orgs want a chronological
+     *   thread without overwriting the original.
+     *
+     * When set, `commentMode` takes precedence over `sticky`.
+     */
+    commentMode?: CommentMode;
     /**
      * When true, post the comment normally even if snoozed.
      * Useful for maintainers forcing an immediate re-alert.

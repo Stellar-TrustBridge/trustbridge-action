@@ -1,0 +1,196 @@
+# docs/examples/weekly-digest.yml
+#
+# Weekly wallet digest — TrustBridge #324
+#
+# Runs every Sunday at 06:00 UTC. For each open bounty issue it validates the
+# contributor's Stellar wallet silently (no per-issue comment), then posts a
+# single digest comment to a designated tracking issue listing who is ready and
+# who is blocked.
+#
+# Required repository secrets:
+#   TRUSTBRIDGE_TOKEN — fine-grained PAT with issues:write + actions:read
+#
+# Required repository variables (Settings → Variables):
+#   DIGEST_TRACKING_ISSUE — issue number of the pinned "wallet digest" issue
+#   BOUNTY_LABEL          — label applied to bounty issues (default: "bounty")
+
+name: TrustBridge — Weekly Wallet Digest
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'   # Every Sunday at 06:00 UTC
+  workflow_dispatch:       # Manual trigger for testing
+
+env:
+  BOUNTY_LABEL: ${{ vars.BOUNTY_LABEL || 'bounty' }}
+  DIGEST_TRACKING_ISSUE: ${{ vars.DIGEST_TRACKING_ISSUE || '1' }}
+  REVALIDATION_BATCH_SIZE: '50'
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  # ── Step 1: Collect open bounty issues ─────────────────────────────────────
+  collect-issues:
+    name: Collect bounty issues
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - name: List open bounty issues
+        id: list
+        env:
+          GH_TOKEN: ${{ secrets.TRUSTBRIDGE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUES=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "$BOUNTY_LABEL" \
+            --state open \
+            --limit "$REVALIDATION_BATCH_SIZE" \
+            --json number,title,assignees,body)
+
+          # Build a matrix of {number, address, title} objects
+          MATRIX=$(echo "$ISSUES" | jq -c '
+            [ .[] | select(.assignees | length > 0) |
+              . as $issue |
+              (
+                $issue.body // "" |
+                capture("(?i)stellar\\s+address:\\s*(?<addr>[GC][A-Z2-7]{55})") // null
+              ) as $cap |
+              select($cap != null) |
+              {
+                number: $issue.number,
+                address: $cap.addr,
+                title: ($issue.title // "")
+              }
+            ]
+          ')
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Found $(echo "$MATRIX" | jq length) issues with addresses"
+
+  # ── Step 2: Validate each wallet (matrix, no per-issue comment) ────────────
+  validate:
+    name: Validate wallet for issue #${{ matrix.issue.number }}
+    runs-on: ubuntu-latest
+    needs: collect-issues
+    if: needs.collect-issues.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        issue: ${{ fromJson(needs.collect-issues.outputs.matrix) }}
+    outputs:
+      # Each matrix leg writes its result to an artifact for aggregation.
+      result_${{ matrix.issue.number }}: ${{ steps.validate.outputs.ready }}
+    steps:
+      - name: TrustBridge validation (silent — no comment)
+        id: validate
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ matrix.issue.address }}
+          github_token: ${{ secrets.TRUSTBRIDGE_TOKEN || secrets.GITHUB_TOKEN }}
+          fail_on_missing: 'false'
+          # Do not post per-issue comments — the digest handles that.
+          comment_mode: 'off'
+          sticky_comment: 'false'
+          debug_mode: 'false'
+
+      - name: Write result artifact
+        run: |
+          mkdir -p /tmp/digest-results
+          cat > /tmp/digest-results/${{ matrix.issue.number }}.json << 'EOF'
+          {
+            "issueNumber": ${{ matrix.issue.number }},
+            "issueTitle": "${{ matrix.issue.title }}",
+            "address": "${{ matrix.issue.address }}",
+            "ready": "${{ steps.validate.outputs.ready }}",
+            "accountFunded": "${{ steps.validate.outputs.account_funded }}",
+            "trustlineExists": "${{ steps.validate.outputs.trustline_exists }}",
+            "xlmReserveMet": "${{ steps.validate.outputs.check_xlm_reserve }}",
+            "checksJson": ${{ toJson(steps.validate.outputs.checks_json) }}
+          }
+          EOF
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-result-${{ matrix.issue.number }}
+          path: /tmp/digest-results/${{ matrix.issue.number }}.json
+          retention-days: 1
+
+  # ── Step 3: Aggregate results and post digest comment ──────────────────────
+  post-digest:
+    name: Post weekly digest
+    runs-on: ubuntu-latest
+    needs: [collect-issues, validate]
+    if: always() && needs.collect-issues.outputs.matrix != '[]'
+    steps:
+      - name: Download all result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-result-*
+          path: /tmp/digest-results
+          merge-multiple: true
+
+      - name: Build and post digest comment
+        env:
+          GH_TOKEN: ${{ secrets.TRUSTBRIDGE_TOKEN || secrets.GITHUB_TOKEN }}
+          DIGEST_ISSUE: ${{ env.DIGEST_TRACKING_ISSUE }}
+        run: |
+          # Aggregate all result JSONs into a single digest Markdown comment.
+          RESULTS=$(find /tmp/digest-results -name '*.json' | sort | xargs cat | jq -s '.')
+          TOTAL=$(echo "$RESULTS" | jq length)
+          READY=$(echo "$RESULTS" | jq '[.[] | select(.ready == "true")] | length')
+          BLOCKED=$(echo "$RESULTS" | jq '[.[] | select(.ready != "true")] | length')
+          RATE=$(echo "$READY $TOTAL" | awk '{if($2==0) print "0.0"; else printf "%.1f", ($1/$2)*100}')
+
+          NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          # Build Markdown
+          BODY=$(cat << MDEOF
+          <!-- trustbridge-action:digest -->
+          ## TrustBridge — Weekly Wallet Digest
+
+          _Generated: \`$NOW\`_
+
+          ### Summary
+
+          | Metric | Value |
+          | --- | --- |
+          | Total issues checked | **$TOTAL** |
+          | ✅ Ready | **$READY** |
+          | ❌ Blocked | **$BLOCKED** |
+          | Ready rate | **${RATE}%** |
+
+          $(echo "$RESULTS" | jq -r '
+            [ .[] | select(.ready != "true") ] |
+            if length > 0 then
+              "### ❌ Blocked contributors\n\n" +
+              (map("- **#\(.issueNumber)** — \(.issueTitle): `\(.address)` — check your wallet") | join("\n"))
+            else ""
+            end
+          ')
+
+          $(echo "$RESULTS" | jq -r '
+            [ .[] | select(.ready == "true") ] |
+            if length > 0 then
+              "\n### ✅ Ready contributors\n\n" +
+              (map("- **#\(.issueNumber)** — \(.issueTitle): `\(.address)` — ✅ all checks pass") | join("\n"))
+            else ""
+            end
+          ')
+
+          ---
+          _Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_
+          MDEOF
+          )
+
+          # Post or update digest comment on the tracking issue
+          gh issue comment "$DIGEST_ISSUE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "$BODY"
+
+          echo "Digest posted to issue #$DIGEST_ISSUE"
+          echo "Total: $TOTAL | Ready: $READY | Blocked: $BLOCKED | Rate: ${RATE}%"

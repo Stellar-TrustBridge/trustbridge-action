@@ -35992,11 +35992,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
 exports.writeFullReport = writeFullReport;
+exports.resolveCommentMode = resolveCommentMode;
 exports.resolveIssueOrPullRequestNumber = resolveIssueOrPullRequestNumber;
 exports.isTrustBridgeComment = isTrustBridgeComment;
 exports.findStickyComment = findStickyComment;
@@ -36325,6 +36326,31 @@ function writeFullReport(fullBody, outputPath) {
     }
 }
 /**
+ * Valid `CommentMode` values — used for input validation.
+ */
+exports.VALID_COMMENT_MODES = ['sticky', 'new', 'reply'];
+/**
+ * Resolve the effective `CommentMode` from action inputs.
+ *
+ * Priority: `commentMode` input > derive from `sticky` boolean > default `'sticky'`.
+ * Invalid values fall back to `'sticky'` with a warning so the action
+ * never hard-fails due to a misconfigured `comment_mode`.
+ */
+function resolveCommentMode(commentMode, sticky) {
+    if (commentMode) {
+        const normalised = commentMode.trim().toLowerCase();
+        if (exports.VALID_COMMENT_MODES.includes(normalised)) {
+            return normalised;
+        }
+        // Invalid value — warn and fall through to default.
+        core.warning(`Invalid comment_mode value "${commentMode}". Expected one of: ${exports.VALID_COMMENT_MODES.join(', ')}. Falling back to "sticky".`);
+    }
+    // Derive from legacy sticky boolean.
+    if (sticky === false)
+        return 'new';
+    return 'sticky';
+}
+/**
  * Resolve the issue or pull-request number a comment should be posted to.
  *
  * `pull_request` (and `pull_request_target`) events carry the number under
@@ -36468,7 +36494,11 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
     return undefined;
 }
 async function postIssueComment(token, body, options = {}) {
-    const sticky = options.sticky ?? true;
+    // Resolve effective comment mode (#322): commentMode input takes precedence
+    // over legacy sticky boolean.
+    const effectiveMode = resolveCommentMode(options.commentMode, options.sticky);
+    // Map back to sticky boolean for the existing snooze/lookup machinery.
+    const sticky = effectiveMode === 'sticky';
     const forceComment = options.forceComment ?? false;
     const snoozeWindowMs = options.snoozeWindowMs ?? 0;
     const context = github.context;
@@ -36560,13 +36590,39 @@ async function postIssueComment(token, body, options = {}) {
             core.warning(`Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`);
         }
     }
+    // reply mode (#322): find the first TrustBridge comment and post a new
+    // top-level comment that references it. GitHub's issue comment API does not
+    // have a native `in_reply_to` for issue comments (only PR review comments
+    // support that), so we prepend a contextual reference line so readers can
+    // follow the chain. When no prior comment exists, falls through to a plain
+    // new comment.
+    if (effectiveMode === 'reply') {
+        let parentId;
+        try {
+            parentId = await findStickyComment(octokit, owner, repo, issueNumber);
+        }
+        catch (error) {
+            core.debug(`reply mode: could not find parent comment: ${error}`);
+        }
+        const replyBody = parentId
+            ? `> _Reply to [TrustBridge check #${parentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentId})_\n\n${body}`
+            : body;
+        const replyResponse = await octokit.rest.issues.createComment({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            body: replyBody,
+        });
+        core.info(`Posted TrustBridge reply comment on issue #${issueNumber}${parentId ? ` (reply to #${parentId})` : ''}.`);
+        return replyResponse.data.html_url;
+    }
     const response = await octokit.rest.issues.createComment({
         owner,
         repo,
         issue_number: issueNumber,
         body,
     });
-    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
     return response.data.html_url;
 }
 // ---------------------------------------------------------------------------
@@ -37329,6 +37385,8 @@ exports.buildValidationArtifact = buildValidationArtifact;
 exports.formatDeltaMarkdown = formatDeltaMarkdown;
 exports.discoverPreviousValidationArtifact = discoverPreviousValidationArtifact;
 exports.extractFromZip = extractFromZip;
+exports.detectAddressChange = detectAddressChange;
+exports.formatAddressChangeWarning = formatAddressChangeWarning;
 const crypto = __importStar(__nccwpck_require__(6982));
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
@@ -37720,6 +37778,114 @@ function extractFromZip(zipBuffer, targetFileName) {
         offset = dataStart + compressedSize;
     }
     return null;
+}
+/**
+ * Detect whether the Stellar address has changed since the last successful
+ * validation run.
+ *
+ * Strategy:
+ * - When `privacyMode` is **off** (default), addresses are compared and
+ *   stored in plain form (`G…`) in the result for display in the comment.
+ * - When `privacyMode` is **on**, both the current and previous addresses are
+ *   hashed with SHA-256 and only the hashes are compared/stored. This means
+ *   the raw prior address is never placed into a public issue comment.
+ *
+ * Muxed accounts (M…): muxed addresses encode an underlying G-address and a
+ * memo id. Two different muxed addresses over the *same* G-address are treated
+ * as the *same* address for comparison purposes — only the base G-address
+ * (`[GC][A-Z2-7]{55}`) is extracted for comparison.
+ *
+ * First-run handling: when `previousArtifact` is null/undefined (no previous
+ * run), the function returns `changed: false` so the action never emits a
+ * spurious "address changed" warning on first run.
+ *
+ * @param currentAddress     The Stellar address being validated this run.
+ * @param previousArtifact   The loaded previous `validation.json` artifact, or null.
+ * @param privacyMode        When true, hash addresses before comparing/storing.
+ */
+function detectAddressChange(currentAddress, previousArtifact, privacyMode = false) {
+    // Normalise: extract base G/C address (strip muxed M-prefix memo id).
+    const normalise = (addr) => {
+        const match = /([GC][A-Z2-7]{55})/.exec(addr);
+        return match ? match[1] : addr;
+    };
+    const normCurrent = normalise(currentAddress);
+    if (!previousArtifact || !previousArtifact.address) {
+        // First run — no previous address to compare.
+        return {
+            changed: false,
+            previousAddress: null,
+            currentAddress: privacyMode ? hashAddressForPrivacy(normCurrent) : normCurrent,
+            privacyMode,
+        };
+    }
+    // The stored address in the artifact may already be hashed (if a prior run
+    // used privacy mode). Detect this by checking for the sha256: prefix.
+    const previousRaw = previousArtifact.address;
+    const previousIsHashed = previousRaw.startsWith('sha256:');
+    let addressesMatch;
+    let displayPrevious;
+    let displayCurrent;
+    if (privacyMode) {
+        // Compare hashes — always safe to log.
+        const currentHash = hashAddressForPrivacy(normCurrent);
+        const previousHash = previousIsHashed
+            ? previousRaw
+            : hashAddressForPrivacy(normalise(previousRaw));
+        addressesMatch = currentHash === previousHash;
+        displayPrevious = previousHash;
+        displayCurrent = currentHash;
+    }
+    else {
+        // Compare plain addresses (normalised). If the previous was hashed we
+        // cannot reverse it — treat as different to be conservative.
+        if (previousIsHashed) {
+            // Previous was hashed, current is not — we can't compare directly.
+            // Treat as possibly changed; surface a note in the comment.
+            addressesMatch = false;
+            displayPrevious = previousRaw; // keep hash for display
+            displayCurrent = normCurrent;
+        }
+        else {
+            const normPrevious = normalise(previousRaw);
+            addressesMatch = normCurrent === normPrevious;
+            displayPrevious = normPrevious;
+            displayCurrent = normCurrent;
+        }
+    }
+    return {
+        changed: !addressesMatch,
+        previousAddress: displayPrevious,
+        currentAddress: displayCurrent,
+        privacyMode,
+    };
+}
+/**
+ * Render a Markdown warning section for the issue comment when an address
+ * change is detected.
+ *
+ * Returns an empty string when `changeResult.changed` is false so callers
+ * can unconditionally append the result.
+ */
+function formatAddressChangeWarning(changeResult) {
+    if (!changeResult.changed)
+        return '';
+    const prevDisplay = changeResult.previousAddress ?? '_unknown_';
+    const currDisplay = changeResult.currentAddress;
+    const privacyNote = changeResult.privacyMode
+        ? ' _(addresses shown as privacy hashes — raw values not stored)_'
+        : '';
+    return [
+        '### ⚠️ Stellar address changed',
+        '',
+        '> **The Stellar address being validated has changed since the last run.**',
+        `> Previous: \`${prevDisplay}\`${privacyNote}`,
+        `> Current:  \`${currDisplay}\``,
+        '>',
+        '> If this change was intentional (e.g. you rotated your wallet), no action',
+        '> is required — the new address will be validated normally.',
+        '> If unexpected, verify that the correct address is submitted in the issue.',
+    ].join('\n');
 }
 
 
@@ -42183,6 +42349,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildConflictReport = buildConflictReport;
+exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
 exports.writeValidationJson = writeValidationJson;
@@ -42191,6 +42359,77 @@ const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const badge_1 = __nccwpck_require__(3120);
 const delta_1 = __nccwpck_require__(1493);
+/**
+ * Build a `ConflictReport` from a map of field → sources.
+ * A conflict exists when a field has values from ≥ 2 sources that disagree.
+ *
+ * @param fieldSources  Map from field name to an array of `ConflictSource` items.
+ * @param privacyMode   When true, address values are masked to first4…last4.
+ * @param now           ISO-8601 timestamp override for testing.
+ */
+function buildConflictReport(fieldSources, options = {}) {
+    const privacyMode = Boolean(options.privacyMode);
+    const generatedAt = options.now ?? new Date().toISOString();
+    const conflicts = [];
+    for (const [field, sources] of Object.entries(fieldSources)) {
+        if (!sources || sources.length < 2)
+            continue;
+        // Mask values if privacy mode — redact G/C addresses to first4…last4.
+        const maskedSources = sources.map((s) => ({
+            source: s.source,
+            value: privacyMode ? maskConflictValue(s.value) : s.value,
+        }));
+        const uniqueValues = new Set(maskedSources.map((s) => s.value));
+        if (uniqueValues.size <= 1)
+            continue; // All sources agree — no conflict.
+        // The first source in the array is the winner (caller must supply in
+        // precedence order: workflow_input > assignee_map > contract > config_file).
+        const resolvedValue = maskedSources[0].value;
+        conflicts.push({ field, resolvedValue, sources: maskedSources });
+    }
+    return {
+        hasConflicts: conflicts.length > 0,
+        conflicts,
+        generatedAt,
+    };
+}
+/**
+ * Mask a value for privacy mode.
+ * Redacts G/C Stellar addresses to first4…last4; leaves other values intact.
+ */
+function maskConflictValue(value) {
+    return value.replace(/\b([GC][A-Z2-7]{55})\b/g, (addr) => {
+        return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+    });
+}
+/**
+ * Format a `ConflictReport` as a Markdown section for embedding in an issue
+ * comment.
+ *
+ * Returns an empty string when there are no conflicts so callers can
+ * unconditionally append the result.
+ */
+function formatConflictReportMarkdown(report) {
+    if (!report || !report.hasConflicts)
+        return '';
+    const lines = [
+        '### ⚠️ Input source conflicts detected',
+        '',
+        '> Two or more sources provided different values for the same input field.',
+        '> The value with the highest precedence (`workflow_input` > `assignee_map` > `contract` > `config_file`) was used.',
+        '',
+        '| Field | Resolved value | Sources |',
+        '| --- | --- | --- |',
+    ];
+    for (const conflict of report.conflicts) {
+        const sourceSummary = conflict.sources
+            .map((s) => `\`${s.source}\`: \`${s.value}\``)
+            .join(', ');
+        lines.push(`| \`${conflict.field}\` | \`${conflict.resolvedValue}\` | ${sourceSummary} |`);
+    }
+    lines.push('');
+    return lines.join('\n');
+}
 function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const timings = extras.timings ?? {};
     const validatedAt = extras.validatedAt ?? new Date().toISOString();
@@ -42231,6 +42470,11 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         timing_total_ms: String(timings.total_ms ?? 0),
         num_sponsoring: String(result.sponsorshipInfo?.numSponsoring ?? 0),
         num_sponsored: String(result.sponsorshipInfo?.numSponsored ?? 0),
+        // #319 — conflict report
+        conflict_report: extras.conflictReport
+            ? JSON.stringify(extras.conflictReport)
+            : '',
+        has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
     };
 }
 function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
@@ -44362,13 +44606,17 @@ async function fetchSSRFSafe(urlStr, options = {}) {
 /***/ }),
 
 /***/ 8855:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DIGEST_MAX_LISTED_ISSUES = void 0;
 exports.summarizeChecks = summarizeChecks;
 exports.formatFailureSummary = formatFailureSummary;
+exports.aggregateDigest = aggregateDigest;
+exports.formatDigestComment = formatDigestComment;
+const delta_1 = __nccwpck_require__(1493);
 function summarizeChecks(result) {
     const failedLabels = result.checks
         .filter((check) => !check.passed)
@@ -44385,6 +44633,404 @@ function formatFailureSummary(result) {
     return summary.failedLabels.length > 0
         ? summary.failedLabels.join(', ')
         : 'none';
+}
+/**
+ * Maximum number of entries listed per section in the Markdown digest.
+ * Caps the comment size on large Wave issues (e.g. 200+ contributors).
+ */
+exports.DIGEST_MAX_LISTED_ISSUES = 50;
+/**
+ * Aggregate multiple `DigestEntry` items into a `DigestReport`.
+ *
+ * - When `privacyMode` is true, addresses are hashed (sha256 prefix) in the
+ *   report so the digest can be posted publicly without leaking contributor
+ *   addresses.
+ * - Entries are capped at `DIGEST_MAX_LISTED_ISSUES` per section to keep
+ *   comment size within GitHub limits.
+ *
+ * @param entries  One entry per issue/address validation run.
+ * @param options  Aggregation options.
+ */
+function aggregateDigest(entries, options = {}) {
+    const privacyMode = Boolean(options.privacyMode);
+    const generatedAt = options.now ?? new Date().toISOString();
+    // Apply privacy masking to addresses only when privacyMode is on.
+    const maskedEntries = entries.map((entry) => ({
+        ...entry,
+        stellarAddress: privacyMode
+            ? (0, delta_1.privacyMaskAddress)(entry.stellarAddress, true)
+            : entry.stellarAddress,
+    }));
+    const readyEntries = maskedEntries.filter((e) => e.result.valid);
+    const blockedEntries = maskedEntries.filter((e) => !e.result.valid);
+    const totalIssues = maskedEntries.length;
+    const readyCount = readyEntries.length;
+    const blockedCount = blockedEntries.length;
+    const readyRateNum = totalIssues > 0 ? (readyCount / totalIssues) * 100 : 0;
+    const readyRate = `${readyRateNum.toFixed(1)}%`;
+    return {
+        totalIssues,
+        readyCount,
+        blockedCount,
+        readyRate,
+        readyEntries: readyEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
+        blockedEntries: blockedEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
+        generatedAt,
+        privacyMode,
+    };
+}
+/**
+ * Format a `DigestReport` as a Markdown string suitable for posting as a
+ * GitHub issue comment.
+ *
+ * - Lists ready and blocked contributors with their issue numbers and
+ *   (optionally redacted) addresses.
+ * - Caps each section at `DIGEST_MAX_LISTED_ISSUES` with a note when
+ *   truncated.
+ * - Includes a machine-readable gate summary (ready/blocked counts).
+ */
+function formatDigestComment(report) {
+    const lines = [
+        '<!-- trustbridge-action:digest -->',
+        '## TrustBridge — Weekly Wallet Digest',
+        '',
+        `_Generated: \`${report.generatedAt}\`_`,
+        `_Privacy mode: ${report.privacyMode ? '**on** (addresses hashed)' : 'off'}_`,
+        '',
+        '### Summary',
+        '',
+        `| Metric | Value |`,
+        `| --- | --- |`,
+        `| Total issues checked | **${report.totalIssues}** |`,
+        `| ✅ Ready | **${report.readyCount}** |`,
+        `| ❌ Blocked | **${report.blockedCount}** |`,
+        `| Ready rate | **${report.readyRate}** |`,
+        '',
+    ];
+    // Blocked section
+    if (report.blockedEntries.length > 0) {
+        lines.push('### ❌ Blocked contributors', '');
+        for (const entry of report.blockedEntries) {
+            const failedLabels = entry.result.checks
+                .filter((c) => !c.passed)
+                .map((c) => c.label)
+                .join(', ');
+            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
+            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ❌ ${failedLabels}`);
+        }
+        if (report.blockedCount > exports.DIGEST_MAX_LISTED_ISSUES) {
+            lines.push(`- _… and ${report.blockedCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
+        }
+        lines.push('');
+    }
+    // Ready section
+    if (report.readyEntries.length > 0) {
+        lines.push('### ✅ Ready contributors', '');
+        for (const entry of report.readyEntries) {
+            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
+            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ✅ all checks pass`);
+        }
+        if (report.readyCount > exports.DIGEST_MAX_LISTED_ISSUES) {
+            lines.push(`- _… and ${report.readyCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
+        }
+        lines.push('');
+    }
+    lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
+    return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
 }
 
 

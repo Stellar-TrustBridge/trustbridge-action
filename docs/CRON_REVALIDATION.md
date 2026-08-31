@@ -170,3 +170,45 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and [ERROR_HANDLING.md](ERROR_HANDL
 ---
 
 [← Back to USAGE](USAGE.md) · [← Back to README](../README.md)
+
+---
+
+## Weekly digest mode (#324)
+
+Per-run comments on every CRON re-validation create noise. The digest mode aggregates all re-validation results into a single summary comment posted to a designated tracking issue once per week (or on any schedule you choose).
+
+### What the digest does
+
+- Runs TrustBridge for every open bounty issue.
+- Collects each result in memory (no per-issue comments posted).
+- Posts **one** summary comment to a tracking issue listing:
+  - Total issues validated, ready count, blocked count, and ready rate.
+  - A per-contributor breakdown (issue number, address, failed checks).
+  - Redacted addresses when `privacy_mode: true` (SHA-256 hashes).
+  - Capped at 50 entries per section to respect GitHub comment size limits.
+
+### Example workflow
+
+See [`docs/examples/weekly-digest.yml`](examples/weekly-digest.yml) for a copy-paste ready workflow.
+
+Key inputs for digest mode:
+
+| Input | Recommended value | Reason |
+|-------|-------------------|--------|
+| `fail_on_missing` | `false` | Keep the digest job green |
+| `sticky_comment` | `false` | Per-issue, no comment to post |
+| `comment_mode` | `new` | Per-issue, no comment to post |
+
+### Size limits and PII
+
+- The digest is capped at `DIGEST_MAX_LISTED_ISSUES = 50` entries per section.
+  When there are more contributors, the comment includes a `… and N more` note.
+- Set `privacy_mode: true` on the TrustBridge runs to hash all addresses before
+  they enter the digest. Hashed addresses cannot be reversed but remain
+  correlatable across digest runs (same address → same hash).
+
+### Validate
+
+```bash
+npm test -- --testPathPattern 'summary'
+```

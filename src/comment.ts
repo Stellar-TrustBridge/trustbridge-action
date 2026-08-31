@@ -581,14 +581,77 @@ export function writeFullReport(
   }
 }
 
+// ---------------------------------------------------------------------------
+// #322 — Comment threading / reply mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Explicit comment threading strategy.
+ *
+ * - `'sticky'` — update the existing TrustBridge comment in place (default).
+ * - `'new'`    — always post a fresh top-level comment (full audit trail).
+ * - `'reply'`  — post a reply to the *first* TrustBridge comment in the
+ *                thread, building a chronological chain without overwriting
+ *                the original summary comment.
+ */
+export type CommentMode = 'sticky' | 'new' | 'reply';
+
+/**
+ * Valid `CommentMode` values — used for input validation.
+ */
+export const VALID_COMMENT_MODES: CommentMode[] = ['sticky', 'new', 'reply'];
+
+/**
+ * Resolve the effective `CommentMode` from action inputs.
+ *
+ * Priority: `commentMode` input > derive from `sticky` boolean > default `'sticky'`.
+ * Invalid values fall back to `'sticky'` with a warning so the action
+ * never hard-fails due to a misconfigured `comment_mode`.
+ */
+export function resolveCommentMode(
+  commentMode: string | undefined,
+  sticky: boolean | undefined,
+): CommentMode {
+  if (commentMode) {
+    const normalised = commentMode.trim().toLowerCase() as CommentMode;
+    if (VALID_COMMENT_MODES.includes(normalised)) {
+      return normalised;
+    }
+    // Invalid value — warn and fall through to default.
+    core.warning(
+      `Invalid comment_mode value "${commentMode}". Expected one of: ${VALID_COMMENT_MODES.join(', ')}. Falling back to "sticky".`,
+    );
+  }
+  // Derive from legacy sticky boolean.
+  if (sticky === false) return 'new';
+  return 'sticky';
+}
+
 export interface UpsertCommentOptions {
   /**
    * When true (default), find and update TrustBridge's previous comment on
    * the issue instead of posting a new one every run. Falls back to
    * creating a new comment when no prior comment is found, or when the
    * lookup itself fails (e.g. transient GitHub API error).
+   *
+   * @deprecated Prefer `commentMode` for explicit control.
    */
   sticky?: boolean;
+  /**
+   * Comment threading strategy (#322).
+   *
+   * - `'sticky'` (default): update the previous TrustBridge comment in place.
+   *   Equivalent to `sticky: true`.
+   * - `'new'`: always post a fresh comment for a full audit trail.
+   *   Equivalent to `sticky: false`.
+   * - `'reply'`: post a reply to the first TrustBridge comment in the thread
+   *   (using `in_reply_to` if the API supports it, else a top-level comment
+   *   that references the parent). Useful when orgs want a chronological
+   *   thread without overwriting the original.
+   *
+   * When set, `commentMode` takes precedence over `sticky`.
+   */
+  commentMode?: CommentMode;
   /**
    * When true, post the comment normally even if snoozed.
    * Useful for maintainers forcing an immediate re-alert.
@@ -842,7 +905,14 @@ export async function postIssueComment(
   body: string,
   options: UpsertCommentOptions = {},
 ): Promise<string | undefined> {
-  const sticky = options.sticky ?? true;
+  // Resolve effective comment mode (#322): commentMode input takes precedence
+  // over legacy sticky boolean.
+  const effectiveMode = resolveCommentMode(
+    options.commentMode,
+    options.sticky,
+  );
+  // Map back to sticky boolean for the existing snooze/lookup machinery.
+  const sticky = effectiveMode === 'sticky';
   const forceComment = options.forceComment ?? false;
   const snoozeWindowMs = options.snoozeWindowMs ?? 0;
   const context = github.context;
@@ -973,6 +1043,35 @@ export async function postIssueComment(
     }
   }
 
+  // reply mode (#322): find the first TrustBridge comment and post a new
+  // top-level comment that references it. GitHub's issue comment API does not
+  // have a native `in_reply_to` for issue comments (only PR review comments
+  // support that), so we prepend a contextual reference line so readers can
+  // follow the chain. When no prior comment exists, falls through to a plain
+  // new comment.
+  if (effectiveMode === 'reply') {
+    let parentId: number | undefined;
+    try {
+      parentId = await findStickyComment(octokit, owner, repo, issueNumber);
+    } catch (error) {
+      core.debug(`reply mode: could not find parent comment: ${error}`);
+    }
+    const replyBody = parentId
+      ? `> _Reply to [TrustBridge check #${parentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentId})_\n\n${body}`
+      : body;
+
+    const replyResponse = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body: replyBody,
+    });
+    core.info(
+      `Posted TrustBridge reply comment on issue #${issueNumber}${parentId ? ` (reply to #${parentId})` : ''}.`,
+    );
+    return replyResponse.data.html_url;
+  }
+
   const response = await octokit.rest.issues.createComment({
     owner,
     repo,
@@ -980,7 +1079,7 @@ export async function postIssueComment(
     body,
   });
 
-  core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+  core.info(`Posted TrustBridge comment on issue #${issueNumber}`);
   return response.data.html_url;
 }
 

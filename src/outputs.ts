@@ -25,14 +25,131 @@ export interface ActionOutputExtras {
   assetIssuer?: string;
   timings?: ActionTimings;
   validatedAt?: string;
-  /** Optional assignee login for matrix-friendly outputs (Issue #3). */
-  assigneeLogin?: string;
-  /** Optional stellar address for matrix-friendly outputs (Issue #3). */
-  stellarAddress?: string;
-  /** Friendbot call information (Issue #4). */
-  friendbotCalled?: boolean;
-  friendbotSuccess?: boolean;
-  friendbotTransactionHash?: string;
+  /**
+   * #319 — Conflict report to embed in outputs. When present,
+   * `conflict_report` and `has_conflicts` outputs are set accordingly.
+   */
+  conflictReport?: ConflictReport | null;
+}
+
+// ---------------------------------------------------------------------------
+// #319 — Merge-resolution conflict report
+// ---------------------------------------------------------------------------
+
+/**
+ * A single source that provided a value for a given field.
+ */
+export interface ConflictSource {
+  /** Symbolic source name: 'workflow_input' | 'assignee_map' | 'contract' | 'config_file'. */
+  source: string;
+  /** The raw value provided by this source (redacted if privacyMode). */
+  value: string;
+}
+
+/**
+ * A detected conflict — two or more sources disagree on the same field.
+ */
+export interface ConflictEntry {
+  /** The field that has conflicting values (e.g. 'stellar_address', 'asset_issuer'). */
+  field: string;
+  /** The value that was ultimately used (winning source according to precedence). */
+  resolvedValue: string;
+  /** All sources that provided a value, including the winner. */
+  sources: ConflictSource[];
+}
+
+/**
+ * Complete conflict report for a single run.
+ */
+export interface ConflictReport {
+  /** True when at least one conflict was found. */
+  hasConflicts: boolean;
+  /** List of individual field conflicts. Empty when `hasConflicts` is false. */
+  conflicts: ConflictEntry[];
+  /** ISO-8601 timestamp. */
+  generatedAt: string;
+}
+
+/**
+ * Build a `ConflictReport` from a map of field → sources.
+ * A conflict exists when a field has values from ≥ 2 sources that disagree.
+ *
+ * @param fieldSources  Map from field name to an array of `ConflictSource` items.
+ * @param privacyMode   When true, address values are masked to first4…last4.
+ * @param now           ISO-8601 timestamp override for testing.
+ */
+export function buildConflictReport(
+  fieldSources: Record<string, ConflictSource[]>,
+  options: { privacyMode?: boolean; now?: string } = {},
+): ConflictReport {
+  const privacyMode = Boolean(options.privacyMode);
+  const generatedAt = options.now ?? new Date().toISOString();
+  const conflicts: ConflictEntry[] = [];
+
+  for (const [field, sources] of Object.entries(fieldSources)) {
+    if (!sources || sources.length < 2) continue;
+
+    // Mask values if privacy mode — redact G/C addresses to first4…last4.
+    const maskedSources: ConflictSource[] = sources.map((s) => ({
+      source: s.source,
+      value: privacyMode ? maskConflictValue(s.value) : s.value,
+    }));
+
+    const uniqueValues = new Set(maskedSources.map((s) => s.value));
+    if (uniqueValues.size <= 1) continue; // All sources agree — no conflict.
+
+    // The first source in the array is the winner (caller must supply in
+    // precedence order: workflow_input > assignee_map > contract > config_file).
+    const resolvedValue = maskedSources[0]!.value;
+    conflicts.push({ field, resolvedValue, sources: maskedSources });
+  }
+
+  return {
+    hasConflicts: conflicts.length > 0,
+    conflicts,
+    generatedAt,
+  };
+}
+
+/**
+ * Mask a value for privacy mode.
+ * Redacts G/C Stellar addresses to first4…last4; leaves other values intact.
+ */
+function maskConflictValue(value: string): string {
+  return value.replace(/\b([GC][A-Z2-7]{55})\b/g, (addr) => {
+    return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+  });
+}
+
+/**
+ * Format a `ConflictReport` as a Markdown section for embedding in an issue
+ * comment.
+ *
+ * Returns an empty string when there are no conflicts so callers can
+ * unconditionally append the result.
+ */
+export function formatConflictReportMarkdown(report: ConflictReport | null | undefined): string {
+  if (!report || !report.hasConflicts) return '';
+
+  const lines: string[] = [
+    '### ⚠️ Input source conflicts detected',
+    '',
+    '> Two or more sources provided different values for the same input field.',
+    '> The value with the highest precedence (`workflow_input` > `assignee_map` > `contract` > `config_file`) was used.',
+    '',
+    '| Field | Resolved value | Sources |',
+    '| --- | --- | --- |',
+  ];
+
+  for (const conflict of report.conflicts) {
+    const sourceSummary = conflict.sources
+      .map((s) => `\`${s.source}\`: \`${s.value}\``)
+      .join(', ');
+    lines.push(`| \`${conflict.field}\` | \`${conflict.resolvedValue}\` | ${sourceSummary} |`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 export interface ActionOutputs {
@@ -66,17 +183,18 @@ export interface ActionOutputs {
   timing_total_ms: string;
   num_sponsoring: string;
   num_sponsored: string;
-  // Network passphrase mismatch (Issue #2)
-  network_passphrase_mismatch: string;
-  expected_network_passphrase: string;
-  actual_network_passphrase: string;
-  // Matrix-friendly outputs (Issue #3)
-  assignee_results_json: string;
-  matrix_ready_map: string;
-  // Friendbot outputs (Issue #4)
-  friendbot_called: string;
-  friendbot_success: string;
-  friendbot_transaction_hash: string;
+  /**
+   * #319 — Merge-resolution conflict report.
+   * JSON string listing sources that disagree on the Stellar address or
+   * validation inputs (e.g. workflow input vs assignee-map vs contract).
+   * Empty string (`""`) when there are no conflicts.
+   */
+  conflict_report: string;
+  /**
+   * #319 — True when at least one source conflict was detected this run.
+   * Allows downstream steps to gate on `steps.trustbridge.outputs.has_conflicts == 'true'`.
+   */
+  has_conflicts: string;
 }
 
 export function toActionOutputs(
@@ -150,14 +268,11 @@ export function toActionOutputs(
     timing_total_ms: String(timings.total_ms ?? 0),
     num_sponsoring: String(result.sponsorshipInfo?.numSponsoring ?? 0),
     num_sponsored: String(result.sponsorshipInfo?.numSponsored ?? 0),
-    network_passphrase_mismatch: mismatch ? 'true' : 'false',
-    expected_network_passphrase: mismatch?.expectedPassphrase ?? '',
-    actual_network_passphrase: mismatch?.actualPassphrase ?? '',
-    assignee_results_json: assigneeResultsJson,
-    matrix_ready_map: matrixReadyMap,
-    friendbot_called: String(extras.friendbotCalled ?? false),
-    friendbot_success: String(extras.friendbotSuccess ?? false),
-    friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
+    // #319 — conflict report
+    conflict_report: extras.conflictReport
+      ? JSON.stringify(extras.conflictReport)
+      : '',
+    has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
   };
 }
 
