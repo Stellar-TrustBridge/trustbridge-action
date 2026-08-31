@@ -27,10 +27,11 @@ import {
   evaluateSnoozeState,
   evaluateCombinedSnoozeState,
   CommentReaction,
-} from "./snooze";
-import { buildDiagnosticsBlock, DiagnosticsConfig } from "./diagnostics";
-import { Locale, getStrings } from "./i18n";
-import { formatDeltaMarkdown, ValidationDelta } from "./delta";
+} from './snooze';
+import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
+import { Locale, getStrings } from './i18n';
+import { formatDeltaMarkdown, ValidationDelta } from './delta';
+import { getOctokitProxyOptions } from './proxy';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -940,7 +941,8 @@ export async function postIssueComment(
   // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
   // Passing it explicitly here is what makes comment posting work on GHES
   // instead of silently calling the wrong (public) API host.
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+  const proxyOpts = getOctokitProxyOptions(context.apiUrl);
+  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl, ...proxyOpts });
   const { owner, repo } = context.repo;
 
   let existingCommentId: number | undefined;
@@ -1264,7 +1266,8 @@ export async function postDiscussionComment(
     return undefined;
   }
 
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+  const proxyOpts2 = getOctokitProxyOptions(context.apiUrl);
+  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl, ...proxyOpts2 });
 
   let existingComment: DiscussionCommentNode | undefined;
   if (sticky) {

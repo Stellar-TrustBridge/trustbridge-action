@@ -17,6 +17,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ValidationResult } from './checks';
 import { logger } from './logger';
+import { getOctokitProxyOptions } from './proxy';
 
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 
@@ -120,8 +121,7 @@ export async function createCheckRun(
       };
     }
 
-    const octokit = github.getOctokit(token);
-    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(token, getOctokitProxyOptions());    const { owner, repo } = github.context.repo;
     const conclusion = determineCheckConclusion(result);
     const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
 

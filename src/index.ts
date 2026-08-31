@@ -79,7 +79,7 @@ import {
 } from './batch';
 import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
 import { DiagnosticsConfig } from './diagnostics';
-import { loadCodeowners, isMaintainerActor } from './codeowners';
+import { getOctokitProxyOptions } from './proxy';
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -1665,8 +1665,7 @@ async function run(): Promise<void> {
     if (issueNumber) {
       const { owner, repo } = github.context.repo;
       try {
-        const octokit = github.getOctokit(githubToken);
-        const labelResult = await applyWalletLabels(
+        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());        const labelResult = await applyWalletLabels(
           octokit,
           owner,
           repo,
@@ -1731,7 +1730,7 @@ async function run(): Promise<void> {
   if (unassignOnNotReady && result && !result.valid) {
     const issueNumber = github.context.payload.issue?.number;
     const { owner, repo } = github.context.repo;
-    const octokit = github.getOctokit(githubToken);
+    const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
     await handleAutoUnassign({
       octokit,
       owner,
