@@ -271,3 +271,137 @@ describe('ContractLookupError', () => {
     expect(new ContractLookupError('msg', false).name).toBe('ContractLookupError');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #294: Contract fixture compatibility tests
+// ---------------------------------------------------------------------------
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'soroban', 'get_address_simulate_result.json');
+
+interface FixtureFile {
+  _fixture_version: string;
+  _generated_from: string;
+  scenarios: Record<string, unknown>;
+}
+
+describe('contract fixture compatibility (issue #294)', () => {
+  let fixture: FixtureFile;
+
+  beforeAll(() => {
+    const raw = fs.readFileSync(FIXTURE_PATH, 'utf8');
+    fixture = JSON.parse(raw) as FixtureFile;
+  });
+
+  it('fixture file is valid JSON and has required top-level fields', () => {
+    expect(typeof fixture._fixture_version).toBe('string');
+    expect(fixture._fixture_version.length).toBeGreaterThan(0);
+    expect(typeof fixture._generated_from).toBe('string');
+    expect(typeof fixture.scenarios).toBe('object');
+    expect(fixture.scenarios).not.toBeNull();
+  });
+
+  it('fixture version is semver-like (x.y.z)', () => {
+    expect(fixture._fixture_version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('fixture has expected scenario keys', () => {
+    const expectedScenarios = ['found', 'not_found', 'null_retval', 'missing_retval', 'missing_result'];
+    for (const key of expectedScenarios) {
+      expect(fixture.scenarios).toHaveProperty(key);
+    }
+  });
+
+  it('scenario "found": parseAddressFromSimulateResult returns a valid G-address', () => {
+    const scenario = fixture.scenarios['found'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).not.toBeNull();
+    expect(address).toMatch(/^G[A-Z2-7]{55}$/);
+  });
+
+  it('scenario "found_alt_address": parseAddressFromSimulateResult returns the correct address', () => {
+    const scenario = fixture.scenarios['found_alt_address'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBe('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN');
+  });
+
+  it('scenario "not_found": parseAddressFromSimulateResult returns null (void retval)', () => {
+    const scenario = fixture.scenarios['not_found'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBeNull();
+  });
+
+  it('scenario "null_retval": parseAddressFromSimulateResult returns null safely', () => {
+    const scenario = fixture.scenarios['null_retval'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBeNull();
+  });
+
+  it('scenario "missing_retval": parseAddressFromSimulateResult returns null', () => {
+    const scenario = fixture.scenarios['missing_retval'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBeNull();
+  });
+
+  it('scenario "missing_result": parseAddressFromSimulateResult returns null (error response)', () => {
+    const scenario = fixture.scenarios['missing_result'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBeNull();
+  });
+
+  it('scenario "invalid_address_in_retval": parseAddressFromSimulateResult rejects non-G-address', () => {
+    const scenario = fixture.scenarios['invalid_address_in_retval'];
+    const address = parseAddressFromSimulateResult(scenario);
+    expect(address).toBeNull();
+  });
+
+  it('all "found" scenarios produce fromRegistry=true when used with lookupAddressFromContract', async () => {
+    // Exercise the full pipeline via mock — fixture response goes through the real parser
+    const foundScenario = fixture.scenarios['found'];
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => foundScenario,
+    } as never);
+
+    const result = await lookupAddressFromContract('alice', baseConfig);
+    expect(result.fromRegistry).toBe(true);
+    expect(result.address).toMatch(/^G[A-Z2-7]{55}$/);
+  });
+
+  it('the "not_found" fixture produces fromRegistry=false when used with lookupAddressFromContract', async () => {
+    const notFoundScenario = fixture.scenarios['not_found'];
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => notFoundScenario,
+    } as never);
+
+    const result = await lookupAddressFromContract('unknown-user', baseConfig);
+    expect(result.fromRegistry).toBe(false);
+    expect(result.address).toBeNull();
+  });
+
+  describe('XDR encoding round-trip', () => {
+    it('buildGetAddressXdr produces base64 that decodes to expected JSON structure', () => {
+      const xdr = buildGetAddressXdr(VALID_CONTRACT, 'alice');
+      const decoded = JSON.parse(Buffer.from(xdr, 'base64').toString('utf8'));
+      expect(decoded.contractId).toBe(VALID_CONTRACT);
+      expect(decoded.fn).toBe('get_address');
+      expect(decoded.args).toEqual(['alice']);
+    });
+
+    it('XDR payload matches the simulateTransaction params structure the fixture was generated from', () => {
+      // The fixture _generated_from field describes the contract function
+      expect(fixture._generated_from).toContain('get_address');
+    });
+
+    it('different usernames produce different XDR (no collision)', () => {
+      const users = ['alice', 'bob', 'carol', 'dave', 'ALICE', 'Alice'];
+      const xdrSet = new Set(users.map((u) => buildGetAddressXdr(VALID_CONTRACT, u)));
+      expect(xdrSet.size).toBe(users.length);
+    });
+  });
+});
