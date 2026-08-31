@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload checksum manifest to Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: trustbridge-checksums.txt
         env:
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload SBOM to Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: trustbridge-sbom.json
         env:
