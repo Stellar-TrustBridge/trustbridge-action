@@ -3345,6 +3345,7 @@ The `reason_code` output is a machine-readable string that identifies why a vali
 | `HORIZON_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned a non-404, non-timeout error (429, 502, 503, 504, etc.). |
 | `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
 | `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
+| `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ | ❌ | ❌ | Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed. |
 
 ### Switching on reason_code in downstream jobs
 
@@ -3365,6 +3366,7 @@ The `reason_code` output is a machine-readable string that identifies why a vali
       ACCOUNT_NOT_FUNDED)  echo "Contributor has not funded their account yet" ;;
       HORIZON_TIMEOUT|HORIZON_ERROR) echo "Horizon unavailable — retry later" ;;
       TLS_ERROR)           echo "Horizon TLS issue — check the endpoint certificate" ;;
+      MILESTONE_GATE_SKIPPED) echo "Milestone gate skipped — issue milestone not in allowlist" ;;
       *)                   echo "Unknown code: ${{ steps.tb.outputs.reason_code }}" ;;
     esac
 ```

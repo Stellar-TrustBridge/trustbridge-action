@@ -94,6 +94,16 @@
       "valid": false,
       "emittedBy": "src/checks.ts (runValidationChecks fallback when no specific code applies)",
       "since": "v1"
+    },
+    {
+      "code": "MILESTONE_GATE_SKIPPED",
+      "description": "The milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/index.ts (milestone gate logic)",
+      "since": "v1"
     }
   ]
 }
