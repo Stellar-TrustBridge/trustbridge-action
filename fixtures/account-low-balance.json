@@ -1,0 +1,24 @@
+{
+  "id": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  "account_id": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  "sequence": "123456789",
+  "subentry_count": 1,
+  "num_sponsoring": 0,
+  "num_sponsored": 0,
+  "balances": [
+    {
+      "balance": "0.5000000",
+      "asset_type": "native",
+      "buying_liabilities": "0.0000000",
+      "selling_liabilities": "0.0000000"
+    },
+    {
+      "balance": "0.0000000",
+      "asset_type": "credit_alphanum4",
+      "asset_code": "USDC",
+      "asset_issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      "buying_liabilities": "0.0000000",
+      "selling_liabilities": "0.0000000"
+    }
+  ]
+}

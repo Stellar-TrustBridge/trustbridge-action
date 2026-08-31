@@ -39848,6 +39848,10 @@ async function run() {
     }
     const commentMode = commentModeRaw;
     const shouldPostComment = commentMode === 'post';
+    // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
+    // instead of calling live Horizon. No network call is made.
+    const fixtureMode = (0, inputs_1.parseBooleanInput)(core.getInput('fixture_mode'), false);
+    const fixturePath = core.getInput('fixture_path') || '';
     // Signed dashboard webhook (Issue #101)
     // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
     const webhookUrl = core.getInput('webhook_url') || core.getInput('dashboard_webhook_url') || '';
@@ -40227,75 +40231,105 @@ async function run() {
     let horizonFetchLatencyMs = 0;
     let horizonFetchStatusCode;
     let horizonFetchError;
-    try {
-        account = waitUntilFunded
-            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
-                timeoutMs: waitUntilFundedTimeoutMs,
-                pollIntervalMs: waitUntilFundedIntervalMs,
-                requestTimeoutMs: horizonTimeoutMs,
-                signal: jobController.signal,
-                onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
-                    component: 'index',
-                    attempt,
-                    elapsedMs,
-                }),
-            }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
-            : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
-        horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-        horizonFetchStatusCode = 200;
-        metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        result = await (0, checks_1.runAccountChecks)(account, checkConfig);
+    // Issue #304 — Fixture mode: short-circuit Horizon fetch with a local file.
+    if (fixtureMode) {
+        if (!fixturePath) {
+            core.setFailed('fixture_mode is true but fixture_path is not set. Provide a path to a JSON fixture file (e.g. fixtures/account-funded.json).');
+            return;
+        }
+        const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
+        const resolvedFixturePath = path.resolve(workspaceRoot, fixturePath);
+        // Path-traversal guard: fixture must stay inside workspace root.
+        if (!resolvedFixturePath.startsWith(workspaceRoot + path.sep) && resolvedFixturePath !== workspaceRoot) {
+            core.setFailed(`fixture_path "${fixturePath}" resolves outside the workspace root. Path traversal is not allowed.`);
+            return;
+        }
+        try {
+            const fixtureRaw = fs.readFileSync(resolvedFixturePath, 'utf8');
+            account = JSON.parse(fixtureRaw);
+            core.info(`[fixture_mode] Loaded Horizon fixture from ${fixturePath} — no network call made.`);
+            horizonFetchStatusCode = 200;
+            horizonFetchLatencyMs = 0;
+            result = await (0, checks_1.runAccountChecks)(account, checkConfig);
+        }
+        catch (fixtureError) {
+            const msg = (0, inputs_1.getErrorMessage)(fixtureError);
+            core.setFailed(`Failed to load fixture file "${fixturePath}": ${msg}`);
+            return;
+        }
     }
-    catch (error) {
-        horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-        metrics_1.globalMetrics.stopTimer('horizon_fetch');
-        if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-            horizonFetchStatusCode = 404;
-            horizonFetchError = error.message;
-            // #144/#266: deterministic cross-network detection — probes canonical opposite
-            // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
-            const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
-            if (mismatchHint) {
-                core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
-                    `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
-            }
-            // #260: claimable-balance-aware funded definition — when policy is 'count',
-            // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
-            let claimableCount;
-            if (claimableBalancePolicy === 'count') {
-                try {
-                    const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
-                    claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
-                    if (claimableCount > 0) {
-                        core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+    else {
+        // Normal Horizon fetch path
+        try {
+            account = waitUntilFunded
+                ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
+                    timeoutMs: waitUntilFundedTimeoutMs,
+                    pollIntervalMs: waitUntilFundedIntervalMs,
+                    requestTimeoutMs: horizonTimeoutMs,
+                    signal: jobController.signal,
+                    onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
+                        component: 'index',
+                        attempt,
+                        elapsedMs,
+                    }),
+                }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
+                : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
+            horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
+            horizonFetchStatusCode = 200;
+            metrics_1.globalMetrics.stopTimer('horizon_fetch');
+            result = await (0, checks_1.runAccountChecks)(account, checkConfig);
+        }
+        catch (error) {
+            horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
+            metrics_1.globalMetrics.stopTimer('horizon_fetch');
+            if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
+                horizonFetchStatusCode = 404;
+                horizonFetchError = error.message;
+                // #144/#266: deterministic cross-network detection — probes canonical opposite
+                // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
+                const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
+                if (mismatchHint) {
+                    core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
+                        `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
+                }
+                // #260: claimable-balance-aware funded definition — when policy is 'count',
+                // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
+                let claimableCount;
+                if (claimableBalancePolicy === 'count') {
+                    try {
+                        const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
+                        claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
+                        if (claimableCount > 0) {
+                            core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
+                        }
+                    }
+                    catch {
+                        claimableCount = 0;
                     }
                 }
-                catch {
-                    claimableCount = 0;
-                }
+                result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
             }
-            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
+            else if (error instanceof horizon_1.HorizonError) {
+                horizonFetchStatusCode = error.statusCode;
+                horizonFetchError = error.message;
+                core.error(error.message);
+                metrics_1.globalMetrics.incrementCounter('errors');
+                metrics_1.globalMetrics.recordMetric('horizon_error', error.statusCode, 'http_status');
+                result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
+            }
+            else {
+                const message = (0, inputs_1.getErrorMessage)(error);
+                horizonFetchError = message;
+                core.error(message);
+                metrics_1.globalMetrics.incrementCounter('errors');
+                result = (0, checks_1.horizonFailureResult)(message, checkConfig);
+            }
         }
-        else if (error instanceof horizon_1.HorizonError) {
-            horizonFetchStatusCode = error.statusCode;
-            horizonFetchError = error.message;
-            core.error(error.message);
-            metrics_1.globalMetrics.incrementCounter('errors');
-            metrics_1.globalMetrics.recordMetric('horizon_error', error.statusCode, 'http_status');
-            result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
+        finally {
+            // Ensure the controller is not leaked if the function returns early.
+            jobController.abort();
         }
-        else {
-            const message = (0, inputs_1.getErrorMessage)(error);
-            horizonFetchError = message;
-            core.error(message);
-            metrics_1.globalMetrics.incrementCounter('errors');
-            result = (0, checks_1.horizonFailureResult)(message, checkConfig);
-        }
-    }
-    finally {
-        // Ensure the controller is not leaked if the function returns early.
-        jobController.abort();
-    }
+    } // end else (normal Horizon fetch path — fixtureMode === false)
     // result is undefined only when the run was cancelled and we returned early above.
     if (result == null) {
         return;
