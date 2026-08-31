@@ -556,6 +556,33 @@ inputs:
     required: false
     default: 'false'
 
+  skip_for_maintainers:
+    description: >-
+      Opt-in skip of validation checks when the workflow actor is a maintainer
+      (listed in CODEOWNERS or maintainers_allowlist). Defaults to false. (Issue #241)
+    required: false
+    default: 'false'
+
+  skip_if_maintainer:
+    description: >-
+      Alias for skip_for_maintainers. Opt-in skip when actor is a maintainer. Defaults to false. (Issue #241)
+    required: false
+    default: 'false'
+
+  maintainers_allowlist:
+    description: >-
+      Optional comma-separated list of GitHub usernames or teams to treat as maintainers
+      when skip_for_maintainers is true. (Issue #241)
+    required: false
+    default: ''
+
+  codeowners_path:
+    description: >-
+      Optional path to CODEOWNERS file. When omitted, checks standard locations
+      (.github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS). (Issue #241)
+    required: false
+    default: ''
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:

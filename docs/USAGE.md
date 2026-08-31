@@ -779,6 +779,34 @@ with:
 - **Permissions**: Requires `issues: write` permission on `github_token`. If permission is missing or an API error occurs, a non-fatal warning is logged and the workflow proceeds without crashing.
 - **Workflow dispatch safety**: Safely skips when there is no issue context (e.g. manual dispatch without an issue).
 
+---
+
+## CODEOWNERS-aware maintainer skip (Issue #241 — opt-in)
+
+Maintainers testing on their own issues or branches can opt in to skipping wallet checks to avoid noisy bot comments:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    stellar_address_input: G...
+    skip_for_maintainers: true     # default: false (opt-in)
+    maintainers_allowlist: 'alice, bob, my-org/core-team' # optional extra maintainers
+```
+
+### How it works
+- **Default off**: `skip_for_maintainers: false` by default.
+- **CODEOWNERS detection**: Auto-detects maintainers from `.github/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS` (or custom `codeowners_path`).
+- **Skip behavior**: When the event actor matches CODEOWNERS or `maintainers_allowlist`, TrustBridge logs an informational message, outputs `ready: true` and `reason_code: MAINTAINER_SKIPPED`, and skips all comment posting and Horizon queries.
+- **Branch safety**:
+  - TrustBridge **never reads CODEOWNERS from untrusted fork PR branches**.
+  - On pull requests from forks, it queries the trusted base branch via the GitHub API. If inaccessible, it safely falls back to standard validation without skipping.
+
+> [!WARNING]
+> **Risk note**: Do **not** enable `skip_for_maintainers: true` on contributor-facing workflows or pull requests where external contributors might forge or bypass checks. Use only for internal maintainer test workflows or triage automation.
+
+---
+
 ## Waiting for the account to be funded
 
 ```yaml
@@ -1469,6 +1497,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `HORIZON_ERROR` | Horizon API returned an HTTP error (5xx or non-404 4xx). |
 | `TLS_ERROR` | Transport-layer TLS/certificate verification failed connecting to Horizon. |
 | `INVALID_ADDRESS` | Provided Stellar address failed StrKey format/checksum validation. |
+| `MAINTAINER_SKIPPED` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
 
 ### Example — Downstream Payout Gating
 
