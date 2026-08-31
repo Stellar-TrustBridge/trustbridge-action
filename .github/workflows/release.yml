@@ -63,6 +63,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Check runtime dependency licenses (GPL policy gate — Issue #334)
+        run: npm run license:check
+
       - name: Build
         run: npm run build
 
