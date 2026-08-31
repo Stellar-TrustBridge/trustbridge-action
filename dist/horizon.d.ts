@@ -91,6 +91,15 @@ export declare class HorizonTlsError extends HorizonError {
     readonly originalCode?: string | undefined;
     constructor(message: string, originalCode?: string | undefined);
 }
+/**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+export declare class HorizonPinMismatchError extends HorizonError {
+    readonly expectedFingerprint: string;
+    readonly actualFingerprint: string;
+    constructor(message: string, expectedFingerprint: string, actualFingerprint: string);
+}
 export type FetchLike = (url: string | import('node-fetch').Request, init?: import('node-fetch').RequestInit) => Promise<import('node-fetch').Response>;
 export interface FetchAccountOptions {
     timeoutMs?: number;
@@ -135,6 +144,14 @@ export interface FetchAccountOptions {
     allowCrossNetworkFailover?: boolean;
     /** Optional secondary Horizon URL used for same-network failover. */
     secondaryHorizonUrl?: string;
+    /**
+     * Optional SHA-256 certificate fingerprint to pin the Horizon TLS cert.
+     * When set, a pre-flight TLS probe is performed before the first fetch.
+     * Mismatch throws HorizonPinMismatchError immediately (not retried).
+     * Leave empty (default) to use standard WebPKI certificate validation only.
+     * (Issue #303)
+     */
+    pinFingerprint?: string;
 }
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 /**
@@ -147,6 +164,17 @@ export declare function normalizeHorizonUrl(baseUrl: string): string;
  */
 export declare function displayHorizonUrl(url: string, revealHost: boolean): string;
 export declare function isRetryableStatus(status: number): boolean;
+/**
+ * Performs a TLS pre-flight check to verify the server certificate fingerprint.
+ * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...')
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ * (Issue #303)
+ */
+export declare function checkCertificatePin(horizonUrl: string, expectedFingerprint: string): Promise<void>;
 export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
 export interface WaitForFundedAccountOptions {

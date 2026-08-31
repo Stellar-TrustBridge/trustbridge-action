@@ -31,6 +31,38 @@ Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Usag
 
 ---
 
+<!-- ERROR_CATALOG_BEGIN -->
+## Structured Error Catalog
+
+Machine-readable catalog of all `reason_code` values that TrustBridge sets on the `reason_code` output.
+This section is verified by `scripts/check-error-catalog.js` on every CI run — removing or renaming a
+code here will fail the build.
+
+| `reason_code` | Class / source | Retryable | Description |
+|---------------|---------------|-----------|-------------|
+| `SUCCESS` | `validAccountResult` · `src/checks.ts` | n/a | All checks passed: account funded, trustline present, XLM reserve met. |
+| `ACCOUNT_NOT_FUNDED` | `unfundedAccountResult` · `src/checks.ts` | Yes (with `wait_until_funded`) | Horizon returned 404 — the account has not been activated on-ledger yet. |
+| `TRUSTLINE_MISSING` | `validAccountResult` · `src/checks.ts` | No | Account is funded but does not hold the configured asset trustline. |
+| `RESERVE_TOO_LOW` | `validAccountResult` · `src/checks.ts` | No | Account is funded and has the trustline but native XLM balance is below the required reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | `validAccountResult` · `src/checks.ts` | No | Account has the trustline but its configured limit is below `min_trustline_limit`. |
+| `FAILED` | `validAccountResult` · `src/checks.ts` | No | Generic failure — one or more checks failed but no more-specific code applies. |
+| `HORIZON_ERROR` | `horizonFailureResult` · `src/checks.ts` | Yes (≤ 3 retries) | Horizon returned a non-404 HTTP error (502, 503, 504, etc.) or an unclassified failure. |
+| `HORIZON_TIMEOUT` | `horizonFailureResult` · `src/checks.ts` | Yes (≤ 3 retries) | Horizon request timed out (AbortController fired after `horizon_timeout_ms`). |
+| `TLS_ERROR` | `tlsFailureResult` · `src/checks.ts` | No | TLS handshake or certificate verification failed for `horizon_url`; connection was never established. |
+| `RATE_LIMIT_EXHAUSTED` | `HorizonRateLimitError` · `src/horizon.ts` | No (budget exhausted) | Horizon returned HTTP 429 and all retry attempts were exhausted (or `retry_max_total_wait_ms` budget was exceeded). |
+| `PIN_MISMATCH` | `HorizonPinMismatchError` · `src/horizon.ts` | No | The Horizon TLS certificate fingerprint did not match `horizon_pin_fingerprint`. Not retried — a fingerprint mismatch means the certificate has changed or a MITM is present. Update `horizon_pin_fingerprint` or investigate the endpoint. (Issue #303) |
+
+### Notes
+
+- The `reason_code` output is always set, even when `fail_on_missing: false`.
+- Downstream steps can branch on `steps.<id>.outputs.reason_code` to implement custom logic per failure mode.
+- Codes in the `HORIZON_*` and `TLS_ERROR` family indicate infrastructure problems, not wallet configuration issues — contributors should not be asked to take action on these.
+- `RATE_LIMIT_EXHAUSTED` is distinct from `HORIZON_ERROR`: it specifically indicates the 429-retry budget was consumed, which may indicate high org-wide concurrency. Consider `rpc_fallback_url` or a self-hosted Horizon node.
+
+<!-- ERROR_CATALOG_END -->
+
+---
+
 ## Input validation errors
 
 ### Invalid Stellar address
@@ -99,6 +131,20 @@ Same retry policy as 429. Public Horizon occasionally returns 503 during mainten
 ### Timeout
 
 Default **15 seconds** per attempt. Network partitions or slow Horizon nodes trigger abort + retry.
+
+### Fetch stack (Node 20 / undici)
+
+TrustBridge uses Node.js 20's built-in `fetch` API (backed by `undici`) for Horizon requests,
+with `node-fetch` as a compatibility layer. This means:
+
+- Keep-alive connections are managed by undici's connection pool
+- Timeouts are enforced via `AbortController` — not socket-level SO_TIMEOUT
+- HTTP/2 multiplexing is not currently used; each request uses HTTP/1.1
+- Hung sockets: when `AbortController` fires, the underlying TCP socket
+  may remain in TIME_WAIT until the OS reclaims it, but no new requests
+  are dispatched
+- `ECONNRESET` from a dropped keep-alive connection is treated as a
+  retryable transport error (status 0)
 
 ### TLS / certificate verification failure
 

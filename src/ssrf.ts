@@ -35,6 +35,14 @@ export const SSRF_BLOCKED_RANGES = [
   { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
   { name: 'reserved_240', pattern: /^240\./ },
   { name: 'ipv6_link_local', pattern: /^fe80:/i },
+  // IPv4-mapped IPv6 loopback
+  { name: 'ipv6_mapped_loopback', pattern: /^::ffff:127\./i },
+  // IPv4-mapped IPv6 private ranges
+  { name: 'ipv6_mapped_private', pattern: /^::ffff:(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)/i },
+  // IPv6 ULA (Unique Local Addresses: fc00::/7)
+  { name: 'ipv6_ula', pattern: /^f[cd][0-9a-f]{2}:/i },
+  // IPv6 loopback full-form (0:0:0:0:0:0:0:1)
+  { name: 'ipv6_loopback_full', pattern: /^0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0*1$/i },
 ];
 
 /**

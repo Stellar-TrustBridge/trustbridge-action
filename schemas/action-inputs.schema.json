@@ -479,10 +479,10 @@
       "pattern": "^(https://|$)",
       "default": ""
     },
-    "federation_resolution_enabled": {
+    "horizon_pin_fingerprint": {
       "type": "string",
-      "description": "Enable optional federation (user*domain) address resolution. When true, addresses in 'user*domain' format are resolved via HTTPS stellar.toml federation protocol. Default false. (Issue #257)",
-      "default": "false"
+      "description": "Optional SHA-256 TLS certificate fingerprint (colon-separated hex) to pin the Horizon endpoint certificate. Default empty (pinning disabled). (Issue #303)",
+      "default": ""
     }
   }
 }

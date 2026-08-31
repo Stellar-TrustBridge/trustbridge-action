@@ -321,3 +321,46 @@ describe('fetchSSRFSafe redirect enforcement', () => {
     throw new Error('Expected fetchSSRFSafe to reject SSRF redirect hops');
   });
 });
+
+// ---------------------------------------------------------------------------
+// IPv6 Horizon endpoint fixtures (Issue #302)
+// ---------------------------------------------------------------------------
+
+describe('IPv6 Horizon endpoint fixtures (Issue #302)', () => {
+  // Test IPv6 loopback variants are blocked
+  const blockedIPv6: [string, string][] = [
+    ['http://[::1]/accounts', 'IPv6 loopback bracket notation'],
+    ['https://[::1]:8080/accounts', 'IPv6 loopback with port'],
+    // IPv4-mapped IPv6
+    ['http://[::ffff:127.0.0.1]/accounts', 'IPv4-mapped IPv6 loopback'],
+    ['http://[::ffff:192.168.1.1]/accounts', 'IPv4-mapped IPv6 class-C'],
+    ['http://[::ffff:10.0.0.1]/accounts', 'IPv4-mapped IPv6 class-A'],
+    ['http://[::ffff:169.254.169.254]/accounts', 'IPv4-mapped IPv6 AWS metadata'],
+    ['http://[::ffff:172.16.0.1]/accounts', 'IPv4-mapped IPv6 class-B'],
+    // IPv6 link-local
+    ['http://[fe80::1]/accounts', 'IPv6 link-local'],
+    ['http://[FE80::1]/accounts', 'IPv6 link-local uppercase'],
+    // IPv6 ULA
+    ['http://[fc00::1]/accounts', 'IPv6 ULA fc00'],
+    ['http://[fd12:3456::1]/accounts', 'IPv6 ULA fd prefix'],
+  ];
+
+  it.each(blockedIPv6)('blocks %s (%s)', (url) => {
+    const result = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: true });
+    expect(result.valid).toBe(false);
+  });
+
+  // Test that public IPv6 URLs are not blocked by SSRF patterns
+  // (structural test — we verify they don't match any blocked pattern)
+  const allowedIPv6 = [
+    'https://[2001:db8::1]/accounts', // Documentation range (public)
+    'https://[2606:4700:4700::1111]/dns', // Cloudflare DNS (public IPv6)
+  ];
+
+  it.each(allowedIPv6)('allows public IPv6 %s', (url) => {
+    const result = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: true });
+    // Should not be blocked by SSRF patterns
+    const ssrfBlocked = result.errors.some((e) => e.includes('blocked address'));
+    expect(ssrfBlocked).toBe(false);
+  });
+});

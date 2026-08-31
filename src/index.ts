@@ -1219,6 +1219,7 @@ async function run(): Promise<void> {
     rateBudgetTracker,
     horizonMaxRequests,
     circuitBreaker: horizonCircuitBreaker,
+    pinFingerprint: core.getInput('horizon_pin_fingerprint').trim() || undefined,
   };
 
   let account: HorizonAccount | null = null;

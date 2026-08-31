@@ -38411,10 +38411,11 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.ALL_WALLET_LABELS = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.displayHorizonUrl = displayHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
+exports.checkCertificatePin = checkCertificatePin;
 exports.parseRetryAfterMs = parseRetryAfterMs;
 exports.fetchAccount = fetchAccount;
 exports.waitForFundedAccount = waitForFundedAccount;
@@ -38431,6 +38432,8 @@ exports.fetchClaimableBalanceCount = fetchClaimableBalanceCount;
 exports.deriveWalletLabel = deriveWalletLabel;
 exports.applyWalletLabels = applyWalletLabels;
 exports.fetchNetworkPassphrase = fetchNetworkPassphrase;
+const tls = __importStar(__nccwpck_require__(4756));
+const crypto = __importStar(__nccwpck_require__(6982));
 const cache_1 = __nccwpck_require__(7377);
 const logger_1 = __nccwpck_require__(6999);
 const links_1 = __nccwpck_require__(3346);
@@ -38462,6 +38465,19 @@ class HorizonTlsError extends HorizonError {
     }
 }
 exports.HorizonTlsError = HorizonTlsError;
+/**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+class HorizonPinMismatchError extends HorizonError {
+    constructor(message, expectedFingerprint, actualFingerprint) {
+        super(message, 0, false);
+        this.expectedFingerprint = expectedFingerprint;
+        this.actualFingerprint = actualFingerprint;
+        this.name = 'HorizonPinMismatchError';
+    }
+}
+exports.HorizonPinMismatchError = HorizonPinMismatchError;
 /**
  * Node/OpenSSL error codes that indicate a TLS handshake or certificate
  * verification failure, as opposed to a generic connection/network error.
@@ -38546,6 +38562,67 @@ function displayHorizonUrl(url, revealHost) {
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
+}
+/**
+ * Performs a TLS pre-flight check to verify the server certificate fingerprint.
+ * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...')
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ * (Issue #303)
+ */
+async function checkCertificatePin(horizonUrl, expectedFingerprint) {
+    const parsed = new URL(horizonUrl);
+    if (parsed.protocol !== 'https:') {
+        // Only HTTPS connections have TLS certificates to pin
+        return;
+    }
+    const host = parsed.hostname;
+    const port = parseInt(parsed.port || '443', 10);
+    const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
+    return new Promise((resolve, reject) => {
+        const socket = tls.connect({ host, port, servername: host }, () => {
+            try {
+                const cert = socket.getPeerCertificate();
+                socket.destroy();
+                if (!cert || !cert.raw) {
+                    reject(new HorizonTlsError('Could not retrieve server certificate for fingerprint check.'));
+                    return;
+                }
+                // Compute SHA-256 fingerprint over the raw DER-encoded certificate
+                const fingerprint = crypto
+                    .createHash('sha256')
+                    .update(cert.raw)
+                    .digest('hex')
+                    .toUpperCase()
+                    .match(/.{2}/g)
+                    .join(':');
+                const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
+                if (normalizedActual !== normalizedExpected) {
+                    reject(new HorizonPinMismatchError(`TLS certificate fingerprint mismatch for Horizon endpoint. ` +
+                        `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +
+                        `The Horizon host certificate may have changed — update horizon_pin_fingerprint or investigate MITM.`, normalizedExpected, normalizedActual));
+                    return;
+                }
+                resolve();
+            }
+            catch (err) {
+                socket.destroy();
+                reject(err instanceof Error ? err : new HorizonTlsError('Certificate pin check failed.'));
+            }
+        });
+        socket.on('error', (err) => {
+            const tlsCode = err.code;
+            reject(new HorizonTlsError('TLS connection failed during certificate pin check.', tlsCode));
+        });
+        // 10 second timeout for the TLS probe
+        socket.setTimeout(10000, () => {
+            socket.destroy();
+            reject(new HorizonTlsError('TLS certificate pin check timed out.'));
+        });
+    });
 }
 function parseRetryAfterMs(response) {
     const header = response.headers.get('retry-after');
@@ -38950,6 +39027,13 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     // Bail out immediately if the job was already cancelled before we start.
     if (signal?.aborted) {
         throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
+    }
+    // Certificate pinning pre-flight (Issue #303).
+    // Performed once before the cache or any Horizon request. A mismatch is
+    // not retried — it means the endpoint's certificate has changed or is not
+    // what was configured, so the run must stop immediately.
+    if (options.pinFingerprint && options.pinFingerprint.trim()) {
+        await checkCertificatePin(normalizedHorizonUrl, options.pinFingerprint.trim());
     }
     const cachingEnabled = cacheTtlMs > 0;
     const cacheKey = cachingEnabled
@@ -40723,6 +40807,7 @@ async function run() {
         rateBudgetTracker,
         horizonMaxRequests,
         circuitBreaker: horizonCircuitBreaker,
+        pinFingerprint: core.getInput('horizon_pin_fingerprint').trim() || undefined,
     };
     let account = null;
     let horizonFetchStartMs = Date.now();
@@ -44761,6 +44846,14 @@ exports.SSRF_BLOCKED_RANGES = [
     { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
     { name: 'reserved_240', pattern: /^240\./ },
     { name: 'ipv6_link_local', pattern: /^fe80:/i },
+    // IPv4-mapped IPv6 loopback
+    { name: 'ipv6_mapped_loopback', pattern: /^::ffff:127\./i },
+    // IPv4-mapped IPv6 private ranges
+    { name: 'ipv6_mapped_private', pattern: /^::ffff:(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)/i },
+    // IPv6 ULA (Unique Local Addresses: fc00::/7)
+    { name: 'ipv6_ula', pattern: /^f[cd][0-9a-f]{2}:/i },
+    // IPv6 loopback full-form (0:0:0:0:0:0:0:1)
+    { name: 'ipv6_loopback_full', pattern: /^0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0{0,4}:0*1$/i },
 ];
 /**
  * Check if a hostname/IP is in the SSRF blocklist.
@@ -46800,6 +46893,300 @@ async function fetchTomlWithCache(domain, options = {}) {
 
 /***/ }),
 
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
+}
+
+
+/***/ }),
+
 /***/ 4344:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -47106,6 +47493,12 @@ exports.SSRF_BLOCKED_PATTERNS = [
     // IPv6 loopback / link-local
     /^https?:\/\/\[?::1\]?/,
     /^https?:\/\/\[?fe80:/i,
+    // IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1, ::ffff:192.168.1.1)
+    /^https?:\/\/\[?::ffff:(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i,
+    // IPv6 ULA (Unique Local Addresses: fc00::/7 — private equivalent of RFC1918)
+    /^https?:\/\/\[?f[cd][0-9a-f]{2}:/i,
+    // IPv6 loopback with zone ID (e.g., ::1%eth0)
+    /^https?:\/\/\[?::1[%]/,
     // Bare "localhost"
     /^https?:\/\/localhost[:/]/i,
     /^https?:\/\/localhost$/i,
