@@ -1,8 +1,12 @@
 import { ValidationResult } from './checks';
 export declare function escapeMarkdownInline(value: string): string;
 export declare function inlineCode(value: string): string;
-/** Base URL for FAQ anchors linked from the onboarding checklist. */
-export declare const TROUBLESHOOTING_FAQ_BASE = "https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md";
+/**
+ * Base URL for FAQ anchors linked from the onboarding checklist.
+ * Points to docs/FAQ.md in the trustbridge-action repository.
+ * @deprecated Use DEFAULT_FAQ_BASE_URL from links.ts directly.
+ */
+export declare const TROUBLESHOOTING_FAQ_BASE = "https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md";
 export interface OnboardingChecklistOptions {
     /** Asset code shown in the trustline checklist item (already escaped for Markdown). */
     assetCode: string;

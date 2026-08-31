@@ -39649,10 +39649,228 @@ const PT = {
     remediationEstimatedSetupCost: (cost) => `Custo estimado de configuração: ~**${cost} XLM**.`,
     remediationHorizonError: 'Horizon não pôde ser alcançado. Tente novamente mais tarde ou verifique sua entrada `horizon_url` e a conectividade de rede.',
 };
+/**
+ * Japanese (ja) locale strings.
+ *
+ * CJK note: Japanese characters are full-width (2 columns each in terminal
+ * renderers), but GitHub Markdown tables render in proportional HTML — no
+ * manual padding is required. Strings are kept concise to avoid table
+ * overflow in narrow viewports.
+ */
+const JA = {
+    heading: 'TrustBridge — Stellarアカウントチェック',
+    checkedAccount: '確認済みアカウント:',
+    horizon: 'Horizon:',
+    asset: 'アセット:',
+    resultsHeading: '結果',
+    validationGateHeading: 'バリデーションゲート',
+    readyToProceed: '続行可能: すべてのチェックに合格しました。',
+    blockedBy: 'ブロック理由:',
+    passedChecks: '合格したチェック:',
+    failedChecks: '不合格のチェック:',
+    balancesHeading: '残高',
+    xlmBalance: 'XLM残高:',
+    minimumRequired: '最低必要額:',
+    setupCostHeading: '初期費用の見積もり',
+    minimumAccountBalance: 'Stellarアカウントの最低残高:',
+    baseReservePerTrustline: 'トラストライン1件あたりの基本準備金 (台帳エントリ):',
+    typicalMinimumToFund: 'アカウント開設+トラストライン1件に必要な最低限度:',
+    addTrustlineHeading: 'トラストラインの追加',
+    viewAccountOnLab: 'Stellar Laboratoryでアカウントを表示',
+    openTransactionBuilder: 'Transaction Builderを開く (Change Trust)',
+    lobstrWallet: 'LOBSTRウォレット',
+    lobstrDescription: 'アセットを追加',
+    sepWalletActionsHeading: 'クイックウォレット操作 (SEP-0007)',
+    sepWalletActionsDescription: 'SEP-0007対応ウォレット (LOBSTR、Solar、Albedo) でこれらのリンクを開いてセットアップを完了してください。',
+    sendXlmToActivate: '{amount} XLMを送信してアカウントを有効化',
+    remediationHeading: '対処方法',
+    configurationSummaryHeading: '設定サマリー',
+    inputColumn: '入力',
+    valueColumn: '値',
+    failOnMissingTrue: '`true` — チェック未通過時にステップが失敗',
+    failOnMissingFalse: '`false` — 警告のみ',
+    stickyCommentTrue: '`true` — 以前のコメントを更新',
+    stickyCommentFalse: '`false` — 常に新規投稿',
+    waitUntilFundedTrue: '`true`',
+    waitUntilFundedFalse: '`false` (デフォルト)',
+    waitUntilFundedTimeoutMs: '`{ms}`',
+    waitUntilFundedIntervalMs: '`{ms}`',
+    outputsHeading: 'アクション出力リファレンス',
+    outputsDescription: '`steps.<id>.outputs.<name>` を使って後続のワークフローステップでこれらの出力名を参照してください。',
+    outputColumn: '出力',
+    valueRunColumn: '今回の実行値',
+    descriptionColumn: '説明',
+    accountFundedOutput: 'アカウントがStellarネットワーク上に存在するか (`action.yml` より)',
+    trustlineExistsOutput: '**{assetCode}** トラストラインが設定されているか (`action.yml` より)',
+    xlmBalanceOutput: 'Horizonが報告するネイティブXLM残高 (`action.yml` より)',
+    commentUrlOutput: 'このIssueコメントのURL (`action.yml` より)',
+    metricsHeading: 'メトリクス',
+    metricsDescription: 'マシンリーダブルな実行メトリクス。値は構造的なカウントのみです — アカウントアドレスや残高は含まれません。',
+    accountFundedLabel: 'アカウント資金化',
+    accountFundedPassDetail: (address) => `アカウント ${address} はStellarネットワーク上でアクティブです。`,
+    accountFundedFailDetail: (address) => `アカウント ${address} はHorizonで**見つかりませんでした** — まだ資金化または有効化されていない可能性があります。`,
+    trustlineLabel: (assetCode) => `${assetCode} トラストライン`,
+    trustlinePassDetail: (assetCode, issuer) => `**${assetCode}** (${issuer}) のトラストラインが設定されています。`,
+    trustlineFailHasTrustlines: (assetCode, issuer) => `アカウントにはトラストラインがありますが、${issuer} が発行した **${assetCode}** のものではありません。`,
+    trustlineFailNoTrustlines: 'アカウントには**トラストラインがゼロ件**です — このアセットを受け取る前にトラストラインを追加してください。',
+    xlmReserveLabel: 'XLM準備金',
+    xlmReservePassDetail: (balance, required) => `残高 **${balance} XLM** は最低 **${required} XLM** の要件を満たしています。`,
+    xlmReserveFailDetail: (balance, required) => `残高 **${balance} XLM** は必要な **${required} XLM** を下回っています。`,
+    horizonAvailabilityLabel: 'Horizon可用性',
+    remediationAddTrustline: (assetCode) => `[Stellar Laboratory](https://laboratory.stellar.org/) (Change Trust操作) または [LOBSTR](https://lobstr.co/) などのウォレットを使用して **${assetCode}** トラストラインを追加してください。`,
+    remediationSendXlm: (amount, address) => `準備金要件を満たすために、${address} に少なくとも **${amount} XLM** を送信してください。`,
+    remediationActivateAccount: (address, minBalance, assetCode) => `${address} を有効化するには、少なくとも **${minBalance} XLM** (Stellarアカウント最低残高) を送信してください。\n\n次に [Stellar Laboratory](https://laboratory.stellar.org/) または [LOBSTR](https://lobstr.co/) で **${assetCode}** トラストラインを追加してください。`,
+    remediationAccountNotFound: (assetCode) => `初期費用の見積もり: 約**1.5 XLM** (1 XLM基本 + ${assetCode}トラストライン準備金0.5 XLM)。`,
+    remediationEstimatedSetupCost: (cost) => `初期費用の見積もり: 約**${cost} XLM**。`,
+    remediationHorizonError: 'Horizonに接続できませんでした。後でもう一度お試しいただくか、`horizon_url` の入力とネットワーク接続を確認してください。',
+};
+/**
+ * French (fr) locale strings.
+ */
+const FR = {
+    heading: 'TrustBridge — Vérification du Compte Stellar',
+    checkedAccount: 'Compte vérifié :',
+    horizon: 'Horizon :',
+    asset: 'Actif :',
+    resultsHeading: 'Résultats',
+    validationGateHeading: 'Portail de validation',
+    readyToProceed: 'Prêt à continuer : toutes les vérifications ont réussi.',
+    blockedBy: 'Bloqué par :',
+    passedChecks: 'Vérifications réussies :',
+    failedChecks: 'Vérifications échouées :',
+    balancesHeading: 'Soldes',
+    xlmBalance: 'Solde XLM :',
+    minimumRequired: 'Minimum requis :',
+    setupCostHeading: 'Estimation du coût de configuration',
+    minimumAccountBalance: 'Solde minimum de compte Stellar :',
+    baseReservePerTrustline: 'Réserve de base par ligne de confiance (entrée de registre) :',
+    typicalMinimumToFund: 'Minimum typique pour financer un compte + une ligne de confiance :',
+    addTrustlineHeading: 'Ajouter une ligne de confiance',
+    viewAccountOnLab: 'Voir le compte sur Stellar Laboratory',
+    openTransactionBuilder: 'Ouvrir Transaction Builder (Change Trust)',
+    lobstrWallet: 'Portefeuille LOBSTR',
+    lobstrDescription: 'ajouter un actif',
+    sepWalletActionsHeading: 'Actions rapides du portefeuille (SEP-0007)',
+    sepWalletActionsDescription: 'Ouvrez ces liens dans un portefeuille compatible SEP-0007 (LOBSTR, Solar, Albedo) pour finaliser la configuration.',
+    sendXlmToActivate: 'Envoyer {amount} XLM pour activer le compte',
+    remediationHeading: 'Remédiation',
+    configurationSummaryHeading: 'Résumé de la configuration',
+    inputColumn: 'Entrée',
+    valueColumn: 'Valeur',
+    failOnMissingTrue: '`true` — l\'étape échoue en cas de vérifications manquantes',
+    failOnMissingFalse: '`false` — avertissement seulement',
+    stickyCommentTrue: '`true` — met à jour le commentaire précédent',
+    stickyCommentFalse: '`false` — publie toujours un nouveau',
+    waitUntilFundedTrue: '`true`',
+    waitUntilFundedFalse: '`false` (défaut)',
+    waitUntilFundedTimeoutMs: '`{ms}`',
+    waitUntilFundedIntervalMs: '`{ms}`',
+    outputsHeading: 'Référence des sorties de l\'action',
+    outputsDescription: 'Utilisez ces noms de sortie dans les étapes de workflow suivantes via `steps.<id>.outputs.<name>`.',
+    outputColumn: 'Sortie',
+    valueRunColumn: 'Valeur dans cette exécution',
+    descriptionColumn: 'Description',
+    accountFundedOutput: 'Si le compte existe sur le réseau Stellar (depuis `action.yml`)',
+    trustlineExistsOutput: 'Si la ligne de confiance **{assetCode}** est configurée (depuis `action.yml`)',
+    xlmBalanceOutput: 'Solde XLM natif rapporté par Horizon (depuis `action.yml`)',
+    commentUrlOutput: 'URL du commentaire d\'issue (depuis `action.yml`)',
+    metricsHeading: 'Métriques',
+    metricsDescription: 'Métriques d\'exécution lisibles par machine. Les valeurs sont uniquement des comptages structurels — aucune adresse de compte ni solde.',
+    accountFundedLabel: 'Compte financé',
+    accountFundedPassDetail: (address) => `Le compte ${address} est actif sur le réseau Stellar.`,
+    accountFundedFailDetail: (address) => `Le compte ${address} n'a **pas été trouvé** sur Horizon — il n'est peut-être pas encore financé ou activé.`,
+    trustlineLabel: (assetCode) => `Ligne de confiance ${assetCode}`,
+    trustlinePassDetail: (assetCode, issuer) => `La ligne de confiance pour **${assetCode}** (${issuer}) est configurée.`,
+    trustlineFailHasTrustlines: (assetCode, issuer) => `Le compte a des lignes de confiance, mais pas pour **${assetCode}** émis par ${issuer}.`,
+    trustlineFailNoTrustlines: 'Le compte a **zéro ligne de confiance** — ajoutez-en une avant de recevoir cet actif.',
+    xlmReserveLabel: 'Réserve XLM',
+    xlmReservePassDetail: (balance, required) => `Le solde **${balance} XLM** satisfait le minimum de **${required} XLM**.`,
+    xlmReserveFailDetail: (balance, required) => `Le solde **${balance} XLM** est en dessous du requis **${required} XLM**.`,
+    horizonAvailabilityLabel: 'Disponibilité Horizon',
+    remediationAddTrustline: (assetCode) => `Ajoutez une ligne de confiance **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) (opération Change Trust) ou un portefeuille tel que [LOBSTR](https://lobstr.co/).`,
+    remediationSendXlm: (amount, address) => `Envoyez au moins **${amount} XLM** à ${address} pour satisfaire l'exigence de réserve.`,
+    remediationActivateAccount: (address, minBalance, assetCode) => `Activez ${address} en envoyant au moins **${minBalance} XLM** (solde minimum de compte Stellar).\n\nEnsuite, ajoutez une ligne de confiance **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) ou [LOBSTR](https://lobstr.co/).`,
+    remediationAccountNotFound: (assetCode) => `Coût de configuration estimé : ~**1.5 XLM** (1 XLM de base + 0.5 XLM de réserve pour la ligne de confiance ${assetCode}).`,
+    remediationEstimatedSetupCost: (cost) => `Coût de configuration estimé : ~**${cost} XLM**.`,
+    remediationHorizonError: 'Horizon n\'a pas pu être atteint. Réessayez plus tard ou vérifiez votre entrée `horizon_url` et la connectivité réseau.',
+};
+/**
+ * German (de) locale strings.
+ */
+const DE = {
+    heading: 'TrustBridge — Stellar-Kontoprüfung',
+    checkedAccount: 'Geprüftes Konto:',
+    horizon: 'Horizon:',
+    asset: 'Asset:',
+    resultsHeading: 'Ergebnisse',
+    validationGateHeading: 'Validierungsschranke',
+    readyToProceed: 'Bereit fortzufahren: alle Prüfungen bestanden.',
+    blockedBy: 'Blockiert durch:',
+    passedChecks: 'Bestandene Prüfungen:',
+    failedChecks: 'Fehlgeschlagene Prüfungen:',
+    balancesHeading: 'Guthaben',
+    xlmBalance: 'XLM-Guthaben:',
+    minimumRequired: 'Mindestbetrag:',
+    setupCostHeading: 'Schätzung der Einrichtungskosten',
+    minimumAccountBalance: 'Stellar-Mindestkontoguthaben:',
+    baseReservePerTrustline: 'Basisreserve pro Trustline (Ledger-Eintrag):',
+    typicalMinimumToFund: 'Typisches Minimum für Konto + eine Trustline:',
+    addTrustlineHeading: 'Trustline hinzufügen',
+    viewAccountOnLab: 'Konto im Stellar Laboratory anzeigen',
+    openTransactionBuilder: 'Transaction Builder öffnen (Change Trust)',
+    lobstrWallet: 'LOBSTR-Wallet',
+    lobstrDescription: 'Asset hinzufügen',
+    sepWalletActionsHeading: 'Schnelle Wallet-Aktionen (SEP-0007)',
+    sepWalletActionsDescription: 'Öffnen Sie diese Links in einem SEP-0007-kompatiblen Wallet (LOBSTR, Solar, Albedo), um die Einrichtung abzuschließen.',
+    sendXlmToActivate: '{amount} XLM senden, um das Konto zu aktivieren',
+    remediationHeading: 'Behebung',
+    configurationSummaryHeading: 'Konfigurationszusammenfassung',
+    inputColumn: 'Eingabe',
+    valueColumn: 'Wert',
+    failOnMissingTrue: '`true` — Schritt schlägt bei fehlenden Prüfungen fehl',
+    failOnMissingFalse: '`false` — nur Warnung',
+    stickyCommentTrue: '`true` — aktualisiert vorherigen Kommentar',
+    stickyCommentFalse: '`false` — veröffentlicht immer neu',
+    waitUntilFundedTrue: '`true`',
+    waitUntilFundedFalse: '`false` (Standard)',
+    waitUntilFundedTimeoutMs: '`{ms}`',
+    waitUntilFundedIntervalMs: '`{ms}`',
+    outputsHeading: 'Referenz der Action-Ausgaben',
+    outputsDescription: 'Verwenden Sie diese Ausgabenamen in nachgelagerten Workflow-Schritten über `steps.<id>.outputs.<name>`.',
+    outputColumn: 'Ausgabe',
+    valueRunColumn: 'Wert in diesem Lauf',
+    descriptionColumn: 'Beschreibung',
+    accountFundedOutput: 'Ob das Konto im Stellar-Netzwerk existiert (aus `action.yml`)',
+    trustlineExistsOutput: 'Ob die **{assetCode}**-Trustline konfiguriert ist (aus `action.yml`)',
+    xlmBalanceOutput: 'Natives XLM-Guthaben laut Horizon (aus `action.yml`)',
+    commentUrlOutput: 'URL des Issue-Kommentars (aus `action.yml`)',
+    metricsHeading: 'Metriken',
+    metricsDescription: 'Maschinenlesbare Laufmetriken. Werte sind nur strukturelle Zählungen — keine Kontoadressen oder Guthaben.',
+    accountFundedLabel: 'Konto finanziert',
+    accountFundedPassDetail: (address) => `Konto ${address} ist im Stellar-Netzwerk aktiv.`,
+    accountFundedFailDetail: (address) => `Konto ${address} wurde bei Horizon **nicht gefunden** — es ist möglicherweise noch nicht finanziert oder aktiviert.`,
+    trustlineLabel: (assetCode) => `${assetCode}-Trustline`,
+    trustlinePassDetail: (assetCode, issuer) => `Trustline für **${assetCode}** (${issuer}) ist konfiguriert.`,
+    trustlineFailHasTrustlines: (assetCode, issuer) => `Das Konto hat Trustlines, jedoch nicht für **${assetCode}** von ${issuer}.`,
+    trustlineFailNoTrustlines: 'Das Konto hat **null Trustlines** — fügen Sie eine hinzu, bevor Sie dieses Asset empfangen.',
+    xlmReserveLabel: 'XLM-Reserve',
+    xlmReservePassDetail: (balance, required) => `Guthaben **${balance} XLM** erfüllt das Minimum von **${required} XLM**.`,
+    xlmReserveFailDetail: (balance, required) => `Guthaben **${balance} XLM** liegt unter dem erforderlichen **${required} XLM**.`,
+    horizonAvailabilityLabel: 'Horizon-Verfügbarkeit',
+    remediationAddTrustline: (assetCode) => `Fügen Sie eine **${assetCode}**-Trustline über [Stellar Laboratory](https://laboratory.stellar.org/) (Change-Trust-Operation) oder ein Wallet wie [LOBSTR](https://lobstr.co/) hinzu.`,
+    remediationSendXlm: (amount, address) => `Senden Sie mindestens **${amount} XLM** an ${address}, um die Reserveanforderung zu erfüllen.`,
+    remediationActivateAccount: (address, minBalance, assetCode) => `Aktivieren Sie ${address}, indem Sie mindestens **${minBalance} XLM** (Stellar-Mindestkontoguthaben) senden.\n\nFügen Sie dann eine **${assetCode}**-Trustline über [Stellar Laboratory](https://laboratory.stellar.org/) oder [LOBSTR](https://lobstr.co/) hinzu.`,
+    remediationAccountNotFound: (assetCode) => `Geschätzte Einrichtungskosten: ~**1,5 XLM** (1 XLM Basis + 0,5 XLM ${assetCode}-Trustline-Reserve).`,
+    remediationEstimatedSetupCost: (cost) => `Geschätzte Einrichtungskosten: ~**${cost} XLM**.`,
+    remediationHorizonError: 'Horizon konnte nicht erreicht werden. Versuchen Sie es später erneut oder überprüfen Sie Ihre `horizon_url`-Eingabe und die Netzwerkkonnektivität.',
+};
 const LOCALES = {
     en: EN,
     es: ES,
     pt: PT,
+    ja: JA,
+    fr: FR,
+    de: DE,
 };
 /**
  * Get comment strings for a given locale, with automatic fallback to English
@@ -41919,7 +42137,7 @@ function emitInputsLogRecord(inputs) {
 /***/ }),
 
 /***/ 3758:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
@@ -41928,6 +42146,7 @@ exports.TROUBLESHOOTING_FAQ_BASE = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
 exports.buildOnboardingChecklist = buildOnboardingChecklist;
+const links_1 = __nccwpck_require__(3346);
 function escapeMarkdownInline(value) {
     // Escape Markdown control characters that can break comment structure or
     // enable link/emphasis injection. Dots and hyphens are left alone so domains
@@ -41937,8 +42156,12 @@ function escapeMarkdownInline(value) {
 function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
 }
-/** Base URL for FAQ anchors linked from the onboarding checklist. */
-exports.TROUBLESHOOTING_FAQ_BASE = 'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md';
+/**
+ * Base URL for FAQ anchors linked from the onboarding checklist.
+ * Points to docs/FAQ.md in the trustbridge-action repository.
+ * @deprecated Use DEFAULT_FAQ_BASE_URL from links.ts directly.
+ */
+exports.TROUBLESHOOTING_FAQ_BASE = links_1.DEFAULT_FAQ_BASE_URL;
 /**
  * Render a GitHub Markdown task-list checklist whose boxes reflect live
  * `ValidationResult` state (fund → trustline → verify balance).
@@ -41947,9 +42170,9 @@ exports.TROUBLESHOOTING_FAQ_BASE = 'https://github.com/Stellar-TrustBridge/trust
  */
 function buildOnboardingChecklist(result, options) {
     const safeAsset = escapeMarkdownInline(options.assetCode);
-    const fundFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#account-is-reported-unfunded`;
-    const trustFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#trustline-is-missing`;
-    const reserveFaq = `${exports.TROUBLESHOOTING_FAQ_BASE}#xlm-reserve-too-low`;
+    const fundFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`;
+    const trustFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.TRUSTLINE_MISSING}`;
+    const reserveFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`;
     const lines = [
         '### Onboarding checklist',
         '',
@@ -45102,6 +45325,300 @@ function formatDigestComment(report) {
     }
     lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
     return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
 }
 
 
