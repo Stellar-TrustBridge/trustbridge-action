@@ -31,7 +31,7 @@ import {
 import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
-import { getOctokitProxyOptions } from './proxy';
+import { loadCommentTemplate, buildTemplateContext } from './template';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -106,13 +106,20 @@ export interface CommentConfig extends CheckConfig {
   sep0010ChallengeXdr?: string;
   sep0010DashboardUrl?: string;
   /**
-   * Raw body of the existing TrustBridge sticky comment, if one was found
-   * (Issue #311).  When provided, `formatCommentBody` extracts the prior
-   * checklist state via `extractChecklistState` and preserves any boxes that
-   * were manually checked by a contributor — even if the live Horizon result
-   * has not yet caught up.  Ignored when `onboardingChecklist` is `false`.
+   * Optional workspace-relative (or absolute) path to a Markdown partial
+   * file that is appended to the comment just before the footer (#312).
+   *
+   * The partial supports `{{variable}}` interpolation for safe substitution
+   * of account, asset, issuer, network, horizon, status, and i18n strings
+   * (`{{locale:KEY}}`). All substituted values are escaped through
+   * `escapeMarkdownInline` to prevent Markdown injection. Dangerous patterns
+   * (prototype-chain keys, <script>, javascript:, inline event handlers) are
+   * rejected before interpolation. The file must reside inside the workspace
+   * root (path traversal is blocked) and must not exceed 8 KB.
+   *
+   * Leave unset or empty to disable the feature entirely.
    */
-  existingCommentBody?: string;
+  customCommentTemplatePath?: string;
 }
 
 export const TRUSTBRIDGE_FOOTER =
@@ -262,24 +269,44 @@ export function formatCommentBody(
       );
     }
 
-    // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready
-    // Prefer dashboard proof link over raw XDR to avoid leaking nonces in public issues.
-    const sep0010Snippet = buildSep0010ChallengeSnippet({
-      challengeXdr: config.sep0010ChallengeXdr,
-      dashboardUrl: config.sep0010DashboardUrl,
-      network: stellarLabNetwork,
-      stellarAddress: config.stellarAddress,
-    });
-    if (sep0010Snippet) {
-      lines.push(
-        "",
-        "### Proof of wallet control (SEP-0010)",
-        "",
-        sep0010Snippet,
-        "",
-        "_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._",
+  // Custom comment template partial (#312) — injected just before the footer.
+  // Path validation, size check, content security, and interpolation escaping
+  // are all handled in loadCommentTemplate / validateTemplateContent.
+  if (config.customCommentTemplatePath) {
+    try {
+      const templateCtx = buildTemplateContext({
+        stellarAddress: config.stellarAddress,
+        assetCode: config.assetCode,
+        assetIssuer: config.assetIssuer,
+        horizonUrl: config.horizonUrl,
+        network: inferStellarNetwork(config.horizonUrl),
+        valid: result.valid,
+        locale: config.locale ?? 'en',
+      });
+      const partial = loadCommentTemplate(config.customCommentTemplatePath, templateCtx);
+      if (partial !== undefined) {
+        lines.push('', partial);
+      } else {
+        // File not found — warn without blocking the comment.
+        core.warning(
+          `custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
+            'The template partial will be omitted from this comment.',
+        );
+      }
+    } catch (templateErr) {
+      const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
+      core.warning(
+        `Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
+          'The template partial will be omitted from this comment.',
       );
     }
+  }
+
+  lines.push(
+    '',
+    '---',
+    TRUSTBRIDGE_FOOTER,
+  );
 
     // Sponsorship info explainer (Issue #141)
     if (

@@ -1125,6 +1125,10 @@ async function run(): Promise<void> {
   const sep0010ChallengeXdr = core.getInput("sep0010_challenge_xdr") || "";
   const sep0010DashboardUrl = core.getInput("sep0010_dashboard_url") || "";
 
+  // Custom comment template partial (#312) — workspace-relative path to a
+  // Markdown partial file injected before the footer.
+  const customCommentTemplatePath = core.getInput('custom_comment_template_path') || '';
+
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
     minXlmReserve: Number(minXlmReserve),
@@ -1650,39 +1654,27 @@ async function run(): Promise<void> {
     };
   }
 
-  // Build the comment body.  When onboarding_checklist is enabled and
-  // sticky_comment is on, we need to incorporate the previous comment body so
-  // that manually-checked boxes survive the update (Issue #311).
-  //
-  // We use `bodyFactory` to defer body construction until `postIssueComment`
-  // has fetched the existing sticky comment body — this avoids a second
-  // findStickyComment round-trip.
-  //
-  // For the discussion path (GraphQL), the existing body is not fetched
-  // before postDiscussionComment, so we pass existingCommentBody=undefined
-  // (the initial body without persistence).
-  const buildCommentBody = (existingCommentBody: string | undefined): string => {
-    const rawBody = formatCommentBody(result, {
-      ...checkConfig,
-      stellarAddress: effectiveResolvedAddress,
-      horizonUrl,
-      failOnMissing,
-      stickyComment,
-      waitUntilFunded,
-      waitUntilFundedTimeoutMs,
-      waitUntilFundedIntervalMs,
-      onboardingChecklist,
-      sep0007DeepLinks,
-      sep0007OriginDomain,
-      sep0010ChallengeXdr,
-      sep0010DashboardUrl,
-      locale,
-      debugMode,
-      docsBaseUrl: core.getInput('docs_base_url') || undefined,
-      delta,
-      diagnosticsConfig,
-      existingCommentBody,
-    });
+  const commentBody = formatCommentBody(result, {
+    ...checkConfig,
+    stellarAddress: effectiveResolvedAddress,
+    horizonUrl,
+    failOnMissing,
+    stickyComment,
+    waitUntilFunded,
+    waitUntilFundedTimeoutMs,
+    waitUntilFundedIntervalMs,
+    onboardingChecklist,
+    sep0007DeepLinks,
+    sep0007OriginDomain,
+    sep0010ChallengeXdr,
+    sep0010DashboardUrl,
+    locale,
+    debugMode,
+    docsBaseUrl: core.getInput('docs_base_url') || undefined,
+    delta,
+    diagnosticsConfig,
+    customCommentTemplatePath: customCommentTemplatePath || undefined,
+  });
 
     const bodyBytes = Buffer.byteLength(rawBody, 'utf8');
     if (bodyBytes > COMMENT_SIZE_LIMIT_BYTES) {

@@ -679,6 +679,33 @@ inputs:
     required: false
     default: '10'
 
+  custom_comment_template_path:
+    description: >-
+      Optional workspace-relative (or absolute within the workspace) path to a
+      Markdown partial file appended to the TrustBridge issue comment just
+      before the footer (#312). Useful for adding Wave-specific help,
+      campaign links, or org-specific remediation guidance without forking
+      the action.
+
+      The partial supports {{variable}} interpolation for safe substitution:
+        - {{account}}       -- checked Stellar address
+        - {{asset}}         -- asset code (e.g. USDC)
+        - {{issuer}}        -- asset issuer address
+        - {{network}}       -- inferred network (mainnet / testnet / unknown)
+        - {{horizon}}       -- Horizon base URL
+        - {{status}}        -- ready or blocked with emoji
+        - {{locale:KEY}}    -- i18n string for KEY in the active locale
+
+      All substituted values (except status) are escaped with
+      escapeMarkdownInline to prevent Markdown injection. Dangerous
+      patterns (<script>, javascript:, inline event handlers,
+      {{constructor}}, {{__proto__}}) are rejected before
+      interpolation. The file must reside inside the workspace root (path
+      traversal is blocked) and must not exceed 8 KB. Leave empty to
+      disable this feature entirely.
+    required: false
+    default: ''
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:

@@ -36253,6 +36253,7 @@ const snooze_1 = __nccwpck_require__(3286);
 const diagnostics_1 = __nccwpck_require__(4851);
 const i18n_1 = __nccwpck_require__(4859);
 const delta_1 = __nccwpck_require__(1493);
+const template_1 = __nccwpck_require__(5237);
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
  * Bump when the comment body structure (sections, markers, remediation
@@ -36420,6 +36421,36 @@ function formatCommentBody(result, config) {
             const diagnosticsBlock = (0, diagnostics_1.buildDiagnosticsBlock)(config.diagnosticsConfig);
             if (diagnosticsBlock) {
                 lines.push(diagnosticsBlock);
+            }
+        }
+        // Custom comment template partial (#312) — injected just before the footer.
+        // Path validation, size check, content security, and interpolation escaping
+        // are all handled in loadCommentTemplate / validateTemplateContent.
+        if (config.customCommentTemplatePath) {
+            try {
+                const templateCtx = (0, template_1.buildTemplateContext)({
+                    stellarAddress: config.stellarAddress,
+                    assetCode: config.assetCode,
+                    assetIssuer: config.assetIssuer,
+                    horizonUrl: config.horizonUrl,
+                    network: (0, links_1.inferStellarNetwork)(config.horizonUrl),
+                    valid: result.valid,
+                    locale: config.locale ?? 'en',
+                });
+                const partial = (0, template_1.loadCommentTemplate)(config.customCommentTemplatePath, templateCtx);
+                if (partial !== undefined) {
+                    lines.push('', partial);
+                }
+                else {
+                    // File not found — warn without blocking the comment.
+                    core.warning(`custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
+                        'The template partial will be omitted from this comment.');
+                }
+            }
+            catch (templateErr) {
+                const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
+                core.warning(`Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
+                    'The template partial will be omitted from this comment.');
             }
         }
         lines.push('', '---', exports.TRUSTBRIDGE_FOOTER);
@@ -40950,6 +40981,9 @@ async function run() {
     // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
     const sep0010ChallengeXdr = core.getInput('sep0010_challenge_xdr') || '';
     const sep0010DashboardUrl = core.getInput('sep0010_dashboard_url') || '';
+    // Custom comment template partial (#312) — workspace-relative path to a
+    // Markdown partial file injected before the footer.
+    const customCommentTemplatePath = core.getInput('custom_comment_template_path') || '';
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve: Number(minXlmReserve),
@@ -41329,48 +41363,29 @@ async function run() {
             },
         };
     }
-    // Build the comment body.  When onboarding_checklist is enabled and
-    // sticky_comment is on, we need to incorporate the previous comment body so
-    // that manually-checked boxes survive the update (Issue #311).
-    //
-    // We use `bodyFactory` to defer body construction until `postIssueComment`
-    // has fetched the existing sticky comment body — this avoids a second
-    // findStickyComment round-trip.
-    //
-    // For the discussion path (GraphQL), the existing body is not fetched
-    // before postDiscussionComment, so we pass existingCommentBody=undefined
-    // (the initial body without persistence).
-    const buildCommentBody = (existingCommentBody) => {
-        const rawBody = (0, comment_1.formatCommentBody)(result, {
-            ...checkConfig,
-            stellarAddress: effectiveResolvedAddress,
-            horizonUrl,
-            failOnMissing,
-            stickyComment,
-            waitUntilFunded,
-            waitUntilFundedTimeoutMs,
-            waitUntilFundedIntervalMs,
-            onboardingChecklist,
-            sep0007DeepLinks,
-            sep0007OriginDomain,
-            sep0010ChallengeXdr,
-            sep0010DashboardUrl,
-            locale,
-            debugMode,
-            docsBaseUrl: core.getInput('docs_base_url') || undefined,
-            delta,
-            diagnosticsConfig,
-            existingCommentBody,
-        });
-        const bodyBytes = Buffer.byteLength(rawBody, 'utf8');
-        if (bodyBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
-            return (0, comment_1.buildTruncatedCommentBody)(rawBody, reportOutputPath);
-        }
-        return rawBody;
-    };
-    // Build a baseline body (no existing comment) for size-check and full-report write.
-    const baselineBody = buildCommentBody(undefined);
-    const baselineBytes = Buffer.byteLength(baselineBody, 'utf8');
+    const commentBody = (0, comment_1.formatCommentBody)(result, {
+        ...checkConfig,
+        stellarAddress: effectiveResolvedAddress,
+        horizonUrl,
+        failOnMissing,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
+        onboardingChecklist,
+        sep0007DeepLinks,
+        sep0007OriginDomain,
+        sep0010ChallengeXdr,
+        sep0010DashboardUrl,
+        locale,
+        debugMode,
+        docsBaseUrl: core.getInput('docs_base_url') || undefined,
+        delta,
+        diagnosticsConfig,
+        customCommentTemplatePath: customCommentTemplatePath || undefined,
+    });
+    // Detect oversize and write the full report to a workspace file when needed.
+    const commentBodyBytes = Buffer.byteLength(commentBody, 'utf8');
     let fullReportPath;
     if (baselineBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
         core.warning(`Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
@@ -46443,6 +46458,245 @@ async function fetchSSRFSafe(urlStr, options = {}) {
 
 /***/ }),
 
+/***/ 9681:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @file ssrf.ts
+ * SSRF-safe HTTP fetch utilities for TrustBridge.
+ *
+ * This module provides helpers for making HTTP requests with built-in
+ * protections against Server-Side Request Forgery (SSRF) attacks:
+ * - HTTPS-only (no HTTP, file://, ftp://, etc.)
+ * - No private/internal IP ranges (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+ * - Request size and timeout limits
+ * - No redirect chains to different origins
+ *
+ * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
+ * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SSRF_BLOCKED_RANGES = void 0;
+exports.isSSRFBlocked = isSSRFBlocked;
+exports.validateSSRFSafeUrl = validateSSRFSafeUrl;
+exports.fetchSSRFSafe = fetchSSRFSafe;
+/**
+ * SSRF blocklist: IP ranges that should never be fetched from inside a
+ * GitHub Actions workflow.
+ *
+ * Covers:
+ * - Loopback: 127.0.0.0/8
+ * - Private RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ * - Link-local: 169.254.0.0/16
+ * - Multicast: 224.0.0.0/4
+ * - Reserved: 240.0.0.0/4
+ * - Localhost IPv6: ::1
+ * - Link-local IPv6: fe80::/10
+ */
+exports.SSRF_BLOCKED_RANGES = [
+    { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
+    { name: 'private_10', pattern: /^10\./ },
+    { name: 'private_172', pattern: /^172\.(1[6-9]|2[0-9]|3[01])\./ },
+    { name: 'private_192', pattern: /^192\.168\./ },
+    { name: 'link_local_169', pattern: /^169\.254\./ },
+    { name: 'multicast', pattern: /^224\.|^225\.|^226\.|^227\.|^228\.|^229\.|^230\.|^231\.|^232\.|^233\.|^234\.|^235\.|^236\.|^237\.|^238\.|^239\./ },
+    { name: 'reserved_240', pattern: /^240\./ },
+    { name: 'ipv6_link_local', pattern: /^fe80:/i },
+];
+/**
+ * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * Returns `{ blocked: true, reason }` if the host should be rejected,
+ * or `{ blocked: false }` if it's safe to fetch from.
+ */
+function isSSRFBlocked(host) {
+    const normalized = host.toLowerCase();
+    for (const range of exports.SSRF_BLOCKED_RANGES) {
+        if (range.pattern.test(normalized)) {
+            return { blocked: true, reason: `Host matches SSRF blocklist: ${range.name}` };
+        }
+    }
+    return { blocked: false };
+}
+/**
+ * Validate that a URL is safe for SSRF-protected HTTP fetch.
+ *
+ * Checks:
+ * - Scheme is HTTPS (no HTTP, file://, ftp://, etc.)
+ * - Hostname is not in the SSRF blocklist
+ * - URL has a valid hostname (not relative, not localhost, etc.)
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }`.
+ */
+function validateSSRFSafeUrl(urlStr) {
+    const errors = [];
+    let parsed;
+    try {
+        parsed = new URL(urlStr);
+    }
+    catch {
+        errors.push('Invalid URL format');
+        return { valid: false, errors };
+    }
+    // Only HTTPS allowed
+    if (parsed.protocol !== 'https:') {
+        errors.push(`Scheme must be HTTPS, got: ${parsed.protocol}`);
+    }
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+        errors.push('URL must not contain credentials (username/password)');
+    }
+    // Hostname must be present and not empty
+    if (!parsed.hostname) {
+        errors.push('URL must have a non-empty hostname');
+    }
+    // Check SSRF blocklist
+    if (parsed.hostname) {
+        const blocked = isSSRFBlocked(parsed.hostname);
+        if (blocked.blocked) {
+            errors.push(`Hostname blocked by SSRF policy: ${blocked.reason}`);
+        }
+    }
+    if (errors.length > 0) {
+        return { valid: false, errors };
+    }
+    return { valid: true };
+}
+/**
+ * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ *
+ * NOT currently called by TrustBridge, but available for future enhancements
+ * that need to safely fetch HTTP resources from URLs in Horizon data.
+ *
+ * Usage:
+ * ```ts
+ * const result = await fetchSSRFSafe(homeDomainUrl, { maxBodyBytes: 256 * 1024 });
+ * if (!result.ok) {
+ *   logger.warn(`Fetch failed: ${result.error}`);
+ *   return;
+ * }
+ * const text = await result.text();
+ * ```
+ */
+async function fetchSSRFSafe(urlStr, options = {}) {
+    const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
+    const timeoutMs = options.timeoutMs ?? 10000;
+    const maxRedirects = options.maxRedirects ?? 5;
+    let currentUrl = urlStr;
+    const seenRedirects = new Set();
+    let redirectCount = 0;
+    while (true) {
+        const validation = validateSSRFSafeUrl(currentUrl);
+        if (!validation.valid) {
+            return { ok: false, error: validation.errors.join('; ') };
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            const response = await fetch(currentUrl, {
+                signal: controller.signal,
+                redirect: 'manual',
+                headers: {
+                    'User-Agent': 'TrustBridge/1.0',
+                    Accept: 'application/toml, text/plain, */*',
+                },
+            });
+            clearTimeout(timeout);
+            if (response.status >= 300 && response.status < 400) {
+                if (!options.followRedirects) {
+                    return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+                }
+                const locationHeader = response.headers.get('location');
+                if (!locationHeader) {
+                    return { ok: false, error: `HTTP ${response.status} redirect without a Location header`, status: response.status };
+                }
+                if (redirectCount >= maxRedirects) {
+                    return {
+                        ok: false,
+                        error: `Too many redirects while fetching ${currentUrl} (limit: ${maxRedirects})`,
+                        status: response.status,
+                    };
+                }
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                const nextTarget = new URL(nextUrl);
+                const hopValidation = validateSSRFSafeUrl(nextUrl);
+                if (!hopValidation.valid) {
+                    return {
+                        ok: false,
+                        error: `Unsafe redirect target: ${hopValidation.errors.join('; ')}`,
+                        status: response.status,
+                    };
+                }
+                const currentOrigin = new URL(currentUrl).origin;
+                const nextOrigin = nextTarget.origin;
+                if (nextTarget.protocol !== 'https:') {
+                    return {
+                        ok: false,
+                        error: `Redirect protocol downgrade not allowed: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (currentOrigin !== nextOrigin) {
+                    return {
+                        ok: false,
+                        error: `Redirect target crosses origin: ${currentUrl} -> ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                if (seenRedirects.has(nextUrl)) {
+                    return {
+                        ok: false,
+                        error: `Redirect loop detected: ${nextUrl}`,
+                        status: response.status,
+                    };
+                }
+                seenRedirects.add(nextUrl);
+                redirectCount += 1;
+                currentUrl = nextUrl;
+                continue;
+            }
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) {
+                const bytes = parseInt(contentLength, 10);
+                if (bytes > maxBodyBytes) {
+                    return {
+                        ok: false,
+                        error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
+                        status: response.status,
+                    };
+                }
+            }
+            if (!response.ok) {
+                return { ok: false, error: `HTTP ${response.status}`, status: response.status };
+            }
+            const textData = await response.text();
+            if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
+                return {
+                    ok: false,
+                    error: `Response body exceeds limit after decompression`,
+                    status: response.status,
+                };
+            }
+            return {
+                ok: true,
+                status: response.status,
+                text: async () => textData,
+                headers: response.headers,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isTimeout = message.includes('signal') || message.includes('timeout');
+            return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+        }
+    }
+}
+
+
+/***/ }),
+
 /***/ 8855:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -49459,6 +49713,571 @@ async function fetchTomlWithCache(domain, options = {}) {
         hash: diagnosticHash,
         cachedAt: startTime,
         fetched: true,
+    };
+}
+
+
+/***/ }),
+
+/***/ 5887:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * @file toml.ts
+ * SEP-0001 stellar.toml fetch and caching with optional integrity validation.
+ *
+ * Responsibilities:
+ *  - Fetch stellar.toml from https://{home_domain}/.well-known/stellar.toml
+ *  - Cache fetches with configurable TTL to prevent hammering origins
+ *  - Optional hash-pin validation for integrity checks (prevent poisoning)
+ *  - SSRF protection (via fetchSSRFSafe)
+ *  - Per-domain cache isolation (prevent cross-domain cache reuse)
+ *
+ * Privacy & Security:
+ *  - Cache keys include domain (prevents cache poisoning across domains)
+ *  - Body size capped at 256 KB before hash validation
+ *  - Hash mismatch is a hard failure (compromised TOML blocks the check)
+ *  - No credentials or auth headers in fetch
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseHashPin = parseHashPin;
+exports.computeHash = computeHash;
+exports.validateTomlHash = validateTomlHash;
+exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.fetchTomlWithCache = fetchTomlWithCache;
+const crypto = __importStar(__nccwpck_require__(6982));
+const ssrf_1 = __nccwpck_require__(9681);
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+/**
+ * Parse a hash pin string into algorithm + expected value.
+ *
+ * @param pin Format: "algorithm:hexvalue" (e.g. "sha256:abc123...")
+ * @returns Parsed pin or undefined if format is invalid
+ */
+function parseHashPin(pin) {
+    if (!pin || typeof pin !== 'string') {
+        return undefined;
+    }
+    const trimmed = pin.trim();
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+        return undefined;
+    }
+    const [algorithm, expectedHex] = parts;
+    const normalized = algorithm.toLowerCase();
+    if (normalized !== 'sha256' && normalized !== 'sha512') {
+        return undefined;
+    }
+    // Validate that expectedHex is a valid hex string
+    if (!/^[0-9a-fA-F]+$/.test(expectedHex)) {
+        return undefined;
+    }
+    // For SHA256: 64 hex chars (32 bytes)
+    // For SHA512: 128 hex chars (64 bytes)
+    const expectedLen = normalized === 'sha256' ? 64 : 128;
+    if (expectedHex.length !== expectedLen) {
+        return undefined;
+    }
+    return {
+        algorithm: normalized,
+        expectedHex: expectedHex.toLowerCase(),
+    };
+}
+/**
+ * Compute the hash of a string using the specified algorithm.
+ *
+ * @param content The content to hash
+ * @param algorithm 'sha256' or 'sha512'
+ * @returns Hex-encoded hash
+ */
+function computeHash(content, algorithm) {
+    const hash = crypto.createHash(algorithm);
+    hash.update(content, 'utf8');
+    return hash.digest('hex');
+}
+/**
+ * Validate content against an optional hash pin.
+ *
+ * @param content The TOML content to validate
+ * @param pin Optional hash pin (format: "algorithm:hexvalue")
+ * @returns { valid: true, hash } on success, or { valid: false, error } on mismatch/error
+ */
+function validateTomlHash(content, pin) {
+    if (!pin) {
+        // No pin provided — content is always valid
+        return { valid: true, hash: '' };
+    }
+    const parsed = parseHashPin(pin);
+    if (!parsed) {
+        return {
+            valid: false,
+            error: `Invalid hash pin format. Expected "algorithm:hexvalue" (e.g. "sha256:abc123...")`,
+        };
+    }
+    const computed = computeHash(content, parsed.algorithm);
+    if (computed !== parsed.expectedHex) {
+        return {
+            valid: false,
+            error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}`,
+        };
+    }
+    return { valid: true, hash: computed };
+}
+/**
+ * Build a cache key for a TOML fetch, ensuring per-domain isolation.
+ *
+ * @param domain The home_domain (e.g. "centre.io")
+ * @returns Cache key (e.g. "toml:centre.io")
+ */
+function buildTomlCacheKey(domain) {
+    const normalized = domain.trim().toLowerCase();
+    return `toml:${normalized}`;
+}
+/**
+ * Fetch stellar.toml for a home_domain with optional caching and hash validation.
+ *
+ * Process:
+ *  1. Check in-memory cache (within TTL)
+ *  2. If cache miss or expired, fetch https://{domain}/.well-known/stellar.toml
+ *  3. Validate hash (if pin provided)
+ *  4. Cache on success
+ *  5. Return result
+ *
+ * @param domain The issuer's home_domain (e.g. "centre.io")
+ * @param options Configuration options
+ * @returns TomlFetchResult (success) or TomlFetchError (failure)
+ */
+async function fetchTomlWithCache(domain, options = {}) {
+    const startTime = Date.now();
+    const cacheTtlMs = options.cacheTtlMs ?? 3600000; // 1 hour
+    const domainNorm = domain.trim().toLowerCase();
+    if (!domainNorm) {
+        return {
+            ok: false,
+            error: 'Domain is empty',
+            cachedAt: startTime,
+        };
+    }
+    const cacheKey = buildTomlCacheKey(domainNorm);
+    // Check cache first
+    const cached = cache_1.defaultCache.get(cacheKey);
+    if (cached) {
+        const age = Date.now() - cached.fetchedAt;
+        if (age < cacheTtlMs) {
+            logger_1.logger.debug(`TOML cache hit for domain ${domainNorm} (age: ${age}ms)`, {
+                component: 'toml',
+                domain: domainNorm,
+                cacheAge: age,
+            });
+            // If hash pin is provided, revalidate cached content
+            if (options.hashPin) {
+                const validation = validateTomlHash(cached.content, options.hashPin);
+                if (!validation.valid) {
+                    logger_1.logger.warn(`TOML hash mismatch on cached entry: ${validation.error}`, {
+                        component: 'toml',
+                        domain: domainNorm,
+                    });
+                    return {
+                        ok: false,
+                        error: validation.error,
+                        cachedAt: cached.fetchedAt,
+                    };
+                }
+            }
+            return {
+                ok: true,
+                content: cached.content,
+                hash: cached.hash,
+                cachedAt: cached.fetchedAt,
+                fetched: false,
+            };
+        }
+        logger_1.logger.debug(`TOML cache expired for domain ${domainNorm} (age: ${age}ms)`, {
+            component: 'toml',
+            domain: domainNorm,
+            cacheAge: age,
+        });
+    }
+    // Cache miss or expired — fetch fresh
+    const tomlUrl = `https://${domainNorm}/.well-known/stellar.toml`;
+    logger_1.logger.debug(`Fetching stellar.toml from ${tomlUrl}`, {
+        component: 'toml',
+        domain: domainNorm,
+    });
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(tomlUrl, {
+        maxBodyBytes: options.maxBodyBytes ?? 256 * 1024, // 256 KB
+        timeoutMs: 10000,
+        followRedirects: false,
+    });
+    if (!fetchResult.ok) {
+        logger_1.logger.warn(`Failed to fetch stellar.toml from ${domainNorm}: ${fetchResult.error}`, {
+            component: 'toml',
+            domain: domainNorm,
+            error: fetchResult.error,
+            status: fetchResult.status,
+        });
+        return {
+            ok: false,
+            error: fetchResult.error,
+            cachedAt: startTime,
+        };
+    }
+    const content = await fetchResult.text();
+    // Validate hash if pin provided
+    if (options.hashPin) {
+        const validation = validateTomlHash(content, options.hashPin);
+        if (!validation.valid) {
+            logger_1.logger.warn(`TOML hash validation failed for ${domainNorm}: ${validation.error}`, {
+                component: 'toml',
+                domain: domainNorm,
+                error: validation.error,
+            });
+            return {
+                ok: false,
+                error: validation.error,
+                cachedAt: startTime,
+            };
+        }
+        // Hash is valid; cache it
+        cache_1.defaultCache.set(cacheKey, {
+            content,
+            fetchedAt: startTime,
+            hash: validation.hash,
+        }, cacheTtlMs);
+        return {
+            ok: true,
+            content,
+            hash: validation.hash,
+            cachedAt: startTime,
+            fetched: true,
+        };
+    }
+    // No hash pin; compute hash for diagnostics but don't validate
+    const diagnosticHash = computeHash(content, 'sha256');
+    // Cache the content
+    cache_1.defaultCache.set(cacheKey, {
+        content,
+        fetchedAt: startTime,
+        hash: diagnosticHash,
+    }, cacheTtlMs);
+    logger_1.logger.debug(`Successfully fetched and cached stellar.toml for ${domainNorm}`, {
+        component: 'toml',
+        domain: domainNorm,
+        sha256: diagnosticHash,
+    });
+    return {
+        ok: true,
+        content,
+        hash: diagnosticHash,
+        cachedAt: startTime,
+        fetched: true,
+    };
+}
+
+
+/***/ }),
+
+/***/ 5237:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * Template loader for TrustBridge custom comment partials (#312).
+ *
+ * Allows repository owners to inject a Markdown "partial" into the TrustBridge
+ * issue comment via a workspace file.  The partial is appended as a section
+ * just before the footer so the i18n-driven core sections remain unchanged.
+ *
+ * Security model
+ * ──────────────
+ * 1. Path validation  — the resolved path must stay inside the workspace root;
+ *    path traversal attempts (../../etc/passwd) fail immediately.
+ * 2. Size cap         — files larger than MAX_TEMPLATE_BYTES (8 KB) are
+ *    rejected to prevent comment-flooding attacks and GitHub size-limit hits.
+ * 3. Dangerous pattern blocking — any `{{constructor}}`, `{{__proto__}}`,
+ *    `{{prototype}}` placeholder or raw `<script`, `javascript:`, or `data:`
+ *    URI content is rejected before interpolation.
+ * 4. Interpolation escaping — every substituted value is run through
+ *    `escapeMarkdownInline` so contributor-supplied strings (addresses, asset
+ *    codes, issuer addresses, network names) cannot inject Markdown structures
+ *    such as links, emphasis, headings, or code-spans into the partial.
+ *    The lone exception is `{{status}}` which expands to a safe symbolic emoji.
+ * 5. i18n integration — `{{locale:KEY}}` expands to the current locale string
+ *    for KEY, making it safe to reference translated copy without bypassing i18n.
+ * 6. Unknown placeholders are replaced with an empty string (never silently
+ *    passed through) so unexpected `{{foo}}` tokens cannot leak raw data.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_TEMPLATE_BYTES = void 0;
+exports.validateTemplatePath = validateTemplatePath;
+exports.validateTemplateContent = validateTemplateContent;
+exports.interpolateTemplate = interpolateTemplate;
+exports.loadCommentTemplate = loadCommentTemplate;
+exports.buildTemplateContext = buildTemplateContext;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const markdown_1 = __nccwpck_require__(3758);
+const i18n_1 = __nccwpck_require__(4859);
+/** Maximum allowed template file size in bytes. */
+exports.MAX_TEMPLATE_BYTES = 8 * 1024; // 8 KB
+/**
+ * Dangerous prototype-pollution / prototype-chain placeholder names.
+ * Any template that uses these as `{{name}}` tokens is rejected outright.
+ * All entries must be lowercase (comparison is done after toLowerCase()).
+ */
+const FORBIDDEN_PLACEHOLDER_NAMES = new Set([
+    'constructor',
+    '__proto__',
+    'prototype',
+    '__definegetter__',
+    '__definesetter__',
+    '__lookupgetter__',
+    '__lookupsetter__',
+]);
+/**
+ * Patterns in the raw template content that indicate active injection attempts.
+ * Checked after path validation and size check, before interpolation.
+ */
+const FORBIDDEN_CONTENT_PATTERNS = [
+    /<script[\s>]/i, // <script tags
+    /javascript\s*:/i, // javascript: URIs
+    /data\s*:\s*text\s*\/\s*html/i, // data:text/html URIs
+    /vbscript\s*:/i, // vbscript: URIs
+    /on\w+\s*=/i, // inline event handlers (onclick=, etc.)
+];
+/**
+ * Validate that the given path resolves inside the workspace root.
+ *
+ * @param templatePath  Raw path from action input (relative or absolute).
+ * @param workspaceRoot Absolute workspace root directory.
+ * @throws `Error` if the resolved path escapes the workspace.
+ */
+function validateTemplatePath(templatePath, workspaceRoot) {
+    const resolvedRoot = path.resolve(workspaceRoot);
+    const candidate = path.isAbsolute(templatePath)
+        ? templatePath
+        : path.join(resolvedRoot, templatePath);
+    const resolved = path.resolve(candidate);
+    // The resolved path must be the workspace root itself OR a descendant of it.
+    if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
+        throw new Error(`custom_comment_template_path resolves outside the workspace root: "${templatePath}". ` +
+            'Only paths inside the workspace are allowed.');
+    }
+    return resolved;
+}
+/**
+ * Scan the raw template content for dangerous patterns and forbidden
+ * prototype-chain placeholder names.
+ *
+ * @throws `Error` describing the first violation found.
+ */
+function validateTemplateContent(raw) {
+    // Check for dangerous content patterns (XSS / HTML injection).
+    for (const pattern of FORBIDDEN_CONTENT_PATTERNS) {
+        if (pattern.test(raw)) {
+            throw new Error(`custom_comment_template contains a disallowed pattern (${pattern.source}). ` +
+                'Template content must be plain Markdown without HTML scripts, event handlers, or javascript:/vbscript: URIs.');
+        }
+    }
+    // Check for forbidden prototype-chain placeholders.
+    const placeholderPattern = /\{\{([^{}]+?)\}\}/g;
+    let match;
+    while ((match = placeholderPattern.exec(raw)) !== null) {
+        // locale:KEY form — only validate the prefix
+        const name = match[1].trim().toLowerCase();
+        // For dotted names (e.g. constructor.prototype.isAdmin), check the first segment.
+        const baseName = name.startsWith('locale:')
+            ? 'locale'
+            : name.split(/[\s.[\]()'"`]/)[0];
+        if (FORBIDDEN_PLACEHOLDER_NAMES.has(baseName)) {
+            throw new Error(`custom_comment_template uses a forbidden placeholder name: "{{${match[1]}}}". ` +
+                'Prototype-chain keys are not allowed as template variables.');
+        }
+    }
+}
+/**
+ * Supported named variables for `{{variable}}` interpolation.
+ *
+ * Every value is escaped with `escapeMarkdownInline` before substitution,
+ * preventing contributor-supplied strings from injecting Markdown structures.
+ * `status` is the one exception — it is always a safe symbolic emoji string
+ * produced internally by this module, not sourced from external input.
+ */
+const SUPPORTED_VARIABLES = new Set([
+    'account',
+    'asset',
+    'issuer',
+    'network',
+    'horizon',
+    'status',
+]);
+/**
+ * Interpolate `{{variable}}` and `{{locale:KEY}}` placeholders in a template
+ * string.
+ *
+ * Rules:
+ * - Known variables are replaced with their escaped context value.
+ * - `{{locale:KEY}}` resolves the locale string for KEY from `getStrings()`.
+ *   Only string-typed fields of `CommentStrings` are supported; function
+ *   fields are excluded and resolve to an empty string.
+ * - Unknown placeholders are replaced with an empty string (never echoed back).
+ *
+ * @param template  Raw template content (already validated).
+ * @param ctx       Interpolation context.
+ * @returns         Interpolated template string.
+ */
+function interpolateTemplate(template, ctx) {
+    const strings = (0, i18n_1.getStrings)(ctx.locale);
+    return template.replace(/\{\{([^{}]+?)\}\}/g, (_match, rawKey) => {
+        const key = rawKey.trim();
+        // Handle {{locale:KEY}} for i18n string lookups.
+        if (key.toLowerCase().startsWith('locale:')) {
+            const i18nKey = key.slice('locale:'.length).trim();
+            const value = strings[i18nKey];
+            // Only allow string-typed fields (not function-typed check helpers).
+            if (typeof value === 'string') {
+                return (0, markdown_1.escapeMarkdownInline)(value);
+            }
+            return '';
+        }
+        const lowerKey = key.toLowerCase();
+        // Unknown or unsupported variable → empty string (safe default).
+        if (!SUPPORTED_VARIABLES.has(lowerKey)) {
+            return '';
+        }
+        // status is safe symbolic text, no escaping needed.
+        if (lowerKey === 'status') {
+            return ctx.status;
+        }
+        const raw = ctx[lowerKey] ?? '';
+        return (0, markdown_1.escapeMarkdownInline)(raw);
+    });
+}
+/**
+ * Load, validate, and interpolate a custom comment template partial.
+ *
+ * Returns the rendered partial string on success, or `undefined` when:
+ * - `templatePath` is empty or undefined (feature disabled).
+ * - The file does not exist at the resolved path (non-fatal, emits a warning).
+ *
+ * Throws `Error` for all hard validation failures (path traversal, size
+ * exceeded, forbidden content) so the action can surface them clearly.
+ *
+ * @param templatePath  Workspace-relative or absolute path to the `.md` file.
+ * @param ctx           Interpolation context for variable substitution.
+ * @param workspaceRoot Workspace root directory.  Defaults to
+ *                      `GITHUB_WORKSPACE` env variable or `process.cwd()`.
+ */
+function loadCommentTemplate(templatePath, ctx, workspaceRoot) {
+    if (!templatePath || templatePath.trim() === '') {
+        return undefined;
+    }
+    const root = workspaceRoot ?? process.env['GITHUB_WORKSPACE'] ?? process.cwd();
+    // 1. Path validation — must stay inside workspace.
+    const resolvedPath = validateTemplatePath(templatePath.trim(), root);
+    // 2. File existence — non-fatal, warn-only.
+    if (!fs.existsSync(resolvedPath)) {
+        // Caller is responsible for surfacing this as a core.warning.
+        return undefined;
+    }
+    // 3. Size check — reject oversized files before reading content.
+    const stat = fs.statSync(resolvedPath);
+    if (stat.size > exports.MAX_TEMPLATE_BYTES) {
+        throw new Error(`custom_comment_template_path "${templatePath}" exceeds the maximum allowed size of ` +
+            `${exports.MAX_TEMPLATE_BYTES} bytes (file is ${stat.size} bytes). ` +
+            'Keep template partials small to avoid hitting GitHub comment size limits.');
+    }
+    const raw = fs.readFileSync(resolvedPath, 'utf8');
+    // 4. Content security validation.
+    validateTemplateContent(raw);
+    // 5. Interpolate placeholders.
+    return interpolateTemplate(raw, ctx);
+}
+/**
+ * Build a `TemplateContext` from comment-level values.
+ *
+ * Centralises the context construction so callers do not need to know
+ * the full shape of `TemplateContext`.
+ */
+function buildTemplateContext(params) {
+    return {
+        account: params.stellarAddress,
+        asset: params.assetCode,
+        issuer: params.assetIssuer,
+        horizon: params.horizonUrl,
+        network: params.network,
+        status: params.valid ? '✅ ready' : '❌ blocked',
+        locale: params.locale,
     };
 }
 

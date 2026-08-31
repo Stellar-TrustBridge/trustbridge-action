@@ -117,81 +117,82 @@ Every value maps 1-to-1 to a heading in `docs/FAQ.md` that uses the explicit `{#
 | `xlm` | `xlm-reserve-too-low` |
 | `horizon` | `horizon-error` |
 
+---
 
-## Locale-aware comments (i18n) — Issue #291
+## Custom comment templates (markdown partials) (#312)
 
-TrustBridge renders issue comments in the contributor's preferred language using
-the `locale` config input. Three locales are currently supported:
+Organisations that want to add Wave-specific help, campaign links, or custom remediation guidance without forking the action can supply a **Markdown partial** file. TrustBridge loads the partial, runs safe interpolation, and appends it just before the action footer.
 
-| Locale | Language |
-|--------|----------|
-| `en` | English (default) |
-| `es` | Spanish |
-| `pt` | Portuguese |
-
-### How locale selection works
-
-Set `locale` in the workflow step:
+### Quick start
 
 ```yaml
 - uses: Stellar-TrustBridge/trustbridge-action@v1
   with:
     stellar_address_input: ${{ steps.address.outputs.address }}
     github_token: ${{ secrets.GITHUB_TOKEN }}
-    locale: es   # 'en' | 'es' | 'pt'
+    custom_comment_template_path: .trustbridge/comment-help.md
 ```
 
-Unknown or unset locales fall back to `en` automatically — the action never fails
-due to an unsupported locale value.
+Create `.trustbridge/comment-help.md` in your repository:
 
-### String architecture
+```markdown
+### Wave-specific help
 
-All locale strings are defined in `src/i18n.ts` as `CommentStrings` objects:
-- Plain string keys (headings, labels, column names) are static strings.
-- Function keys (detail messages, remediation copy) accept address/balance args
-  and return translated strings with interpolated values.
+This run validated account {{account}} for the **{{asset}}** token on {{network}}.
+Current status: {{status}}
 
-The `getStrings(locale)` function returns the correct `CommentStrings` object
-for the requested locale, falling back to `EN` when the locale is unsupported.
-
-### Adding a new locale
-
-1. Add the new locale code to `export type Locale` in `src/i18n.ts`.
-2. Create a new `const XX: CommentStrings = { ... }` object implementing every
-   key in the `CommentStrings` interface (TypeScript enforces completeness).
-3. Register it in the `LOCALES` map at the bottom of `src/i18n.ts`.
-4. Run `npm test -- --testPathPattern 'i18n-comment-snapshots' --updateSnapshot`
-   to generate golden snapshots for the new locale.
-5. Verify key parity: `npm test -- --testPathPattern 'i18n'` — the key parity
-   tests in `__tests__/i18n-comment-snapshots.test.ts` will fail if any key is
-   missing or empty.
-
-### Golden snapshots for i18n comment rendering
-
-`__tests__/i18n-comment-snapshots.test.ts` stores golden snapshots for each
-supported locale × scenario (success / unfunded-failure). These snapshots live in
-`__tests__/__snapshots__/i18n-comment-snapshots.test.ts.snap`.
-
-If a translation changes or the comment template is updated, regenerate:
-
-```bash
-npm test -- --testPathPattern 'i18n-comment-snapshots' --updateSnapshot
+Need help? Join [#wave-support](https://discord.example/wave-support) on Discord.
+See the [campaign FAQ](https://your-org.example/wave/faq) for trustline setup instructions.
 ```
 
-Always commit the updated snapshot alongside the translation change so CI stays
-green. A snapshot mismatch in CI means a locale string or comment template
-changed without updating the golden file.
+### Available template variables
 
-### Key parity enforcement
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `{{account}}` | Checked Stellar address | Escaped for Markdown |
+| `{{asset}}` | Asset code (e.g. `USDC`) | Escaped for Markdown |
+| `{{issuer}}` | Asset issuer address | Escaped for Markdown |
+| `{{network}}` | Inferred network (`mainnet` / `testnet` / `unknown`) | Escaped for Markdown |
+| `{{horizon}}` | Horizon base URL | Escaped for Markdown |
+| `{{status}}` | `✅ ready` or `❌ blocked` | Safe emoji string — not escaped |
+| `{{locale:KEY}}` | i18n string for `KEY` in the active locale | See i18n keys below |
 
-The key parity tests verify that every string key defined in the English
-`CommentStrings` interface is also present and non-empty in every other locale.
-A missing translation key causes a descriptive test failure:
+All variable values (except `{{status}}`) are run through `escapeMarkdownInline` before substitution, so contributor-supplied strings (addresses, asset codes, etc.) cannot inject Markdown structures such as links, emphasis, headings, or code spans.
 
+### i18n string variables (`{{locale:KEY}}`)
+
+Use `{{locale:KEY}}` to embed a translated string from the active locale (`en`, `es`, `pt`). For example:
+
+```markdown
+### {{locale:remediationHeading}}
+
+{{locale:readyToProceed}}
 ```
-Locale "es" is missing 2 key(s): newHeading, newLabel
-```
 
-This ensures that adding a new string to `CommentStrings` without translating
-it into all locales fails fast in CI rather than silently rendering an empty
-string in contributors' issue comments.
+Only `string`-typed fields of `CommentStrings` are supported (function-typed check helpers are excluded and resolve to an empty string). Unknown keys also produce an empty string.
+
+### Security guarantees
+
+| Threat | Defence |
+|--------|---------|
+| **Path traversal** | The resolved path must stay inside the workspace root. `../../etc/passwd`-style paths throw immediately before any file read. |
+| **Oversized file** | Files larger than **8 KB** are rejected before content is read. |
+| **HTML/XSS injection** | Templates containing `<script`, `javascript:`, `vbscript:`, `data:text/html`, or inline event handlers (`onclick=`, `onload=`, etc.) are rejected. |
+| **Prototype-chain placeholders** | `{{constructor}}`, `{{__proto__}}`, `{{prototype}}`, `{{__defineGetter__}}`, `{{__defineSetter__}}`, `{{__lookupGetter__}}`, `{{__lookupSetter__}}` throw a hard error before any substitution occurs. |
+| **Unknown placeholder leakage** | Any `{{unknown}}` placeholder (not in the supported variable set and not a valid `{{locale:KEY}}`) is replaced with an empty string, never echoed back. |
+| **Markdown injection via values** | All substituted values (except the safe `{{status}}`) are escaped through `escapeMarkdownInline`. A contributor address like `][evil](https://malicious.example)` becomes `\\]\\[evil\\]\\(https://malicious.example\\)`. |
+| **Template failure isolation** | Any template loading or validation error emits a `core.warning` and omits the partial. The rest of the comment (i18n core sections) and the footer are always posted. |
+
+### Constraints
+
+- The template file must be **inside the workspace root** (the repository checkout directory). Absolute paths outside the workspace are rejected.
+- Maximum template size: **8 KB**. Keep partials focused to avoid hitting GitHub's 65 KB comment size limit alongside the full TrustBridge comment body.
+- The feature is opt-in. Leave `custom_comment_template_path` empty (the default) to disable it.
+- i18n core sections are produced by `formatCommentBody` using `getStrings()` and are not affected by the template.
+
+### Implementation reference
+
+- Template loader: `src/template.ts` (`loadCommentTemplate`, `validateTemplatePath`, `validateTemplateContent`, `interpolateTemplate`, `buildTemplateContext`)
+- Integration point: `formatCommentBody` in `src/comment.ts` — partial injected before `---` footer
+- Tests: `__tests__/template.test.ts` (unit), `__tests__/comment.test.ts` (integration, injection scenarios)
+

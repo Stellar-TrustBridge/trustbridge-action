@@ -1110,223 +1110,169 @@ describe('writeFullReport', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Checklist state persistence (Issue #311)
-// ---------------------------------------------------------------------------
+// ── Custom comment template integration tests (#312) ─────────────────────────
 
-describe('formatCommentBody — checklist persistence (Issue #311)', () => {
-  const failingResult: ValidationResult = {
-    valid: false,
-    accountFunded: false,
-    trustlineExists: false,
-    xlmBalance: '0',
-    xlmReserveMet: false,
-    assetBalance: '0',
-    assetBalanceMet: false,
-    checks: [
-      { passed: false, label: 'Account funded', detail: 'Account not found.' },
-      { passed: false, label: 'USDC trustline', detail: 'Cannot check without funded account.' },
-      { passed: false, label: 'XLM reserve', detail: 'Cannot check without funded account.' },
-    ],
-  };
+describe('formatCommentBody with custom_comment_template_path', () => {
+  let tmpDir: string;
+  let savedWorkspace: string | undefined;
 
-  it('renders unchecked boxes when no existingCommentBody is provided (no regression)', () => {
-    const body = formatCommentBody(failingResult, {
+  beforeAll(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(1000000000000);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-comment-template-'));
+    // Set GITHUB_WORKSPACE so loadCommentTemplate treats tmpDir as workspace root
+    savedWorkspace = process.env['GITHUB_WORKSPACE'];
+    process.env['GITHUB_WORKSPACE'] = tmpDir;
+  });
+
+  afterAll(() => {
+    jest.restoreAllMocks();
+    // Restore GITHUB_WORKSPACE
+    if (savedWorkspace === undefined) {
+      delete process.env['GITHUB_WORKSPACE'];
+    } else {
+      process.env['GITHUB_WORKSPACE'] = savedWorkspace;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeResult = (valid: boolean) => ({
+    ...validationResult,
+    valid,
+    accountFunded: valid,
+    trustlineExists: valid,
+    xlmReserveMet: valid,
+    xlmBalance: valid ? '10.0000000' : '0',
+  });
+
+  it('injects template partial before the footer when path is valid', () => {
+    const templateFile = path.join(tmpDir, 'custom.md');
+    fs.writeFileSync(templateFile, '### Custom Wave Help\n\nContact: wave@example.com');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'custom.md',
+    });
+
+    // Partial appears before the footer
+    const partialIdx = body.indexOf('Custom Wave Help');
+    const footerIdx = body.indexOf('_Posted by [trustbridge-action]');
+    expect(partialIdx).toBeGreaterThan(0);
+    expect(partialIdx).toBeLessThan(footerIdx);
+  });
+
+  it('interpolates {{account}} and {{status}} in partial', () => {
+    const templateFile = path.join(tmpDir, 'interp.md');
+    fs.writeFileSync(templateFile, 'For {{account}}: {{status}}');
+
+    const body = formatCommentBody(makeResult(true), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'interp.md',
+    });
+
+    expect(body).toContain('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
+    expect(body).toContain('✅ ready');
+  });
+
+  it('does not break comment when customCommentTemplatePath is undefined', () => {
+    const body = formatCommentBody(makeResult(false), {
       ...baseConfig,
       horizonUrl: 'https://horizon.stellar.org',
     });
-    expect(body).toContain('- [ ] **Fund account**');
-    expect(body).toContain('- [ ] **Add USDC trustline**');
-    expect(body).toContain('- [ ] **Verify XLM balance**');
+
+    expect(body).toContain('_Posted by [trustbridge-action]');
+    expect(body).not.toContain('Custom Wave Help');
   });
 
-  it('preserves a manually-checked Fund account box from the existing comment', () => {
-    // Simulate a previous comment body where the user manually checked Fund account
-    const prevBody = [
-      '<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->',
-      '## TrustBridge — Stellar Account Check',
-      '',
-      '### Onboarding checklist',
-      '',
-      '- [x] **Fund account** — Activate the account with XLM.',
-      '- [ ] **Add USDC trustline** — Configure the asset trustline.',
-      '- [ ] **Verify XLM balance** — Meet the reserve.',
-    ].join('\n');
+  it('emits a core.warning when the template file does not exist', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
 
-    const body = formatCommentBody(failingResult, {
+    formatCommentBody(makeResult(false), {
       ...baseConfig,
       horizonUrl: 'https://horizon.stellar.org',
-      existingCommentBody: prevBody,
+      customCommentTemplatePath: 'does-not-exist.md',
     });
 
-    // Fund account was manually checked — should survive even though Horizon says 404
-    expect(body).toContain('- [x] **Fund account**');
-    // Other items follow live state (still unchecked)
-    expect(body).toContain('- [ ] **Add USDC trustline**');
-    expect(body).toContain('- [ ] **Verify XLM balance**');
-  });
-
-  it('preserves all three manually-checked boxes from the existing comment', () => {
-    const prevBody = [
-      '### Onboarding checklist',
-      '',
-      '- [x] **Fund account** — Activate.',
-      '- [x] **Add USDC trustline** — Trustline.',
-      '- [x] **Verify XLM balance** — Reserve.',
-    ].join('\n');
-
-    const body = formatCommentBody(failingResult, {
-      ...baseConfig,
-      horizonUrl: 'https://horizon.stellar.org',
-      existingCommentBody: prevBody,
-    });
-
-    expect(body).toContain('- [x] **Fund account**');
-    expect(body).toContain('- [x] **Add USDC trustline**');
-    expect(body).toContain('- [x] **Verify XLM balance**');
-  });
-
-  it('live Horizon pass always wins over previous unchecked state', () => {
-    // Previous comment had Fund account unchecked, but Horizon now returns funded
-    const prevBody = [
-      '### Onboarding checklist',
-      '',
-      '- [ ] **Fund account** — Activate.',
-      '- [ ] **Add USDC trustline** — Trustline.',
-      '- [ ] **Verify XLM balance** — Reserve.',
-    ].join('\n');
-
-    const fundedResult: ValidationResult = {
-      ...failingResult,
-      accountFunded: true,
-    };
-
-    const body = formatCommentBody(fundedResult, {
-      ...baseConfig,
-      horizonUrl: 'https://horizon.stellar.org',
-      existingCommentBody: prevBody,
-    });
-
-    // Horizon says funded → must be checked regardless of previous state
-    expect(body).toContain('- [x] **Fund account**');
-  });
-
-  it('does not persist checklist state when onboardingChecklist is disabled', () => {
-    const prevBody = [
-      '### Onboarding checklist',
-      '',
-      '- [x] **Fund account** — Activate.',
-      '- [x] **Add USDC trustline** — Trustline.',
-      '- [x] **Verify XLM balance** — Reserve.',
-    ].join('\n');
-
-    const body = formatCommentBody(failingResult, {
-      ...baseConfig,
-      horizonUrl: 'https://horizon.stellar.org',
-      existingCommentBody: prevBody,
-      onboardingChecklist: false,
-    });
-
-    // Checklist entirely omitted when disabled
-    expect(body).not.toContain('### Onboarding checklist');
-  });
-});
-
-describe('postIssueComment — bodyFactory (Issue #311)', () => {
-  const mockedGithub = github as unknown as {
-    context: {
-      payload: { issue?: { number: number } };
-      repo: { owner: string; repo: string };
-      apiUrl: string;
-    };
-    getOctokit: jest.Mock;
-  };
-
-  const PREV_COMMENT_BODY = [
-    '<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->',
-    '### Onboarding checklist',
-    '',
-    '- [x] **Fund account** — Activate.',
-    '- [ ] **Add USDC trustline** — Trustline.',
-    '- [ ] **Verify XLM balance** — Reserve.',
-  ].join('\n');
-
-  beforeEach(() => {
-    mockedGithub.context.payload = { issue: { number: 7 } };
-    mockedGithub.context.apiUrl = 'https://api.github.com';
-  });
-
-  it('calls bodyFactory with the existing comment body when a sticky comment is found', async () => {
-    const octokit = makeOctokit();
-    // findStickyComment (via REST fallback) returns comment id 99
-    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
-    octokit.paginate.mockResolvedValue([
-      { id: 99, body: PREV_COMMENT_BODY },
-    ]);
-    // getComment returns the body so bodyFactory can use it
-    octokit.rest.issues.getComment.mockResolvedValue({
-      data: { body: PREV_COMMENT_BODY },
-    });
-    octokit.rest.issues.updateComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
-    });
-    mockedGithub.getOctokit.mockReturnValue(octokit);
-
-    const factorySpy = jest.fn((existingBody: string | undefined) =>
-      `rebuilt-body: ${existingBody?.slice(0, 20) ?? 'none'}`,
-    );
-
-    await postIssueComment('token', 'fallback-body', {
-      sticky: true,
-      bodyFactory: factorySpy,
-    });
-
-    // Factory should have been called with the fetched existing comment body
-    expect(factorySpy).toHaveBeenCalledWith(PREV_COMMENT_BODY);
-    // The body posted should be what the factory returned
-    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: expect.stringContaining('rebuilt-body:'),
-      }),
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('was not found in the workspace'),
     );
   });
 
-  it('calls bodyFactory with undefined when no existing comment is found', async () => {
-    const octokit = makeOctokit();
-    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
-    octokit.paginate.mockResolvedValue([]);
-    octokit.rest.issues.createComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
-    });
-    mockedGithub.getOctokit.mockReturnValue(octokit);
+  it('emits a core.warning and omits partial when template contains <script>', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
 
-    const factorySpy = jest.fn((_existingBody: string | undefined) => 'brand-new-body');
+    const templateFile = path.join(tmpDir, 'evil.md');
+    fs.writeFileSync(templateFile, 'Hello <script>alert(1)</script>');
 
-    await postIssueComment('token', 'fallback-body', {
-      sticky: true,
-      bodyFactory: factorySpy,
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'evil.md',
     });
 
-    // No existing comment → factory called with undefined
-    expect(factorySpy).toHaveBeenCalledWith(undefined);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'brand-new-body' }),
+    expect(body).not.toContain('<script>');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    // Footer is still present — comment is never broken by template failure
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('emits a core.warning and omits partial on path traversal attempt', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: '../../../../etc/passwd',
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('omits partial and warns on {{constructor}} in template', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const templateFile = path.join(tmpDir, 'proto.md');
+    fs.writeFileSync(templateFile, 'Oops: {{constructor}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'proto.md',
+    });
+
+    expect(body).not.toContain('constructor');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
     );
   });
 
-  it('uses the plain body argument (not bodyFactory) when bodyFactory is not provided', async () => {
-    const octokit = makeOctokit();
-    octokit.graphql.mockRejectedValue(new Error('graphql unavailable'));
-    octokit.paginate.mockResolvedValue([]);
-    octokit.rest.issues.createComment.mockResolvedValue({
-      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+  it('escapes Markdown injection in template variables from address', () => {
+    // Simulate a "malicious" address that contains link injection syntax.
+    // In production, addresses are validated G-addresses, but the template
+    // system must still escape whatever it receives.
+    const templateFile = path.join(tmpDir, 'injection.md');
+    fs.writeFileSync(templateFile, 'Account: {{account}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      stellarAddress: 'G][evil](https://steal.example)',
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'injection.md',
     });
-    mockedGithub.getOctokit.mockReturnValue(octokit);
 
-    await postIssueComment('token', 'plain-body', { sticky: true });
-
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'plain-body' }),
-    );
+    // ] ( ) should be escaped in the template substitution, breaking any link
+    expect(body).toContain('\\]\\[evil\\]\\(https://steal.example\\)');
+    // Footer is still present — comment is never broken by escaped content
+    expect(body).toContain('_Posted by [trustbridge-action]');
   });
 });
