@@ -1957,6 +1957,30 @@ curl -X POST "https://your-dependency-track/api/v1/bom" \
   -F "bom=@trustbridge-sbom.json"
 ```
 
+### Verifying release attestations
+
+Each release includes SLSA provenance attestations for `dist/index.js` and `dist/licenses.txt`, plus a SHA-256 checksum manifest. Supply-chain reviewers can verify the integrity of the action bundle before pinning to a version:
+
+```bash
+TAG=v1.0.1
+
+# Clone the release tag
+git clone --depth 1 --branch "$TAG" https://github.com/Stellar-TrustBridge/trustbridge-action.git
+cd trustbridge-action
+
+# Verify SLSA provenance (requires gh CLI with attestation support)
+gh attestation verify dist/index.js \
+  --repo Stellar-TrustBridge/trustbridge-action \
+  --signer-workflow Stellar-TrustBridge/trustbridge-action/.github/workflows/release.yml \
+  --source-ref "refs/tags/$TAG"
+
+# Download and verify checksums
+gh release download "$TAG" --pattern trustbridge-checksums.txt
+sha256sum -c trustbridge-checksums.txt
+```
+
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the complete verification procedure.
+
 ---
 
 ## Scheduled wallet re-validation (cron)

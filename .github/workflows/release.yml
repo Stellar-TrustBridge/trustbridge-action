@@ -75,6 +75,30 @@ jobs:
         with:
           subject-path: dist/index.js
 
+      - name: Generate SLSA provenance for dist/licenses.txt
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/licenses.txt
+
+      - name: Generate checksum manifest
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "# TrustBridge Release Checksums" > trustbridge-checksums.txt
+          echo "" >> trustbridge-checksums.txt
+          echo "Generated from tag ${GITHUB_REF_NAME}" >> trustbridge-checksums.txt
+          echo "" >> trustbridge-checksums.txt
+          sha256sum dist/index.js dist/licenses.txt >> trustbridge-checksums.txt
+          cat trustbridge-checksums.txt
+
+      - name: Upload checksum manifest to Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: trustbridge-checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate SBOM (CycloneDX format)
         run: |
           npx @cyclonedx/npm@latest --output-file trustbridge-sbom.json --output-format json --specs all
