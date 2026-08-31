@@ -33,8 +33,7 @@
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.11.1",
-    "@actions/github": "^6.0.1",
-    "https-proxy-agent": "^7.0.6",
+    "@actions/github": "^9.1.1",
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
