@@ -31,17 +31,26 @@
 # may omit `contents: read`, but listing it explicitly is
 # recommended for clarity and least-privilege hygiene.
 #
-# Rate-limit guidance
-# -------------------
-# GitHub REST API: 5 000 requests / hour for GITHUB_TOKEN
-# (lower for unauthenticated calls — never use those here).
-# This workflow makes ~1 REST call per issue to list assignees
-# and 1 action run (2–3 API calls internally) per issue. For
-# repos with 100+ open bounty issues, either:
-#   a) Process in batches and add a sleep between dispatches.
-#   b) Use a PAT with higher limits via TRUSTBRIDGE_TOKEN.
-# The script below logs a warning when the parseable count
-# is zero (a likely sign of template drift or rate-limiting).
+# Fork safety
+# -----------
+# Scheduled workflows run on every fork by default. To prevent
+# unnecessary runs on developer forks, add an `if:` condition:
+#   if: github.repository == 'YOUR_ORG/YOUR_REPO' || !github.event.repository.fork
+#
+# Secrets & Authentication
+# ------------------------
+# • GITHUB_TOKEN (default): standard token with `issues: write`.
+# • TRUSTBRIDGE_TOKEN (optional): Fine-grained PAT if org-level
+#   token restrictions block issue commenting.
+# • GITHUB_APP_TOKEN (optional): GitHub App installation token
+#   for higher API rate limits (15,000 req/hr).
+#
+# Comment mode & Safety
+# ---------------------
+# • comment_mode: "dry-run" — validates and sets outputs without
+#   making GitHub comment API calls (safest for audit runs).
+# • comment_mode: "post" (default) — posts/updates sticky comment.
+# • comment_mode: "off" — completely skips comment generation.
 #
 # Recommended settings for cron runs
 # ------------------------------------
@@ -73,6 +82,10 @@ on:
         description: "Max issues to process in this run (default: 50)"
         required: false
         default: "50"
+      comment_mode:
+        description: "Comment posting mode: post, dry-run, or off (default: dry-run for cron safety)"
+        required: false
+        default: "dry-run"
 
 # Minimal, explicit permissions — principle of least privilege.
 permissions:
@@ -100,6 +113,8 @@ jobs:
   revalidate-wallets:
     name: "Re-validate contributor wallets"
     runs-on: ubuntu-latest
+    # Guard against accidental runs on fork repositories
+    if: !github.event.repository.fork
 
     steps:
       # ------------------------------------------------------------------
