@@ -1,0 +1,302 @@
+name: 'TrustBridge Org Defaults'
+description: >-
+  Organization-wide composite action that injects default policy values for
+  TrustBridge validation. Repositories can override any default via inputs.
+  This avoids duplicating Horizon URL, asset issuer, and policy settings
+  across every workflow file in the organization.
+
+author: 'Stellar-TrustBridge'
+
+inputs:
+  github_token:
+    description: >-
+      GitHub token with `issues: write` permission for posting comments.
+      `GITHUB_TOKEN` is typical for issue-triggered workflows.
+    required: true
+
+  stellar_address_input:
+    description: >-
+      Stellar account address (G-address) to validate. Required unless
+      assignee_address_map is set.
+    required: false
+    default: ''
+
+  # ── Organization policy defaults ──────────────────────────────────────
+  # These inputs define the org-wide defaults. Any repo-level workflow can
+  # override any of these by passing the corresponding input.
+
+  org_horizon_url:
+    description: 'Organization-wide default Horizon API base URL'
+    required: false
+    default: 'https://horizon.stellar.org'
+
+  org_asset_code:
+    description: 'Organization-wide default asset code to check trustline for'
+    required: false
+    default: 'USDC'
+
+  org_asset_issuer:
+    description: 'Organization-wide default asset issuer Stellar address (G-address)'
+    required: false
+    default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+  org_min_xlm_reserve:
+    description: 'Organization-wide minimum native XLM balance required'
+    required: false
+    default: '1.5'
+
+  org_fail_on_missing:
+    description: 'Organization-wide default for fail_on_missing (true/false)'
+    required: false
+    default: 'true'
+
+  org_sticky_comment:
+    description: 'Organization-wide default for sticky_comment (true/false)'
+    required: false
+    default: 'true'
+
+  # ── Repo-level overrides ──────────────────────────────────────────────
+  # When these are set, they override the org defaults above.
+
+  horizon_url:
+    description: 'Override org default Horizon API base URL'
+    required: false
+    default: ''
+
+  asset_code:
+    description: 'Override org default asset code'
+    required: false
+    default: ''
+
+  asset_issuer:
+    description: 'Override org default asset issuer'
+    required: false
+    default: ''
+
+  min_xlm_reserve:
+    description: 'Override org default minimum XLM reserve'
+    required: false
+    default: ''
+
+  fail_on_missing:
+    description: 'Override org default fail_on_missing'
+    required: false
+    default: ''
+
+  sticky_comment:
+    description: 'Override org default sticky_comment'
+    required: false
+    default: ''
+
+  # ── Passthrough inputs ────────────────────────────────────────────────
+  # All other trustbridge-action inputs that are not org-policy decisions.
+
+  assignee_address_map:
+    description: 'Optional JSON object mapping GitHub usernames to Stellar addresses'
+    required: false
+    default: ''
+
+  debug_mode:
+    description: 'Enable extra action logs for troubleshooting'
+    required: false
+    default: 'false'
+
+  horizon_timeout_ms:
+    description: 'Horizon request timeout in milliseconds'
+    required: false
+    default: '15000'
+
+  wait_until_funded:
+    description: 'Poll Horizon until the account becomes funded'
+    required: false
+    default: 'false'
+
+  wait_until_funded_timeout_ms:
+    description: 'Maximum total time to poll for funding, in milliseconds'
+    required: false
+    default: '120000'
+
+  wait_until_funded_interval_ms:
+    description: 'Delay between polling attempts, in milliseconds'
+    required: false
+    default: '5000'
+
+  horizon_url_fallback:
+    description: 'Optional fallback Horizon API base URL'
+    required: false
+    default: ''
+
+  rpc_fallback_url:
+    description: 'Optional secondary/fallback Horizon or RPC URL(s)'
+    required: false
+    default: ''
+
+  use_cache:
+    description: 'Cache successful Horizon responses in job memory'
+    required: false
+    default: 'false'
+
+  horizon_cache_ttl_ms:
+    description: 'In-memory Horizon account cache TTL in milliseconds'
+    required: false
+    default: '60000'
+
+  allow_cross_network_fallback:
+    description: 'Allow fallback URLs to different Stellar network'
+    required: false
+    default: 'false'
+
+  trustbridge_config_path:
+    description: 'Path to a consumer trustbridge.yml config file'
+    required: false
+    default: '.trustbridge.yml'
+
+  log_inputs:
+    description: 'Emit a structured JSON log record of all resolved inputs'
+    required: false
+    default: 'false'
+
+  check_ledger_freshness:
+    description: 'Enable ledger freshness guard'
+    required: false
+    default: 'false'
+
+  max_ledger_lag_seconds:
+    description: 'Maximum allowed lag in seconds'
+    required: false
+    default: '60'
+
+  ledger_freshness_fail_on_stale:
+    description: 'Hard-fail when Horizon is stale'
+    required: false
+    default: 'false'
+
+  locale:
+    description: 'Language for issue comments (en, es, pt)'
+    required: false
+    default: 'en'
+
+  comment_mode:
+    description: 'Controls comment posting: post, dry-run, or off'
+    required: false
+    default: 'post'
+
+  auto_wallet_labels:
+    description: 'Automatically apply wallet state labels'
+    required: false
+    default: 'false'
+
+  unassign_on_not_ready:
+    description: 'Auto-unassign assignees when readiness checks fail'
+    required: false
+    default: 'false'
+
+  assets_json:
+    description: 'JSON array of additional assets to validate trustlines for'
+    required: false
+    default: ''
+
+outputs:
+  ready:
+    description: 'Whether all validation checks passed (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.ready }}
+
+  trustline_exists:
+    description: 'Whether the account has a trustline for the configured asset'
+    value: ${{ steps.run-trustbridge.outputs.trustline_exists }}
+
+  xlm_balance:
+    description: 'Current native XLM balance as reported by Horizon'
+    value: ${{ steps.run-trustbridge.outputs.xlm_balance }}
+
+  account_funded:
+    description: 'Whether the account exists and is activated'
+    value: ${{ steps.run-trustbridge.outputs.account_funded }}
+
+  comment_url:
+    description: 'URL of the created or updated issue comment'
+    value: ${{ steps.run-trustbridge.outputs.comment_url }}
+
+  asset_balance:
+    description: 'Current asset balance as reported by Horizon'
+    value: ${{ steps.run-trustbridge.outputs.asset_balance }}
+
+  native_balance:
+    description: 'Native XLM balance (alias of xlm_balance)'
+    value: ${{ steps.run-trustbridge.outputs.native_balance }}
+
+  horizon_url_used:
+    description: 'Horizon API base URL used for validation'
+    value: ${{ steps.run-trustbridge.outputs.horizon_url }}
+
+  reason_code:
+    description: 'Machine-readable failure reason code'
+    value: ${{ steps.run-trustbridge.outputs.reason_code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve org policy defaults
+      id: resolve-policy
+      shell: bash
+      run: |
+        # Resolve effective values: repo-level override wins over org default
+        resolve() {
+          local override="$1"
+          local org_default="$2"
+          if [ -n "$override" ]; then
+            echo "$override"
+          else
+            echo "$org_default"
+          fi
+        }
+
+        HORIZON_URL=$(resolve "${{ inputs.horizon_url }}" "${{ inputs.org_horizon_url }}")
+        ASSET_CODE=$(resolve "${{ inputs.asset_code }}" "${{ inputs.org_asset_code }}")
+        ASSET_ISSUER=$(resolve "${{ inputs.asset_issuer }}" "${{ inputs.org_asset_issuer }}")
+        MIN_XLM_RESERVE=$(resolve "${{ inputs.min_xlm_reserve }}" "${{ inputs.org_min_xlm_reserve }}")
+        FAIL_ON_MISSING=$(resolve "${{ inputs.fail_on_missing }}" "${{ inputs.org_fail_on_missing }}")
+        STICKY_COMMENT=$(resolve "${{ inputs.sticky_comment }}" "${{ inputs.org_sticky_comment }}")
+
+        echo "horizon_url=$HORIZON_URL" >> "$GITHUB_OUTPUT"
+        echo "asset_code=$ASSET_CODE" >> "$GITHUB_OUTPUT"
+        echo "asset_issuer=$ASSET_ISSUER" >> "$GITHUB_OUTPUT"
+        echo "min_xlm_reserve=$MIN_XLM_RESERVE" >> "$GITHUB_OUTPUT"
+        echo "fail_on_missing=$FAIL_ON_MISSING" >> "$GITHUB_OUTPUT"
+        echo "sticky_comment=$STICKY_COMMENT" >> "$GITHUB_OUTPUT"
+
+        echo "::notice::Org policy: horizon_url=$HORIZON_URL, asset=$ASSET_CODE/$ASSET_ISSUER, reserve=$MIN_XLM_RESERVE XLM"
+
+    - name: Run TrustBridge with org defaults
+      id: run-trustbridge
+      uses: Stellar-TrustBridge/trustbridge-action@v1
+      with:
+        github_token: ${{ inputs.github_token }}
+        stellar_address_input: ${{ inputs.stellar_address_input }}
+        horizon_url: ${{ steps.resolve-policy.outputs.horizon_url }}
+        asset_code: ${{ steps.resolve-policy.outputs.asset_code }}
+        asset_issuer: ${{ steps.resolve-policy.outputs.asset_issuer }}
+        min_xlm_reserve: ${{ steps.resolve-policy.outputs.min_xlm_reserve }}
+        fail_on_missing: ${{ steps.resolve-policy.outputs.fail_on_missing }}
+        sticky_comment: ${{ steps.resolve-policy.outputs.sticky_comment }}
+        assignee_address_map: ${{ inputs.assignee_address_map }}
+        debug_mode: ${{ inputs.debug_mode }}
+        horizon_timeout_ms: ${{ inputs.horizon_timeout_ms }}
+        wait_until_funded: ${{ inputs.wait_until_funded }}
+        wait_until_funded_timeout_ms: ${{ inputs.wait_until_funded_timeout_ms }}
+        wait_until_funded_interval_ms: ${{ inputs.wait_until_funded_interval_ms }}
+        horizon_url_fallback: ${{ inputs.horizon_url_fallback }}
+        rpc_fallback_url: ${{ inputs.rpc_fallback_url }}
+        use_cache: ${{ inputs.use_cache }}
+        horizon_cache_ttl_ms: ${{ inputs.horizon_cache_ttl_ms }}
+        allow_cross_network_fallback: ${{ inputs.allow_cross_network_fallback }}
+        trustbridge_config_path: ${{ inputs.trustbridge_config_path }}
+        log_inputs: ${{ inputs.log_inputs }}
+        check_ledger_freshness: ${{ inputs.check_ledger_freshness }}
+        max_ledger_lag_seconds: ${{ inputs.max_ledger_lag_seconds }}
+        ledger_freshness_fail_on_stale: ${{ inputs.ledger_freshness_fail_on_stale }}
+        locale: ${{ inputs.locale }}
+        comment_mode: ${{ inputs.comment_mode }}
+        auto_wallet_labels: ${{ inputs.auto_wallet_labels }}
+        unassign_on_not_ready: ${{ inputs.unassign_on_not_ready }}
+        assets_json: ${{ inputs.assets_json }}
