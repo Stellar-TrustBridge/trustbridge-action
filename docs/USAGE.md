@@ -290,6 +290,175 @@ Using `network: testnet` automatically populates:
 > **Network safety validation:**
 > TrustBridge validates network compatibility before fetching account data. Combining a testnet Horizon endpoint with a mainnet asset issuer (e.g. mainnet USDC `GA5ZSEJY...`) fails fast with an explicit error to prevent accidental configuration errors.
 
+### Automatic Friendbot funding for testnet (Issue #4)
+
+For testnet campaigns, TrustBridge can automatically call Stellar Friendbot to fund new accounts that return 404 ("not found") errors. This streamlines testnet onboarding by removing the manual step of visiting Friendbot before assignment.
+
+#### Enabling Friendbot
+
+```yaml
+with:
+  network: testnet
+  stellar_address_input: ${{ steps.lookup.outputs.address }}
+  use_friendbot: true
+  friendbot_url: 'https://friendbot.stellar.org'
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**How it works:**
+
+1. TrustBridge attempts to fetch the account from Horizon
+2. If the account doesn't exist (404), and `use_friendbot: true`:
+   - Calls the specified `friendbot_url` with the account address
+   - Waits for Friendbot to fund the account
+   - Retries the Horizon fetch
+3. Proceeds with normal validation checks
+
+#### Safety guarantees
+
+**Network guard:** Friendbot is **only** available on testnet. Mainnet/public network requests always refuse friendbot calls, even if `use_friendbot: true`.
+
+```yaml
+# ❌ This configuration is blocked
+with:
+  horizon_url: https://horizon.stellar.org  # Public network
+  use_friendbot: true  # BLOCKED: Cannot use friendbot on mainnet
+```
+
+**SSRF protection:** Only official Stellar friendbot endpoints are allowed:
+- `https://friendbot.stellar.org`
+- `https://horizon-testnet.stellar.org/friendbot`
+- `friendbot-testnet.stellar.org`
+
+Custom or third-party friendbot URLs are rejected to prevent SSRF attacks.
+
+#### Friendbot outputs
+
+Use these outputs to track friendbot activity in your workflow:
+
+```yaml
+- id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    network: testnet
+    use_friendbot: true
+    friendbot_url: 'https://friendbot.stellar.org'
+    # ... other inputs
+
+- name: Check friendbot result
+  if: steps.trustbridge.outputs.friendbot_called == 'true'
+  run: |
+    echo "Friendbot was called"
+    echo "Success: ${{ steps.trustbridge.outputs.friendbot_success }}"
+    if [ "${{ steps.trustbridge.outputs.friendbot_success }}" = "true" ]; then
+      echo "Transaction: ${{ steps.trustbridge.outputs.friendbot_transaction_hash }}"
+    fi
+```
+
+**Available outputs:**
+- `friendbot_called`: `"true"` if Friendbot was called this run
+- `friendbot_success`: `"true"` if the funding succeeded
+- `friendbot_transaction_hash`: Transaction hash from successful funding
+
+#### When to use Friendbot
+
+✅ **Good use cases:**
+- Onboarding new contributors to testnet campaigns
+- Automated testnet wallet provisioning
+- CI/CD pipelines that create ephemeral test accounts
+
+❌ **Not recommended:**
+- Mainnet/public network (blocked by design)
+- Production workflows (testnet only)
+- When you need to control the exact funding amount (Friendbot uses standard amounts)
+
+#### Troubleshooting
+
+**"Friendbot is only available for testnet"**
+- Your `horizon_url` points to mainnet, not testnet
+- Use `network: testnet` or set `horizon_url: https://horizon-testnet.stellar.org`
+
+**"Friendbot URL not on the allowlist"**
+- Only official Stellar friendbot endpoints are supported
+- Use `https://friendbot.stellar.org` or leave `friendbot_url` empty to use the default
+
+**"Friendbot returned HTTP 400: Account already exists"**
+- The account is already funded on testnet
+- This is not an error — validation proceeds normally
+
+**Friendbot times out**
+- Increase `friendbot_timeout_ms` (default 15000ms)
+- Check Stellar testnet status at https://status.stellar.org
+
+---
+
+## Network passphrase mismatch detection (Issue #2)
+
+TrustBridge automatically detects when your configured `horizon_url` and `network_passphrase` inputs point to different Stellar networks. This prevents confusing 404 errors when, for example, you specify testnet credentials but your Horizon URL points to mainnet.
+
+### How it works
+
+1. **Automatic inference**: When `network_passphrase` is empty, TrustBridge infers the expected passphrase from your `horizon_url`:
+   - `horizon-testnet.stellar.org` → `"Test SDF Network ; September 2015"`
+   - `horizon.stellar.org` → `"Public Global Stellar Network ; September 2015"`
+
+2. **Horizon validation**: TrustBridge fetches the actual network passphrase from the Horizon root endpoint
+
+3. **Mismatch detection**: If they differ, a clear error banner appears in the comment showing both passphrases
+
+### When to set network_passphrase explicitly
+
+```yaml
+with:
+  horizon_url: https://horizon-private.example.com
+  network_passphrase: 'My Custom Network ; 2024'
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Use cases:**
+- Custom/private Stellar networks with non-standard passphrases
+- Avoiding ambiguity when Horizon URL doesn't follow standard naming
+- Ensuring validation against a specific network even if the URL changes
+
+### Example mismatch scenarios
+
+| Configuration | Result |
+|--------------|--------|
+| `horizon_url: horizon-testnet.stellar.org`<br>`network_passphrase: (empty)` | ✅ Match (inferred testnet) |
+| `horizon_url: horizon.stellar.org`<br>`network_passphrase: Test SDF Network ; September 2015` | ❌ Mismatch (public URL, testnet passphrase) |
+| `horizon_url: horizon-testnet.stellar.org`<br>`network_passphrase: Public Global Stellar Network ; September 2015` | ❌ Mismatch (testnet URL, public passphrase) |
+| `horizon_url: custom-horizon.example.com`<br>`network_passphrase: My Custom Network ; 2024` | ✅ Match (if Horizon reports same) |
+
+### Outputs
+
+When a mismatch is detected, these outputs are set:
+
+- `network_passphrase_mismatch`: `"true"` or `"false"`
+- `expected_network_passphrase`: The passphrase you configured/inferred
+- `actual_network_passphrase`: What Horizon reported
+
+Use these in conditional workflow steps:
+
+```yaml
+- name: Alert on network mismatch
+  if: steps.bridge.outputs.network_passphrase_mismatch == 'true'
+  run: |
+    echo "::error::Network configuration error detected"
+    echo "Expected: ${{ steps.bridge.outputs.expected_network_passphrase }}"
+    echo "Actual: ${{ steps.bridge.outputs.actual_network_passphrase }}"
+```
+
+### Disabling the check
+
+To skip network passphrase validation entirely (not recommended):
+
+```yaml
+with:
+  check_network_passphrase: false
+  # ... other inputs
+```
+
 ---
 
 ## Canary & secondary endpoint failover
@@ -599,6 +768,188 @@ Add the badge to your repository README using the Markdown output:
 ```
 
 #### Example badge output
+
+---
+
+## Matrix-friendly outputs for parallel validation (Issue #3)
+
+When validating multiple assignees in a GitHub Actions matrix, standard outputs like `ready` are overwritten by each matrix leg. TrustBridge provides **matrix-friendly JSON outputs** that map each assignee to their validation result, enabling stable access to per-assignee data in downstream jobs.
+
+### The problem with standard outputs in matrices
+
+```yaml
+# ❌ This DOESN'T work as expected
+strategy:
+  matrix:
+    assignee: [alice, bob, charlie]
+steps:
+  - id: check
+    uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ matrix.assignee_address }}
+  
+  # Only the LAST matrix leg's value is available!
+  - run: echo "${{ steps.check.outputs.ready }}"
+```
+
+### The solution: JSON map outputs
+
+TrustBridge provides two matrix-friendly outputs:
+
+#### `assignee_results_json`
+
+Complete validation results keyed by assignee login:
+
+```json
+{
+  "alice": {
+    "ready": true,
+    "stellar_address": "GALICE...",
+    "xlm_balance": "5.0",
+    "account_funded": true,
+    "trustline_exists": true,
+    "reason_code": "SUCCESS",
+    "validated_at": "2024-01-15T10:30:00Z"
+  },
+  "bob": {
+    "ready": false,
+    "stellar_address": "GBOB...",
+    "xlm_balance": "0.5",
+    "account_funded": true,
+    "trustline_exists": false,
+    "reason_code": "TRUSTLINE_MISSING",
+    "validated_at": "2024-01-15T10:30:05Z"
+  }
+}
+```
+
+#### `matrix_ready_map`
+
+Simplified boolean map for quick ready checks:
+
+```json
+{
+  "alice": true,
+  "bob": false,
+  "charlie": true
+}
+```
+
+### Usage pattern 1: Parallel validation with per-assignee access
+
+```yaml
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        assignee: [alice, bob, charlie]
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.lookup.outputs.address }}
+          assignee_login: ${{ matrix.assignee }}  # Enable matrix outputs
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Access this assignee's result
+        run: |
+          # Parse the JSON map to get this specific assignee's status
+          READY_MAP='${{ steps.check.outputs.matrix_ready_map }}'
+          MY_STATUS=$(echo "$READY_MAP" | jq -r '.["${{ matrix.assignee }}"]')
+          echo "Assignee ${{ matrix.assignee }} ready: $MY_STATUS"
+```
+
+### Usage pattern 2: Downstream job with aggregated results
+
+```yaml
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.check.outputs.assignee_results_json }}
+      ready_map: ${{ steps.check.outputs.matrix_ready_map }}
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        # ... validation config
+
+  process-payouts:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process only ready assignees
+        run: |
+          RESULTS='${{ needs.validate.outputs.results }}'
+          READY_MAP='${{ needs.validate.outputs.ready_map }}'
+          
+          for assignee in $(echo "$READY_MAP" | jq -r 'to_entries[] | select(.value==true) | .key'); do
+            address=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].stellar_address')
+            echo "Queue payout for $assignee at $address"
+          done
+```
+
+### Usage pattern 3: Dynamic matrix from ready assignees
+
+```yaml
+jobs:
+  validate-all:
+    outputs:
+      ready_assignees: ${{ steps.filter.outputs.assignees }}
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        # ... batch validation
+      
+      - id: filter
+        run: |
+          READY_MAP='${{ steps.check.outputs.matrix_ready_map }}'
+          # Extract only ready assignees for next job's matrix
+          READY=$(echo "$READY_MAP" | jq -c '[to_entries[] | select(.value==true) | .key]')
+          echo "assignees=$READY" >> $GITHUB_OUTPUT
+
+  payout:
+    needs: validate-all
+    strategy:
+      matrix:
+        assignee: ${{ fromJSON(needs.validate-all.outputs.ready_assignees) }}
+    steps:
+      - name: Execute payout
+        run: echo "Paying ${{ matrix.assignee }}"
+```
+
+### Complete examples
+
+See `docs/examples/` for full workflow files:
+- [`matrix-assignee-validation.yml`](examples/matrix-assignee-validation.yml) — Parallel validation with matrix strategy
+- [`batch-validation-with-matrix-outputs.yml`](examples/batch-validation-with-matrix-outputs.yml) — Single-job batch validation with downstream processing
+
+### Username sanitization
+
+GitHub usernames may contain characters that cause issues in Actions expressions (e.g., hyphens in `my-user`). TrustBridge automatically sanitizes usernames when used as map keys:
+
+- Preserves alphanumerics, underscores, hyphens
+- Replaces other special characters with `_`
+- Prefixes with `_` if starts with a digit
+- Empty/whitespace becomes `"unknown"`
+
+```yaml
+# Username "alice-123" → key "alice-123" (preserved)
+# Username "bob@example" → key "bob_example" (sanitized)
+# Username "42charlie" → key "_42charlie" (prefixed)
+```
+
+### Output size limits
+
+GitHub Actions has a 1MB limit for step outputs. TrustBridge's JSON map approach is more efficient than creating individual outputs per assignee (`ready_alice`, `ready_bob`, etc.), but be mindful when validating hundreds of assignees. Consider:
+
+- Batch validation in smaller groups (e.g., 50 assignees per job)
+- Use `matrix_ready_map` for gating logic (smaller than full results)
+- Store full results in artifacts for large batches
+
+---
+
+### Example badge output
 
 **Pass state:** [![TrustBridge](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)
 
