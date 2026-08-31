@@ -1,11 +1,15 @@
 /**
- * Tests for FAQ anchor deep links (Issue #104).
+ * Tests for FAQ anchor deep links (Issue #104, #328).
  * Verifies that:
  *   1. Every anchor in FAQ_ANCHORS exists as a heading in docs/FAQ.md.
  *   2. buildFaqLink generates correct URLs.
  *   3. getFaqAnchorForCheck maps check labels to the right anchors.
  *   4. buildFaqLinkForCheck returns undefined for unknown labels.
  *   5. Invalid base URL overrides fall back to the default silently.
+ *   6. The onboarding checklist (buildOnboardingChecklist) uses only anchors
+ *      that exist in docs/FAQ.md — no rot against a non-existent file (Issue #328).
+ *   7. Every FAQ URL emitted anywhere in comment/markdown code points to
+ *      docs/FAQ.md, not to any other (potentially missing) file.
  */
 
 import * as fs from 'fs';
@@ -18,6 +22,8 @@ import {
   buildFaqLinkForCheck,
   FaqAnchor,
 } from '../src/links';
+import { buildOnboardingChecklist } from '../src/markdown';
+import { ValidationResult } from '../src/checks';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,11 +46,23 @@ function extractFaqAnchors(markdown: string): Set<string> {
   return anchors;
 }
 
+/** Minimal ValidationResult with all checks failing. */
+function failedResult(): ValidationResult {
+  return {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: '0',
+    xlmReserveMet: false,
+    checks: [],
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Anchor existence tests
+// Anchor existence tests — every FAQ_ANCHORS entry must be in docs/FAQ.md
 // ---------------------------------------------------------------------------
 
-describe('FAQ anchor existence in docs/FAQ.md (Issue #104)', () => {
+describe('FAQ anchor existence in docs/FAQ.md (Issue #104, #328)', () => {
   let faqContent: string;
   let anchorsInDoc: Set<string>;
 
@@ -67,6 +85,21 @@ describe('FAQ anchor existence in docs/FAQ.md (Issue #104)', () => {
       expect(anchorsInDoc.has(anchor)).toBe(true);
     });
   }
+
+  it('docs/FAQ.md contains all 7 expected anchors', () => {
+    const expected = [
+      'account-not-funded',
+      'trustline-missing',
+      'xlm-reserve-too-low',
+      'testing-on-testnet',
+      'horizon-error',
+      'debug-mode',
+      'webhook-not-received',
+    ];
+    for (const anchor of expected) {
+      expect(anchorsInDoc.has(anchor)).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -99,7 +132,7 @@ describe('buildFaqLink', () => {
     expect(link).toBe('https://example.com/faq#horizon-error');
   });
 
-  it('returns a URL containing the anchor fragment', () => {
+  it('returns a URL containing the anchor fragment for every FAQ_ANCHORS value', () => {
     for (const anchor of Object.values(FAQ_ANCHORS) as FaqAnchor[]) {
       const link = buildFaqLink(anchor);
       expect(link).toContain(`#${anchor}`);
@@ -141,6 +174,32 @@ describe('getFaqAnchorForCheck', () => {
     expect(getFaqAnchorForCheck('Custom plugin check')).toBeUndefined();
     expect(getFaqAnchorForCheck('')).toBeUndefined();
   });
+
+  // Every anchor returned by getFaqAnchorForCheck must exist in FAQ.md
+  describe('every resolved anchor exists in docs/FAQ.md', () => {
+    let anchorsInDoc: Set<string>;
+
+    beforeAll(() => {
+      const faqContent = fs.readFileSync(FAQ_PATH, 'utf8');
+      anchorsInDoc = extractFaqAnchors(faqContent);
+    });
+
+    const knownLabels: Array<[string, string]> = [
+      ['Account funded', FAQ_ANCHORS.ACCOUNT_NOT_FUNDED],
+      ['USDC trustline', FAQ_ANCHORS.TRUSTLINE_MISSING],
+      ['XLM reserve', FAQ_ANCHORS.XLM_RESERVE_TOO_LOW],
+      ['XLM balance', FAQ_ANCHORS.XLM_RESERVE_TOO_LOW],
+      ['Horizon availability', FAQ_ANCHORS.HORIZON_ERROR],
+    ];
+
+    for (const [label, expectedAnchor] of knownLabels) {
+      it(`"${label}" → #${expectedAnchor} is present in docs/FAQ.md`, () => {
+        const anchor = getFaqAnchorForCheck(label);
+        expect(anchor).toBe(expectedAnchor);
+        expect(anchorsInDoc.has(anchor!)).toBe(true);
+      });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -167,5 +226,103 @@ describe('buildFaqLinkForCheck', () => {
   it('falls back to default when override URL is invalid', () => {
     const link = buildFaqLinkForCheck('XLM reserve', 'not-a-url');
     expect(link).toContain(DEFAULT_FAQ_BASE_URL);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Onboarding checklist FAQ anchor sync (Issue #328)
+// Ensures buildOnboardingChecklist in src/markdown.ts uses anchors that
+// exist in docs/FAQ.md and does NOT reference any non-existent file.
+// ---------------------------------------------------------------------------
+
+describe('buildOnboardingChecklist FAQ anchor sync (Issue #328)', () => {
+  let anchorsInDoc: Set<string>;
+
+  beforeAll(() => {
+    const faqContent = fs.readFileSync(FAQ_PATH, 'utf8');
+    anchorsInDoc = extractFaqAnchors(faqContent);
+  });
+
+  it('every FAQ link in the checklist points to docs/FAQ.md, not TROUBLESHOOTING.md', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    expect(markdown).not.toContain('TROUBLESHOOTING.md');
+    expect(markdown).toContain('docs/FAQ.md');
+  });
+
+  it('fund account link uses #account-not-funded (exists in FAQ.md)', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    expect(markdown).toContain(`#${FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`);
+    expect(anchorsInDoc.has(FAQ_ANCHORS.ACCOUNT_NOT_FUNDED)).toBe(true);
+  });
+
+  it('trustline link uses #trustline-missing (exists in FAQ.md)', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    expect(markdown).toContain(`#${FAQ_ANCHORS.TRUSTLINE_MISSING}`);
+    expect(anchorsInDoc.has(FAQ_ANCHORS.TRUSTLINE_MISSING)).toBe(true);
+  });
+
+  it('XLM reserve link uses #xlm-reserve-too-low (exists in FAQ.md)', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    expect(markdown).toContain(`#${FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`);
+    expect(anchorsInDoc.has(FAQ_ANCHORS.XLM_RESERVE_TOO_LOW)).toBe(true);
+  });
+
+  it('does not use any stale anchor names that are not in FAQ.md', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    // These were the old incorrect anchor names — they must never appear again
+    expect(markdown).not.toContain('#account-is-reported-unfunded');
+    expect(markdown).not.toContain('#trustline-is-missing');
+  });
+
+  it('all fragment anchors in checklist output exist in docs/FAQ.md', () => {
+    const markdown = buildOnboardingChecklist(failedResult(), {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    // Extract every #anchor from the rendered markdown
+    const fragmentRe = /#([a-z0-9-]+)/g;
+    let match: RegExpExecArray | null;
+    const found: string[] = [];
+    while ((match = fragmentRe.exec(markdown)) !== null) {
+      found.push(match[1]);
+    }
+    expect(found.length).toBeGreaterThan(0);
+    for (const fragment of found) {
+      expect(anchorsInDoc.has(fragment)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFAULT_FAQ_BASE_URL integrity
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_FAQ_BASE_URL', () => {
+  it('is an HTTPS URL', () => {
+    expect(DEFAULT_FAQ_BASE_URL.startsWith('https://')).toBe(true);
+  });
+
+  it('points to the trustbridge-action repository FAQ', () => {
+    expect(DEFAULT_FAQ_BASE_URL).toContain('Stellar-TrustBridge/trustbridge-action');
+    expect(DEFAULT_FAQ_BASE_URL).toContain('docs/FAQ.md');
+  });
+
+  it('does not point to TROUBLESHOOTING.md', () => {
+    expect(DEFAULT_FAQ_BASE_URL).not.toContain('TROUBLESHOOTING');
   });
 });
