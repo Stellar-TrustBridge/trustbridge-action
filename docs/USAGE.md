@@ -4,6 +4,8 @@ How to integrate **trustbridge-action** into your repository workflows.
 
 Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Error handling](ERROR_HANDLING.md) · [Cron re-validation](CRON_REVALIDATION.md)
 
+> Security warning: TrustBridge strips raw Stellar addresses, muxed addresses, and secret-bearing URL/query values before writing them to GitHub Actions logs. Do not rely on `debug_mode` or `log_inputs` to expose account IDs or webhook secrets in a run; they are automatically scrubbed at the logger boundary and any leaked raw value is treated as a failing regression in the test suite.
+
 ---
 
 ## Prerequisites

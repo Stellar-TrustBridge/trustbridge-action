@@ -17,6 +17,7 @@ import {
   redactString,
   redactContext,
   isSensitiveSecretKey,
+  logger,
   ActionInputsLogRecord,
 } from '../src/logger';
 
@@ -113,6 +114,16 @@ describe('redactString', () => {
     expect(result).toContain('GAAA...AWHF');
   });
 
+  it('masks muxed M-addresses and webhook secrets in a free-form string', () => {
+    const muxed = 'M' + 'A'.repeat(55);
+    const msg = `account=${muxed}; webhook_secret=supersecret-123; X-TrustBridge-Signature: sha256=abc123def456`;
+    const result = redactString(msg);
+    expect(result).not.toContain(muxed);
+    expect(result).not.toContain('supersecret-123');
+    expect(result).not.toContain('abc123def456');
+    expect(result).toContain('MAAA...AAAA');
+  });
+
   it('leaves a string with no address unchanged', () => {
     const msg = 'No address here';
     expect(redactString(msg)).toBe(msg);
@@ -120,6 +131,48 @@ describe('redactString', () => {
 
   it('returns empty string unchanged', () => {
     expect(redactString('')).toBe('');
+  });
+});
+
+describe('logger redaction in output paths', () => {
+  beforeEach(() => {
+    logger.setDebugMode(false);
+    jest.clearAllMocks();
+  });
+
+  it('redacts muxed addresses and webhook secret values from debug output', () => {
+    const muxed = 'M' + 'A'.repeat(55);
+    const debugSpy = core.debug as jest.MockedFunction<typeof core.debug>;
+    logger.setDebugMode(true);
+    logger.debug('Debug call with account data', {
+      component: 'index',
+      stellarAddress: muxed,
+      webhookSecret: 'super-secret-value',
+      url: `https://horizon.example.com/accounts/${VALID_G_ADDRESS}?webhookSecret=super-secret-value`,
+    });
+
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    const [message] = debugSpy.mock.calls[0];
+    expect(message).not.toContain(muxed);
+    expect(message).not.toContain(VALID_G_ADDRESS);
+    expect(message).not.toContain('super-secret-value');
+    expect(message).toContain('MAAA...AAAA');
+    expect(message).toContain('GAAA...AWHF');
+  });
+
+  it('redacts address-bearing URLs and error details in logger.error output', () => {
+    const errorSpy = core.error as jest.MockedFunction<typeof core.error>;
+    const rawUrl = `https://horizon.example.com/accounts/${VALID_G_ADDRESS}?webhookSecret=redacted-value`;
+    const err = new Error(`fetch failed for ${rawUrl} and secret=high-value-secret`);
+
+    logger.error('Gateway failure', { component: 'index', horizonUrl: rawUrl }, err);
+
+    const [message] = errorSpy.mock.calls[0];
+    expect(message).not.toContain(VALID_G_ADDRESS);
+    expect(message).not.toContain('redacted-value');
+    expect(message).not.toContain('high-value-secret');
+    expect(message).toContain('GAAA...AWHF');
+    expect(message).toContain('[REDACTED]');
   });
 });
 
