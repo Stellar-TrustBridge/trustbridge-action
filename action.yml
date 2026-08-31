@@ -684,28 +684,11 @@ outputs:
   timing_comment_post_ms:
     description: "Execution duration of comment posting phase in milliseconds"
   timing_total_ms:
-    description: "Total execution duration in milliseconds"
-
-  # ── Friendbot outputs (Issue #4) ──────────────────────────────────────────
-  friendbot_called:
-    description: 'Whether Friendbot was called during this run (true/false)'
-  friendbot_success:
-    description: 'Whether Friendbot successfully funded the account (true/false)'
-  friendbot_transaction_hash:
-    description: 'Transaction hash from successful Friendbot call, or empty if not called/failed'
-
-  # ── Conflict report outputs (#319) ────────────────────────────────────────
-  conflict_report:
-    description: >-
-      JSON string listing all detected source conflicts for this run (e.g.
-      workflow_input vs assignee_map vs contract disagreeing on the Stellar
-      address or asset issuer). Empty string when there are no conflicts.
-      Parse with `JSON.parse(steps.trustbridge.outputs.conflict_report)`.
-  has_conflicts:
-    description: >-
-      'true' when at least one source conflict was detected during this run,
-      'false' otherwise. Gate downstream steps with
-      `if: steps.trustbridge.outputs.has_conflicts == 'true'`.
+    description: 'Total execution duration in milliseconds'
+  num_sponsoring:
+    description: 'Number of accounts this account is sponsoring (numeric string)'
+  num_sponsored:
+    description: 'Number of accounts sponsoring this account (numeric string)'
 
 runs:
   using: "node20"
