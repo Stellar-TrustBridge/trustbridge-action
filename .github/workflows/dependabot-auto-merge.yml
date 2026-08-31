@@ -1,0 +1,84 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot-auto-merge:
+    name: Auto-merge @actions/* patch updates
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Evaluate auto-merge criteria
+        id: evaluate
+        run: |
+          PACKAGE_ECOSYSTEM="${{ steps.metadata.outputs.package-ecosystem }}"
+          UPDATE_TYPE="${{ steps.metadata.outputs.update-type }}"
+          DEPENDENCY_NAMES="${{ steps.metadata.outputs.dependency-names }}"
+          DEPENDENCY_GROUP="${{ steps.metadata.outputs.dependency-group }}"
+
+          echo "Package ecosystem: $PACKAGE_ECOSYSTEM"
+          echo "Update type: $UPDATE_TYPE"
+          echo "Dependency names: $DEPENDENCY_NAMES"
+          echo "Dependency group: $DEPENDENCY_GROUP"
+
+          # 1. Update type MUST be semver patch
+          if [ "$UPDATE_TYPE" != "version-update:semver-patch" ]; then
+            echo "::notice::Skipping auto-merge: Update type '$UPDATE_TYPE' is not semver-patch."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 2. Package ecosystem MUST be npm
+          if [ "$PACKAGE_ECOSYSTEM" != "npm" ]; then
+            echo "::notice::Skipping auto-merge: Ecosystem '$PACKAGE_ECOSYSTEM' is not npm."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 3. All dependency names MUST start with @actions/
+          # Never allow stellar-sdk or other runtime core dependencies to auto-merge
+          IS_ALL_ACTIONS="true"
+          IFS=',' read -ra DEPS <<< "$DEPENDENCY_NAMES"
+          for dep in "${DEPS[@]}"; do
+            TRIMMED_DEP=$(echo "$dep" | xargs)
+            if [[ ! "$TRIMMED_DEP" =~ ^@actions/ ]]; then
+              echo "::notice::Skipping auto-merge: Dependency '$TRIMMED_DEP' is not an @actions/* package."
+              IS_ALL_ACTIONS="false"
+              break
+            fi
+          done
+
+          if [ "$IS_ALL_ACTIONS" = "true" ]; then
+            echo "All criteria met: @actions/* patch update."
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Approve and enable auto-merge
+        if: steps.evaluate.outputs.eligible == 'true'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Approving PR for @actions/* patch update..."
+          gh pr review --approve "$PR_URL" --body "Auto-approved: Patch update for @actions/* package(s) meeting auto-merge policy criteria."
+
+          echo "Enabling auto-merge (squash)..."
+          gh pr merge --auto --squash "$PR_URL"
