@@ -465,6 +465,25 @@
       "format": "uri",
       "pattern": "^(https://|$)",
       "default": ""
+    },
+    "unauthorized_trustline_policy": {
+      "type": "string",
+      "description": "How to treat a trustline that exists but is not yet authorized by the issuer (AUTHORIZATION_REQUIRED): warn (default), fail, or ignore.",
+      "enum": [
+        "fail",
+        "warn",
+        "ignore"
+      ],
+      "default": "warn"
+    },
+    "clawback_strict_mode": {
+      "type": "string",
+      "description": "When true, fail validation if the configured asset has clawback enabled (is_clawback_enabled / AUTH_CLAWBACK_ENABLED). Default false.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     }
   }
 }

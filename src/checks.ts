@@ -18,11 +18,11 @@ import {
   inferStellarNetwork,
   oppositeNetwork,
   StellarNetwork,
-} from "./links";
-import { globalMetrics } from "./metrics";
-import { UnauthorizedTrustlinePolicy } from "./inputs";
-import { fetchTomlWithCache } from "./toml";
-import { validateHorizonUrl } from "./validation";
+} from './links';
+import { globalMetrics } from './metrics';
+import { UnauthorizedTrustlinePolicy } from './inputs';
+import { fetchTomlWithCache } from './toml';
+import { validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -898,12 +898,20 @@ export function runAccountChecks(
     });
   }
 
-  if (trustlineExistsRaw && clawbackEnabled && clawbackStrictMode) {
-    checks.push({
-      passed: false,
-      label: `${safeAssetCode} clawback safety`,
-      detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${inlineCode(config.assetIssuer)}) — blocked by \`clawback_strict_mode: true\`.`,
-    });
+  if (trustlineExistsRaw && clawbackEnabled) {
+    if (clawbackStrictMode) {
+      checks.push({
+        passed: false,
+        label: `${safeAssetCode} clawback safety`,
+        detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${inlineCode(config.assetIssuer)}) — blocked by \`clawback_strict_mode: true\`.`,
+      });
+    } else {
+      checks.push({
+        passed: true,
+        label: `${safeAssetCode} clawback status`,
+        detail: `**${safeAssetCode}** has **clawback enabled** by the issuer (${inlineCode(config.assetIssuer)}) (CAP-0035).`,
+      });
+    }
   }
 
   let homeDomainCheck: HomeDomainCheckResult | undefined;
@@ -1065,7 +1073,38 @@ export function runAccountChecks(
     })();
   }
 
-  return buildResult();
+  return {
+    valid,
+    accountFunded: true,
+    trustlineExists,
+    trustlineAuthorized,
+    clawbackEnabled: trustlineExistsRaw ? clawbackEnabled : undefined,
+    xlmBalance,
+    xlmReserveMet,
+    assetBalance: assetBalanceRaw,
+    assetBalanceMet,
+    trustlineLimit,
+    checks,
+    remediation,
+    claimableBalanceCount,
+    hasClaimableBalances: hasClaimables,
+    reasonCode: (() => {
+      if (valid) return 'SUCCESS';
+      if (!trustlineExistsRaw) return 'TRUSTLINE_MISSING';
+      if (authorizationBlocks) return 'TRUSTLINE_UNAUTHORIZED';
+      if (clawbackBlocks) return 'CLAWBACK_BLOCKED';
+      if (!trustlineExists) return 'TRUSTLINE_MISSING';
+      if (!xlmReserveMet) return 'RESERVE_TOO_LOW';
+      if (config.minTrustlineLimit && !trustlineLimitMet) return 'TRUSTLINE_LIMIT_TOO_LOW';
+      if (assetBalanceCheckEnabled && !assetBalanceMet) return 'ASSET_BALANCE_TOO_LOW';
+      if (homeDomainCheck?.blocksValid) return 'HOME_DOMAIN_INVALID';
+      return 'FAILED';
+    })(),
+    failedCheckLabels: toFailedCheckCodes(checks),
+    reserveRequirement,
+    homeDomainCheck,
+    sponsorshipInfo,
+  };
 }
 
 export function unfundedAccountResult(

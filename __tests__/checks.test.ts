@@ -1126,3 +1126,138 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(result.hasClaimableBalances).toBe(true);
   });
 });
+
+describe('Asset authorization and clawback flags detection (Issue #247)', () => {
+  it('passes vanilla USDC without flags or clawback (no false failure)', () => {
+    const account = makeAccount();
+    const result = runAccountChecks(account, defaultConfig);
+    expect(result.valid).toBe(true);
+    expect(result.trustlineExists).toBe(true);
+    expect(result.trustlineAuthorized).toBe(true);
+    expect(result.clawbackEnabled).toBe(false);
+    expect(result.reasonCode).toBe('SUCCESS');
+    expect(result.checks.some((c) => c.label.includes('clawback'))).toBe(false);
+  });
+
+  it('warns when trustline is unauthorized and unauthorizedTrustlinePolicy is warn (default)', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '0.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          is_authorized: false,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'warn' });
+    expect(result.valid).toBe(true);
+    expect(result.trustlineExists).toBe(true);
+    expect(result.trustlineAuthorized).toBe(false);
+    expect(result.checks[1].detail).toContain('not yet authorized');
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+
+  it('fails with TRUSTLINE_UNAUTHORIZED when unauthorizedTrustlinePolicy is fail', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '0.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          is_authorized: false,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
+    expect(result.valid).toBe(false);
+    expect(result.trustlineExists).toBe(false);
+    expect(result.trustlineAuthorized).toBe(false);
+    expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
+    expect(result.checks[1].passed).toBe(false);
+    expect(result.checks[1].detail).toContain('not authorized');
+    expect(result.remediation).toContain('SetTrustLineFlags');
+  });
+
+  it('surfaces informational status when clawback is enabled and clawbackStrictMode is false (default)', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '100.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          is_clawback_enabled: true,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: false });
+    expect(result.valid).toBe(true);
+    expect(result.clawbackEnabled).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+    const clawbackCheck = result.checks.find((c) => c.label.includes('clawback status'));
+    expect(clawbackCheck).toBeDefined();
+    expect(clawbackCheck?.passed).toBe(true);
+    expect(clawbackCheck?.detail).toContain('clawback enabled');
+  });
+
+  it('fails with CLAWBACK_BLOCKED when clawback is enabled and clawbackStrictMode is true', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '100.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          is_clawback_enabled: true,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ],
+    });
+    const result = runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+    expect(result.valid).toBe(false);
+    expect(result.clawbackEnabled).toBe(true);
+    expect(result.reasonCode).toBe('CLAWBACK_BLOCKED');
+    const clawbackCheck = result.checks.find((c) => c.label.includes('clawback safety'));
+    expect(clawbackCheck).toBeDefined();
+    expect(clawbackCheck?.passed).toBe(false);
+    expect(clawbackCheck?.detail).toContain('blocked by `clawback_strict_mode: true`');
+    expect(result.remediation).toContain('clawback enabled');
+  });
+
+  it('handles older Horizon responses where flag fields are absent without error', () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '100.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ],
+    });
+    delete (account.balances[1] as { is_authorized?: boolean }).is_authorized;
+    delete (account.balances[1] as { is_clawback_enabled?: boolean }).is_clawback_enabled;
+
+    const result = runAccountChecks(account, defaultConfig);
+    expect(result.valid).toBe(true);
+    expect(result.trustlineAuthorized).toBe(true);
+    expect(result.clawbackEnabled).toBe(false);
+  });
+});

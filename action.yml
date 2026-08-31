@@ -540,6 +540,22 @@ inputs:
     required: false
     default: ""
 
+  unauthorized_trustline_policy:
+    description: >-
+      How to treat a trustline that exists but is not yet authorized by the issuer
+      (AUTHORIZATION_REQUIRED): "warn" (default, surfaces warning), "fail" (blocks ready),
+      or "ignore" (skips check). (Issue #247)
+    required: false
+    default: 'warn'
+
+  clawback_strict_mode:
+    description: >-
+      When true, fail validation if the configured asset has clawback enabled
+      (is_clawback_enabled / AUTH_CLAWBACK_ENABLED). When false (default), surfaces
+      an informational notice without failing the run. (Issue #247)
+    required: false
+    default: 'false'
+
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
