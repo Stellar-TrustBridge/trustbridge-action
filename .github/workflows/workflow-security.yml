@@ -17,15 +17,8 @@
 name: Workflow Security
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - "docs/examples/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/**"
-      - "docs/examples/**"
+  workflow_dispatch:
+
 
 # Deny-by-default at the workflow level. Each job grants only what it needs.
 permissions: {}

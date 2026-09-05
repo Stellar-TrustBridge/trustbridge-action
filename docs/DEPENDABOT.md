@@ -1,58 +1,42 @@
-# Dependabot Maintenance & Auto-Merge Policy
+# Dependabot & Release/CI Compatibility Policy
 
-This document details the automated dependency maintenance and auto-merge policy for `Stellar-TrustBridge/trustbridge-action`.
+This document describes how Dependabot (and similar automated dependency update PRs) interact with **trustbridge-action** versioning, committed `dist/` bundles, and CI workflows.
 
 ---
 
-## 1. Overview & Auto-Merge Boundary
+## Overview & Why This Matters
 
-To balance supply-chain hygiene with security and stability, automated PR merging is strictly confined to **low-risk patch updates of GitHub Actions toolkits (`@actions/*`)**.
+As a GitHub JavaScript Action, `trustbridge-action` commits its compiled distribution bundle (`dist/index.js`) to the repository so consumers can reference the action without needing to run `npm build` at execution time.
 
-### Allowed for Auto-Merge
-| Scope | Condition | Rationale |
+When Dependabot opens a pull request to update dependencies (e.g. bumping `@actions/core` or `node-fetch` in `package.json` and `package-lock.json`), it only updates the lockfile — **it does not rebuild `dist/`**. Merging a Dependabot PR without rebuilding `dist/` results in a stale bundle that does not contain the updated dependencies or security fixes.
+
+---
+
+## File Maintenance Boundaries
+
+Dependabot is configured to update NPM dependencies. Maintainers should enforce the following boundaries:
+
+| File / Path | Dependabot Permitted | Maintainer Action Required |
 |---|---|---|
-| `@actions/*` packages | **Patch updates only** (`~1.x.y` → `~1.x.z`) | Official GitHub Action runner toolkits (e.g. `@actions/core`, `@actions/github`, `@actions/http-client`) with minor bug/security fixes that do not change runtime interfaces. |
-
-### Never Auto-Merged (Manual Review Required)
-| Dependency Scope | Reason |
-|---|---|
-| `stellar-sdk` / `@stellar/stellar-sdk` | Core Stellar blockchain protocol interface. Any update must be manually reviewed for cryptographic correctness, Soroban XDR changes, and Horizon protocol breaking changes. |
-| Any Minor (`semver-minor`) or Major (`semver-major`) update | Minor and major updates can introduce behavioral or API breaking changes that require explicit test verification and documentation updates. |
-| Any non-`@actions/*` npm dependency | Tooling, build plugins, linters, and external utilities must be reviewed by maintainers before landing. |
-| GitHub Actions workflow dependencies (`github-actions`) | Changes to actions used in CI workflows require maintainer review to prevent pipeline tampering. |
+| `package.json` | ✅ Yes | Review changes |
+| `package-lock.json` | ✅ Yes | Review lockfile changes |
+| `dist/index.js` | ❌ No (Dependabot will not modify `dist/`) | **Rebuild required** via `npm run build` |
+| `action.yml` | ❌ No | Update manually if action specs change |
 
 ---
 
-## 2. Automation Architecture
+## Maintainer Checklist for Dependabot PRs
 
-### Dependabot Configuration (`.github/dependabot.yml`)
-- Schedules weekly dependency updates every Monday at 06:00 UTC.
-- Groups `@actions/*` patch updates under `actions-patches`.
-- Applies the `dependencies` and `javascript` labels.
+When reviewing and merging Dependabot PRs affecting runtime dependencies, maintainers must follow this checklist:
 
-### Auto-Merge Workflow (`.github/workflows/dependabot-auto-merge.yml`)
-1. **Actor Verification**: Only runs when triggered by `dependabot[bot]`.
-2. **Metadata Inspection**: Uses `@dependabot/fetch-metadata` to query update severity and target dependencies.
-3. **Strict Policy Evaluation**:
-   - `update-type == 'version-update:semver-patch'`
-   - `package-ecosystem == 'npm'`
-   - Every updated package name matches `@actions/*`.
-4. **CI Status & Merge Queue**:
-   - Executes `gh pr review --approve` with an audit note.
-   - Executes `gh pr merge --auto --squash` so GitHub will merge the pull request **only after all required branch protection status checks pass**.
+1. **Verify lockfile changes**: Ensure `package-lock.json` changes match `package.json`.
+2. **Rebuild `dist/`**: Checkout the Dependabot branch locally, run `npm run build`, commit `dist/index.js`, and push.
+3. **Verify CI**: Ensure the `CI` workflow (`.github/workflows/ci.yml`) passes.
+4. **Merge PR**: Once `dist/` matches the updated dependencies and CI passes, merge the PR.
 
 ---
 
-## 3. Security & Safety Guarantees
+## Recommended Workflow Patterns
 
-- **Branch Protection & Green CI**: GitHub auto-merge will **never** merge a pull request if required CI checks fail or are pending.
-- **Least Privilege**: The auto-merge workflow requests only `contents: write` and `pull-requests: write`.
-- **Auditability**: Every auto-merged PR contains an explicit automated review approval comment linking back to this policy.
-
----
-
-## 4. Maintainer Setup Checklist
-
-For repositories deploying this workflow:
-1. Ensure **Allow auto-merge** is enabled in Repository Settings > General > Pull Requests.
-2. In Repository Settings > Branches, ensure the default branch (`main`) has **Require status checks to pass before merging** enabled.
+- Rebuild locally with `npm run build` and commit `dist/` on Dependabot branches before merge.
+- Optional auto-build pattern: Maintainers may add a branch-protection trigger or GitHub Action that runs `npm run build` on `dependabot/*` branches and pushes the updated `dist/` back to the pull request before merging.

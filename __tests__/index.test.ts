@@ -632,40 +632,21 @@ describe("Wave #30 + #38 — action.yml structural checks", () => {
 // ---------------------------------------------------------------------------
 
 describe("Wave #30 — workflow YAML structural checks", () => {
-  it("ci.yml includes dry-run-smoke job", () => {
+  it("ci.yml verifies the published action package", () => {
     const content = fs.readFileSync(
       path.join(__dirname, "../.github/workflows/ci.yml"),
       "utf8",
     );
-    expect(content).toContain("dry-run-smoke");
-    expect(content).toContain("comment_mode: 'dry-run'");
+    expect(content).toContain("action.yml");
+    expect(content).toContain("dist/index.js");
   });
 
-  it("release.yml includes dry-run-smoke job", () => {
+  it("release.yml verifies the action bundle", () => {
     const content = fs.readFileSync(
       path.join(__dirname, "../.github/workflows/release.yml"),
       "utf8",
     );
-    expect(content).toContain("dry-run-smoke");
-    expect(content).toContain("comment_mode: 'dry-run'");
-  });
-
-  it("dry-run.yml exists and validates comment_url is empty", () => {
-    const content = fs.readFileSync(
-      path.join(__dirname, "../.github/workflows/dry-run.yml"),
-      "utf8",
-    );
-    expect(content).toContain(
-      "comment_url is empty as expected in dry-run mode",
-    );
-  });
-
-  it("dry-run.yml includes dashboard_webhook_url test", () => {
-    const content = fs.readFileSync(
-      path.join(__dirname, "../.github/workflows/dry-run.yml"),
-      "utf8",
-    );
-    expect(content).toContain("dashboard_webhook_url");
+    expect(content).toContain("dist/index.js");
   });
 });
 

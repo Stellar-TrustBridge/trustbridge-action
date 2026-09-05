@@ -377,7 +377,7 @@ Programs should define their own labels and document them in their contributing 
 
 ### Testing approach
 
-- Use dry-run workflows (`.github/workflows/dry-run.yml`) to test label gate logic locally.
+- Use `comment_mode: dry-run` in a local workflow to exercise label gate logic without posting comments.
 - Mock issue labels in test workflow inputs.
 - Verify outputs are correctly forwarded or set to sentinel values.
 

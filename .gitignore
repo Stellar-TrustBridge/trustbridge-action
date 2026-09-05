@@ -6,7 +6,8 @@ coverage/
 .env.*
 !.env.example
 
-# Local-only issue push helper (keep for next wave; do not commit)
+# Local scratch / issue drafts
 push_issues.sh
 issues.md
+issues*.md
 issues.d/

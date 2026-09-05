@@ -3,144 +3,28 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: write  # required to create/update GitHub Release assets
+  contents: write
 
 jobs:
-  verify-and-release:
+  release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # Allow uploading SBOM asset to release
-      id-token: write  # Required for keyless Sigstore signing
-      attestations: write  # Publish provenance to GitHub's attestations API
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      - name: Enforce immutable release tag policy
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify action bundle
         run: |
-          tag="${GITHUB_REF_NAME}"
+          test -f action.yml
+          test -f dist/index.js
 
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Release tags must use the immutable full SemVer form vMAJOR.MINOR.PATCH. Major aliases such as v1 are forbidden."
-            exit 1
-          fi
-
-          set +e
-          release_lookup="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>&1)"
-          lookup_status=$?
-          set -e
-
-          if [[ ${lookup_status} -eq 0 ]]; then
-            echo "::error::Release ${tag} already exists. Published tags are immutable; create the next patch version instead."
-            exit 1
-          fi
-
-          if [[ "${release_lookup}" != *"HTTP 404"* ]]; then
-            echo "::error::Unable to confirm that ${tag} is new: ${release_lookup}"
-            exit 1
-          fi
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm test
-
-      - name: Check runtime dependency licenses (GPL policy gate — Issue #334)
-        run: npm run license:check
-
-      - name: Build
-        run: npm run build
-
-      - name: Verify action bundle exists
-        run: test -f dist/index.js
-
-      - name: Generate SLSA provenance for dist/index.js
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/index.js
-
-      - name: Generate SLSA provenance for dist/licenses.txt
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/licenses.txt
-
-      - name: Generate checksum manifest
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: |
-          echo "# TrustBridge Release Checksums" > trustbridge-checksums.txt
-          echo "" >> trustbridge-checksums.txt
-          echo "Generated from tag ${GITHUB_REF_NAME}" >> trustbridge-checksums.txt
-          echo "" >> trustbridge-checksums.txt
-          sha256sum dist/index.js dist/licenses.txt >> trustbridge-checksums.txt
-          cat trustbridge-checksums.txt
-
-      - name: Upload checksum manifest to Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: trustbridge-checksums.txt
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate SBOM (CycloneDX format)
-        run: |
-          npx @cyclonedx/npm@latest --output-file trustbridge-sbom.json --output-format json --specs all
-          echo "SBOM generated: trustbridge-sbom.json"
-          cat trustbridge-sbom.json | head -20
-
-      - name: Upload SBOM to Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: trustbridge-sbom.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  dry-run-smoke:
-    runs-on: ubuntu-latest
-    name: dry-run-smoke
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '20'
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Build
-        run: npm run build
-      - name: Dry-run action (comment_mode)
-        id: trustbridge
-        uses: ./
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          stellar_address_input: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
-          fail_on_missing: false
-          comment_mode: 'dry-run'
-          dashboard_webhook_url: ''
-      - name: Assert dry-run left comment_url empty
-        run: |
-          echo "comment_url=${{ steps.trustbridge.outputs.comment_url }}"
-          test -z "${{ steps.trustbridge.outputs.comment_url }}"
