@@ -26,7 +26,7 @@
 #
 # TODO(maintainers): replace 07b97d28d482a18d277285f980dd5d7206673eb5 below with the commit SHA of the
 # release tag you want examples to track, e.g.:
-#   uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@<sha> # v1.4.0
+#   uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0
 
 name: Verify Stellar wallet (with label gate)
 
