@@ -53,7 +53,9 @@ an update PR. Keep the `github-actions` update entry in `.github/dependabot.yml`
 enabled so those pins remain current.
 
 The `workflow-security` workflow runs `actionlint` and `zizmor`, including the
-`unpinned-uses` check, for changes to workflows and workflow examples. Before
+`unpinned-uses` check, automatically on every pull request that touches
+`.github/workflows/**` or `docs/examples/**`, and on pushes to `main` for the
+same paths. It can also be run manually via `workflow_dispatch`. Before
 merging an example, check every `uses:` line, including checkout, setup, upload,
 download, script, and TrustBridge references.
 
