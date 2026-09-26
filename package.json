@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "GitHub Action to verify Stellar account trustlines and XLM reserve before issue assignment workflows",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt && node scripts/normalize-maps.js",
     "test:map-paths": "node scripts/check-map-paths.js",
