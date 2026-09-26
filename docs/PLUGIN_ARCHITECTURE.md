@@ -109,31 +109,35 @@ These are pre-registered into the `defaultRegistry` at action startup via `regis
 
 ## Security
 
-Plugins must not execute arbitrary code sourced from issue bodies.
+Plugins are trusted repository files. The loader dynamically `import()`s allowlisted modules, so the security boundary is *which files may be imported*, not whether dynamic imports happen at all.
 
 ### 1. Typed context only
 `run()` receives typed action inputs and Horizon data only.
 
-### 2. No dynamic imports or eval
-Plugins are reviewed TypeScript source files. The runner does not evaluate strings.
+### 2. Allowlist + workspace-root confinement
+External plugins are loaded only when their path is explicitly listed in the allowlist (the `trustbridge_plugins_path` action input). Each path is resolved against the workspace root (`GITHUB_WORKSPACE`) and dynamically imported via a `file://` URL. The loader actively rejects:
 
-### 3. Output escaping
-The runner automatically escapes Markdown metacharacters in plugin `label`, `detail`, and `remediation` strings for all external plugins. Plugins should return plain text and must not attempt to include Markdown formatting (like `**bold**` or links), as it will be escaped and rendered literally. Core plugins (`trustbridge/*`) are trusted and may use Markdown formatting.
-
-### 4. No runtime npm loading
-Arbitrary npm packages are out of scope for v1.
-
-### 5. Workspace-only path constraints
-Optional plugins are loaded from the workspace only, never from `node_modules` or remote URLs.
-
-- Workspace root: `GITHUB_WORKSPACE`
-- Example plugin path: `plugins/kyc.ts`
-- Enable via action input: `trustbridge_plugins_path: plugins/kyc.ts`
-
-The loader actively rejects:
 - Absolute paths.
 - Path traversal sequences (`../`) attempting to escape the workspace root.
 - Non-file targets (e.g., directories or symlinks).
+- Paths outside the workspace root, including `node_modules` and remote URLs.
+
+Dynamic `import()` is therefore confined to trusted repository files under the workspace root that appear on the allowlist. The runner never evaluates strings and never imports code supplied through issue bodies or other untrusted input.
+
+### 3. Shape validation
+After import, the loader validates the module's shape before use: it accepts a `default` export, a named `plugin` export, or the first exported object matching the `CheckPlugin` interface, and requires `id`, `label`, and `run()`. Modules that fail validation throw `PluginLoadError` (`invalid_export`) and are skipped (fail-open).
+
+### 4. Output escaping
+The runner automatically escapes Markdown metacharacters in plugin `label`, `detail`, and `remediation` strings for all external plugins. Plugins should return plain text and must not attempt to include Markdown formatting (like `**bold**` or links), as it will be escaped and rendered literally. Core plugins (`trustbridge/*`) are trusted and may use Markdown formatting.
+
+### 5. No runtime npm loading
+Arbitrary npm packages are out of scope for v1.
+
+### Threat model
+
+- **Trusted**: repository files under the workspace root that are explicitly allowlisted. These are reviewed like any other source file and may be dynamically imported.
+- **Untrusted**: issue bodies, comments, and any other external input. Code from these sources is never imported or evaluated; only typed action inputs and Horizon data reach `run()`.
+- **Boundary**: the allowlist plus workspace-root path guards decide what may be imported. Anything not on the allowlist, or resolving outside the workspace root, is rejected before import.
 
 ---
 
