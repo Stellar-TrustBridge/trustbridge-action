@@ -52,13 +52,13 @@ describe('validateTemplatePath', () => {
   it('accepts a relative path inside workspace', () => {
     const workspace = '/workspace/repo';
     const resolved = validateTemplatePath('.trustbridge/comment.md', workspace);
-    expect(resolved).toBe(path.join(workspace, '.trustbridge', 'comment.md'));
+    expect(resolved).toBe(path.resolve(workspace, '.trustbridge', 'comment.md'));
   });
 
   it('accepts an absolute path inside workspace', () => {
     const workspace = '/workspace/repo';
     const resolved = validateTemplatePath('/workspace/repo/templates/partial.md', workspace);
-    expect(resolved).toBe(path.join(workspace, 'templates', 'partial.md'));
+    expect(resolved).toBe(path.resolve(workspace, 'templates', 'partial.md'));
   });
 
   it('rejects path traversal with ../', () => {
