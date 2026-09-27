@@ -6,6 +6,14 @@
  * making it easy for consumers to add new locales or adjust copy.
  */
 export type Locale = 'en' | 'es' | 'pt' | 'ja' | 'fr' | 'de';
+/**
+ * Every supported locale, in canonical order.
+ *
+ * Consumers that must recognise text produced by *any* locale (for example
+ * `extractChecklistState` in `markdown.ts`, which must keep working after a
+ * workflow switches `locale`) iterate this list.
+ */
+export declare const SUPPORTED_LOCALES: readonly Locale[];
 export interface CommentStrings {
     heading: string;
     checkedAccount: string;
@@ -17,6 +25,22 @@ export interface CommentStrings {
     blockedBy: string;
     passedChecks: string;
     failedChecks: string;
+    /** Label for the machine-readable `reason_code` bullet (Issue #450). */
+    reasonCode: string;
+    /** Label for the `ready` boolean bullet (Issue #450). */
+    readyFlag: string;
+    circuitBreakerHeading: string;
+    circuitBreakerOpen: string;
+    circuitBreakerRecoveryHint: string;
+    circuitBreakerReasonCode: string;
+    checklistHeading: string;
+    checklistIntro: string;
+    checklistFundAccountLabel: string;
+    checklistFundAccountDetail: string;
+    checklistTrustlineLabel(assetCode: string): string;
+    checklistTrustlineDetail: string;
+    checklistReserveLabel: string;
+    checklistReserveDetail(minXlmReserve: string): string;
     balancesHeading: string;
     xlmBalance: string;
     minimumRequired: string;
