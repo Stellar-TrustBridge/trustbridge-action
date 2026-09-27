@@ -708,3 +708,8 @@ MIT — see [LICENSE](LICENSE).
 ## Acknowledgments
 
 Built for the Stellar open-source ecosystem. Horizon data provided by the [Stellar Development Foundation](https://stellar.org). Wallet setup links reference [Stellar Laboratory](https://laboratory.stellar.org) and [LOBSTR](https://lobstr.co/).
+
+## Handsoff notes
+
+<!-- handsoff-issue-497 -->
+- #497: Add CONTRIBUTING scripts cheat-sheet
