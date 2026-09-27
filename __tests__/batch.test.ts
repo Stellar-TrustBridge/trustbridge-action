@@ -59,6 +59,12 @@ describe('parseBatchAddresses', () => {
     expect(result).toEqual([VALID_ADDR_1, VALID_ADDR_2]);
   });
 
+  it('parses JSON array and drops empty after trim', () => {
+    const input = `["${VALID_ADDR_1}", "  ", "${VALID_ADDR_2}", ""]`;
+    const result = parseBatchAddresses(input);
+    expect(result).toEqual([VALID_ADDR_1, VALID_ADDR_2]);
+  });
+
   it('deduplicates addresses', () => {
     const input = `${VALID_ADDR_1}\n${VALID_ADDR_2}\n${VALID_ADDR_1}`;
     const result = parseBatchAddresses(input);
@@ -166,6 +172,10 @@ describe('formatBatchSummaryMarkdown', () => {
     expect(md).toContain('2 of 3 addresses failed');
     expect(md).toContain('account not funded');
     expect(md).toContain('USDC trustline missing');
+    
+    // Check that per-address outcomes are listed (shortened addresses)
+    expect(md).toContain('GA5ZSE…KZVN'); // VALID_ADDR_1
+    expect(md).toContain('GBBD47…HEX2'); // VALID_ADDR_2
   });
 });
 
@@ -241,5 +251,41 @@ describe('runBatchValidation', () => {
     expect(results).toHaveLength(1);
     expect(results[0].valid).toBe(false);
     expect(results[0].failureReason).toContain('Horizon error');
+  });
+
+  it('handles mixed valid and invalid addresses', async () => {
+    mockFetchAccount.mockImplementation(async (url, address) => {
+      if (address === VALID_ADDR_1) {
+        return {
+          ...FUNDED_ACCOUNT,
+          id: VALID_ADDR_1,
+          account_id: VALID_ADDR_1,
+        } as any;
+      }
+      throw new horizon.HorizonError('Not found', 404);
+    });
+
+    const results = await runBatchValidation(
+      [VALID_ADDR_1, 'INVALID_FORMAT', VALID_ADDR_3],
+      DEFAULT_CONFIG,
+      'https://horizon.stellar.org',
+      { requestDelayMs: 0 },
+    );
+
+    expect(results).toHaveLength(3);
+    
+    // First address valid
+    expect(results[0].address).toBe(VALID_ADDR_1);
+    expect(results[0].valid).toBe(true);
+
+    // Second address invalid format (fails before Horizon fetch)
+    expect(results[1].address).toBe('INVALID_FORMAT');
+    expect(results[1].valid).toBe(false);
+    expect(results[1].failureReason).toContain('Invalid Stellar address format');
+
+    // Third address fails at Horizon (404)
+    expect(results[2].address).toBe(VALID_ADDR_3);
+    expect(results[2].valid).toBe(false);
+    expect(results[2].failureReason).toContain('not funded');
   });
 });
