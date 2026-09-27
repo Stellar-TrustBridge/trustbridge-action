@@ -196,3 +196,25 @@ Only `string`-typed fields of `CommentStrings` are supported (function-typed che
 - Integration point: `formatCommentBody` in `src/comment.ts` — partial injected before `---` footer
 - Tests: `__tests__/template.test.ts` (unit), `__tests__/comment.test.ts` (integration, injection scenarios)
 
+## Local Comment Preview
+
+Contributors can preview how a comment will render locally without needing to run the full action or post to a live issue. This is useful when modifying `src/comment.ts` or testing custom comment templates.
+
+Run the preview script against any JSON fixture from the `fixtures/` directory:
+
+```bash
+npm run preview-comment fixtures/account-funded.json
+```
+
+By default, the script prints the generated Markdown to `stdout`. To save the output to a file, provide a second argument:
+
+```bash
+npm run preview-comment fixtures/account-funded.json preview.md
+```
+
+You can customize the check configuration by setting `INPUT_*` environment variables before running the script:
+
+```bash
+INPUT_ASSET_CODE="EURC" INPUT_MIN_XLM_RESERVE="2.5" npm run preview-comment fixtures/account-funded.json
+```
+
