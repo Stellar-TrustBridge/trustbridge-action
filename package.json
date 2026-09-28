@@ -54,7 +54,7 @@
     "@types/node-fetch": "^2.6.12",
     "@typescript-eslint/eslint-plugin": "^8.68.0",
     "@typescript-eslint/parser": "^8.70.0",
-    "@vercel/ncc": "^0.38.3",
+    "@vercel/ncc": "^0.45.0",
     "eslint": "^10.11.0",
     "jest": "^30.5.0",
     "license-checker": "^25.0.1",
