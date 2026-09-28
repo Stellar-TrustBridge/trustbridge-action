@@ -145,6 +145,37 @@ export class HorizonPinMismatchError extends HorizonError {
 }
 
 /**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+export class HorizonCircuitOpenError extends HorizonError {
+  constructor(message: string) {
+    super(message, 0, false);
+    this.name = "HorizonCircuitOpenError";
+  }
+}
+
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+export function isCircuitOpenError(
+  error: unknown,
+): error is HorizonCircuitOpenError {
+  return (
+    error instanceof HorizonCircuitOpenError ||
+    error instanceof CircuitOpenError ||
+    (error instanceof Error && error.name === "HorizonCircuitOpenError")
+  );
+}
+
+/**
  * Node/OpenSSL error codes that indicate a TLS handshake or certificate
  * verification failure, as opposed to a generic connection/network error.
  */
@@ -775,10 +806,8 @@ async function fetchAccountOnce(
             final: true,
           }),
         );
-        throw new HorizonError(
+        throw new HorizonCircuitOpenError(
           `Horizon request blocked by circuit breaker: ${error.message}`,
-          0,
-          false,
         );
       }
 

@@ -15,19 +15,27 @@ export interface LogContext {
 }
 export declare function isSensitiveSecretKey(key: string): boolean;
 /**
- * Redacts a single Stellar address (G- or C-address) to its first 4 and
- * last 4 characters, separated by `...`. Non-address strings are returned
- * unchanged so non-address log values never collide with the redaction
- * pass.
+ * Redacts a single Stellar address to its first 4 and last 4 characters,
+ * separated by `...`. Handles:
+ *   - G-addresses and C-addresses (Soroban contracts): exactly 56 characters.
+ *   - Muxed M-addresses: exactly 69 characters (M + 68 base32 chars).
+ * Non-address strings are returned unchanged so non-address log values
+ * never collide with the redaction pass.
  *
  * Examples:
  *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
  *     => 'GA5Z...KZVN'
+ *   redactStellarAddress('MA7QYNF7SOWQ3GLR2BGMZEHXR8' + 'A'.repeat(43))
+ *     => 'MA7Q...AAAA'
  */
 export declare function redactStellarAddress(address: string): string;
 /**
- * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
- * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
+ * Redacts every Stellar address (G-, C-, and muxed M-addresses) and PEM
+ * private key embedded in an arbitrary free-form string — error messages,
+ * Horizon URLs, JSON snippets, stack traces, etc.
+ *
+ * Muxed M-addresses (69 chars) are scanned first so their longer pattern
+ * cannot be partially matched by the 56-char G/C regex.
  */
 export declare function redactString(value: string): string;
 /**
@@ -36,6 +44,10 @@ export declare function redactString(value: string): string;
  * matching an address shape are masked before the URL reaches a log line.
  * The base hostname / protocol is preserved so operators can still verify
  * which Horizon instance was called.
+ *
+ * Handles all three Stellar address forms:
+ *   - G-addresses and C-addresses (56 chars)
+ *   - Muxed M-addresses (69 chars)
  */
 export declare function redactHorizonUrl(url: string): string;
 /**

@@ -8,6 +8,16 @@
 
 export type Locale = 'en' | 'es' | 'pt' | 'ja' | 'fr' | 'de';
 
+/**
+ * Every supported locale, in canonical order.
+ *
+ * Consumers that must recognise text produced by *any* locale (for example
+ * `extractChecklistState` in `markdown.ts`, which must keep working after a
+ * workflow switches `locale`) iterate this list.
+ */
+export const SUPPORTED_LOCALES: readonly Locale[] = ['en', 'es', 'pt', 'ja', 'fr', 'de'];
+
+
 export interface CommentStrings {
   // Main heading
   heading: string;
@@ -24,6 +34,26 @@ export interface CommentStrings {
   blockedBy: string;
   passedChecks: string;
   failedChecks: string;
+  /** Label for the machine-readable `reason_code` bullet (Issue #450). */
+  reasonCode: string;
+  /** Label for the `ready` boolean bullet (Issue #450). */
+  readyFlag: string;
+
+  // Circuit-breaker banner (Issue #434)
+  circuitBreakerHeading: string;
+  circuitBreakerOpen: string;
+  circuitBreakerRecoveryHint: string;
+  circuitBreakerReasonCode: string;
+
+  // Onboarding checklist (Issue #436 — previously English-only in markdown.ts)
+  checklistHeading: string;
+  checklistIntro: string;
+  checklistFundAccountLabel: string;
+  checklistFundAccountDetail: string;
+  checklistTrustlineLabel(assetCode: string): string;
+  checklistTrustlineDetail: string;
+  checklistReserveLabel: string;
+  checklistReserveDetail(minXlmReserve: string): string;
 
   // Balances section
   balancesHeading: string;
@@ -124,6 +154,26 @@ const EN: CommentStrings = {
   blockedBy: 'Blocked by:',
   passedChecks: 'Passed checks:',
   failedChecks: 'Failed checks:',
+  reasonCode: 'Reason code:',
+  readyFlag: 'Ready:',
+
+  circuitBreakerHeading: 'Circuit breaker open',
+  circuitBreakerOpen:
+    'This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.',
+  circuitBreakerRecoveryHint:
+    'This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow. If it keeps happening, check the Horizon endpoint health and your `horizon_url` / `max_retries` settings.',
+  circuitBreakerReasonCode: 'Reason code: `CIRCUIT_OPEN`',
+
+  checklistHeading: 'Onboarding checklist',
+  checklistIntro:
+    '_Complete these steps in order. Boxes update automatically from live Horizon checks._',
+  checklistFundAccountLabel: 'Fund account',
+  checklistFundAccountDetail: 'Activate the account with XLM.',
+  checklistTrustlineLabel: (assetCode: string) => `Add ${assetCode} trustline`,
+  checklistTrustlineDetail: 'Configure the asset trustline.',
+  checklistReserveLabel: 'Verify XLM balance',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `Meet the **${minXlmReserve} XLM** reserve.`,
 
   balancesHeading: 'Balances',
   xlmBalance: 'XLM balance:',
@@ -228,6 +278,26 @@ const ES: CommentStrings = {
   blockedBy: 'Bloqueado por:',
   passedChecks: 'Comprobaciones pasadas:',
   failedChecks: 'Comprobaciones fallidas:',
+  reasonCode: 'Código de razón:',
+  readyFlag: 'Listo:',
+
+  circuitBreakerHeading: 'Disyuntor abierto',
+  circuitBreakerOpen:
+    'Esta ejecución falló rápidamente porque el disyuntor de Horizon estaba abierto: la cuenta **no** se comprobó.',
+  circuitBreakerRecoveryHint:
+    'Es una protección de resiliencia, no un problema de la cuenta. Espera a que termine la ventana de recuperación y vuelve a ejecutar el workflow. Si se repite, comprueba la salud del endpoint de Horizon y los ajustes `horizon_url` / `max_retries`.',
+  circuitBreakerReasonCode: 'Código de razón: `CIRCUIT_OPEN`',
+
+  checklistHeading: 'Lista de incorporación',
+  checklistIntro:
+    '_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._',
+  checklistFundAccountLabel: 'Financiar la cuenta',
+  checklistFundAccountDetail: 'Activa la cuenta con XLM.',
+  checklistTrustlineLabel: (assetCode: string) => `Añadir línea de confianza ${assetCode}`,
+  checklistTrustlineDetail: 'Configura la línea de confianza del activo.',
+  checklistReserveLabel: 'Verificar saldo XLM',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `Alcanza la reserva de **${minXlmReserve} XLM**.`,
 
   balancesHeading: 'Saldos',
   xlmBalance: 'Saldo de XLM:',
@@ -332,6 +402,26 @@ const PT: CommentStrings = {
   blockedBy: 'Bloqueado por:',
   passedChecks: 'Verificações aprovadas:',
   failedChecks: 'Verificações falhadas:',
+  reasonCode: 'Código de motivo:',
+  readyFlag: 'Pronto:',
+
+  circuitBreakerHeading: 'Disjuntor aberto',
+  circuitBreakerOpen:
+    'Esta execução falhou rapidamente porque o disjuntor do Horizon estava aberto — a conta **não** foi verificada.',
+  circuitBreakerRecoveryHint:
+    'Isto é uma proteção de resiliência, não um problema com a conta. Aguarde a janela de recuperação e execute o workflow novamente. Se persistir, verifique a saúde do endpoint do Horizon e as definições `horizon_url` / `max_retries`.',
+  circuitBreakerReasonCode: 'Código de motivo: `CIRCUIT_OPEN`',
+
+  checklistHeading: 'Lista de integração',
+  checklistIntro:
+    '_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._',
+  checklistFundAccountLabel: 'Financiar a conta',
+  checklistFundAccountDetail: 'Ative a conta com XLM.',
+  checklistTrustlineLabel: (assetCode: string) => `Adicionar linha de confiança ${assetCode}`,
+  checklistTrustlineDetail: 'Configure a linha de confiança do ativo.',
+  checklistReserveLabel: 'Verificar saldo XLM',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `Atinja a reserva de **${minXlmReserve} XLM**.`,
 
   balancesHeading: 'Saldos',
   xlmBalance: 'Saldo de XLM:',
@@ -441,6 +531,26 @@ const JA: CommentStrings = {
   blockedBy: 'ブロック理由:',
   passedChecks: '合格したチェック:',
   failedChecks: '不合格のチェック:',
+  reasonCode: '理由コード:',
+  readyFlag: '判定:',
+
+  circuitBreakerHeading: 'サーキットブレーカーが開いています',
+  circuitBreakerOpen:
+    'Horizon のサーキットブレーカーが開いていたため、この実行は即座に失敗しました。アカウントは**チェックされていません**。',
+  circuitBreakerRecoveryHint:
+    'これはアカウントの問題ではなく、レジリエンス保護です。復旧ウィンドウの経過を待ってからワークフローを再実行してください。繰り返し発生する場合は、Horizon エンドポイントの健全性と `horizon_url` / `max_retries` の設定を確認してください。',
+  circuitBreakerReasonCode: '理由コード: `CIRCUIT_OPEN`',
+
+  checklistHeading: 'オンボーディングチェックリスト',
+  checklistIntro:
+    '_以下の手順を順番に完了してください。チェックボックスは Horizon のライブチェックから自動更新されます。_',
+  checklistFundAccountLabel: 'アカウント入金',
+  checklistFundAccountDetail: 'XLM を送信してアカウントを有効化します。',
+  checklistTrustlineLabel: (assetCode: string) => `${assetCode} のトラストラインを追加`,
+  checklistTrustlineDetail: 'アセットのトラストラインを設定します。',
+  checklistReserveLabel: 'XLM 残高の確認',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `**${minXlmReserve} XLM** の準備金要件を満たしてください。`,
 
   balancesHeading: '残高',
   xlmBalance: 'XLM残高:',
@@ -544,6 +654,26 @@ const FR: CommentStrings = {
   blockedBy: 'Bloqué par :',
   passedChecks: 'Vérifications réussies :',
   failedChecks: 'Vérifications échouées :',
+  reasonCode: 'Code de motif :',
+  readyFlag: 'Prêt :',
+
+  circuitBreakerHeading: 'Coupe-circuit ouvert',
+  circuitBreakerOpen:
+    'Cette exécution a échoué immédiatement car le coupe-circuit Horizon était ouvert — le compte **n’a pas** été vérifié.',
+  circuitBreakerRecoveryHint:
+    'Il s’agit d’une protection de résilience, pas d’un problème de compte. Attendez la fin de la fenêtre de récupération, puis relancez le workflow. Si cela persiste, vérifiez la santé du point de terminaison Horizon et les réglages `horizon_url` / `max_retries`.',
+  circuitBreakerReasonCode: 'Code de motif : `CIRCUIT_OPEN`',
+
+  checklistHeading: 'Liste d’intégration',
+  checklistIntro:
+    '_Effectuez ces étapes dans l’ordre. Les cases se mettent à jour automatiquement à partir des vérifications Horizon._',
+  checklistFundAccountLabel: 'Financer le compte',
+  checklistFundAccountDetail: 'Activez le compte avec des XLM.',
+  checklistTrustlineLabel: (assetCode: string) => `Ajouter la ligne de confiance ${assetCode}`,
+  checklistTrustlineDetail: 'Configurez la ligne de confiance de l’actif.',
+  checklistReserveLabel: 'Vérifier le solde XLM',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `Atteignez la réserve de **${minXlmReserve} XLM**.`,
 
   balancesHeading: 'Soldes',
   xlmBalance: 'Solde XLM :',
@@ -647,6 +777,26 @@ const DE: CommentStrings = {
   blockedBy: 'Blockiert durch:',
   passedChecks: 'Bestandene Prüfungen:',
   failedChecks: 'Fehlgeschlagene Prüfungen:',
+  reasonCode: 'Grundcode:',
+  readyFlag: 'Bereit:',
+
+  circuitBreakerHeading: 'Sicherungsschalter offen',
+  circuitBreakerOpen:
+    'Dieser Lauf wurde sofort abgebrochen, da der Horizon-Sicherungsschalter offen war — das Konto wurde **nicht** geprüft.',
+  circuitBreakerRecoveryHint:
+    'Dies ist ein Resilienzschutz und kein Problem mit dem Konto. Warten Sie das Ende des Wiederherstellungsfensters ab und starten Sie den Workflow erneut. Sollte dies wiederholt auftreten, prüfen Sie die Erreichbarkeit des Horizon-Endpunkts sowie die Einstellungen `horizon_url` / `max_retries`.',
+  circuitBreakerReasonCode: 'Grundcode: `CIRCUIT_OPEN`',
+
+  checklistHeading: 'Onboarding-Checkliste',
+  checklistIntro:
+    '_Führen Sie diese Schritte der Reihe nach aus. Die Kästchen werden automatisch aus den Horizon-Prüfungen aktualisiert._',
+  checklistFundAccountLabel: 'Konto finanzieren',
+  checklistFundAccountDetail: 'Aktivieren Sie das Konto mit XLM.',
+  checklistTrustlineLabel: (assetCode: string) => `${assetCode}-Trustline hinzufügen`,
+  checklistTrustlineDetail: 'Richten Sie die Trustline des Assets ein.',
+  checklistReserveLabel: 'XLM-Guthaben prüfen',
+  checklistReserveDetail: (minXlmReserve: string) =>
+    `Erreichen Sie die Reserve von **${minXlmReserve} XLM**.`,
 
   balancesHeading: 'Guthaben',
   xlmBalance: 'XLM-Guthaben:',
@@ -742,6 +892,13 @@ const LOCALES: Record<Locale, CommentStrings> = {
   fr: FR,
   de: DE,
 };
+
+// Fail fast at import time if a new locale is added without a matching pack.
+for (const locale of SUPPORTED_LOCALES) {
+  if (!LOCALES[locale]) {
+    throw new Error(`Missing i18n string pack for locale "${locale}"`);
+  }
+}
 
 /**
  * Get comment strings for a given locale, with automatic fallback to English

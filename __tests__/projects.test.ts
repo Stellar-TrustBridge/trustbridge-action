@@ -114,6 +114,14 @@ describe('updateProjectV2Status', () => {
       }
     });
 
+    mockGraphql.mockResolvedValueOnce({
+      addProjectV2ItemById: {
+        item: { id: 'item-1' }
+      }
+    });
+
+    mockGraphql.mockResolvedValueOnce({});
+
     const result = await updateProjectV2Status({
       octokit: mockOctokit as any,
       projectId: 'proj-1',

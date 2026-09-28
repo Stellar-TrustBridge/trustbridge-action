@@ -1,9 +1,11 @@
-import { HorizonError, HorizonRateLimitError, isCreditBalance,
+﻿import { HorizonError, HorizonRateLimitError, isCreditBalance,
   isRetryableStatus,
   parseRetryAfterMs,
   fetchNetworkPassphrase, FetchLike,
   parseHorizonBalance, normalizeHorizonUrl, getAssetBalance } from '../src/horizon';
 import { fetchAccount, HorizonAccount, waitForFundedAccount, getNativeBalance, hasTrustline, fetchClaimableBalanceCount } from '../src/horizon';
+import { HorizonCircuitOpenError, isCircuitOpenError } from '../src/horizon';
+import { CircuitBreaker, CircuitOpenError } from '../src/resilience';
 import * as loggerModule from '../src/logger';
 import { SimpleCache } from '../src/cache';
 import type { Request, RequestInit, Response } from 'node-fetch';
@@ -1229,5 +1231,50 @@ describe('fetchClaimableBalanceCount', () => {
     });
     const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
     expect(result).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-open propagation
+// ---------------------------------------------------------------------------
+
+describe('circuit-open propagation (Issue #434)', () => {
+  it('throws HorizonCircuitOpenError when the breaker blocks the request', async () => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1, recoveryTimeoutMs: 60_000 });
+    // Trip the breaker with one failure. The tripping call rethrows the
+    // original error; the *next* call is the fast-fail.
+    await expect(
+      breaker.execute(async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    // The next call is fast-failed without touching the network.
+    const fetchFn = jest.fn();
+    await expect(
+      fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        fetchFn: fetchFn as unknown as FetchLike,
+        cacheTtlMs: 0,
+        circuitBreaker: breaker,
+      }),
+    ).rejects.toThrow(HorizonCircuitOpenError);
+
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+
+  it('keeps HorizonCircuitOpenError a HorizonError so existing handlers still work', () => {
+    const err = new HorizonCircuitOpenError('blocked');
+    expect(err).toBeInstanceOf(HorizonError);
+    expect(err.statusCode).toBe(0);
+    expect(err.retryable).toBe(false);
+  });
+
+  it('detects circuit-open errors across both representations', () => {
+    expect(isCircuitOpenError(new HorizonCircuitOpenError('x'))).toBe(true);
+    expect(isCircuitOpenError(new CircuitOpenError('x'))).toBe(true);
+    expect(isCircuitOpenError(new HorizonError('x', 500))).toBe(false);
+    expect(isCircuitOpenError(new Error('x'))).toBe(false);
+    expect(isCircuitOpenError(undefined)).toBe(false);
   });
 });

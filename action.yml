@@ -637,14 +637,19 @@ inputs:
     description: >-
       Opt-in skip of validation checks when the workflow actor is a maintainer
       (listed in CODEOWNERS or maintainers_allowlist). Defaults to false. (Issue #241)
+      This is the canonical input name; when it is set explicitly it always takes
+      precedence over the deprecated skip_if_maintainer alias. (Issue #448)
     required: false
     default: 'false'
 
   skip_if_maintainer:
     description: >-
-      Alias for skip_for_maintainers. Opt-in skip when actor is a maintainer. Defaults to false. (Issue #241)
+      DEPRECATED alias for skip_for_maintainers. Only consulted when
+      skip_for_maintainers is unset; a conflict resolves in favour of
+      skip_for_maintainers and emits a warning. Scheduled for removal in a future
+      major release — migrate to skip_for_maintainers. (Issue #241, #448)
     required: false
-    default: 'false'
+    default: ''
 
   maintainers_allowlist:
     description: >-
@@ -742,6 +747,100 @@ inputs:
       interpolation. The file must reside inside the workspace root (path
       traversal is blocked) and must not exceed 8 KB. Leave empty to
       disable this feature entirely.
+    required: false
+    default: ''
+
+  ready_pass_label:
+    description: >-
+      Deprecated alias for pass_label. Used only when pass_label is empty.
+      Leave empty to use the default pass label.
+    required: false
+    default: ''
+
+  ready_label_pass:
+    description: >-
+      Deprecated alias for pass_label with a lower precedence than
+      ready_pass_label. Used only when both pass_label and ready_pass_label are
+      empty. (Issue #306)
+    required: false
+    default: ''
+
+  ready_fail_label:
+    description: >-
+      Deprecated alias for fail_label. Used only when fail_label is empty.
+      Leave empty to use the default fail label.
+    required: false
+    default: ''
+
+  ready_label_fail:
+    description: >-
+      Deprecated alias for fail_label with a lower precedence than
+      ready_fail_label. Used only when both fail_label and ready_fail_label are
+      empty. (Issue #306)
+    required: false
+    default: ''
+
+  codeowners_path:
+    description: >-
+      Optional repository-relative path to a CODEOWNERS file used to decide
+      whether the workflow actor is a maintainer. Defaults to the conventional
+      CODEOWNERS locations (.github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS).
+      Only used when skip_for_maintainers is true. (Issue #241, #448)
+    required: false
+    default: ''
+
+  github_username:
+    description: >-
+      Optional GitHub username used for account-level lookups that cannot be
+      derived from the workflow event context. Leave empty to use the event
+      actor. (Issue #257)
+    required: false
+    default: ''
+
+  previous_validation_path:
+    description: >-
+      Optional workspace-relative path to the previous run's
+      validation.json artifact. When set, the comment includes a delta section
+      comparing this run against the previous one. No extra API scopes are
+      required. Leave empty to disable the delta section. (Issue #148)
+    required: false
+    default: ''
+
+  report_output_path:
+    description: >-
+      Workspace-relative path for the Markdown validation report written during
+      the run. Defaults to trustbridge-report.md at the workspace root.
+    required: false
+    default: 'trustbridge-report.md'
+
+  use_check_runs:
+    description: >-
+      When true, publish the validation result as a GitHub Check Run on the
+      commit instead of (or in addition to) the issue comment. Requires
+      github_token with checks: write. Defaults to false.
+    required: false
+    default: 'false'
+
+  privacy_mode:
+    description: >-
+      When true, redact Stellar addresses and balances from the workflow log
+      output. The sticky comment is unaffected. Defaults to false.
+    required: false
+    default: 'false'
+
+  soroban_rpc_url:
+    description: >-
+      Optional Soroban RPC URL used together with contract_id to resolve a
+      contract-derived Stellar address. Leave empty to skip contract
+      resolution. (Issue #318)
+    required: false
+    default: ''
+
+  contract_id:
+    description: >-
+      Optional Soroban contract ID used with soroban_rpc_url to resolve a
+      contract-derived Stellar address. Leave empty to skip contract
+      resolution. (Issue #318)
     required: false
     default: ''
 

@@ -77519,12 +77519,15 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = void 0;
+const core = __importStar(__nccwpck_require__(37484));
 const actionsCache = __importStar(__nccwpck_require__(5116));
-const fs = __importStar(__nccwpck_require__(79896));
-const path = __importStar(__nccwpck_require__(16928));
-const os = __importStar(__nccwpck_require__(70857));
 const crypto = __importStar(__nccwpck_require__(76982));
+const fs = __importStar(__nccwpck_require__(79896));
+const os = __importStar(__nccwpck_require__(70857));
+const path = __importStar(__nccwpck_require__(16928));
 const logger_1 = __nccwpck_require__(86999);
+/** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
+const SUPPORTED_NAMED_BACKENDS = new Set(['memory', 'github-actions']);
 /**
  * GitHub Actions cache backend implementation.
  * Uses the @actions/cache module to store and retrieve check-result data in the
@@ -77655,6 +77658,32 @@ class SimpleCache {
     constructor(options = {}) {
         this.store = new Map();
         this.useBackend = false;
+        // Warn when an unsupported named backend is requested so operators learn
+        // immediately instead of silently getting in-memory-only behaviour.
+        // Issue #462: unsupported backend values must not fail the workflow, but
+        // they must emit a clear warning so the misconfiguration is visible.
+        if (options.selectedBackend !== undefined && options.selectedBackend !== '') {
+            if (!SUPPORTED_NAMED_BACKENDS.has(options.selectedBackend)) {
+                try {
+                    core.warning(`[TrustBridge] cache: unsupported backend "${options.selectedBackend}" ` +
+                        `was requested but is not recognised. ` +
+                        `Supported values: ${[...SUPPORTED_NAMED_BACKENDS].map((b) => `"${b}"`).join(', ')}. ` +
+                        `Falling back to in-memory cache. ` +
+                        `Set selectedBackend to "github-actions" to enable GitHub Actions cache persistence, ` +
+                        `or omit the option to use the default in-memory backend.`);
+                }
+                catch {
+                    // core.warning may throw outside GitHub Actions context (local dev / tests).
+                    // Swallow so the cache is still usable.
+                }
+            }
+            // When selectedBackend is 'github-actions', honour it by treating it as
+            // equivalent to useActionsCacheBackend: true (unless a backend was already
+            // explicitly provided).
+            if (options.selectedBackend === 'github-actions' && !options.backend) {
+                options = { ...options, useActionsCacheBackend: true };
+            }
+        }
         this.useBackend = options.useActionsCacheBackend ?? false;
         this.backend = options.backend || (this.useBackend ? new GitHubActionsCacheBackend(options.cacheKeyPrefix) : undefined);
     }
@@ -77815,7 +77844,7 @@ exports.defaultCache = new SimpleCache();
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
+exports.STROOPS_PER_UNIT = exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
 exports.hasClaimableBalances = hasClaimableBalances;
 exports.countClaimableBalances = countClaimableBalances;
 exports.detectNetworkMismatch = detectNetworkMismatch;
@@ -77835,10 +77864,13 @@ exports.parseTrustlineLimit = parseTrustlineLimit;
 exports.estimateTrustlineSetupCost = estimateTrustlineSetupCost;
 exports.formatXlmDeficit = formatXlmDeficit;
 exports.formatAssetDeficit = formatAssetDeficit;
+exports.toStroops = toStroops;
+exports.formatStroops = formatStroops;
 exports.runAccountChecks = runAccountChecks;
 exports.unfundedAccountResult = unfundedAccountResult;
 exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
+exports.circuitOpenFailureResult = circuitOpenFailureResult;
 exports.tlsFailureResult = tlsFailureResult;
 exports.rateBudgetExhaustedResult = rateBudgetExhaustedResult;
 exports.computeProtocolMinReserve = computeProtocolMinReserve;
@@ -77886,14 +77918,14 @@ function countClaimableBalances(account) {
  * was performed or the address is genuinely unfunded everywhere).
  *
  * Deterministic heuristics (Issue #266):
- * - 404 primary + 200 alt (publicâ†’testnet OR testnetâ†’public) => hint, clear
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
  *   comment with both canonical URLs and horizon_url guidance.
  * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
  * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
  * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
- * - Canonical opposite URLs (https://horizon.stellar.org â†” https://horizon-testnet.stellar.org)
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
  *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
- *   Arbitrary fallback URLs are NEVER probed here â€” that is gated in `horizon.ts` via
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
  *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
  *
  * @param configuredHorizonUrl  The `horizon_url` input value.
@@ -77929,13 +77961,13 @@ async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetch
         return undefined;
     }
     catch {
-        // Network error or timeout â€” can't determine, so no hint
+        // Network error or timeout — can't determine, so no hint
         return undefined;
     }
 }
 /**
  * Build the deterministic cross-network mismatch detail string used in the
- * `Account funded` check. Centralized so both directions (publicâ†”testnet) use
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
  * the identical format and are tested deterministically.
  */
 function buildNetworkMismatchDetail(stellarAddress, hint) {
@@ -77976,7 +78008,7 @@ async function detectPassphraseMismatch(horizonUrl, configuredPassphrase, fetchP
  * Evaluate the issuer's SEP-0001 home domain alignment against the
  * fetched Horizon account data.
  *
- * This is a **pure, synchronous** function â€” it only inspects the
+ * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
  * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
@@ -77993,12 +78025,12 @@ async function detectPassphraseMismatch(horizonUrl, configuredPassphrase, fetchP
 function evaluateHomeDomain(issuerAccount, config) {
     const mode = config.homeDomainCheckMode ?? "warn";
     const expected = config.expectedHomeDomain?.trim().toLowerCase();
-    // No issuer account available â€” treat the same as missing.
+    // No issuer account available — treat the same as missing.
     if (!issuerAccount) {
         return {
             outcome: "missing",
             expectedHomeDomain: config.expectedHomeDomain,
-            detail: 'Issuer account data was not available from Horizon â€” home domain could not be verified.',
+            detail: 'Issuer account data was not available from Horizon — home domain could not be verified.',
             blocksValid: mode === 'strict',
         };
     }
@@ -78028,7 +78060,7 @@ function evaluateHomeDomain(issuerAccount, config) {
         outcome: "valid",
         actualHomeDomain: rawDomain,
         expectedHomeDomain: config.expectedHomeDomain,
-        detail: `Issuer \`home_domain\` is \`${(0, markdown_1.escapeMarkdownInline)(rawDomain)}\` âœ“`,
+        detail: `Issuer \`home_domain\` is \`${(0, markdown_1.escapeMarkdownInline)(rawDomain)}\` ✓`,
         blocksValid: false,
     };
 }
@@ -78063,7 +78095,7 @@ function base32Decode(input) {
     return Uint8Array.from(bytes);
 }
 /**
- * CRC-16/XMODEM (poly 0x1021, init 0x0000, no reflect, no xorout) â€” the
+ * CRC-16/XMODEM (poly 0x1021, init 0x0000, no reflect, no xorout) — the
  * checksum algorithm StrKey appends (little-endian) after the version byte
  * and payload.
  */
@@ -78087,7 +78119,7 @@ function normalizeStellarAddress(address) {
  * Validates a Stellar "G..." address against the full StrKey policy: 56
  * characters from the StrKey base32 alphabet, the ed25519 public key
  * version byte, and a matching CRC-16/XMODEM checksum. A regex match alone
- * only confirms shape â€” many regex-valid strings are not real StrKeys
+ * only confirms shape — many regex-valid strings are not real StrKeys
  * because their checksum bytes don't match the payload.
  */
 function isValidStellarAddress(address) {
@@ -78200,7 +78232,7 @@ function convertMuxedToGAddress(address) {
  * M-address sequences, validates each one, and returns the first valid hit
  * together with a deduplicated list of every valid address found.
  *
- * Safe to call with arbitrary untrusted input â€” performs no network requests
+ * Safe to call with arbitrary untrusted input — performs no network requests
  * and never throws.
  *
  * @param text - Issue body, comment text, or any free-form string.
@@ -78245,7 +78277,7 @@ function validateStellarAddress(address) {
         }
         return;
     }
-    if (!isValidStellarAddress(address)) {
+    if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
         throw new Error(`Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
             'with a valid StrKey checksum.');
     }
@@ -78286,17 +78318,50 @@ function formatXlmDeficit(required, actual) {
 function formatAssetDeficit(required, actual) {
     return Math.max(0, required - actual).toFixed(7);
 }
+/** Stellar amounts have 7 decimal places: 1 unit = 10,000,000 stroops. */
+exports.STROOPS_PER_UNIT = 10000000n;
+/**
+ * Convert a non-negative decimal amount (Horizon balance string or
+ * `min_asset_balance` value) to integer stroops without floating-point math.
+ *
+ * Digits beyond the 7th decimal are dropped (`'floor'`) or rounded up to the
+ * next stroop (`'ceil'`). Because balances are whole stroops,
+ * `balance >= threshold` is equivalent to `balance >= ceil(threshold)`.
+ * Unparseable values yield `0n`, matching `parseHorizonBalance`.
+ */
+function toStroops(value, rounding = 'floor') {
+    let text = String(value).trim();
+    if (/e/i.test(text)) {
+        // Exponent notation (e.g. `1e-8`) — expand to a plain decimal string.
+        const parsed = Number(text);
+        text = Number.isFinite(parsed) ? parsed.toFixed(20) : '';
+    }
+    const match = /^(\d*)(?:\.(\d*))?$/.exec(text);
+    if (!match || (match[1] === '' && !match[2]))
+        return 0n;
+    const fraction = match[2] ?? '';
+    let stroops = BigInt(match[1] || '0') * exports.STROOPS_PER_UNIT + BigInt(fraction.slice(0, 7).padEnd(7, '0'));
+    if (rounding === 'ceil' && /[1-9]/.test(fraction.slice(7)))
+        stroops += 1n;
+    return stroops;
+}
+/** Format integer stroops as a 7-decimal amount string, e.g. `15000000n` → `'1.5000000'`. */
+function formatStroops(stroops) {
+    const whole = stroops / exports.STROOPS_PER_UNIT;
+    const fraction = (stroops % exports.STROOPS_PER_UNIT).toString().padStart(7, '0');
+    return `${whole}.${fraction}`;
+}
 /**
  * Renders the sponsor-aware reserve math behind a `ReserveRequirement` as a
  * short human-readable clause, e.g.
- * "protocol minimum **1.5 XLM** = (2 + 1 subentry) Ã— 0.5 XLM, floor **1.5 XLM**".
+ * "protocol minimum **1.5 XLM** = (2 + 1 subentry) × 0.5 XLM, floor **1.5 XLM**".
  */
 function explainReserveRequirement(reserve) {
     const sponsorClause = reserve.numSponsoring !== 0 || reserve.numSponsored !== 0
-        ? ` + ${reserve.numSponsoring} sponsoring âˆ’ ${reserve.numSponsored} sponsored`
+        ? ` + ${reserve.numSponsoring} sponsoring − ${reserve.numSponsored} sponsored`
         : '';
     const subentryWord = reserve.subentryCount === 1 ? 'subentry' : 'subentries';
-    const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) Ã— ${exports.STELLAR_BASE_RESERVE_XLM} XLM`;
+    const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) × ${exports.STELLAR_BASE_RESERVE_XLM} XLM`;
     return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
 }
 function runAccountChecks(account, config) {
@@ -78324,10 +78389,12 @@ function runAccountChecks(account, config) {
     // isCreditBalance() — only credit_alphanum4/credit_alphanum12 count as trustlines.
     // LP shares must never be treated as asset trustlines for readiness checks.
     const assetBalanceRaw = (0, horizon_1.getAssetBalance)(account, config.assetCode, config.assetIssuer);
-    const assetBalanceNumeric = (0, horizon_1.parseHorizonBalance)(assetBalanceRaw);
     const minAssetBalanceRequired = Number(config.minAssetBalance ?? 0);
-    const assetBalanceCheckEnabled = minAssetBalanceRequired > 0;
-    const assetBalanceMet = !assetBalanceCheckEnabled || assetBalanceNumeric >= minAssetBalanceRequired;
+    // Issue #476: compare in integer stroops so large balances and thresholds
+    // with more than 7 decimals never round across the boundary.
+    const assetBalanceRequirement = buildAssetBalanceRequirement(toStroops(config.minAssetBalance ?? 0, 'ceil'), toStroops(assetBalanceRaw));
+    const assetBalanceCheckEnabled = assetBalanceRequirement.required > 0n;
+    const assetBalanceMet = !assetBalanceCheckEnabled || assetBalanceRequirement.met;
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const reserveExplanation = explainReserveRequirement(reserveRequirement);
     const trustlineLimit = (0, horizon_1.getTrustlineLimit)(account, config.assetCode, config.assetIssuer);
@@ -78337,8 +78404,13 @@ function runAccountChecks(account, config) {
     let trustlineDetail;
     if (trustlineExistsRaw && isUnauthorized) {
         trustlineDetail = authorizationBlocks
-            ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${(0, markdown_1.inlineCode)(config.assetIssuer)}) â€” blocked by \`unauthorized_trustline_policy: fail\`.`
-            : `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer â€” transfers will fail until authorized.`;
+            ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${(0, markdown_1.inlineCode)(config.assetIssuer)}) — blocked by \`unauthorized_trustline_policy: fail\`.`
+            : `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer — transfers will fail until authorized.`;
+        // Issue #248: Add auth_revocable context when relevant
+        if (issuerAuthRevocable) {
+            trustlineDetail +=
+                ' The issuer has **AUTH_REVOCABLE** enabled, meaning authorized trustlines can be **revoked** at any time.';
+        }
     }
     else if (trustlineExistsRaw) {
         trustlineDetail = `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured.`;
@@ -78351,7 +78423,7 @@ function runAccountChecks(account, config) {
         trustlineDetail = `Account has trustlines, but not for **${safeAssetCode}** issued by ${(0, markdown_1.inlineCode)(config.assetIssuer)}.`;
     }
     else {
-        trustlineDetail = 'Account has **zero trustlines** â€” add a trustline before receiving this asset.';
+        trustlineDetail = 'Account has **zero trustlines** — add a trustline before receiving this asset.';
     }
     const checks = [
         {
@@ -78368,8 +78440,8 @@ function runAccountChecks(account, config) {
             passed: xlmReserveMet,
             label: "XLM reserve",
             detail: xlmReserveMet
-                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the required **${reserveRequirement.required} XLM** â€” ${reserveExplanation}.`
-                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${reserveRequirement.required} XLM** â€” ${reserveExplanation}.`,
+                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`
+                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`,
         },
     ];
     if (config.minTrustlineLimit !== undefined) {
@@ -78387,8 +78459,8 @@ function runAccountChecks(account, config) {
         const assetBalanceCheckDetail = trustlineExists
             ? assetBalanceMet
                 ? `Balance **${(0, markdown_1.inlineCode)(assetBalanceRaw)} ${safeAssetCode}** meets the minimum of **${minAssetBalanceRequired} ${safeAssetCode}**.`
-                : `Balance **${(0, markdown_1.inlineCode)(assetBalanceRaw)} ${safeAssetCode}** is below the required **${minAssetBalanceRequired} ${safeAssetCode}**. Deficit: **${formatAssetDeficit(minAssetBalanceRequired, assetBalanceNumeric)} ${safeAssetCode}**.`
-            : `Cannot verify ${safeAssetCode} balance â€” trustline is not configured yet.`;
+                : `Balance **${(0, markdown_1.inlineCode)(assetBalanceRaw)} ${safeAssetCode}** is below the required **${minAssetBalanceRequired} ${safeAssetCode}**. Deficit: **${assetBalanceRequirement.missing} ${safeAssetCode}**.`
+            : `Cannot verify ${safeAssetCode} balance — trustline is not configured yet.`;
         checks.push({
             passed: assetBalanceMet || !trustlineExists,
             label: `${safeAssetCode} minimum balance`,
@@ -78399,24 +78471,12 @@ function runAccountChecks(account, config) {
         checks.push({
             passed: false,
             label: `${safeAssetCode} clawback safety`,
-            detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${(0, markdown_1.inlineCode)(config.assetIssuer)}) â€” blocked by \`clawback_strict_mode: true\`.`,
+            detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${(0, markdown_1.inlineCode)(config.assetIssuer)}) — blocked by \`clawback_strict_mode: true\`.`,
         });
     }
     let homeDomainCheck;
     if (config.homeDomainCheckEnabled) {
         homeDomainCheck = evaluateHomeDomain(account, config);
-        // Emit metrics tag for dashboards and payout automation.
-        metrics_1.globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
-        metrics_1.globalMetrics.recordMetric('home_domain_check', 1, 'count', {
-            outcome: homeDomainCheck.outcome,
-            mode: config.homeDomainCheckMode ?? 'warn',
-        });
-        const homeDomainPassed = !homeDomainCheck.blocksValid || homeDomainCheck.outcome === 'valid';
-        checks.push({
-            passed: homeDomainPassed,
-            label: 'SEP-0001 home domain',
-            detail: homeDomainCheck.detail,
-        });
     }
     const buildResult = () => {
         if (config.homeDomainCheckEnabled &&
@@ -78452,7 +78512,7 @@ function runAccountChecks(account, config) {
                 steps.push(`Increase the ${safeAssetCode} trustline limit to at least **${config.minTrustlineLimit} ${safeAssetCode}** using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Manage Trust operation) or a wallet. Current limit is **${(0, markdown_1.inlineCode)(trustlineLimit)} ${safeAssetCode}**.`);
             }
             if (assetBalanceCheckEnabled && !assetBalanceMet && trustlineExists) {
-                steps.push(`Acquire at least **${formatAssetDeficit(minAssetBalanceRequired, assetBalanceNumeric)} ${safeAssetCode}** to meet the minimum asset balance requirement of **${minAssetBalanceRequired} ${safeAssetCode}**.`);
+                steps.push(`Acquire at least **${assetBalanceRequirement.missing} ${safeAssetCode}** to meet the minimum asset balance requirement of **${minAssetBalanceRequired} ${safeAssetCode}**.`);
             }
             if (clawbackBlocks) {
                 steps.push(`This asset has clawback enabled, which is blocked by \`clawback_strict_mode: true\`. Choose a different asset, or set \`clawback_strict_mode: false\` to proceed with a warning instead.`);
@@ -78517,8 +78577,8 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCo
     const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? "");
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
     // Build the "not found" detail, extended with mismatch context when available
-    // Uses centralized deterministic builder so publicâ†”testnet produce identical format.
-    let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon â€” it may not be funded or activated yet.`;
+    // Uses centralized deterministic builder so public↔testnet produce identical format.
+    let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
     if (mismatchHint) {
         notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
     }
@@ -78528,7 +78588,7 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCo
     const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
     const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
     if (claimablePolicy === 'count' && hasClaimables) {
-        notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon â€” these must be claimed after funding.`;
+        notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
     }
     else if (claimablePolicy === 'ignore' && hasClaimables) {
         // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
@@ -78555,10 +78615,10 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCo
         checks.push({
             passed: false,
             label: `${safeAssetCode} minimum balance`,
-            detail: `Cannot verify ${safeAssetCode} balance â€” Fund the account and establish a trustline first.`,
+            detail: `Cannot verify ${safeAssetCode} balance — Fund the account and establish a trustline first.`,
         });
     }
-    // Claimable balances informational check (Issue #260) â€” only when policy is count
+    // Claimable balances informational check (Issue #260) — only when policy is count
     const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
     if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
         checks.push({
@@ -78602,7 +78662,7 @@ function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCo
             // Unfunded path: home domain cannot be verified, treat as non-blocking regardless of mode
             passed: true,
             label: 'SEP-0001 home domain',
-            detail: 'Cannot verify issuer home domain â€” account is not yet funded.',
+            detail: 'Cannot verify issuer home domain — account is not yet funded.',
         });
     }
     return {
@@ -78671,19 +78731,19 @@ function toFailedCheckCodes(checks) {
  * Reduces an error message to something safe to post in a public GitHub
  * comment: only the first line (never a multi-line stack trace) and capped
  * to a sane length. The underlying Error's full `.stack` is never passed
- * into this pipeline in the first place â€” callers only ever pass
- * `error.message` â€” but this is a defense-in-depth guard against a
+ * into this pipeline in the first place — callers only ever pass
+ * `error.message` — but this is a defense-in-depth guard against a
  * message that itself happens to be multi-line or unexpectedly long.
  */
 function sanitizeErrorMessageForComment(message) {
     const firstLine = message.split(/\r?\n/)[0] ?? "";
     const MAX_LENGTH = 500;
-    return firstLine.length > MAX_LENGTH ? `${firstLine.slice(0, MAX_LENGTH)}â€¦` : firstLine;
+    return firstLine.length > MAX_LENGTH ? `${firstLine.slice(0, MAX_LENGTH)}…` : firstLine;
 }
 function horizonFailureResult(message, config) {
     // `message` may originate from the configured Horizon endpoint's HTTP
     // response body (e.g. the `detail`/`title` fields of an error payload),
-    // which is not trusted content â€” sanitize and escape it before it lands
+    // which is not trusted content — sanitize and escape it before it lands
     // in the Markdown comment so it can't dump a stack trace, inject
     // formatting/links, or break out of the comment structure.
     const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
@@ -78735,7 +78795,7 @@ function horizonFailureResult(message, config) {
         checks.push({
             passed: true,
             label: 'SEP-0001 home domain',
-            detail: 'Cannot verify issuer home domain â€” Horizon was unreachable.',
+            detail: 'Cannot verify issuer home domain — Horizon was unreachable.',
         });
     }
     return {
@@ -78756,7 +78816,90 @@ function horizonFailureResult(message, config) {
         failedCheckLabels: toFailedCheckCodes(checks),
         sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
         homeDomainCheck: config.homeDomainCheckEnabled
-            ? { outcome: 'skipped', detail: 'Cannot verify â€” Horizon unreachable.', blocksValid: false }
+            ? { outcome: 'skipped', detail: 'Cannot verify — Horizon unreachable.', blocksValid: false }
+            : undefined,
+    };
+}
+/**
+ * Builds a result for a circuit-breaker fast-fail (Issue #209 / #434).
+ *
+ * Kept distinct from `horizonFailureResult` because the semantics differ in
+ * an important way: when the circuit is open the request **never left the
+ * process**, so nothing whatsoever is known about the account. A
+ * `HORIZON_ERROR` result implies Horizon answered and the answer was bad.
+ * Reporting a tripped circuit as a Horizon error sends triagers hunting for
+ * an account problem (or a broken endpoint) that may not exist.
+ *
+ * PII-safe by construction: the comment, metrics, and debug fields carry only
+ * the boolean fact that the breaker tripped — no address, balance, issuer, or
+ * endpoint URL is added to the comment by this path.
+ */
+function circuitOpenFailureResult(message, config) {
+    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
+    const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
+    const checks = [
+        {
+            passed: false,
+            label: "Horizon availability",
+            // The breaker message is generated locally from configured thresholds and
+            // contains no account data, so it is safe to surface verbatim.
+            detail: safeMessage || skipped,
+        },
+        {
+            passed: false,
+            label: `${safeAssetCode} trustline`,
+            detail: skipped,
+        },
+        {
+            passed: false,
+            label: "XLM reserve",
+            detail: skipped,
+        },
+    ];
+    if (assetBalanceCheckEnabled) {
+        checks.push({
+            passed: false,
+            label: `${safeAssetCode} minimum balance`,
+            detail: skipped,
+        });
+    }
+    if (config.homeDomainCheckEnabled) {
+        metrics_1.globalMetrics.incrementCounter("home_domain_skipped");
+        metrics_1.globalMetrics.recordMetric("home_domain_check", 1, "count", {
+            outcome: "skipped",
+            mode: config.homeDomainCheckMode ?? "warn",
+        });
+        checks.push({
+            passed: true,
+            label: "SEP-0001 home domain",
+            detail: "Cannot verify issuer home domain — the Horizon circuit breaker was open.",
+        });
+    }
+    return {
+        valid: false,
+        reasonCode: "CIRCUIT_OPEN",
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: "unknown",
+        xlmReserveMet: false,
+        assetBalance: "unknown",
+        assetBalanceMet: false,
+        circuitOpen: true,
+        checks,
+        remediation: "The Horizon circuit breaker is open after repeated Horizon failures, so this run " +
+            "was short-circuited without contacting Horizon. This is a resilience safeguard, not a " +
+            "problem with the account. Wait for the recovery window to elapse and re-run the " +
+            "workflow; if it keeps happening, check the health of the configured Horizon endpoint.",
+        failedCheckLabels: toFailedCheckCodes(checks),
+        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+        homeDomainCheck: config.homeDomainCheckEnabled
+            ? {
+                outcome: "skipped",
+                detail: "Cannot verify — the Horizon circuit breaker was open.",
+                blocksValid: false,
+            }
             : undefined,
     };
 }
@@ -78765,7 +78908,7 @@ function horizonFailureResult(message, config) {
  * the configured Horizon endpoint (see `HorizonTlsError`). Kept distinct
  * from `horizonFailureResult` so the comment clearly attributes the
  * failure to the endpoint's transport/certificate configuration rather
- * than to the account or trustline being checked â€” this matters most for
+ * than to the account or trustline being checked — this matters most for
  * private/enterprise Horizon mirrors, where a bad or expired certificate
  * is easy to misdiagnose as "the account isn't set up right."
  */
@@ -78781,12 +78924,12 @@ function tlsFailureResult(message, config) {
         {
             passed: false,
             label: `${safeAssetCode} trustline`,
-            detail: 'Check could not be completed â€” the Horizon TLS handshake failed before this account could be queried.',
+            detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
         },
         {
             passed: false,
             label: 'XLM reserve',
-            detail: 'Check could not be completed â€” the Horizon TLS handshake failed before this account could be queried.',
+            detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
         },
     ];
     return {
@@ -78873,9 +79016,9 @@ function rateBudgetExhaustedResult(message, config) {
 }
 /**
  * Computes the real Stellar protocol minimum balance for an account:
- * `(2 base reserves + subentries + num_sponsoring âˆ’ num_sponsored) * base_reserve`.
+ * `(2 base reserves + subentries + num_sponsoring − num_sponsored) * base_reserve`.
  * Sponsored subentries don't count against the sponsoree's own reserve, and
- * subentries the account sponsors *for others* do â€” see CAP-0033. Clamped
+ * subentries the account sponsors *for others* do — see CAP-0033. Clamped
  * to zero so a stale/inconsistent sponsorship snapshot can never go negative.
  */
 function computeProtocolMinReserve(account) {
@@ -79086,7 +79229,7 @@ function buildAssetBalanceRequirement(required, actual) {
     return {
         required,
         actual,
-        missing: formatAssetDeficit(Number(required) / 1e7, Number(actual) / 1e7),
+        missing: formatStroops(met ? 0n : required - actual),
         met,
     };
 }
@@ -79357,6 +79500,7 @@ exports.isBotCommentAuthor = isBotCommentAuthor;
 exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
 exports.resolveDiscussionNodeId = resolveDiscussionNodeId;
+exports.resolveDiscussionCommentTarget = resolveDiscussionCommentTarget;
 exports.findStickyDiscussionComment = findStickyDiscussionComment;
 exports.postDiscussionComment = postDiscussionComment;
 const core = __importStar(__nccwpck_require__(37484));
@@ -79416,10 +79560,8 @@ function formatCommentBody(result, config) {
             `${strings.checkedAccount} ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
             `${strings.horizon} ${(0, markdown_1.inlineCode)(config.horizonUrl)}`,
             `${strings.asset} **${config.assetCode}** · Issuer: ${(0, markdown_1.inlineCode)(config.assetIssuer)}`,
-            "",
-            `### ${strings.resultsHeading}`,
-            "",
         ];
+        lines.push("", `### ${strings.resultsHeading}`, "");
         for (const check of result.checks) {
             // Append a FAQ deep link for failing checks so contributors land on the
             // exact fix (Issue #104). Passing checks do not include the link to keep
@@ -79433,11 +79575,28 @@ function formatCommentBody(result, config) {
             }
             lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}${faqSuffix}`);
         }
+        // Circuit breaker banner (Issue #434) — a run that fast-failed because the
+        // Horizon circuit was open must say so, otherwise the Results list looks
+        // like a plain account failure and triage chases the wrong root cause.
+        // Rendered immediately after Results so it is the first thing a maintainer
+        // reads. Contains no account data, addresses, or balances.
+        if (result.circuitOpen) {
+            lines.push("", `> ⚡ **${strings.circuitBreakerHeading}**`, `> - ${strings.circuitBreakerOpen}`, `> - ${strings.circuitBreakerRecoveryHint}`, `> - ${strings.circuitBreakerReasonCode}`);
+        }
         // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
         if (config.onboardingChecklist !== false) {
+            // Preserve any manually-checked boxes from the previous sticky comment
+            // (Issue #311).  extractChecklistState parses only the known allowlisted
+            // labels (across every supported locale) so a crafted comment body
+            // cannot inject arbitrary state and a locale switch does not lose state.
+            const previousChecks = config.existingCommentBody
+                ? (0, markdown_1.extractChecklistState)(config.existingCommentBody)
+                : undefined;
             lines.push("", (0, markdown_1.buildOnboardingChecklist)(result, {
                 assetCode: config.assetCode,
                 minXlmReserve: config.minXlmReserve,
+                locale: config.locale,
+                previousChecks,
             }));
         }
         // Ledger freshness / lag alert (Issue #107) — surfaced as a distinct banner
@@ -79462,29 +79621,112 @@ function formatCommentBody(result, config) {
         if (deltaSection) {
             lines.push("", deltaSection);
         }
-        // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
-        if (config.onboardingChecklist !== false) {
-            // Preserve any manually-checked boxes from the previous sticky comment
-            // (Issue #311).  extractChecklistState parses only the known allowlisted
-            // label keys so a crafted comment body cannot inject arbitrary state.
-            const previousChecks = config.existingCommentBody
-                ? (0, markdown_1.extractChecklistState)(config.existingCommentBody)
-                : undefined;
-            lines.push('', (0, markdown_1.buildOnboardingChecklist)(result, {
-                assetCode: config.assetCode,
-                minXlmReserve: config.minXlmReserve,
-                previousChecks,
-            }));
-            // SEP-0007 wallet deep links (Issue #44)
-            if (config.sep0007DeepLinks) {
-                const payLink = (0, links_1.buildSep0007PayLink)({
-                    destination: config.stellarAddress,
-                    amount: String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM),
-                    msg: `Activate Stellar account for ${config.assetCode} trustline`,
-                    network: stellarLabNetwork,
-                    originDomain: config.sep0007OriginDomain || undefined,
-                });
-                lines.push("", `### ${strings.sepWalletActionsHeading}`, "", `_${strings.sepWalletActionsDescription}_`, "", `- [${strings.sendXlmToActivate.replace("{amount}", String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`);
+        // Validation gate (Issue #450) — the machine-readable verdict that the
+        // `ready` / `reason_code` action outputs expose. Surfacing it here means a
+        // dashboard triager can read the reason code straight from the comment
+        // instead of digging through the Actions log.
+        const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+        lines.push("", `### ${strings.validationGateHeading}`, "", gate.ready
+            ? `- ${strings.readyToProceed}`
+            : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, `- ${strings.readyFlag} \`${String(gate.ready)}\``, `- ${strings.reasonCode} ${(0, markdown_1.inlineCode)(reasonCode)}`, "", `### ${strings.balancesHeading}`, "", `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
+            ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
+            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``, 
+        // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
+        (() => {
+            const asset = config.assetCode;
+            const bal = result.assetBalance ?? "0";
+            const trustline = result.trustlineExists;
+            if (bal === "unknown") {
+                return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? "exists" : "missing"})`;
+            }
+            if (!trustline) {
+                return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
+            }
+            // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
+            const limitNote = result.trustlineLimit
+                ? ` (limit \`${result.trustlineLimit} ${asset}\`)`
+                : "";
+            return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
+        })(), "", `### ${strings.setupCostHeading}`, "", `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, "", `### ${strings.addTrustlineHeading}`, "", `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+        // SEP-0007 wallet deep links (Issue #44) — independent of the checklist flag.
+        if (config.sep0007DeepLinks) {
+            const payLink = (0, links_1.buildSep0007PayLink)({
+                destination: config.stellarAddress,
+                amount: String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM),
+                msg: `Activate Stellar account for ${config.assetCode} trustline`,
+                network: stellarLabNetwork,
+                originDomain: config.sep0007OriginDomain || undefined,
+            });
+            lines.push("", `### ${strings.sepWalletActionsHeading}`, "", `_${strings.sepWalletActionsDescription}_`, "", `- [${strings.sendXlmToActivate.replace("{amount}", String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`);
+        }
+        // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready.
+        // Prefer the dashboard proof link over a raw XDR to avoid leaking nonces in
+        // public issues.
+        const sep0010Snippet = (0, links_1.buildSep0010ChallengeSnippet)({
+            challengeXdr: config.sep0010ChallengeXdr,
+            dashboardUrl: config.sep0010DashboardUrl,
+            network: stellarLabNetwork,
+            stellarAddress: config.stellarAddress,
+        });
+        if (sep0010Snippet) {
+            lines.push("", "### Proof of wallet control (SEP-0010)", "", sep0010Snippet, "", "_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._");
+        }
+        // Sponsorship info explainer (Issue #141)
+        if (result.sponsorshipInfo &&
+            (result.sponsorshipInfo.numSponsoring > 0 ||
+                result.sponsorshipInfo.numSponsored > 0)) {
+            const { numSponsoring, numSponsored } = result.sponsorshipInfo;
+            const netSponsorship = numSponsoring - numSponsored;
+            lines.push("", "### Sponsorship status", "", numSponsored > 0
+                ? `**This account is sponsored.** Another account is covering some or all of its reserve requirements.`
+                : "**This account sponsors other accounts** and may have reduced available balance.", "", `- Accounts this account sponsors: **${numSponsoring}**`, `- Accounts sponsoring this account: **${numSponsored}**`, `- Net sponsorship effect: **${netSponsorship > 0 ? "+" : ""}${netSponsorship}** ${netSponsorship > 0
+                ? "reserve entries (increases requirement)"
+                : netSponsorship < 0
+                    ? "reserve entries (reduces requirement)"
+                    : "entries (balanced)"}`, "");
+            if (result.reserveRequirement) {
+                const baseReserve = 2 * 0.5;
+                const subentryReserve = result.reserveRequirement.subentryCount * 0.5;
+                const sponsorshipAdjustment = netSponsorship * 0.5;
+                lines.push("**Reserve calculation breakdown:**", "", "```", `Base reserves (2):           ${baseReserve.toFixed(1)} XLM`, `Subentries (${result.reserveRequirement.subentryCount}):            ${subentryReserve > 0 ? "+" : " "}${subentryReserve.toFixed(1)} XLM`, numSponsoring > 0 || numSponsored > 0
+                    ? `Sponsorship (${numSponsoring} - ${numSponsored}):    ${sponsorshipAdjustment >= 0 ? "+" : ""}${sponsorshipAdjustment.toFixed(1)} XLM`
+                    : "", "---------------------------------", `Protocol minimum:            ${result.reserveRequirement.protocolMinimum.toFixed(1)} XLM`, result.reserveRequirement.configuredFloor > result.reserveRequirement.protocolMinimum
+                    ? `Configured floor:            ${result.reserveRequirement.configuredFloor.toFixed(1)} XLM`
+                    : "", `Required (final):            ${result.reserveRequirement.required.toFixed(1)} XLM`, "```", "");
+            }
+            lines.push("**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost.", "", numSponsored > 0 && numSponsoring === 0
+                ? `> \u2139\ufe0f **For contributors:** Since this account is fully sponsored, you may need less XLM than the displayed requirement. However, the sponsor must maintain sufficient reserves.`
+                : numSponsoring > 0
+                    ? `> \u26a0\ufe0f **Sponsoring ${numSponsoring} account${numSponsoring > 1 ? "s" : ""} adds ${(numSponsoring * 0.5).toFixed(1)} XLM to your reserve requirement.** Deep sponsorship chains (sponsor-of-sponsor patterns) can cause unexpected reserve exhaustion if intermediate sponsors become underfunded.`
+                    : "", "", "[Learn more about sponsorship](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships) | [CAP-0033 spec](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0033.md)");
+        }
+        if (remediation) {
+            lines.push("", `### ${strings.remediationHeading}`, "", remediation);
+        }
+        lines.push("", `### ${strings.configurationSummaryHeading}`, "", `| ${strings.inputColumn} | ${strings.valueColumn} |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? "_default (true)_" : config.failOnMissing ? strings.failOnMissingTrue : strings.failOnMissingFalse} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? "_default (true)_" : config.stickyComment ? strings.stickyCommentTrue : strings.stickyCommentFalse} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? strings.waitUntilFundedTrue : strings.waitUntilFundedFalse} |`, `| \`onboarding_checklist\` | \`${config.onboardingChecklist === false ? "false" : "true"}\` |`);
+        // Ledger freshness config row
+        if (config.checkLedgerFreshness) {
+            lines.push(`| \`check_ledger_freshness\` | \`true\` |`, `| \`max_ledger_lag_seconds\` | \`${config.maxLedgerLagSeconds ?? 60}s\` |`, `| \`ledger_freshness_fail_on_stale\` | \`${config.ledgerFreshnessFailOnStale ? "true (hard fail)" : "false (warn only)"}\` |`);
+        }
+        if (assetBalanceCheckEnabled) {
+            lines.push(`| \`min_asset_balance\` | \`${config.minAssetBalance} ${config.assetCode}\` |`);
+        }
+        if (config.waitUntilFunded) {
+            const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
+            const interval = config.waitUntilFundedIntervalMs ?? 5000;
+            lines.push(`| \`wait_until_funded_timeout_ms\` | ${strings.waitUntilFundedTimeoutMs.replace("{ms}", String(timeout))} |`, `| \`wait_until_funded_interval_ms\` | ${strings.waitUntilFundedIntervalMs.replace("{ms}", String(interval))} |`);
+        }
+        lines.push("", `### ${strings.outputsHeading}`, "", `_${strings.outputsDescription}_`, "", `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace("{assetCode}", config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`, `| \`asset_balance\` | \`${result.assetBalance ?? "0"}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
+        // Hardened metrics JSON export (Issue #33)
+        if (config.metricsSnapshot) {
+            const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
+            lines.push("", `### ${strings.metricsHeading}`, "", `_${strings.metricsDescription}_`, "", "```json", metricsJson, "```");
+        }
+        // Expert diagnostics block (Issue #102) — only appended in debug/expert mode
+        if (config.debugMode && config.diagnosticsConfig) {
+            const diagnosticsBlock = (0, diagnostics_1.buildDiagnosticsBlock)(config.diagnosticsConfig);
+            if (diagnosticsBlock) {
+                lines.push(diagnosticsBlock);
             }
         }
         // Custom comment template partial (#312) — injected just before the footer.
@@ -79515,44 +79757,6 @@ function formatCommentBody(result, config) {
                 const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
                 core.warning(`Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
                     'The template partial will be omitted from this comment.');
-            }
-        }
-        lines.push('', '---', exports.TRUSTBRIDGE_FOOTER);
-        // Sponsorship info explainer (Issue #141)
-        if (result.sponsorshipInfo &&
-            (result.sponsorshipInfo.numSponsoring > 0 ||
-                result.sponsorshipInfo.numSponsored > 0)) {
-            lines.push("", "### Sponsorship status", "", result.sponsorshipInfo.numSponsored > 0
-                ? `**This account is sponsored.** Another account is covering some or all of its reserve requirements.`
-                : "**This account sponsors other accounts** and may have reduced available balance.", "", `- Accounts this account sponsors: **${result.sponsorshipInfo.numSponsoring}**`, `- Accounts sponsoring this account: **${result.sponsorshipInfo.numSponsored}**`, "", "**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost. [Learn more about sponsorship.](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships)");
-        }
-        if (remediation) {
-            lines.push("", `### ${strings.remediationHeading}`, "", remediation);
-        }
-        lines.push("", `### ${strings.configurationSummaryHeading}`, "", `| ${strings.inputColumn} | ${strings.valueColumn} |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? "_default (true)_" : config.failOnMissing ? strings.failOnMissingTrue : strings.failOnMissingFalse} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? "_default (true)_" : config.stickyComment ? strings.stickyCommentTrue : strings.stickyCommentFalse} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? strings.waitUntilFundedTrue : strings.waitUntilFundedFalse} |`, `| \`onboarding_checklist\` | \`${config.onboardingChecklist === false ? "false" : "true"}\` |`);
-        // Ledger freshness config row
-        if (config.checkLedgerFreshness) {
-            lines.push(`| \`check_ledger_freshness\` | \`true\` |`, `| \`max_ledger_lag_seconds\` | \`${config.maxLedgerLagSeconds ?? 60}s\` |`, `| \`ledger_freshness_fail_on_stale\` | \`${config.ledgerFreshnessFailOnStale ? "true (hard fail)" : "false (warn only)"}\` |`);
-        }
-        if (assetBalanceCheckEnabled) {
-            lines.push(`| \`min_asset_balance\` | \`${config.minAssetBalance} ${config.assetCode}\` |`);
-        }
-        if (config.waitUntilFunded) {
-            const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
-            const interval = config.waitUntilFundedIntervalMs ?? 5000;
-            lines.push(`| \`wait_until_funded_timeout_ms\` | ${strings.waitUntilFundedTimeoutMs.replace("{ms}", String(timeout))} |`, `| \`wait_until_funded_interval_ms\` | ${strings.waitUntilFundedIntervalMs.replace("{ms}", String(interval))} |`);
-        }
-        lines.push("", `### ${strings.outputsHeading}`, "", `_${strings.outputsDescription}_`, "", `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace("{assetCode}", config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`, `| \`asset_balance\` | \`${result.assetBalance ?? "0"}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
-        // Hardened metrics JSON export (Issue #33)
-        if (config.metricsSnapshot) {
-            const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
-            lines.push("", `### ${strings.metricsHeading}`, "", `_${strings.metricsDescription}_`, "", "```json", metricsJson, "```");
-        }
-        // Expert diagnostics block (Issue #102) — only appended in debug/expert mode
-        if (config.debugMode && config.diagnosticsConfig) {
-            const diagnosticsBlock = (0, diagnostics_1.buildDiagnosticsBlock)(config.diagnosticsConfig);
-            if (diagnosticsBlock) {
-                lines.push(diagnosticsBlock);
             }
         }
         lines.push("", "---", exports.TRUSTBRIDGE_FOOTER);
@@ -80042,6 +80246,33 @@ function resolveDiscussionNodeId(payload) {
     return undefined;
 }
 /**
+ * The discussion comment that triggered a `discussion_comment` event, as
+ * needed to thread TrustBridge's reply (Issue #472).
+ *
+ * - `nodeId`: GraphQL node id of the triggering comment.
+ * - `isReply`: true when the triggering comment is itself a reply
+ *   (`comment.parent_id` is set). GitHub Discussions allow only one level of
+ *   replies, so the reply must then target the triggering comment's parent.
+ *
+ * Returns `undefined` for events without a comment (e.g. `discussion`),
+ * where TrustBridge posts a top-level comment.
+ *
+ * @internal Exported for testing.
+ */
+function resolveDiscussionCommentTarget(payload) {
+    if (payload && typeof payload === "object") {
+        const comment = payload.comment;
+        const nodeId = comment?.node_id;
+        if (typeof nodeId === "string" && nodeId.trim()) {
+            return {
+                nodeId: nodeId.trim(),
+                isReply: comment?.parent_id !== undefined && comment?.parent_id !== null,
+            };
+        }
+    }
+    return undefined;
+}
+/**
  * Find TrustBridge's previous sticky comment on a discussion, if any.
  *
  * Paginates through every discussion comment (100 per page) so the marker is
@@ -80052,11 +80283,15 @@ function resolveDiscussionNodeId(payload) {
  */
 async function findStickyDiscussionComment(octokit, discussionId, options = {}) {
     const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
+    // When threading (Issue #472), search the replies of the thread's top-level
+    // comment so each thread keeps its own sticky comment.
+    const selection = options.replyToId
+        ? '... on DiscussionComment {\n          comments: replies(first: 100, after: $cursor) {'
+        : '... on Discussion {\n          comments(first: 100, after: $cursor) {';
     const query = `
     query FindTrustBridgeDiscussionComment($discussionId: ID!, $cursor: String) {
       node(id: $discussionId) {
-        ... on Discussion {
-          comments(first: 100, after: $cursor) {
+        ${selection}
             nodes {
               id
               body
@@ -80085,7 +80320,7 @@ async function findStickyDiscussionComment(octokit, discussionId, options = {}) 
     while (pageCount < maxPages) {
         pageCount++;
         const data = (await octokit.graphql(query, {
-            discussionId,
+            discussionId: options.replyToId ?? discussionId,
             cursor,
         }));
         const comments = data?.node?.comments;
@@ -80109,6 +80344,39 @@ async function findStickyDiscussionComment(octokit, discussionId, options = {}) 
     return lastMatch;
 }
 /**
+ * Resolve the top-level comment a reply should thread under for a
+ * `discussion_comment` event (Issue #472).
+ *
+ * A top-level triggering comment is used directly. When the triggering
+ * comment is itself a reply, its parent is looked up via GraphQL (`replyTo`),
+ * because GitHub rejects replies to replies. If that lookup fails, the reply
+ * falls back to a top-level comment rather than failing the run.
+ */
+async function resolveDiscussionReplyToId(octokit, payload) {
+    const target = resolveDiscussionCommentTarget(payload);
+    if (!target)
+        return undefined;
+    if (!target.isReply)
+        return target.nodeId;
+    try {
+        const data = (await octokit.graphql(`query TrustBridgeDiscussionReplyParent($commentId: ID!) {
+        node(id: $commentId) {
+          ... on DiscussionComment { replyTo { id } }
+        }
+      }`, { commentId: target.nodeId }));
+        const parentId = data?.node?.replyTo?.id;
+        if (parentId)
+            return parentId;
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        core.warning(`Could not resolve the parent thread of discussion comment ${target.nodeId}, posting a top-level comment instead: ${message}`);
+        return undefined;
+    }
+    core.warning(`Discussion comment ${target.nodeId} has no resolvable parent thread; posting a top-level comment instead.`);
+    return undefined;
+}
+/**
  * Post (or sticky-upsert) a TrustBridge comment on a GitHub Discussion via
  * the GraphQL API.
  *
@@ -80117,6 +80385,10 @@ async function findStickyDiscussionComment(octokit, discussionId, options = {}) 
  * TrustBridge comment on the discussion is updated in place via
  * `updateDiscussionComment`; otherwise a new comment is created via
  * `addDiscussionComment`.
+ *
+ * On `discussion_comment` events the comment is threaded under the triggering
+ * comment's top-level thread (`replyToId`), and the sticky lookup is scoped to
+ * that thread's replies (Issue #472).
  *
  * Requires `discussions: write` permission on the workflow token (documented
  * in docs/USAGE.md). A missing permission surfaces as a GraphQL mutation
@@ -80138,10 +80410,12 @@ async function postDiscussionComment(token, body, options = {}) {
     }
     const proxyOpts2 = (0, proxy_1.getOctokitProxyOptions)(context.apiUrl);
     const octokit = github.getOctokit(token, { baseUrl: context.apiUrl, ...proxyOpts2 });
+    const replyToId = options.replyToId ??
+        (await resolveDiscussionReplyToId(octokit, context.payload));
     let existingComment;
     if (sticky) {
         try {
-            existingComment = await findStickyDiscussionComment(octokit, discussionId);
+            existingComment = await findStickyDiscussionComment(octokit, discussionId, { replyToId });
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -80174,12 +80448,14 @@ async function postDiscussionComment(token, body, options = {}) {
             core.warning(`Could not update existing TrustBridge discussion comment (id=${existingComment.id}), falling back to a new comment: ${message}`);
         }
     }
-    const data = (await octokit.graphql(`mutation AddTrustBridgeDiscussionComment($discussionId: ID!, $body: String!) {
-      addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
+    const data = (await octokit.graphql(`mutation AddTrustBridgeDiscussionComment($discussionId: ID!, $body: String!, $replyToId: ID) {
+      addDiscussionComment(input: { discussionId: $discussionId, body: $body, replyToId: $replyToId }) {
         comment { id url }
       }
-    }`, { discussionId, body }));
-    core.info(`Posted TrustBridge comment on discussion ${discussionId}.`);
+    }`, { discussionId, body, replyToId: replyToId ?? null }));
+    core.info(replyToId
+        ? `Posted TrustBridge reply in thread ${replyToId} on discussion ${discussionId}.`
+        : `Posted TrustBridge comment on discussion ${discussionId}.`);
     return data.addDiscussionComment?.comment.url;
 }
 
@@ -81788,7 +82064,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.ALL_WALLET_LABELS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.isCircuitOpenError = isCircuitOpenError;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.displayHorizonUrl = displayHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
@@ -81861,6 +82138,32 @@ class HorizonPinMismatchError extends HorizonError {
     }
 }
 exports.HorizonPinMismatchError = HorizonPinMismatchError;
+/**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+class HorizonCircuitOpenError extends HorizonError {
+    constructor(message) {
+        super(message, 0, false);
+        this.name = "HorizonCircuitOpenError";
+    }
+}
+exports.HorizonCircuitOpenError = HorizonCircuitOpenError;
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+function isCircuitOpenError(error) {
+    return (error instanceof HorizonCircuitOpenError ||
+        error instanceof resilience_1.CircuitOpenError ||
+        (error instanceof Error && error.name === "HorizonCircuitOpenError"));
+}
 /**
  * Node/OpenSSL error codes that indicate a TLS handshake or certificate
  * verification failure, as opposed to a generic connection/network error.
@@ -82289,7 +82592,7 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     attempt,
                     final: true,
                 }));
-                throw new HorizonError(`Horizon request blocked by circuit breaker: ${error.message}`, 0, false);
+                throw new HorizonCircuitOpenError(`Horizon request blocked by circuit breaker: ${error.message}`);
             }
             const tlsCode = tlsErrorCode(error);
             if (tlsCode) {
@@ -83100,14 +83403,23 @@ async function fetchNetworkPassphrase(horizonUrl, options = {}) {
  * making it easy for consumers to add new locales or adjust copy.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SUPPORTED_LOCALES = void 0;
 exports.getStrings = getStrings;
 exports.isValidLocale = isValidLocale;
 exports.parseLocaleInput = parseLocaleInput;
 /**
+ * Every supported locale, in canonical order.
+ *
+ * Consumers that must recognise text produced by *any* locale (for example
+ * `extractChecklistState` in `markdown.ts`, which must keep working after a
+ * workflow switches `locale`) iterate this list.
+ */
+exports.SUPPORTED_LOCALES = ['en', 'es', 'pt', 'ja', 'fr', 'de'];
+/**
  * English (en) locale strings.
  */
 const EN = {
-    heading: 'TrustBridge â€” Stellar Account Check',
+    heading: 'TrustBridge — Stellar Account Check',
     checkedAccount: 'Checked account:',
     horizon: 'Horizon:',
     asset: 'Asset:',
@@ -83117,6 +83429,20 @@ const EN = {
     blockedBy: 'Blocked by:',
     passedChecks: 'Passed checks:',
     failedChecks: 'Failed checks:',
+    reasonCode: 'Reason code:',
+    readyFlag: 'Ready:',
+    circuitBreakerHeading: 'Circuit breaker open',
+    circuitBreakerOpen: 'This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.',
+    circuitBreakerRecoveryHint: 'This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow. If it keeps happening, check the Horizon endpoint health and your `horizon_url` / `max_retries` settings.',
+    circuitBreakerReasonCode: 'Reason code: `CIRCUIT_OPEN`',
+    checklistHeading: 'Onboarding checklist',
+    checklistIntro: '_Complete these steps in order. Boxes update automatically from live Horizon checks._',
+    checklistFundAccountLabel: 'Fund account',
+    checklistFundAccountDetail: 'Activate the account with XLM.',
+    checklistTrustlineLabel: (assetCode) => `Add ${assetCode} trustline`,
+    checklistTrustlineDetail: 'Configure the asset trustline.',
+    checklistReserveLabel: 'Verify XLM balance',
+    checklistReserveDetail: (minXlmReserve) => `Meet the **${minXlmReserve} XLM** reserve.`,
     balancesHeading: 'Balances',
     xlmBalance: 'XLM balance:',
     minimumRequired: 'Minimum required:',
@@ -83136,10 +83462,10 @@ const EN = {
     configurationSummaryHeading: 'Configuration summary',
     inputColumn: 'Input',
     valueColumn: 'Value',
-    failOnMissingTrue: '`true` â€” step fails on missing checks',
-    failOnMissingFalse: '`false` â€” only warns',
-    stickyCommentTrue: '`true` â€” upserts prior comment',
-    stickyCommentFalse: '`false` â€” always posts new',
+    failOnMissingTrue: '`true` — step fails on missing checks',
+    failOnMissingFalse: '`false` — only warns',
+    stickyCommentTrue: '`true` — upserts prior comment',
+    stickyCommentFalse: '`false` — always posts new',
     waitUntilFundedTrue: '`true`',
     waitUntilFundedFalse: '`false` (default)',
     waitUntilFundedTimeoutMs: '`{ms}`',
@@ -83154,14 +83480,14 @@ const EN = {
     xlmBalanceOutput: 'Native XLM balance reported by Horizon (from `action.yml`)',
     commentUrlOutput: 'URL of this issue comment (from `action.yml`)',
     metricsHeading: 'Metrics',
-    metricsDescription: 'Machine-readable run metrics. Values are structural counts only â€” no account addresses or balances.',
+    metricsDescription: 'Machine-readable run metrics. Values are structural counts only — no account addresses or balances.',
     accountFundedLabel: 'Account funded',
     accountFundedPassDetail: (address) => `Account ${address} is active on the Stellar network.`,
-    accountFundedFailDetail: (address) => `Account ${address} was **not found** on Horizon â€” it may not be funded or activated yet.`,
+    accountFundedFailDetail: (address) => `Account ${address} was **not found** on Horizon — it may not be funded or activated yet.`,
     trustlineLabel: (assetCode) => `${assetCode} trustline`,
     trustlinePassDetail: (assetCode, issuer) => `Trustline for **${assetCode}** (${issuer}) is configured.`,
     trustlineFailHasTrustlines: (assetCode, issuer) => `Account has trustlines, but not for **${assetCode}** issued by ${issuer}.`,
-    trustlineFailNoTrustlines: 'Account has **zero trustlines** â€” add a trustline before receiving this asset.',
+    trustlineFailNoTrustlines: 'Account has **zero trustlines** — add a trustline before receiving this asset.',
     xlmReserveLabel: 'XLM reserve',
     xlmReservePassDetail: (balance, required) => `Balance **${balance} XLM** meets the minimum of **${required} XLM**.`,
     xlmReserveFailDetail: (balance, required) => `Balance **${balance} XLM** is below the required **${required} XLM**.`,
@@ -83182,151 +83508,179 @@ const EN = {
  * Spanish (es) locale strings.
  */
 const ES = {
-    heading: 'TrustBridge â€” VerificaciÃ³n de Cuenta Stellar',
+    heading: 'TrustBridge — Verificación de Cuenta Stellar',
     checkedAccount: 'Cuenta verificada:',
     horizon: 'Horizon:',
     asset: 'Activo:',
     resultsHeading: 'Resultados',
-    validationGateHeading: 'Puerta de validaciÃ³n',
+    validationGateHeading: 'Puerta de validación',
     readyToProceed: 'Listo para proceder: todas las comprobaciones pasaron.',
     blockedBy: 'Bloqueado por:',
     passedChecks: 'Comprobaciones pasadas:',
     failedChecks: 'Comprobaciones fallidas:',
+    reasonCode: 'Código de razón:',
+    readyFlag: 'Listo:',
+    circuitBreakerHeading: 'Disyuntor abierto',
+    circuitBreakerOpen: 'Esta ejecución falló rápidamente porque el disyuntor de Horizon estaba abierto: la cuenta **no** se comprobó.',
+    circuitBreakerRecoveryHint: 'Es una protección de resiliencia, no un problema de la cuenta. Espera a que termine la ventana de recuperación y vuelve a ejecutar el workflow. Si se repite, comprueba la salud del endpoint de Horizon y los ajustes `horizon_url` / `max_retries`.',
+    circuitBreakerReasonCode: 'Código de razón: `CIRCUIT_OPEN`',
+    checklistHeading: 'Lista de incorporación',
+    checklistIntro: '_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._',
+    checklistFundAccountLabel: 'Financiar la cuenta',
+    checklistFundAccountDetail: 'Activa la cuenta con XLM.',
+    checklistTrustlineLabel: (assetCode) => `Añadir línea de confianza ${assetCode}`,
+    checklistTrustlineDetail: 'Configura la línea de confianza del activo.',
+    checklistReserveLabel: 'Verificar saldo XLM',
+    checklistReserveDetail: (minXlmReserve) => `Alcanza la reserva de **${minXlmReserve} XLM**.`,
     balancesHeading: 'Saldos',
     xlmBalance: 'Saldo de XLM:',
-    minimumRequired: 'MÃ­nimo requerido:',
-    setupCostHeading: 'EstimaciÃ³n del costo de configuraciÃ³n',
-    minimumAccountBalance: 'Saldo mÃ­nimo de cuenta Stellar:',
-    baseReservePerTrustline: 'Reserva base por lÃ­nea de confianza (entrada del libro mayor):',
-    typicalMinimumToFund: 'MÃ­nimo tÃ­pico para financiar cuenta + una lÃ­nea de confianza:',
-    addTrustlineHeading: 'Agregar una lÃ­nea de confianza',
+    minimumRequired: 'Mínimo requerido:',
+    setupCostHeading: 'Estimación del costo de configuración',
+    minimumAccountBalance: 'Saldo mínimo de cuenta Stellar:',
+    baseReservePerTrustline: 'Reserva base por línea de confianza (entrada del libro mayor):',
+    typicalMinimumToFund: 'Mínimo típico para financiar cuenta + una línea de confianza:',
+    addTrustlineHeading: 'Agregar una línea de confianza',
     viewAccountOnLab: 'Ver cuenta en Stellar Laboratory',
     openTransactionBuilder: 'Abrir Transaction Builder (Change Trust)',
     lobstrWallet: 'Billetera LOBSTR',
     lobstrDescription: 'agregar activo',
-    sepWalletActionsHeading: 'Acciones rÃ¡pidas de billetera (SEP-0007)',
-    sepWalletActionsDescription: 'Abre estos enlaces en una billetera compatible con SEP-0007 (LOBSTR, Solar, Albedo) para completar la configuraciÃ³n.',
-    sendXlmToActivate: 'EnvÃ­a {amount} XLM para activar la cuenta',
-    remediationHeading: 'RemediaciÃ³n',
-    configurationSummaryHeading: 'Resumen de configuraciÃ³n',
+    sepWalletActionsHeading: 'Acciones rápidas de billetera (SEP-0007)',
+    sepWalletActionsDescription: 'Abre estos enlaces en una billetera compatible con SEP-0007 (LOBSTR, Solar, Albedo) para completar la configuración.',
+    sendXlmToActivate: 'Envía {amount} XLM para activar la cuenta',
+    remediationHeading: 'Remediación',
+    configurationSummaryHeading: 'Resumen de configuración',
     inputColumn: 'Entrada',
     valueColumn: 'Valor',
-    failOnMissingTrue: '`true` â€” el paso falla en comprobaciones faltantes',
-    failOnMissingFalse: '`false` â€” solo advierte',
-    stickyCommentTrue: '`true` â€” actualiza comentario anterior',
-    stickyCommentFalse: '`false` â€” siempre publica uno nuevo',
+    failOnMissingTrue: '`true` — el paso falla en comprobaciones faltantes',
+    failOnMissingFalse: '`false` — solo advierte',
+    stickyCommentTrue: '`true` — actualiza comentario anterior',
+    stickyCommentFalse: '`false` — siempre publica uno nuevo',
     waitUntilFundedTrue: '`true`',
     waitUntilFundedFalse: '`false` (predeterminado)',
     waitUntilFundedTimeoutMs: '`{ms}`',
     waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Referencia de salidas de acciÃ³n',
-    outputsDescription: 'Use estos nombres de salida en pasos de flujo de trabajo posteriores a travÃ©s de `steps.<id>.outputs.<name>`.',
+    outputsHeading: 'Referencia de salidas de acción',
+    outputsDescription: 'Use estos nombres de salida en pasos de flujo de trabajo posteriores a través de `steps.<id>.outputs.<name>`.',
     outputColumn: 'Salida',
-    valueRunColumn: 'Valor en esta ejecuciÃ³n',
-    descriptionColumn: 'DescripciÃ³n',
+    valueRunColumn: 'Valor en esta ejecución',
+    descriptionColumn: 'Descripción',
     accountFundedOutput: 'Si la cuenta existe en la red Stellar (de `action.yml`)',
-    trustlineExistsOutput: 'Si la lÃ­nea de confianza **{assetCode}** estÃ¡ configurada (de `action.yml`)',
+    trustlineExistsOutput: 'Si la línea de confianza **{assetCode}** está configurada (de `action.yml`)',
     xlmBalanceOutput: 'Saldo de XLM nativo reportado por Horizon (de `action.yml`)',
     commentUrlOutput: 'URL del comentario de problema (de `action.yml`)',
-    metricsHeading: 'MÃ©tricas',
-    metricsDescription: 'MÃ©tricas de ejecuciÃ³n legibles por mÃ¡quina. Los valores son solo recuentos estructurales â€” sin direcciones de cuenta ni saldos.',
+    metricsHeading: 'Métricas',
+    metricsDescription: 'Métricas de ejecución legibles por máquina. Los valores son solo recuentos estructurales — sin direcciones de cuenta ni saldos.',
     accountFundedLabel: 'Cuenta financiada',
-    accountFundedPassDetail: (address) => `La cuenta ${address} estÃ¡ activa en la red Stellar.`,
-    accountFundedFailDetail: (address) => `La cuenta ${address} **no se encontrÃ³** en Horizon â€” puede que no estÃ© financiada o activada aÃºn.`,
-    trustlineLabel: (assetCode) => `LÃ­nea de confianza ${assetCode}`,
-    trustlinePassDetail: (assetCode, issuer) => `LÃ­nea de confianza para **${assetCode}** (${issuer}) estÃ¡ configurada.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `La cuenta tiene lÃ­neas de confianza, pero no para **${assetCode}** emitido por ${issuer}.`,
-    trustlineFailNoTrustlines: 'La cuenta tiene **cero lÃ­neas de confianza** â€” agrega una antes de recibir este activo.',
+    accountFundedPassDetail: (address) => `La cuenta ${address} está activa en la red Stellar.`,
+    accountFundedFailDetail: (address) => `La cuenta ${address} **no se encontró** en Horizon — puede que no esté financiada o activada aún.`,
+    trustlineLabel: (assetCode) => `Línea de confianza ${assetCode}`,
+    trustlinePassDetail: (assetCode, issuer) => `Línea de confianza para **${assetCode}** (${issuer}) está configurada.`,
+    trustlineFailHasTrustlines: (assetCode, issuer) => `La cuenta tiene líneas de confianza, pero no para **${assetCode}** emitido por ${issuer}.`,
+    trustlineFailNoTrustlines: 'La cuenta tiene **cero líneas de confianza** — agrega una antes de recibir este activo.',
     xlmReserveLabel: 'Reserva de XLM',
-    xlmReservePassDetail: (balance, required) => `El saldo **${balance} XLM** cumple con el mÃ­nimo de **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `El saldo **${balance} XLM** estÃ¡ por debajo del requerido **${required} XLM**.`,
+    xlmReservePassDetail: (balance, required) => `El saldo **${balance} XLM** cumple con el mínimo de **${required} XLM**.`,
+    xlmReserveFailDetail: (balance, required) => `El saldo **${balance} XLM** está por debajo del requerido **${required} XLM**.`,
     horizonAvailabilityLabel: 'Disponibilidad de Horizon',
-    remediationAddTrustline: (assetCode) => `Agrega una lÃ­nea de confianza **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operaciÃ³n Change Trust) o una billetera como [LOBSTR](https://lobstr.co/).`,
-    remediationSendXlm: (amount, address) => `EnvÃ­a al menos **${amount} XLM** a ${address} para cumplir con el requisito de reserva.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Activa ${address} enviando al menos **${minBalance} XLM** (saldo mÃ­nimo de cuenta Stellar).\n\nLuego agrega una lÃ­nea de confianza **${assetCode}** a travÃ©s de [Stellar Laboratory](https://laboratory.stellar.org/) o [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Costo estimado de configuraciÃ³n: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de lÃ­nea de confianza ${assetCode}).`,
-    remediationEstimatedSetupCost: (cost) => `Costo estimado de configuraciÃ³n: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon no se pudo alcanzar. ReintÃ©ntalo mÃ¡s tarde o verifica tu entrada `horizon_url` y la conectividad de red.',
-    networkMismatchDetected: 'Se detectÃ³ una discrepancia de red.',
+    remediationAddTrustline: (assetCode) => `Agrega una línea de confianza **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operación Change Trust) o una billetera como [LOBSTR](https://lobstr.co/).`,
+    remediationSendXlm: (amount, address) => `Envía al menos **${amount} XLM** a ${address} para cumplir con el requisito de reserva.`,
+    remediationActivateAccount: (address, minBalance, assetCode) => `Activa ${address} enviando al menos **${minBalance} XLM** (saldo mínimo de cuenta Stellar).\n\nLuego agrega una línea de confianza **${assetCode}** a través de [Stellar Laboratory](https://laboratory.stellar.org/) o [LOBSTR](https://lobstr.co/).`,
+    remediationAccountNotFound: (assetCode) => `Costo estimado de configuración: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de línea de confianza ${assetCode}).`,
+    remediationEstimatedSetupCost: (cost) => `Costo estimado de configuración: ~**${cost} XLM**.`,
+    remediationHorizonError: 'Horizon no se pudo alcanzar. Reinténtalo más tarde o verifica tu entrada `horizon_url` y la conectividad de red.',
+    networkMismatchDetected: 'Se detectó una discrepancia de red.',
     networkMismatchConfiguredNetwork: 'Red configurada:',
     networkMismatchActiveNetwork: 'Red activa:',
     networkMismatchFix: 'Financia esta cuenta en la red configurada.',
-    networkMismatchUpdateUrl: 'Actualiza `horizon_url` a la URL de la red activa si querÃ­as comprobar esa red.',
+    networkMismatchUpdateUrl: 'Actualiza `horizon_url` a la URL de la red activa si querías comprobar esa red.',
 };
 /**
  * Portuguese (pt) locale strings.
  */
 const PT = {
-    heading: 'TrustBridge â€” VerificaÃ§Ã£o de Conta Stellar',
+    heading: 'TrustBridge — Verificação de Conta Stellar',
     checkedAccount: 'Conta verificada:',
     horizon: 'Horizon:',
     asset: 'Ativo:',
     resultsHeading: 'Resultados',
-    validationGateHeading: 'PortÃ£o de validaÃ§Ã£o',
-    readyToProceed: 'Pronto para prosseguir: todas as verificaÃ§Ãµes passaram.',
+    validationGateHeading: 'Portão de validação',
+    readyToProceed: 'Pronto para prosseguir: todas as verificações passaram.',
     blockedBy: 'Bloqueado por:',
-    passedChecks: 'VerificaÃ§Ãµes aprovadas:',
-    failedChecks: 'VerificaÃ§Ãµes falhadas:',
+    passedChecks: 'Verificações aprovadas:',
+    failedChecks: 'Verificações falhadas:',
+    reasonCode: 'Código de motivo:',
+    readyFlag: 'Pronto:',
+    circuitBreakerHeading: 'Disjuntor aberto',
+    circuitBreakerOpen: 'Esta execução falhou rapidamente porque o disjuntor do Horizon estava aberto — a conta **não** foi verificada.',
+    circuitBreakerRecoveryHint: 'Isto é uma proteção de resiliência, não um problema com a conta. Aguarde a janela de recuperação e execute o workflow novamente. Se persistir, verifique a saúde do endpoint do Horizon e as definições `horizon_url` / `max_retries`.',
+    circuitBreakerReasonCode: 'Código de motivo: `CIRCUIT_OPEN`',
+    checklistHeading: 'Lista de integração',
+    checklistIntro: '_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._',
+    checklistFundAccountLabel: 'Financiar a conta',
+    checklistFundAccountDetail: 'Ative a conta com XLM.',
+    checklistTrustlineLabel: (assetCode) => `Adicionar linha de confiança ${assetCode}`,
+    checklistTrustlineDetail: 'Configure a linha de confiança do ativo.',
+    checklistReserveLabel: 'Verificar saldo XLM',
+    checklistReserveDetail: (minXlmReserve) => `Atinja a reserva de **${minXlmReserve} XLM**.`,
     balancesHeading: 'Saldos',
     xlmBalance: 'Saldo de XLM:',
-    minimumRequired: 'MÃ­nimo necessÃ¡rio:',
-    setupCostHeading: 'Estimativa de custo de configuraÃ§Ã£o',
-    minimumAccountBalance: 'Saldo mÃ­nimo de conta Stellar:',
-    baseReservePerTrustline: 'Reserva base por linha de confianÃ§a (entrada de ledger):',
-    typicalMinimumToFund: 'MÃ­nimo tÃ­pico para financiar conta + uma linha de confianÃ§a:',
-    addTrustlineHeading: 'Adicionar uma linha de confianÃ§a',
+    minimumRequired: 'Mínimo necessário:',
+    setupCostHeading: 'Estimativa de custo de configuração',
+    minimumAccountBalance: 'Saldo mínimo de conta Stellar:',
+    baseReservePerTrustline: 'Reserva base por linha de confiança (entrada de ledger):',
+    typicalMinimumToFund: 'Mínimo típico para financiar conta + uma linha de confiança:',
+    addTrustlineHeading: 'Adicionar uma linha de confiança',
     viewAccountOnLab: 'Ver conta no Stellar Laboratory',
     openTransactionBuilder: 'Abrir Transaction Builder (Change Trust)',
     lobstrWallet: 'Carteira LOBSTR',
     lobstrDescription: 'adicionar ativo',
-    sepWalletActionsHeading: 'AÃ§Ãµes rÃ¡pidas da carteira (SEP-0007)',
-    sepWalletActionsDescription: 'Abra esses links em uma carteira compatÃ­vel com SEP-0007 (LOBSTR, Solar, Albedo) para concluir a configuraÃ§Ã£o.',
+    sepWalletActionsHeading: 'Ações rápidas da carteira (SEP-0007)',
+    sepWalletActionsDescription: 'Abra esses links em uma carteira compatível com SEP-0007 (LOBSTR, Solar, Albedo) para concluir a configuração.',
     sendXlmToActivate: 'Envie {amount} XLM para ativar a conta',
-    remediationHeading: 'RemediaÃ§Ã£o',
-    configurationSummaryHeading: 'Resumo da configuraÃ§Ã£o',
+    remediationHeading: 'Remediação',
+    configurationSummaryHeading: 'Resumo da configuração',
     inputColumn: 'Entrada',
     valueColumn: 'Valor',
-    failOnMissingTrue: '`true` â€” etapa falha em verificaÃ§Ãµes ausentes',
-    failOnMissingFalse: '`false` â€” apenas avisa',
-    stickyCommentTrue: '`true` â€” atualiza comentÃ¡rio anterior',
-    stickyCommentFalse: '`false` â€” sempre publica um novo',
+    failOnMissingTrue: '`true` — etapa falha em verificações ausentes',
+    failOnMissingFalse: '`false` — apenas avisa',
+    stickyCommentTrue: '`true` — atualiza comentário anterior',
+    stickyCommentFalse: '`false` — sempre publica um novo',
     waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (padrÃ£o)',
+    waitUntilFundedFalse: '`false` (padrão)',
     waitUntilFundedTimeoutMs: '`{ms}`',
     waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'ReferÃªncia de saÃ­das de aÃ§Ã£o',
-    outputsDescription: 'Use esses nomes de saÃ­da em etapas de fluxo de trabalho posteriores via `steps.<id>.outputs.<name>`.',
-    outputColumn: 'SaÃ­da',
-    valueRunColumn: 'Valor nesta execuÃ§Ã£o',
-    descriptionColumn: 'DescriÃ§Ã£o',
+    outputsHeading: 'Referência de saídas de ação',
+    outputsDescription: 'Use esses nomes de saída em etapas de fluxo de trabalho posteriores via `steps.<id>.outputs.<name>`.',
+    outputColumn: 'Saída',
+    valueRunColumn: 'Valor nesta execução',
+    descriptionColumn: 'Descrição',
     accountFundedOutput: 'Se a conta existe na rede Stellar (de `action.yml`)',
-    trustlineExistsOutput: 'Se a linha de confianÃ§a **{assetCode}** estÃ¡ configurada (de `action.yml`)',
+    trustlineExistsOutput: 'Se a linha de confiança **{assetCode}** está configurada (de `action.yml`)',
     xlmBalanceOutput: 'Saldo de XLM nativo relatado pelo Horizon (de `action.yml`)',
-    commentUrlOutput: 'URL do comentÃ¡rio de problema (de `action.yml`)',
-    metricsHeading: 'MÃ©tricas',
-    metricsDescription: 'MÃ©tricas de execuÃ§Ã£o legÃ­veis por mÃ¡quina. Os valores sÃ£o apenas contagens estruturais â€” nenhum endereÃ§o de conta ou saldo.',
+    commentUrlOutput: 'URL do comentário de problema (de `action.yml`)',
+    metricsHeading: 'Métricas',
+    metricsDescription: 'Métricas de execução legíveis por máquina. Os valores são apenas contagens estruturais — nenhum endereço de conta ou saldo.',
     accountFundedLabel: 'Conta financiada',
-    accountFundedPassDetail: (address) => `A conta ${address} estÃ¡ ativa na rede Stellar.`,
-    accountFundedFailDetail: (address) => `A conta ${address} **nÃ£o foi encontrada** no Horizon â€” pode nÃ£o estar financiada ou ativada ainda.`,
-    trustlineLabel: (assetCode) => `Linha de confianÃ§a ${assetCode}`,
-    trustlinePassDetail: (assetCode, issuer) => `Linha de confianÃ§a para **${assetCode}** (${issuer}) estÃ¡ configurada.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `A conta tem linhas de confianÃ§a, mas nÃ£o para **${assetCode}** emitido por ${issuer}.`,
-    trustlineFailNoTrustlines: 'A conta tem **zero linhas de confianÃ§a** â€” adicione uma antes de receber esse ativo.',
+    accountFundedPassDetail: (address) => `A conta ${address} está ativa na rede Stellar.`,
+    accountFundedFailDetail: (address) => `A conta ${address} **não foi encontrada** no Horizon — pode não estar financiada ou ativada ainda.`,
+    trustlineLabel: (assetCode) => `Linha de confiança ${assetCode}`,
+    trustlinePassDetail: (assetCode, issuer) => `Linha de confiança para **${assetCode}** (${issuer}) está configurada.`,
+    trustlineFailHasTrustlines: (assetCode, issuer) => `A conta tem linhas de confiança, mas não para **${assetCode}** emitido por ${issuer}.`,
+    trustlineFailNoTrustlines: 'A conta tem **zero linhas de confiança** — adicione uma antes de receber esse ativo.',
     xlmReserveLabel: 'Reserva de XLM',
-    xlmReservePassDetail: (balance, required) => `Saldo **${balance} XLM** atende ao mÃ­nimo de **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `Saldo **${balance} XLM** estÃ¡ abaixo do exigido **${required} XLM**.`,
+    xlmReservePassDetail: (balance, required) => `Saldo **${balance} XLM** atende ao mínimo de **${required} XLM**.`,
+    xlmReserveFailDetail: (balance, required) => `Saldo **${balance} XLM** está abaixo do exigido **${required} XLM**.`,
     horizonAvailabilityLabel: 'Disponibilidade do Horizon',
-    remediationAddTrustline: (assetCode) => `Adicione uma linha de confianÃ§a **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operaÃ§Ã£o Change Trust) ou uma carteira como [LOBSTR](https://lobstr.co/).`,
+    remediationAddTrustline: (assetCode) => `Adicione uma linha de confiança **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operação Change Trust) ou uma carteira como [LOBSTR](https://lobstr.co/).`,
     remediationSendXlm: (amount, address) => `Envie pelo menos **${amount} XLM** para ${address} para atender ao requisito de reserva.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Ative ${address} enviando pelo menos **${minBalance} XLM** (saldo mÃ­nimo de conta Stellar).\n\nEm seguida, adicione uma linha de confianÃ§a **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) ou [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Custo estimado de configuraÃ§Ã£o: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de linha de confianÃ§a ${assetCode}).`,
-    remediationEstimatedSetupCost: (cost) => `Custo estimado de configuraÃ§Ã£o: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon nÃ£o pÃ´de ser alcanÃ§ado. Tente novamente mais tarde ou verifique sua entrada `horizon_url` e a conectividade de rede.',
-    networkMismatchDetected: 'DiscrepÃ¢ncia de rede detectada.',
+    remediationActivateAccount: (address, minBalance, assetCode) => `Ative ${address} enviando pelo menos **${minBalance} XLM** (saldo mínimo de conta Stellar).\n\nEm seguida, adicione uma linha de confiança **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) ou [LOBSTR](https://lobstr.co/).`,
+    remediationAccountNotFound: (assetCode) => `Custo estimado de configuração: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de linha de confiança ${assetCode}).`,
+    remediationEstimatedSetupCost: (cost) => `Custo estimado de configuração: ~**${cost} XLM**.`,
+    remediationHorizonError: 'Horizon não pôde ser alcançado. Tente novamente mais tarde ou verifique sua entrada `horizon_url` e a conectividade de rede.',
+    networkMismatchDetected: 'Discrepância de rede detectada.',
     networkMismatchConfiguredNetwork: 'Rede configurada:',
     networkMismatchActiveNetwork: 'Rede ativa:',
     networkMismatchFix: 'Financie esta conta na rede configurada.',
-    networkMismatchUpdateUrl: 'Atualize `horizon_url` para a URL da rede ativa se vocÃª pretendia verificar essa rede.',
+    networkMismatchUpdateUrl: 'Atualize `horizon_url` para a URL da rede ativa se você pretendia verificar essa rede.',
 };
 /**
  * Japanese (ja) locale strings.
@@ -83347,6 +83701,20 @@ const JA = {
     blockedBy: 'ブロック理由:',
     passedChecks: '合格したチェック:',
     failedChecks: '不合格のチェック:',
+    reasonCode: '理由コード:',
+    readyFlag: '判定:',
+    circuitBreakerHeading: 'サーキットブレーカーが開いています',
+    circuitBreakerOpen: 'Horizon のサーキットブレーカーが開いていたため、この実行は即座に失敗しました。アカウントは**チェックされていません**。',
+    circuitBreakerRecoveryHint: 'これはアカウントの問題ではなく、レジリエンス保護です。復旧ウィンドウの経過を待ってからワークフローを再実行してください。繰り返し発生する場合は、Horizon エンドポイントの健全性と `horizon_url` / `max_retries` の設定を確認してください。',
+    circuitBreakerReasonCode: '理由コード: `CIRCUIT_OPEN`',
+    checklistHeading: 'オンボーディングチェックリスト',
+    checklistIntro: '_以下の手順を順番に完了してください。チェックボックスは Horizon のライブチェックから自動更新されます。_',
+    checklistFundAccountLabel: 'アカウント入金',
+    checklistFundAccountDetail: 'XLM を送信してアカウントを有効化します。',
+    checklistTrustlineLabel: (assetCode) => `${assetCode} のトラストラインを追加`,
+    checklistTrustlineDetail: 'アセットのトラストラインを設定します。',
+    checklistReserveLabel: 'XLM 残高の確認',
+    checklistReserveDetail: (minXlmReserve) => `**${minXlmReserve} XLM** の準備金要件を満たしてください。`,
     balancesHeading: '残高',
     xlmBalance: 'XLM残高:',
     minimumRequired: '最低必要額:',
@@ -83422,6 +83790,20 @@ const FR = {
     blockedBy: 'Bloqué par :',
     passedChecks: 'Vérifications réussies :',
     failedChecks: 'Vérifications échouées :',
+    reasonCode: 'Code de motif :',
+    readyFlag: 'Prêt :',
+    circuitBreakerHeading: 'Coupe-circuit ouvert',
+    circuitBreakerOpen: 'Cette exécution a échoué immédiatement car le coupe-circuit Horizon était ouvert — le compte **n’a pas** été vérifié.',
+    circuitBreakerRecoveryHint: 'Il s’agit d’une protection de résilience, pas d’un problème de compte. Attendez la fin de la fenêtre de récupération, puis relancez le workflow. Si cela persiste, vérifiez la santé du point de terminaison Horizon et les réglages `horizon_url` / `max_retries`.',
+    circuitBreakerReasonCode: 'Code de motif : `CIRCUIT_OPEN`',
+    checklistHeading: 'Liste d’intégration',
+    checklistIntro: '_Effectuez ces étapes dans l’ordre. Les cases se mettent à jour automatiquement à partir des vérifications Horizon._',
+    checklistFundAccountLabel: 'Financer le compte',
+    checklistFundAccountDetail: 'Activez le compte avec des XLM.',
+    checklistTrustlineLabel: (assetCode) => `Ajouter la ligne de confiance ${assetCode}`,
+    checklistTrustlineDetail: 'Configurez la ligne de confiance de l’actif.',
+    checklistReserveLabel: 'Vérifier le solde XLM',
+    checklistReserveDetail: (minXlmReserve) => `Atteignez la réserve de **${minXlmReserve} XLM**.`,
     balancesHeading: 'Soldes',
     xlmBalance: 'Solde XLM :',
     minimumRequired: 'Minimum requis :',
@@ -83497,6 +83879,20 @@ const DE = {
     blockedBy: 'Blockiert durch:',
     passedChecks: 'Bestandene Prüfungen:',
     failedChecks: 'Fehlgeschlagene Prüfungen:',
+    reasonCode: 'Grundcode:',
+    readyFlag: 'Bereit:',
+    circuitBreakerHeading: 'Sicherungsschalter offen',
+    circuitBreakerOpen: 'Dieser Lauf wurde sofort abgebrochen, da der Horizon-Sicherungsschalter offen war — das Konto wurde **nicht** geprüft.',
+    circuitBreakerRecoveryHint: 'Dies ist ein Resilienzschutz und kein Problem mit dem Konto. Warten Sie das Ende des Wiederherstellungsfensters ab und starten Sie den Workflow erneut. Sollte dies wiederholt auftreten, prüfen Sie die Erreichbarkeit des Horizon-Endpunkts sowie die Einstellungen `horizon_url` / `max_retries`.',
+    circuitBreakerReasonCode: 'Grundcode: `CIRCUIT_OPEN`',
+    checklistHeading: 'Onboarding-Checkliste',
+    checklistIntro: '_Führen Sie diese Schritte der Reihe nach aus. Die Kästchen werden automatisch aus den Horizon-Prüfungen aktualisiert._',
+    checklistFundAccountLabel: 'Konto finanzieren',
+    checklistFundAccountDetail: 'Aktivieren Sie das Konto mit XLM.',
+    checklistTrustlineLabel: (assetCode) => `${assetCode}-Trustline hinzufügen`,
+    checklistTrustlineDetail: 'Richten Sie die Trustline des Assets ein.',
+    checklistReserveLabel: 'XLM-Guthaben prüfen',
+    checklistReserveDetail: (minXlmReserve) => `Erreichen Sie die Reserve von **${minXlmReserve} XLM**.`,
     balancesHeading: 'Guthaben',
     xlmBalance: 'XLM-Guthaben:',
     minimumRequired: 'Mindestbetrag:',
@@ -83566,6 +83962,12 @@ const LOCALES = {
     fr: FR,
     de: DE,
 };
+// Fail fast at import time if a new locale is added without a matching pack.
+for (const locale of exports.SUPPORTED_LOCALES) {
+    if (!LOCALES[locale]) {
+        throw new Error(`Missing i18n string pack for locale "${locale}"`);
+    }
+}
 /**
  * Get comment strings for a given locale, with automatic fallback to English
  * if the locale is not available.
@@ -83840,12 +84242,8 @@ async function handleAutoUnassign(options) {
 }
 function resolveConfiguredReadyLabels() {
     const passLabel = (core.getInput("pass_label") ||
-        core.getInput("ready_pass_label") ||
-        core.getInput("ready_label_pass") ||
         "").trim();
     const failLabel = (core.getInput("fail_label") ||
-        core.getInput("ready_fail_label") ||
-        core.getInput("ready_label_fail") ||
         "").trim();
     return { passLabel, failLabel };
 }
@@ -83899,8 +84297,21 @@ async function run() {
                 }
             }
         }
-        // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in)
-        const skipForMaintainers = (0, inputs_1.parseBooleanInput)(core.getInput('skip_for_maintainers') || core.getInput('skip_if_maintainer'), false);
+        // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
+        // Issue #448: `skip_for_maintainers` is canonical; `skip_if_maintainer` is a
+        // deprecated alias that is only consulted when the canonical input is unset.
+        const maintainerSkip = (0, inputs_1.resolveMaintainerSkipInput)(core.getInput('skip_for_maintainers'), core.getInput('skip_if_maintainer'));
+        if (maintainerSkip.usedDeprecatedAlias) {
+            core.warning("`skip_if_maintainer` is deprecated and will be removed in a future major " +
+                "release. Use `skip_for_maintainers` instead — it is the canonical name " +
+                "and takes precedence whenever it is set explicitly.");
+        }
+        if (maintainerSkip.conflict) {
+            core.warning("Both `skip_for_maintainers` and the deprecated `skip_if_maintainer` were " +
+                "supplied with conflicting values. Using `skip_for_maintainers`; the " +
+                "deprecated alias is ignored.");
+        }
+        const skipForMaintainers = maintainerSkip.enabled;
         if (skipForMaintainers) {
             const actor = github.context.actor ||
                 github.context.payload.sender?.login ||
@@ -83910,7 +84321,7 @@ async function run() {
                 .split(',')
                 .map((m) => m.trim())
                 .filter(Boolean);
-            const customCodeownersPath = core.getInput('codeowners_path') || '';
+            const customCodeownersPath = '';
             const rawGithubToken = core.getInput('github_token');
             const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
             const token = (0, inputs_1.resolveGitHubAuthToken)({
@@ -83959,12 +84370,13 @@ async function run() {
         const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
         const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
         const dashboardRosterTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
+        const dashboardRosterAllowHttp = (0, inputs_1.parseBooleanInput)(core.getInput('dashboard_roster_allow_http'), false);
         // Issue #318: Soroban full roster inputs
         const sorobanFullRoster = (0, inputs_1.parseBooleanInput)(core.getInput('soroban_full_roster'), false);
         const sorobanRosterPageLimit = (0, inputs_1.parseNumberInput)(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
         // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
-        const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
-        const contractId = core.getInput('contract_id') || '';
+        const sorobanRpcUrl = '';
+        const contractId = '';
         let contractResolvedAddress;
         if (sorobanRpcUrl && contractId) {
             const assigneeLogin = resolveAssigneeLoginFromContext();
@@ -84006,7 +84418,7 @@ async function run() {
             const assigneeLogin = resolveAssigneeLoginFromContext();
             if (assigneeLogin) {
                 try {
-                    const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs);
+                    const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs, dashboardRosterAllowHttp);
                     const found = map[assigneeLogin.toLowerCase()];
                     if (found)
                         dashboardResolvedAddress = found;
@@ -84078,7 +84490,7 @@ async function run() {
         // Multi-asset trustline validation (Issue #4)
         const assetsJsonRaw = core.getInput("assets_json") || "";
         // Soroban contract registry (Issue #7)
-        const githubUsername = core.getInput("github_username") || "";
+        const githubUsername = "";
         // Plugin runner flag (Issue #198) — default off
         const usePluginRunner = (0, inputs_1.parseBooleanInput)(core.getInput("use_plugin_runner"), false);
         // Onboarding checklist in comments (Issue #154) — default on
@@ -84086,8 +84498,8 @@ async function run() {
         // Security artifacts / delta vs previous run (Issue #148)
         const writeValidationJsonEnabled = (0, inputs_1.parseBooleanInput)(core.getInput("write_validation_json"), false);
         const validationJsonPath = core.getInput("validation_json_path") || "validation.json";
-        const previousValidationPath = core.getInput("previous_validation_path") || "";
-        const privacyMode = (0, inputs_1.parseBooleanInput)(core.getInput("privacy_mode"), false);
+        const previousValidationPath = "";
+        const privacyMode = false;
         // External plugins from workspace (allowlisted only)
         const trustbridgePluginsPathRaw = core.getInput("trustbridge_plugins_path") || "";
         const allowedPluginPaths = trustbridgePluginsPathRaw
@@ -84100,7 +84512,7 @@ async function run() {
         // Batch validation (Issue #199)
         const stellarAddressesRaw = core.getInput("stellar_addresses") || "";
         // Full-report artifact path (used when comment exceeds size limit)
-        const reportOutputPath = core.getInput("report_output_path") || "trustbridge-report.md";
+        const reportOutputPath = "trustbridge-report.md";
         // Failure snooze window (Issue #155)
         const snoozeWindowMinutes = (0, inputs_1.parseNumberInput)(core.getInput("snooze_window_minutes"), 30, {
             min: 0,
@@ -84368,7 +84780,7 @@ async function run() {
         const homeDomainCheckMode = homeDomainCheckModeRaw === "strict" ? "strict" : "warn";
         // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
         // GitHub Checks API integration (Wave #26 — optional, off by default)
-        const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput("use_check_runs"), false);
+        const useCheckRuns = false;
         // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
         const checkLedgerFreshnessEnabled = (0, inputs_1.parseBooleanInput)(core.getInput("check_ledger_freshness"), false);
         const maxLedgerLagSeconds = (0, inputs_1.parseNumberInput)(core.getInput("max_ledger_lag_seconds") || "60", 60, { min: 1, max: 3600 });
@@ -84705,6 +85117,22 @@ async function run() {
                         }
                         result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
                     }
+                }
+                else if ((0, horizon_1.isCircuitOpenError)(error)) {
+                    // #209/#434: the circuit breaker fast-failed the request, so Horizon was
+                    // never contacted and the account state is entirely unknown. Report this
+                    // as CIRCUIT_OPEN (not HORIZON_ERROR) and let the comment render a
+                    // dedicated banner so a resilience safeguard is not misread as an
+                    // account-level failure. statusCode is 0 — no HTTP response happened.
+                    horizonFetchStatusCode = 0;
+                    horizonFetchError = error.message;
+                    core.error(error.message);
+                    core.warning("Horizon circuit breaker is open — the account was not checked. " +
+                        "Re-run the workflow after the recovery window elapses.");
+                    metrics_1.globalMetrics.incrementCounter("errors");
+                    metrics_1.globalMetrics.incrementCounter("horizon_circuit_open");
+                    metrics_1.globalMetrics.recordMetric("horizon_circuit_open", 1, "count");
+                    result = (0, checks_1.circuitOpenFailureResult)(error.message, checkConfig);
                 }
                 else if (error instanceof horizon_1.HorizonError) {
                     horizonFetchStatusCode = error.statusCode;
@@ -85191,6 +85619,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TRUSTBRIDGE_ENV_MAP = void 0;
 exports.parseBooleanInput = parseBooleanInput;
+exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
 exports.getErrorMessage = getErrorMessage;
 exports.parseAssigneeAddressMap = parseAssigneeAddressMap;
@@ -85213,6 +85642,64 @@ function parseBooleanInput(value, defaultValue) {
         return false;
     }
     return defaultValue;
+}
+const TRUTHY = ['true', '1', 'yes'];
+const FALSY = ['false', '0', 'no'];
+/**
+ * Resolve the maintainer-skip input, honouring the canonical
+ * `skip_for_maintainers` name and the deprecated `skip_if_maintainer` alias
+ * (Issue #448).
+ *
+ * Precedence rules, in order:
+ *
+ * 1. `skip_for_maintainers` wins whenever it carries an explicit boolean.
+ *    A caller who writes `skip_for_maintainers: false` alongside a stale
+ *    `skip_if_maintainer: true` gets the explicit `false` — the canonical
+ *    input is never silently overridden.
+ * 2. The alias is consulted only when the canonical input is unset/empty.
+ *    This is what makes the alias usable at all: `action.yml` gives the
+ *    canonical input a `false` default, so "canonical is unset" is detected
+ *    from the raw (pre-default) input string rather than from the parsed
+ *    value.
+ * 3. If neither is supplied, the value is `false` (opt-in only).
+ *
+ * When both are supplied with conflicting values, `conflict` is set so the
+ * caller can warn; the canonical value is still the one used.
+ *
+ * @param canonicalValue Raw `skip_for_maintainers` input.
+ * @param aliasValue     Raw `skip_if_maintainer` input.
+ * @returns              Resolved value plus provenance.
+ */
+function resolveMaintainerSkipInput(canonicalValue, aliasValue) {
+    const canonical = (canonicalValue ?? '').trim();
+    const alias = (aliasValue ?? '').trim();
+    const canonicalIsBoolean = TRUTHY.includes(canonical.toLowerCase())
+        || FALSY.includes(canonical.toLowerCase());
+    const aliasIsBoolean = TRUTHY.includes(alias.toLowerCase())
+        || FALSY.includes(alias.toLowerCase());
+    if (canonicalIsBoolean) {
+        const enabled = parseBooleanInput(canonical, false);
+        return {
+            enabled,
+            source: 'skip_for_maintainers',
+            conflict: aliasIsBoolean && parseBooleanInput(alias, false) !== enabled,
+            usedDeprecatedAlias: false,
+        };
+    }
+    if (aliasIsBoolean) {
+        return {
+            enabled: parseBooleanInput(alias, false),
+            source: 'skip_if_maintainer',
+            conflict: false,
+            usedDeprecatedAlias: true,
+        };
+    }
+    return {
+        enabled: false,
+        source: 'default',
+        conflict: false,
+        usedDeprecatedAlias: false,
+    };
 }
 function parseNumberInput(value, defaultValue, options = {}) {
     if (value === undefined || value.trim() === '') {
@@ -85490,6 +85977,8 @@ exports.FAQ_ANCHORS = {
     HORIZON_ERROR: 'horizon-error',
     DEBUG_MODE: 'debug-mode',
     WEBHOOK_NOT_RECEIVED: 'webhook-not-received',
+    CLAIMABLE_BALANCE: 'claimable-balance',
+    UNAUTHORIZED_TRUSTLINE: 'unauthorized-trustline',
 };
 /**
  * Map from check label keywords to FAQ anchor names.
@@ -85497,10 +85986,13 @@ exports.FAQ_ANCHORS = {
  */
 const CHECK_TO_ANCHOR_MAP = [
     { keyword: 'funded', anchor: exports.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED },
+    // 'unauthorized' must come before 'trustline' so the more specific match wins
+    { keyword: 'unauthorized', anchor: exports.FAQ_ANCHORS.UNAUTHORIZED_TRUSTLINE },
     { keyword: 'trustline', anchor: exports.FAQ_ANCHORS.TRUSTLINE_MISSING },
     { keyword: 'reserve', anchor: exports.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
     { keyword: 'xlm', anchor: exports.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
     { keyword: 'horizon', anchor: exports.FAQ_ANCHORS.HORIZON_ERROR },
+    { keyword: 'claimable', anchor: exports.FAQ_ANCHORS.CLAIMABLE_BALANCE },
 ];
 /**
  * Resolve the FAQ anchor most relevant to a check label.
@@ -85814,10 +86306,18 @@ const ADDRESS_CONTEXT_KEYS = new Set([
 ]);
 /**
  * Pattern matching Stellar account identifiers that may appear in logs:
- * classic G-addresses, C-addresses (Soroban contracts), and muxed M-addresses.
- * All are 56 characters long and begin with G, C, or M.
+ * classic G-addresses (56 chars), C-addresses / Soroban contracts (56 chars),
+ * and short-form M-address-like patterns (56 chars starting with M).
+ * All standard StrKey addresses begin with G or C and are exactly 56 characters.
  */
-const STELLAR_ADDRESS_REGEX = /\b([GCM][A-Z2-7]{55})\b/g;
+const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+/**
+ * Pattern matching muxed M-addresses in free-form text.
+ * Muxed accounts encode as 69 characters: M + 68 base32 chars (version byte,
+ * 32-byte ed25519 key, 8-byte muxed ID, 2-byte CRC-16/XMODEM checksum).
+ * These are distinct from G/C addresses and require a separate regex.
+ */
+const MUXED_ADDRESS_REGEX = /\bM[A-Z2-7]{68}\b/g;
 const PEM_PRIVATE_KEY_REGEX = /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
 const SECRET_ASSIGNMENT_REGEX = /((?:[A-Za-z0-9_-]*?(?:token|secret|signature|hmac|key|auth|authorization)[A-Za-z0-9_-]*?)\s*(?:=|:)\s*)(?!-----BEGIN)([^\s,;]+)/gi;
 const SENSITIVE_SECRET_KEYS = new Set([
@@ -85855,35 +86355,54 @@ function isSensitiveSecretKey(key) {
         normalized.includes('auth'));
 }
 /**
- * Redacts a single Stellar address (G- or C-address) to its first 4 and
- * last 4 characters, separated by `...`. Non-address strings are returned
- * unchanged so non-address log values never collide with the redaction
- * pass.
+ * Redacts a single Stellar address to its first 4 and last 4 characters,
+ * separated by `...`. Handles:
+ *   - G-addresses and C-addresses (Soroban contracts): exactly 56 characters.
+ *   - Muxed M-addresses: exactly 69 characters (M + 68 base32 chars).
+ * Non-address strings are returned unchanged so non-address log values
+ * never collide with the redaction pass.
  *
  * Examples:
  *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
  *     => 'GA5Z...KZVN'
+ *   redactStellarAddress('MA7QYNF7SOWQ3GLR2BGMZEHXR8' + 'A'.repeat(43))
+ *     => 'MA7Q...AAAA'
  */
 function redactStellarAddress(address) {
     if (!address)
         return address;
     const trimmed = address.trim();
-    if (trimmed.length !== 56)
-        return address;
     const first = trimmed.charAt(0);
-    if (first !== 'G' && first !== 'C' && first !== 'M')
-        return address;
-    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
-        // Reset regex state (global flag); bail out if it's not a clean match.
-        STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    // Muxed M-address: exactly 69 chars
+    if (first === 'M' && trimmed.length === 69) {
+        MUXED_ADDRESS_REGEX.lastIndex = 0;
+        if (MUXED_ADDRESS_REGEX.test(trimmed)) {
+            MUXED_ADDRESS_REGEX.lastIndex = 0;
+            return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+        }
+        MUXED_ADDRESS_REGEX.lastIndex = 0;
         return address;
     }
-    STELLAR_ADDRESS_REGEX.lastIndex = 0;
-    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+    // Classic G-address or C-address: exactly 56 chars
+    if ((first === 'G' || first === 'C') && trimmed.length === 56) {
+        STELLAR_ADDRESS_REGEX.lastIndex = 0;
+        if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
+            // Reset regex state (global flag); bail out if it's not a clean match.
+            STELLAR_ADDRESS_REGEX.lastIndex = 0;
+            return address;
+        }
+        STELLAR_ADDRESS_REGEX.lastIndex = 0;
+        return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+    }
+    return address;
 }
 /**
- * Redacts every Stellar address and PEM private key embedded in an arbitrary free-form
- * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
+ * Redacts every Stellar address (G-, C-, and muxed M-addresses) and PEM
+ * private key embedded in an arbitrary free-form string — error messages,
+ * Horizon URLs, JSON snippets, stack traces, etc.
+ *
+ * Muxed M-addresses (69 chars) are scanned first so their longer pattern
+ * cannot be partially matched by the 56-char G/C regex.
  */
 function redactString(value) {
     if (!value)
@@ -85895,6 +86414,9 @@ function redactString(value) {
         }
         return `${prefix}[REDACTED]`;
     });
+    // Redact muxed M-addresses (69 chars) before G/C addresses (56 chars)
+    MUXED_ADDRESS_REGEX.lastIndex = 0;
+    masked = masked.replace(MUXED_ADDRESS_REGEX, (match) => `${match.slice(0, 4)}...${match.slice(-4)}`);
     STELLAR_ADDRESS_REGEX.lastIndex = 0;
     return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
@@ -85904,12 +86426,19 @@ function redactString(value) {
  * matching an address shape are masked before the URL reaches a log line.
  * The base hostname / protocol is preserved so operators can still verify
  * which Horizon instance was called.
+ *
+ * Handles all three Stellar address forms:
+ *   - G-addresses and C-addresses (56 chars)
+ *   - Muxed M-addresses (69 chars)
  */
 function redactHorizonUrl(url) {
     if (!url)
         return url;
     const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
-    let masked = url.replace(/\/accounts\/([GCM][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
+    // Redact muxed M-addresses (69 chars) in path segments first
+    let masked = url.replace(/\/accounts\/(M[A-Z2-7]{68})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${addr.slice(0, 4)}...${addr.slice(-4)}${rest ?? ''}`);
+    // Then redact classic G/C addresses (56 chars) in path segments
+    masked = masked.replace(/\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
     try {
         const parsed = new URL(masked);
         const safeParams = new URLSearchParams();
@@ -86181,12 +86710,13 @@ function emitInputsLogRecord(inputs) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.TROUBLESHOOTING_FAQ_BASE = void 0;
+exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
 exports.extractChecklistState = extractChecklistState;
 exports.buildOnboardingChecklist = buildOnboardingChecklist;
 const links_1 = __nccwpck_require__(73346);
+const i18n_1 = __nccwpck_require__(84859);
 function escapeMarkdownInline(value) {
     // Escape Markdown control characters that can break comment structure or
     // enable link/emphasis injection. Dots and hyphens are left alone so domains
@@ -86197,32 +86727,39 @@ function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
 }
 /**
- * Base URL for FAQ anchors linked from the onboarding checklist.
- * Points to docs/FAQ.md in the trustbridge-action repository.
- * @deprecated Use DEFAULT_FAQ_BASE_URL from links.ts directly.
+ * Canonical (locale-independent) keys used in the Map returned by
+ * `extractChecklistState` and accepted by `buildOnboardingChecklist` via
+ * `options.previousChecks`.
+ *
+ * These are *stable identifiers*, not rendered text — a comment written in
+ * `es` and re-rendered in `en` still maps onto the same key, which is what
+ * makes checklist state survive a locale switch (Issue #436).
  */
-exports.TROUBLESHOOTING_FAQ_BASE = links_1.DEFAULT_FAQ_BASE_URL;
+exports.CHECKLIST_FUND_KEY = 'Fund account';
+exports.CHECKLIST_RESERVE_KEY = 'Verify XLM balance';
 /**
  * The fixed set of checklist label keys used in the onboarding checklist.
- * These are the only labels that extractChecklistState will recognise so that
- * a malicious comment body can never inject unexpected checked state. The
- * values are exact substrings of the bold label text rendered by
- * buildOnboardingChecklist (e.g. `**Fund account**`).
+ * These are the only keys that extractChecklistState will recognise so that
+ * a malicious comment body can never inject unexpected checked state.
  *
  * @internal Exported for testing.
  */
 exports.CHECKLIST_LABEL_KEYS = [
-    'Fund account',
+    exports.CHECKLIST_FUND_KEY,
     // trustline label is dynamic (includes asset code), handled separately
-    'Verify XLM balance',
+    exports.CHECKLIST_RESERVE_KEY,
 ];
 /**
  * Sentinel prefix used to match the trustline checklist label regardless of
  * the asset code.  The parser matches any line whose bold label *starts with*
  * this prefix (up to the next ` trustline` suffix pattern) so asset codes
  * containing markdown-safe characters are matched correctly.
+ *
+ * @deprecated Locale-aware affixes are derived from the i18n string
+ * `checklistTrustlineLabel`; these remain as the English defaults.
  */
 exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = 'Add ';
+/** @deprecated See {@link CHECKLIST_TRUSTLINE_LABEL_PREFIX}. */
 exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = ' trustline';
 /**
  * Key used to store the trustline checked state inside the Map returned by
@@ -86230,31 +86767,80 @@ exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = ' trustline';
  */
 exports.CHECKLIST_TRUSTLINE_KEY = 'trustline';
 /**
+ * Marker injected into a localized trustline label template so the literal
+ * prefix/suffix around the asset code can be derived without hard-coding
+ * per-locale affixes.
+ */
+const ASSET_CODE_SENTINEL = '\u0001';
+/**
+ * Derive the literal affixes around the asset code for a given locale by
+ * rendering the localized label template with a sentinel "asset code".
+ */
+function trustlineAffixes(locale) {
+    const template = (0, i18n_1.getStrings)(locale).checklistTrustlineLabel(ASSET_CODE_SENTINEL);
+    const index = template.indexOf(ASSET_CODE_SENTINEL);
+    // A locale pack that drops the placeholder still yields a usable (possibly
+    // empty) affix pair — the label simply becomes a literal match.
+    const safeIndex = index === -1 ? template.length : index;
+    return {
+        prefix: template.slice(0, safeIndex),
+        suffix: index === -1 ? '' : template.slice(safeIndex + 1),
+    };
+}
+function localeLabelSet(locale) {
+    const strings = (0, i18n_1.getStrings)(locale);
+    return {
+        heading: strings.checklistHeading,
+        fund: strings.checklistFundAccountLabel,
+        reserve: strings.checklistReserveLabel,
+        trustline: trustlineAffixes(locale),
+    };
+}
+/**
+ * All locale label sets, in canonical order. Used by `extractChecklistState`
+ * so a comment body written in one locale is still parsed after the workflow
+ * switches `locale` (Issue #436).
+ */
+function allLocaleLabelSets() {
+    return i18n_1.SUPPORTED_LOCALES.map((locale) => localeLabelSet(locale));
+}
+/**
  * Parse an existing TrustBridge comment body and extract the checked/unchecked
  * state of each onboarding checklist item (Issue #311).
  *
  * Only lines that match one of the known checklist label patterns are
  * recognised — no user-controlled text is used as a map key, so a maliciously
- * crafted comment body cannot inject unexpected state.
+ * crafted comment body cannot inject unexpected state. Labels are matched
+ * against the built-in locale allowlist (or a single locale when
+ * `options.locale` is supplied).
  *
  * The function is intentionally permissive about whitespace and case so that
  * minor formatting differences between action versions do not break persistence.
  *
  * @param body   Raw markdown body of an existing TrustBridge comment.
+ * @param options Optional locale restriction.
  * @returns      A Map from canonical label key to checked boolean.
- *               Keys: `"Fund account"`, `"trustline"`, `"Verify XLM balance"`.
+ *               Keys: `CHECKLIST_FUND_KEY`, `CHECKLIST_TRUSTLINE_KEY`,
+ *               `CHECKLIST_RESERVE_KEY`.
  *               Only items found in the body are included — callers should
  *               treat a missing key as "no previous state".
  */
-function extractChecklistState(body) {
+function extractChecklistState(body, options = {}) {
     const state = new Map();
     if (!body || typeof body !== 'string') {
         return state;
     }
+    const labelSets = options.locale
+        ? [localeLabelSet(options.locale)]
+        : allLocaleLabelSets();
     // Locate the onboarding checklist section so we only parse lines inside it.
     // This prevents false positives from other task-list items in the comment.
-    const checklistHeaderPattern = /^###\s+Onboarding checklist\s*$/im;
-    const headerMatch = checklistHeaderPattern.exec(body);
+    // Every known locale heading is accepted so a locale switch does not hide
+    // the section (Issue #436).
+    const headingPattern = new RegExp(`^###[ \\t]+(?:${labelSets
+        .map((set) => escapeRegExp(set.heading))
+        .join('|')})[ \\t]*$`, 'im');
+    const headerMatch = headingPattern.exec(body);
     if (!headerMatch) {
         return state;
     }
@@ -86276,36 +86862,55 @@ function extractChecklistState(body) {
     //   \*\*([^*]+)\*\*   — bold label text (no asterisks inside)
     const linePattern = /^[ \t]*-[ \t]+\[(x| )\][ \t]+\*\*([^*]+)\*\*/gim;
     let match;
+    const fundLabels = new Set(labelSets.map((set) => set.fund));
+    const reserveLabels = new Set(labelSets.map((set) => set.reserve));
     while ((match = linePattern.exec(checklistSection)) !== null) {
         const checked = match[1] === 'x';
         const rawLabel = match[2].trim();
-        // Fund account — exact match (allowlisted)
-        if (rawLabel === 'Fund account') {
-            state.set('Fund account', checked);
+        // Fund account — exact match against the locale allowlist
+        if (fundLabels.has(rawLabel)) {
+            state.set(exports.CHECKLIST_FUND_KEY, checked);
             continue;
         }
-        // Verify XLM balance — exact match (allowlisted)
-        if (rawLabel === 'Verify XLM balance') {
-            state.set('Verify XLM balance', checked);
+        // Verify XLM balance — exact match against the locale allowlist
+        if (reserveLabels.has(rawLabel)) {
+            state.set(exports.CHECKLIST_RESERVE_KEY, checked);
             continue;
         }
-        // Trustline — dynamic label "Add <ASSET_CODE> trustline"; match by prefix+suffix
+        // Trustline — dynamic label "<prefix><ASSET_CODE><suffix>"; match by affixes.
         // Only ASCII printable characters are allowed in the asset code portion to
         // prevent injection via embedded newlines or control characters.
-        if (rawLabel.startsWith(exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX) &&
-            rawLabel.endsWith(exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX) &&
-            // The asset code portion between prefix and suffix must be pure ASCII
-            // printable (no control chars, no Unicode shenanigans).
-            /^[\x20-\x7E]+$/.test(rawLabel)) {
+        for (const set of labelSets) {
+            const { prefix, suffix } = set.trustline;
+            if (!prefix && !suffix)
+                continue;
+            if (!rawLabel.startsWith(prefix) || !rawLabel.endsWith(suffix))
+                continue;
+            const assetCode = rawLabel.slice(prefix.length, rawLabel.length - suffix.length);
+            if (assetCode.length === 0)
+                continue;
+            if (!/^[\x20-\x7E]+$/.test(assetCode))
+                continue;
             state.set(exports.CHECKLIST_TRUSTLINE_KEY, checked);
+            break;
         }
         // Any other bold label text is silently ignored.
     }
     return state;
 }
 /**
+ * Escape a string for safe use inside a regular expression.
+ */
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
  * Render a GitHub Markdown task-list checklist whose boxes reflect live
  * `ValidationResult` state (fund → trustline → verify balance).
+ *
+ * All headings and labels come from the locale string pack (Issue #436) so a
+ * non-`en` comment no longer mixes English checklist copy into a translated
+ * comment.
  *
  * When `options.previousChecks` is supplied (extracted from a prior sticky
  * comment via `extractChecklistState`), a box is checked if EITHER the live
@@ -86316,23 +86921,24 @@ function extractChecklistState(body) {
  * Checkboxes are comment-only (no GitHub Projects task-list API sync).
  */
 function buildOnboardingChecklist(result, options) {
+    const strings = (0, i18n_1.getStrings)(options.locale ?? 'en');
     const safeAsset = escapeMarkdownInline(options.assetCode);
     const fundFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`;
     const trustFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.TRUSTLINE_MISSING}`;
     const reserveFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`;
     const prev = options.previousChecks;
     // Resolve each checkbox state: live result OR previously-checked.
-    const fundChecked = result.accountFunded || (prev?.get('Fund account') === true);
+    const fundChecked = result.accountFunded || (prev?.get(exports.CHECKLIST_FUND_KEY) === true);
     const trustChecked = result.trustlineExists || (prev?.get(exports.CHECKLIST_TRUSTLINE_KEY) === true);
-    const reserveChecked = result.xlmReserveMet || (prev?.get('Verify XLM balance') === true);
+    const reserveChecked = result.xlmReserveMet || (prev?.get(exports.CHECKLIST_RESERVE_KEY) === true);
     const lines = [
-        '### Onboarding checklist',
+        `### ${strings.checklistHeading}`,
         '',
-        '_Complete these steps in order. Boxes update automatically from live Horizon checks._',
+        strings.checklistIntro,
         '',
-        `- [${fundChecked ? 'x' : ' '}] **Fund account** — Activate the account with XLM. ([FAQ](${fundFaq}))`,
-        `- [${trustChecked ? 'x' : ' '}] **Add ${safeAsset} trustline** — Configure the asset trustline. ([FAQ](${trustFaq}))`,
-        `- [${reserveChecked ? 'x' : ' '}] **Verify XLM balance** — Meet the **${options.minXlmReserve} XLM** reserve. ([FAQ](${reserveFaq}))`,
+        `- [${fundChecked ? 'x' : ' '}] **${strings.checklistFundAccountLabel}** — ${strings.checklistFundAccountDetail} ([FAQ](${fundFaq}))`,
+        `- [${trustChecked ? 'x' : ' '}] **${strings.checklistTrustlineLabel(safeAsset)}** — ${strings.checklistTrustlineDetail} ([FAQ](${trustFaq}))`,
+        `- [${reserveChecked ? 'x' : ' '}] **${strings.checklistReserveLabel}** — ${strings.checklistReserveDetail(String(options.minXlmReserve))} ([FAQ](${reserveFaq}))`,
     ];
     return lines.join('\n');
 }
@@ -87397,6 +88003,8 @@ function isCheckPlugin(obj) {
  *
  * Only paths listed in `allowedPluginPaths` are loaded. Missing or invalid
  * plugins are logged as warnings but do not block the run (fail-open).
+ * Two plugins exporting the same `id` throw a `PluginLoadError` with reason
+ * `duplicate_id`.
  *
  * Returns an array of successfully loaded plugins.
  */
@@ -87415,10 +88023,11 @@ async function loadPluginsFromAllowlist(config) {
         });
     }
     const loaded = [];
+    const pathById = new Map();
     for (const pluginPath of allowedPluginPaths) {
+        let plugin;
         try {
-            const plugin = await loadPlugin(workspaceRoot, pluginPath, { debugMode });
-            loaded.push(plugin);
+            plugin = await loadPlugin(workspaceRoot, pluginPath, { debugMode });
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -87426,7 +88035,16 @@ async function loadPluginsFromAllowlist(config) {
                 component: 'pluginLoader',
             });
             // Fail-open: continue loading other plugins
+            continue;
         }
+        // Duplicate ids are a configuration error: the registry is first-wins, so
+        // one plugin would be silently dropped. Fail with a clear error instead.
+        const existingPath = pathById.get(plugin.id);
+        if (existingPath !== undefined) {
+            throw new PluginLoadError(`Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existingPath}. Plugin ids must be unique.`, pluginPath, 'duplicate_id');
+        }
+        pathById.set(plugin.id, pluginPath);
+        loaded.push(plugin);
     }
     if (debugMode) {
         logger_1.logger.debug(`Loaded ${loaded.length}/${allowedPluginPaths.length} plugins`, {
@@ -88672,12 +89290,12 @@ exports.fetchDashboardRoster = fetchDashboardRoster;
 const crypto = __importStar(__nccwpck_require__(76982));
 const validation_1 = __nccwpck_require__(24344);
 const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
-async function fetchDashboardRoster(url, secret, timeoutMs, fetchFn = fetch) {
+async function fetchDashboardRoster(url, secret, timeoutMs, allowHttp = false, fetchFn = fetch) {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) {
         throw new Error('Dashboard roster URL cannot be empty.');
     }
-    const ssrfCheck = (0, validation_1.validateSsrfSafeUrl)(trimmedUrl, 'dashboard_roster_url', { allowHttp: true });
+    const ssrfCheck = (0, validation_1.validateSsrfSafeUrl)(trimmedUrl, 'dashboard_roster_url', { allowHttp });
     if (!ssrfCheck.valid) {
         throw new Error(`Dashboard roster URL failed security validation: ${ssrfCheck.errors.join(', ')}`);
     }
@@ -88721,7 +89339,7 @@ async function fetchDashboardRoster(url, secret, timeoutMs, fetchFn = fetch) {
             if (!location)
                 throw new Error('Redirect missing location');
             const redirectUrl = new URL(location, targetUrl).toString();
-            const redirectSsrf = (0, validation_1.validateSsrfSafeUrl)(redirectUrl, 'dashboard_roster_redirect', { allowHttp: true });
+            const redirectSsrf = (0, validation_1.validateSsrfSafeUrl)(redirectUrl, 'dashboard_roster_redirect', { allowHttp });
             if (!redirectSsrf.valid) {
                 throw new Error(`Dashboard roster redirect failed security validation: ${redirectSsrf.errors.join(', ')}`);
             }
@@ -88888,6 +89506,20 @@ function buildSarifRules() {
                 precision: 'high',
             },
         },
+        {
+            id: 'TB005',
+            shortDescription: {
+                text: 'Asset trustline does not have clawback enabled',
+            },
+            fullDescription: {
+                text: 'The issuer can reclaim clawback-enabled assets at any time. Emitted when clawback_strict_mode blocks a clawback-enabled trustline.',
+            },
+            helpUri: 'https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8',
+            properties: {
+                tags: ['trustbridge', 'stellar', 'wallet-readiness', 'clawback'],
+                precision: 'high',
+            },
+        },
     ];
 }
 /**
@@ -88902,6 +89534,9 @@ function checkToSarifLevel(check) {
 function checkLabelToRuleId(label) {
     if (label.includes('Account funded'))
         return 'TB001';
+    // Checked before 'trustline' so clawback labels never fall into TB002.
+    if (label.includes('clawback'))
+        return 'TB005';
     if (label.includes('trustline'))
         return 'TB002';
     if (label.includes('XLM reserve'))
@@ -91100,9 +91735,11 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.WEBHOOK_STELLAR_ADDRESS_PATTERN = exports.WEBHOOK_REPOSITORY_PATTERN = exports.WEBHOOK_CHECK_REQUIRED_FIELDS = exports.WEBHOOK_RESULT_REQUIRED_FIELDS = exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS = void 0;
 exports.computeWebhookSignature = computeWebhookSignature;
 exports.verifyWebhookSignature = verifyWebhookSignature;
 exports.buildWebhookPayload = buildWebhookPayload;
+exports.validateWebhookPayload = validateWebhookPayload;
 exports.deliverWebhook = deliverWebhook;
 exports.sendWebhookNotification = sendWebhookNotification;
 const crypto = __importStar(__nccwpck_require__(76982));
@@ -91167,11 +91804,113 @@ function buildWebhookPayload(result, stellarAddress, repository, issueNumber) {
     };
 }
 // ---------------------------------------------------------------------------
+// Schema validation (Issue #471)
+// ---------------------------------------------------------------------------
+/** Mirrors `schemas/webhook-payload.schema.json`; kept in sync by webhook-contract tests. */
+exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS = [
+    'schema_version',
+    'event',
+    'timestamp',
+    'repository',
+    'issue_number',
+    'stellar_address',
+    'result',
+];
+exports.WEBHOOK_RESULT_REQUIRED_FIELDS = [
+    'valid',
+    'account_funded',
+    'trustline_exists',
+    'xlm_balance',
+    'checks',
+];
+exports.WEBHOOK_CHECK_REQUIRED_FIELDS = ['label', 'passed'];
+exports.WEBHOOK_REPOSITORY_PATTERN = '^[^/]+/[^/]+$';
+exports.WEBHOOK_STELLAR_ADDRESS_PATTERN = '^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$';
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+function checkObjectKeys(obj, allowed, at, errors) {
+    for (const field of allowed) {
+        if (!(field in obj))
+            errors.push(`${at}: missing required property "${field}"`);
+    }
+    for (const key of Object.keys(obj)) {
+        if (!allowed.includes(key))
+            errors.push(`${at}: unexpected property "${key}"`);
+    }
+}
+function isPlainObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Validate an outbound webhook payload against
+ * `schemas/webhook-payload.schema.json`.
+ *
+ * @returns A list of violations; empty when the payload is conformant.
+ */
+function validateWebhookPayload(payload) {
+    const errors = [];
+    if (!isPlainObject(payload))
+        return ['payload: must be an object'];
+    checkObjectKeys(payload, exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS, 'payload', errors);
+    if (payload.schema_version !== '1')
+        errors.push('schema_version: must be "1"');
+    if (payload.event !== 'validation_complete')
+        errors.push('event: must be "validation_complete"');
+    if (typeof payload.timestamp !== 'string' || !ISO_DATE_TIME.test(payload.timestamp) || isNaN(Date.parse(payload.timestamp))) {
+        errors.push('timestamp: must be an ISO-8601 date-time string');
+    }
+    if (typeof payload.repository !== 'string' || !new RegExp(exports.WEBHOOK_REPOSITORY_PATTERN).test(payload.repository)) {
+        errors.push('repository: must be in "owner/repo" format');
+    }
+    const issue = payload.issue_number;
+    if (issue !== null && (typeof issue !== 'number' || !Number.isInteger(issue) || issue < 1)) {
+        errors.push('issue_number: must be an integer >= 1 or null');
+    }
+    if (typeof payload.stellar_address !== 'string' || !new RegExp(exports.WEBHOOK_STELLAR_ADDRESS_PATTERN).test(payload.stellar_address)) {
+        errors.push('stellar_address: must be a redacted address (first-4...last-4)');
+    }
+    const result = payload.result;
+    if (!isPlainObject(result)) {
+        if ('result' in payload)
+            errors.push('result: must be an object');
+        return errors;
+    }
+    checkObjectKeys(result, exports.WEBHOOK_RESULT_REQUIRED_FIELDS, 'result', errors);
+    for (const field of ['valid', 'account_funded', 'trustline_exists']) {
+        if (field in result && typeof result[field] !== 'boolean')
+            errors.push(`result.${field}: must be a boolean`);
+    }
+    if ('xlm_balance' in result && typeof result.xlm_balance !== 'string') {
+        errors.push('result.xlm_balance: must be a string');
+    }
+    if ('checks' in result) {
+        if (!Array.isArray(result.checks)) {
+            errors.push('result.checks: must be an array');
+        }
+        else {
+            result.checks.forEach((check, i) => {
+                const at = `result.checks[${i}]`;
+                if (!isPlainObject(check)) {
+                    errors.push(`${at}: must be an object`);
+                    return;
+                }
+                checkObjectKeys(check, exports.WEBHOOK_CHECK_REQUIRED_FIELDS, at, errors);
+                if ('label' in check && typeof check.label !== 'string')
+                    errors.push(`${at}.label: must be a string`);
+                if ('passed' in check && typeof check.passed !== 'boolean')
+                    errors.push(`${at}.passed: must be a boolean`);
+            });
+        }
+    }
+    return errors;
+}
+// ---------------------------------------------------------------------------
 // Delivery
 // ---------------------------------------------------------------------------
 /**
  * Deliver a signed webhook notification to the configured endpoint.
  *
+ * - Validates the payload against `schemas/webhook-payload.schema.json` and
+ *   refuses to send (fail closed) when it does not conform.
  * - Signs the JSON payload with HMAC-SHA256 when a secret is provided.
  * - Respects `timeoutMs` via `AbortController`.
  * - **Never throws** — all errors are swallowed and returned in the result
@@ -91182,6 +91921,14 @@ function buildWebhookPayload(result, stellarAddress, repository, issueNumber) {
  */
 async function deliverWebhook(payload, config, fetchFn = fetch) {
     const timeoutMs = config.timeoutMs ?? 5000;
+    // Fail closed: never send a body that breaks the published receiver contract.
+    const violations = validateWebhookPayload(payload);
+    if (violations.length > 0) {
+        return {
+            sent: false,
+            error: `payload failed webhook-payload.schema.json validation: ${violations.join('; ')}`,
+        };
+    }
     let body;
     try {
         body = JSON.stringify(payload);

@@ -113,9 +113,24 @@ export declare function verifyWebhookSignature(body: string, signature: string, 
  * masked address, never the full public key.
  */
 export declare function buildWebhookPayload(result: ValidationResult, stellarAddress: string, repository: string, issueNumber: number | null): WebhookPayload;
+/** Mirrors `schemas/webhook-payload.schema.json`; kept in sync by webhook-contract tests. */
+export declare const WEBHOOK_PAYLOAD_REQUIRED_FIELDS: readonly ["schema_version", "event", "timestamp", "repository", "issue_number", "stellar_address", "result"];
+export declare const WEBHOOK_RESULT_REQUIRED_FIELDS: readonly ["valid", "account_funded", "trustline_exists", "xlm_balance", "checks"];
+export declare const WEBHOOK_CHECK_REQUIRED_FIELDS: readonly ["label", "passed"];
+export declare const WEBHOOK_REPOSITORY_PATTERN = "^[^/]+/[^/]+$";
+export declare const WEBHOOK_STELLAR_ADDRESS_PATTERN = "^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$";
+/**
+ * Validate an outbound webhook payload against
+ * `schemas/webhook-payload.schema.json`.
+ *
+ * @returns A list of violations; empty when the payload is conformant.
+ */
+export declare function validateWebhookPayload(payload: unknown): string[];
 /**
  * Deliver a signed webhook notification to the configured endpoint.
  *
+ * - Validates the payload against `schemas/webhook-payload.schema.json` and
+ *   refuses to send (fail closed) when it does not conform.
  * - Signs the JSON payload with HMAC-SHA256 when a secret is provided.
  * - Respects `timeoutMs` via `AbortController`.
  * - **Never throws** — all errors are swallowed and returned in the result

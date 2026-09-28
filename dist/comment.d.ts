@@ -332,12 +332,37 @@ export declare function postIssueComment(token: string, body: string, options?: 
  * @internal Exported for testing.
  */
 export declare function resolveDiscussionNodeId(payload: unknown): string | undefined;
+/**
+ * The discussion comment that triggered a `discussion_comment` event, as
+ * needed to thread TrustBridge's reply (Issue #472).
+ *
+ * - `nodeId`: GraphQL node id of the triggering comment.
+ * - `isReply`: true when the triggering comment is itself a reply
+ *   (`comment.parent_id` is set). GitHub Discussions allow only one level of
+ *   replies, so the reply must then target the triggering comment's parent.
+ *
+ * Returns `undefined` for events without a comment (e.g. `discussion`),
+ * where TrustBridge posts a top-level comment.
+ *
+ * @internal Exported for testing.
+ */
+export declare function resolveDiscussionCommentTarget(payload: unknown): {
+    nodeId: string;
+    isReply: boolean;
+} | undefined;
 export interface UpsertDiscussionCommentOptions extends UpsertCommentOptions {
     /**
      * Explicit discussion node id (e.g. "DIC_kw..."). When omitted, the id is
      * resolved from `github.context.payload.discussion.node_id`.
      */
     discussionId?: string;
+    /**
+     * Node id of the top-level discussion comment to reply under (Issue #472).
+     * When omitted, it is resolved from a `discussion_comment` event payload:
+     * the triggering comment, or its parent when it is itself a reply. Other
+     * events post a top-level comment.
+     */
+    replyToId?: string;
 }
 interface DiscussionCommentNode {
     id: string;
@@ -355,7 +380,9 @@ interface DiscussionCommentNode {
  * the action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-export declare function findStickyDiscussionComment(octokit: Octokit, discussionId: string, options?: FindStickyCommentOptions): Promise<DiscussionCommentNode | undefined>;
+export declare function findStickyDiscussionComment(octokit: Octokit, discussionId: string, options?: FindStickyCommentOptions & {
+    replyToId?: string;
+}): Promise<DiscussionCommentNode | undefined>;
 /**
  * Post (or sticky-upsert) a TrustBridge comment on a GitHub Discussion via
  * the GraphQL API.
@@ -365,6 +392,10 @@ export declare function findStickyDiscussionComment(octokit: Octokit, discussion
  * TrustBridge comment on the discussion is updated in place via
  * `updateDiscussionComment`; otherwise a new comment is created via
  * `addDiscussionComment`.
+ *
+ * On `discussion_comment` events the comment is threaded under the triggering
+ * comment's top-level thread (`replyToId`), and the sticky lookup is scoped to
+ * that thread's replies (Issue #472).
  *
  * Requires `discussions: write` permission on the workflow token (documented
  * in docs/USAGE.md). A missing permission surfaces as a GraphQL mutation
