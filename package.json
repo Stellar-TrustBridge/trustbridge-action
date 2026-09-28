@@ -40,7 +40,7 @@
   "license": "MIT",
   "dependencies": {
     "@actions/cache": "^6.2.0",
-    "@actions/core": "^2.0.3",
+    "@actions/core": "^3.0.1",
     "@actions/github": "^6.0.1",
     "https-proxy-agent": "^9.1.0",
     "node-fetch": "^2.7.0"
