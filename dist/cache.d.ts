@@ -37,6 +37,20 @@ export interface CacheBackendOptions {
      * When provided, overrides useActionsCacheBackend.
      */
     backend?: PersistentCacheBackend;
+    /**
+     * Named backend selector. Supported values: `"github-actions"` (persists via
+     * GitHub Actions cache API) and `"memory"` (in-memory only, default).
+     *
+     * Any other value is **not supported** and will be ignored with a warning.
+     * The cache will fall back to in-memory-only mode so the workflow does not
+     * break, but the selected backend will not be active.
+     *
+     * @example
+     * ```ts
+     * new SimpleCache({ selectedBackend: 'github-actions' })
+     * ```
+     */
+    selectedBackend?: string;
 }
 /**
  * Interface for pluggable persistent cache backends (GitHub Actions cache, Redis, etc.).

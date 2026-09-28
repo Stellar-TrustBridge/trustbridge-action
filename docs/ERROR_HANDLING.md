@@ -118,7 +118,7 @@ Stellar accounts must receive a minimum XLM funding transaction before they exis
 
 Horizon may return `Retry-After`. The client:
 
-1. Waits for `Retry-After` or exponential backoff (1s, 2s, 4s)
+1. Waits for `Retry-After` or exponential backoff (1s, 2s, 4s) with a ±10% random jitter to prevent thundering herds.
 2. Enforces a sleep cap: `retry_max_delay_ms` (per retry) and `retry_max_total_wait_ms` (total across retries). If exceeded, throws a distinct rate limit error immediately.
 3. Retries up to **3** times
 4. If still failing → `horizonFailureResult`

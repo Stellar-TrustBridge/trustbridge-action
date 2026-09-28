@@ -81,12 +81,14 @@ export function parseBatchAddresses(raw: string): string[] {
     if (!Array.isArray(parsed)) {
       throw new Error('stellar_addresses JSON must be an array of strings.');
     }
-    addresses = (parsed as unknown[]).map((item, i) => {
-      if (typeof item !== 'string') {
-        throw new Error(`stellar_addresses JSON array item at index ${i} is not a string.`);
-      }
-      return item.trim();
-    });
+    addresses = (parsed as unknown[])
+      .map((item, i) => {
+        if (typeof item !== 'string') {
+          throw new Error(`stellar_addresses JSON array item at index ${i} is not a string.`);
+        }
+        return item.trim();
+      })
+      .filter((item) => item.length > 0);
   } else {
     // Newline-separated
     addresses = trimmed

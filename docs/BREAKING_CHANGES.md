@@ -209,7 +209,42 @@ An input or output **must** remain in the warn state for **at least one full maj
 
 | Input / Output | Deprecated in | Replacement | Planned removal |
 |----------------|--------------|-------------|-----------------|
-| _(none yet)_ | — | — | — |
+| `skip_if_maintainer` | v1.x (Issue #448) | `skip_for_maintainers` | v2.0.0 |
+
+### `skip_if_maintainer` → `skip_for_maintainers` (Issue #448)
+
+`skip_if_maintainer` was introduced alongside `skip_for_maintainers` as a
+naming variant. Two names for one behaviour invited a precedence question that
+was never documented, and the original `a || b` read was misleading: because
+`action.yml` gives `skip_for_maintainers` a `false` default, the truthy string
+`"false"` short-circuited the fallback and the alias was effectively
+unreachable.
+
+**Resolved precedence** (canonical always wins):
+
+1. `skip_for_maintainers` set to an explicit boolean → that value is used. The
+   alias is ignored, even if it says the opposite.
+2. Otherwise `skip_if_maintainer` set to an explicit boolean → that value is
+   used, plus a deprecation warning.
+3. Neither set → `false`.
+
+Conflicting values resolve in favour of the canonical input and emit an
+explicit warning; no value is silently chosen.
+
+**Risk of the deprecated alias.** The alias enables exactly the same opt-out as
+the canonical input, so it carries the identical security consideration:
+enabling either on contributor-facing workflows lets a maintainer actor bypass
+validation. The alias is deprecated for clarity and future removal, **not**
+because it is less safe. Migration is behaviour-preserving and needs no
+security review.
+
+| Change | Classification |
+| --- | --- |
+| `skip_if_maintainer` marked deprecated in `action.yml` + docs | Non-breaking (MINOR) |
+| Runtime deprecation warning when the alias is used | Non-breaking (MINOR) |
+| Runtime conflict warning when both inputs disagree | Non-breaking (MINOR) |
+| Documented canonical-wins precedence | Non-breaking (MINOR) — restores the alias to its documented contract |
+| Removal of `skip_if_maintainer` in v2 | **Breaking (MAJOR)** — covered by the warn → remove lifecycle above |
 
 ---
 
@@ -320,6 +355,22 @@ User-Agent: trustbridge-action/1
 - [ ] Is a new optional field added? Update `schemas/webhook-payload.schema.json` (mark as not-required).
 - [ ] Run `npm test -- --testPathPattern 'webhook'` — the contract tests must pass.
 - [ ] If introducing a new `schema_version`, add a new frozen-fields table above and update `buildWebhookPayload` to emit the new version for new consumers while keeping backward compatibility.
+
+---
+
+## Action Inputs: `posting_mode` vs `comment_mode` (Issue #418)
+
+### Summary of Change
+In previous versions, `comment_mode` had conflicting declarations across action specifications:
+1. Controlling GitHub comment posting behavior (`post`, `dry-run`, `off`).
+2. Controlling comment threading strategy (`sticky`, `new`, `reply`).
+
+### Resolution & Inputs
+- **`posting_mode`**: Dedicated input for comment posting policy. Allowed values: `'post'` (default), `'dry-run'`, `'off'`.
+- **`comment_mode`**: Dedicated input for comment threading strategy. Allowed values: `'sticky'` (default), `'new'`, `'reply'`.
+
+### Backward Compatibility
+To avoid breaking existing workflows that configured `comment_mode: dry-run` or `comment_mode: off`, `src/index.ts` automatically falls back to using `comment_mode` as `posting_mode` when `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`.
 
 ---
 

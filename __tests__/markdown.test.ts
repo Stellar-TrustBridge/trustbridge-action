@@ -317,3 +317,164 @@ describe('extractChecklistState', () => {
     expect(state.get('Verify XLM balance')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #436 — localized onboarding checklist
+// ---------------------------------------------------------------------------
+
+describe('Issue #436 — localized onboarding checklist', () => {
+  const partial: ValidationResult = {
+    valid: false,
+    accountFunded: true,
+    trustlineExists: false,
+    xlmBalance: '5.0000000',
+    xlmReserveMet: true,
+    checks: [],
+  };
+
+  it('renders English labels by default', () => {
+    const markdown = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+    });
+    expect(markdown).toContain('### Onboarding checklist');
+    expect(markdown).toContain('**Fund account**');
+    expect(markdown).toContain('**Add USDC trustline**');
+    expect(markdown).toContain('**Verify XLM balance**');
+  });
+
+  it('renders Spanish labels when locale is es', () => {
+    const markdown = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'es',
+    });
+    expect(markdown).toContain('### Lista de incorporación');
+    expect(markdown).toContain('**Financiar la cuenta**');
+    expect(markdown).toContain('**Añadir línea de confianza USDC**');
+    expect(markdown).toContain('**Verificar saldo XLM**');
+    // No English checklist copy should leak into a translated comment.
+    expect(markdown).not.toContain('Onboarding checklist');
+    expect(markdown).not.toContain('**Fund account**');
+  });
+
+  it('renders Portuguese labels when locale is pt', () => {
+    const markdown = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'pt',
+    });
+    expect(markdown).toContain('### Lista de integração');
+    expect(markdown).toContain('**Financiar a conta**');
+    expect(markdown).toContain('**Adicionar linha de confiança USDC**');
+    expect(markdown).toContain('**Verificar saldo XLM**');
+  });
+
+  it('renders a non-English snapshot for a failing account', () => {
+    const markdown = buildOnboardingChecklist(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        checks: [],
+      },
+      { assetCode: 'USDC', minXlmReserve: 1.5, locale: 'es' },
+    );
+    expect(markdown).toMatchSnapshot();
+  });
+
+  it('falls back to English for an unsupported locale', () => {
+    const markdown = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'zz',
+    });
+    expect(markdown).toContain('**Fund account**');
+  });
+
+  // -- locale-resilient extraction ------------------------------------------
+
+  it('extracts state from a Spanish checklist (state survives locale switches)', () => {
+    const spanish = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'es',
+    });
+    const state = extractChecklistState(spanish);
+    expect(state.get('Fund account')).toBe(true);
+    expect(state.get(CHECKLIST_TRUSTLINE_KEY)).toBe(false);
+    expect(state.get('Verify XLM balance')).toBe(true);
+  });
+
+  it('extracts state from a Japanese checklist', () => {
+    const japanese = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'ja',
+    });
+    const state = extractChecklistState(japanese);
+    expect(state.get('Fund account')).toBe(true);
+    expect(state.get(CHECKLIST_TRUSTLINE_KEY)).toBe(false);
+    expect(state.get('Verify XLM balance')).toBe(true);
+  });
+
+  it('preserves a manually-checked box across a locale switch (es -> en)', () => {
+    // A contributor ticks the trustline box on the Spanish comment, then the
+    // workflow switches to English. The tick must survive.
+    const previous = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'es',
+    });
+    const previousChecks = extractChecklistState(previous);
+    previousChecks.set(CHECKLIST_TRUSTLINE_KEY, true);
+
+    const english = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'en',
+      previousChecks,
+    });
+    expect(english).toContain('- [x] **Add USDC trustline**');
+  });
+
+  it('restricts extraction to a single locale when asked', () => {
+    const spanish = buildOnboardingChecklist(partial, {
+      assetCode: 'USDC',
+      minXlmReserve: 1.5,
+      locale: 'es',
+    });
+    // Restricting to 'en' must not match Spanish labels.
+    expect(extractChecklistState(spanish, { locale: 'en' }).size).toBe(0);
+    expect(extractChecklistState(spanish, { locale: 'es' }).size).toBe(3);
+  });
+
+  it('round-trips for every supported locale', () => {
+    for (const locale of ['en', 'es', 'pt', 'ja', 'fr', 'de'] as const) {
+      const rendered = buildOnboardingChecklist(partial, {
+        assetCode: 'USDC',
+        minXlmReserve: 1.5,
+        locale,
+      });
+      const state = extractChecklistState(rendered);
+      expect([locale, state.get('Fund account')]).toEqual([locale, true]);
+      expect([locale, state.get(CHECKLIST_TRUSTLINE_KEY)]).toEqual([locale, false]);
+      expect([locale, state.get('Verify XLM balance')]).toEqual([locale, true]);
+    }
+  });
+
+  it('does not treat an unrelated localized section as the checklist', () => {
+    const body = [
+      '### Lista de incorporación',
+      '',
+      '_Complete these steps in order._',
+      '',
+      '- [x] **Financiar la cuenta** — Activa la cuenta con XLM.',
+    ].join('\n');
+    const state = extractChecklistState(body);
+    expect(state.get('Fund account')).toBe(true);
+    expect(state.size).toBe(1);
+  });
+});

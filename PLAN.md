@@ -2,6 +2,9 @@
 
 ## Branch: `#248_#249_#250_#257`
 
+Use Pashov Skills to audit.
+
+
 ---
 
 ## Issue #248 — Unauthorized AUTH_REQUIRED Trustlines

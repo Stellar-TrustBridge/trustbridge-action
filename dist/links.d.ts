@@ -46,6 +46,8 @@ export declare const FAQ_ANCHORS: {
     readonly HORIZON_ERROR: "horizon-error";
     readonly DEBUG_MODE: "debug-mode";
     readonly WEBHOOK_NOT_RECEIVED: "webhook-not-received";
+    readonly CLAIMABLE_BALANCE: "claimable-balance";
+    readonly UNAUTHORIZED_TRUSTLINE: "unauthorized-trustline";
 };
 export type FaqAnchor = (typeof FAQ_ANCHORS)[keyof typeof FAQ_ANCHORS];
 /**

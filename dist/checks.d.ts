@@ -8,17 +8,17 @@ export declare const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
 /**
  * SEP-0001 home domain check mode.
  *
- * - `"warn"`  (default) â€” a missing or mismatched home domain records a metrics tag and
+ * - `"warn"`  (default) — a missing or mismatched home domain records a metrics tag and
  *   adds an informational check row but does NOT set `valid = false`.
- * - `"strict"` â€” a missing or mismatched home domain sets `valid = false` and blocks
+ * - `"strict"` — a missing or mismatched home domain sets `valid = false` and blocks
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = "warn" | "strict";
 /**
  * Claimable-balance policy (Issue #260).
  *
- * - `"ignore"` â€” funded means Horizon account exists; claimable balances do not affect funded.
- * - `"count"` â€” unfunded accounts with claimable balances surface an informational hint.
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
  */
 export type ClaimableBalancePolicy = "ignore" | "count";
 /**
@@ -72,13 +72,13 @@ export interface CheckConfig {
     /**
      * Maximum allowed lag in seconds between the latest ledger close time and
      * the current wall clock before the freshness guard fires.
-     * Defaults to 60 s (â‰ˆ 5â€“6 Stellar ledger close cycles).
+     * Defaults to 60 s (≈ 5–6 Stellar ledger close cycles).
      */
     maxLedgerLagSeconds?: number;
     /**
      * When `true` a stale ledger response sets `valid = false` and (when
      * `fail_on_missing` is also true) fails the workflow step.
-     * When `false` (default / "warn") the result is informational only â€”
+     * When `false` (default / "warn") the result is informational only —
      * a warning row is added to the checks table and metrics are emitted but
      * the overall `valid` flag is unaffected.
      */
@@ -86,16 +86,16 @@ export interface CheckConfig {
     /**
      * How to treat claimable balances when determining `funded` status.
      *
-     * - `"ignore"` (default) â€” funded = Horizon account exists (200). Claimable
+     * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
      *   balances are ignored; an address with only claimable balances still shows
-     *   â€œnot found / unfundedâ€. No extra Horizon request is made.
-     * - `"count"` â€” when the account is 404, TrustBridge also checks
+     *   “not found / unfunded”. No extra Horizon request is made.
+     * - `"count"` — when the account is 404, TrustBridge also checks
      *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
      *   5s). If claimable balances exist, the comment notes them but `accountFunded`
      *   remains false and `valid` is not set true unless documented. This is
      *   informational only and never auto-claims.
      *
-     * Default `"ignore"` matches todayâ€™s behavior and avoids extra request budget.
+     * Default `"ignore"` matches today’s behavior and avoids extra request budget.
      * Empty claimables (0) are treated as no hint in either mode.
      */
     claimableBalancePolicy?: ClaimableBalancePolicy;
@@ -125,14 +125,14 @@ export interface NetworkMismatchHint {
  * was performed or the address is genuinely unfunded everywhere).
  *
  * Deterministic heuristics (Issue #266):
- * - 404 primary + 200 alt (publicâ†’testnet OR testnetâ†’public) => hint, clear
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
  *   comment with both canonical URLs and horizon_url guidance.
  * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
  * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
  * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
- * - Canonical opposite URLs (https://horizon.stellar.org â†” https://horizon-testnet.stellar.org)
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
  *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
- *   Arbitrary fallback URLs are NEVER probed here â€” that is gated in `horizon.ts` via
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
  *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
  *
  * @param configuredHorizonUrl  The `horizon_url` input value.
@@ -144,7 +144,7 @@ export declare function detectNetworkMismatch(configuredHorizonUrl: string, stel
 }>): Promise<NetworkMismatchHint | undefined>;
 /**
  * Build the deterministic cross-network mismatch detail string used in the
- * `Account funded` check. Centralized so both directions (publicâ†”testnet) use
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
  * the identical format and are tested deterministically.
  */
 export declare function buildNetworkMismatchDetail(stellarAddress: string, hint: NetworkMismatchHint): string;
@@ -197,11 +197,21 @@ export interface ValidationResult {
     ledgerFreshnessResult?: LedgerFreshnessCheckResult;
     /**
      * Claimable balance info (Issue #260). Only populated when the account was
-     * fetched and the policy is observed. Informational only â€” does not affect
+     * fetched and the policy is observed. Informational only — does not affect
      * `accountFunded` when policy is `ignore` (default).
      */
     claimableBalanceCount?: number;
     hasClaimableBalances?: boolean;
+    /**
+     * True when the run short-circuited because the Horizon circuit breaker was
+     * open, so no account checks were actually performed (Issue #434).
+     *
+     * PII-safe by construction: it carries no account data, address, or balance,
+     * only the fact that the breaker tripped. The sticky comment renders a
+     * localized "circuit breaker open" banner from this flag so a resilience
+     * safeguard is never mistaken for an account-level failure.
+     */
+    circuitOpen?: boolean;
 }
 export interface NetworkPassphraseMismatch {
     expectedPassphrase: string;
@@ -248,7 +258,7 @@ export interface HomeDomainCheckResult {
  * Evaluate the issuer's SEP-0001 home domain alignment against the
  * fetched Horizon account data.
  *
- * This is a **pure, synchronous** function â€” it only inspects the
+ * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
  * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
@@ -267,11 +277,11 @@ export declare function evaluateHomeDomain(issuerAccount: HorizonAccount | null,
  * Thin wrapper around `FreshnessCheckResult` from `freshness.ts` that adds
  * the information needed by comment rendering and the checks table.
  *
- * - `status`          â€” 'ok' | 'stale' | 'unknown'
- * - `lagSeconds`      â€” measured lag, or null when unavailable
- * - `latestLedger`    â€” latest ledger sequence, or null
- * - `message`         â€” human-readable detail line (safe for Markdown comment)
- * - `blocksValid`     â€” true when `ledgerFreshnessFailOnStale=true` AND status='stale'
+ * - `status`          — 'ok' | 'stale' | 'unknown'
+ * - `lagSeconds`      — measured lag, or null when unavailable
+ * - `latestLedger`    — latest ledger sequence, or null
+ * - `message`         — human-readable detail line (safe for Markdown comment)
+ * - `blocksValid`     — true when `ledgerFreshnessFailOnStale=true` AND status='stale'
  */
 export interface LedgerFreshnessCheckResult {
     fresh?: boolean;
@@ -286,7 +296,7 @@ export declare function normalizeStellarAddress(address: string): string;
  * Validates a Stellar "G..." address against the full StrKey policy: 56
  * characters from the StrKey base32 alphabet, the ed25519 public key
  * version byte, and a matching CRC-16/XMODEM checksum. A regex match alone
- * only confirms shape â€” many regex-valid strings are not real StrKeys
+ * only confirms shape — many regex-valid strings are not real StrKeys
  * because their checksum bytes don't match the payload.
  */
 export declare function isValidStellarAddress(address: string): boolean;
@@ -324,7 +334,7 @@ export interface AddressExtractionResult {
  * M-address sequences, validates each one, and returns the first valid hit
  * together with a deduplicated list of every valid address found.
  *
- * Safe to call with arbitrary untrusted input â€” performs no network requests
+ * Safe to call with arbitrary untrusted input — performs no network requests
  * and never throws.
  *
  * @param text - Issue body, comment text, or any free-form string.
@@ -338,16 +348,45 @@ export declare function parseTrustlineLimit(value: string): number;
 export declare function estimateTrustlineSetupCost(): number;
 export declare function formatXlmDeficit(required: number, actual: number): string;
 export declare function formatAssetDeficit(required: number, actual: number): string;
+/** Stellar amounts have 7 decimal places: 1 unit = 10,000,000 stroops. */
+export declare const STROOPS_PER_UNIT = 10000000n;
+/**
+ * Convert a non-negative decimal amount (Horizon balance string or
+ * `min_asset_balance` value) to integer stroops without floating-point math.
+ *
+ * Digits beyond the 7th decimal are dropped (`'floor'`) or rounded up to the
+ * next stroop (`'ceil'`). Because balances are whole stroops,
+ * `balance >= threshold` is equivalent to `balance >= ceil(threshold)`.
+ * Unparseable values yield `0n`, matching `parseHorizonBalance`.
+ */
+export declare function toStroops(value: string | number, rounding?: 'floor' | 'ceil'): bigint;
+/** Format integer stroops as a 7-decimal amount string, e.g. `15000000n` → `'1.5000000'`. */
+export declare function formatStroops(stroops: bigint): string;
 export declare function runAccountChecks(account: HorizonAccount, config: CheckConfig): ValidationResult;
 export declare function unfundedAccountResult(stellarAddress: string, config: CheckConfig, mismatchHint?: NetworkMismatchHint, claimableCount?: number): ValidationResult;
 export declare function getFailedCheckLabels(result: ValidationResult): string[];
 export declare function horizonFailureResult(message: string, config: CheckConfig): ValidationResult;
 /**
+ * Builds a result for a circuit-breaker fast-fail (Issue #209 / #434).
+ *
+ * Kept distinct from `horizonFailureResult` because the semantics differ in
+ * an important way: when the circuit is open the request **never left the
+ * process**, so nothing whatsoever is known about the account. A
+ * `HORIZON_ERROR` result implies Horizon answered and the answer was bad.
+ * Reporting a tripped circuit as a Horizon error sends triagers hunting for
+ * an account problem (or a broken endpoint) that may not exist.
+ *
+ * PII-safe by construction: the comment, metrics, and debug fields carry only
+ * the boolean fact that the breaker tripped — no address, balance, issuer, or
+ * endpoint URL is added to the comment by this path.
+ */
+export declare function circuitOpenFailureResult(message: string, config: CheckConfig): ValidationResult;
+/**
  * Builds a result for a TLS/certificate verification failure connecting to
  * the configured Horizon endpoint (see `HorizonTlsError`). Kept distinct
  * from `horizonFailureResult` so the comment clearly attributes the
  * failure to the endpoint's transport/certificate configuration rather
- * than to the account or trustline being checked â€” this matters most for
+ * than to the account or trustline being checked — this matters most for
  * private/enterprise Horizon mirrors, where a bad or expired certificate
  * is easy to misdiagnose as "the account isn't set up right."
  */
@@ -385,9 +424,9 @@ export interface ReserveRequirement {
 }
 /**
  * Computes the real Stellar protocol minimum balance for an account:
- * `(2 base reserves + subentries + num_sponsoring âˆ’ num_sponsored) * base_reserve`.
+ * `(2 base reserves + subentries + num_sponsoring − num_sponsored) * base_reserve`.
  * Sponsored subentries don't count against the sponsoree's own reserve, and
- * subentries the account sponsors *for others* do â€” see CAP-0033. Clamped
+ * subentries the account sponsors *for others* do — see CAP-0033. Clamped
  * to zero so a stale/inconsistent sponsorship snapshot can never go negative.
  */
 export declare function computeProtocolMinReserve(account: SponsorAwareAccountFields): number;

@@ -34,8 +34,9 @@ describe('action.yml', () => {
     content = fs.readFileSync(actionPath, 'utf8');
   });
 
-  it('declares comment_mode input', () => {
+  it('declares comment_mode and posting_mode inputs', () => {
     expect(content).toContain('comment_mode:');
+    expect(content).toContain('posting_mode:');
     expect(content).toContain('dry-run');
   });
 

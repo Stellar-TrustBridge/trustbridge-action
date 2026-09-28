@@ -34,9 +34,9 @@ export const STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
 /**
  * SEP-0001 home domain check mode.
  *
- * - `"warn"`  (default) â€” a missing or mismatched home domain records a metrics tag and
+ * - `"warn"`  (default) — a missing or mismatched home domain records a metrics tag and
  *   adds an informational check row but does NOT set `valid = false`.
- * - `"strict"` â€” a missing or mismatched home domain sets `valid = false` and blocks
+ * - `"strict"` — a missing or mismatched home domain sets `valid = false` and blocks
  *   payout automation, matching the behaviour of other hard checks.
  */
 export type HomeDomainCheckMode = "warn" | "strict";
@@ -44,8 +44,8 @@ export type HomeDomainCheckMode = "warn" | "strict";
 /**
  * Claimable-balance policy (Issue #260).
  *
- * - `"ignore"` â€” funded means Horizon account exists; claimable balances do not affect funded.
- * - `"count"` â€” unfunded accounts with claimable balances surface an informational hint.
+ * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
  */
 export type ClaimableBalancePolicy = "ignore" | "count";
 
@@ -106,7 +106,7 @@ export interface CheckConfig {
   homeDomainCheckMode?: HomeDomainCheckMode;
 
   // ---------------------------------------------------------------------------
-  // Ledger lag / freshness guard (Issue #107 â€” optional, off by default)
+  // Ledger lag / freshness guard (Issue #107 — optional, off by default)
   // ---------------------------------------------------------------------------
 
   /**
@@ -120,14 +120,14 @@ export interface CheckConfig {
   /**
    * Maximum allowed lag in seconds between the latest ledger close time and
    * the current wall clock before the freshness guard fires.
-   * Defaults to 60 s (â‰ˆ 5â€“6 Stellar ledger close cycles).
+   * Defaults to 60 s (≈ 5–6 Stellar ledger close cycles).
    */
   maxLedgerLagSeconds?: number;
 
   /**
    * When `true` a stale ledger response sets `valid = false` and (when
    * `fail_on_missing` is also true) fails the workflow step.
-   * When `false` (default / "warn") the result is informational only â€”
+   * When `false` (default / "warn") the result is informational only —
    * a warning row is added to the checks table and metrics are emitted but
    * the overall `valid` flag is unaffected.
    */
@@ -139,23 +139,23 @@ export interface CheckConfig {
   /**
    * How to treat claimable balances when determining `funded` status.
    *
-   * - `"ignore"` (default) â€” funded = Horizon account exists (200). Claimable
+   * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
    *   balances are ignored; an address with only claimable balances still shows
-   *   â€œnot found / unfundedâ€. No extra Horizon request is made.
-   * - `"count"` â€” when the account is 404, TrustBridge also checks
+   *   “not found / unfunded”. No extra Horizon request is made.
+   * - `"count"` — when the account is 404, TrustBridge also checks
    *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
    *   5s). If claimable balances exist, the comment notes them but `accountFunded`
    *   remains false and `valid` is not set true unless documented. This is
    *   informational only and never auto-claims.
    *
-   * Default `"ignore"` matches todayâ€™s behavior and avoids extra request budget.
+   * Default `"ignore"` matches today’s behavior and avoids extra request budget.
    * Empty claimables (0) are treated as no hint in either mode.
    */
   claimableBalancePolicy?: ClaimableBalancePolicy;
 }
 
 // ---------------------------------------------------------------------------
-// #144 â€” Cross-network detection
+// #144 — Cross-network detection
 // ---------------------------------------------------------------------------
 
 /**
@@ -184,14 +184,14 @@ export interface NetworkMismatchHint {
  * was performed or the address is genuinely unfunded everywhere).
  *
  * Deterministic heuristics (Issue #266):
- * - 404 primary + 200 alt (publicâ†’testnet OR testnetâ†’public) => hint, clear
+ * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
  *   comment with both canonical URLs and horizon_url guidance.
  * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
  * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
  * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
- * - Canonical opposite URLs (https://horizon.stellar.org â†” https://horizon-testnet.stellar.org)
+ * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
  *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
- *   Arbitrary fallback URLs are NEVER probed here â€” that is gated in `horizon.ts` via
+ *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
  *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
  *
  * @param configuredHorizonUrl  The `horizon_url` input value.
@@ -233,14 +233,14 @@ export async function detectNetworkMismatch(
     }
     return undefined;
   } catch {
-    // Network error or timeout â€” can't determine, so no hint
+    // Network error or timeout — can't determine, so no hint
     return undefined;
   }
 }
 
 /**
  * Build the deterministic cross-network mismatch detail string used in the
- * `Account funded` check. Centralized so both directions (publicâ†”testnet) use
+ * `Account funded` check. Centralized so both directions (public↔testnet) use
  * the identical format and are tested deterministically.
  */
 export function buildNetworkMismatchDetail(
@@ -312,11 +312,21 @@ export interface ValidationResult {
   ledgerFreshnessResult?: LedgerFreshnessCheckResult;
   /**
    * Claimable balance info (Issue #260). Only populated when the account was
-   * fetched and the policy is observed. Informational only â€” does not affect
+   * fetched and the policy is observed. Informational only — does not affect
    * `accountFunded` when policy is `ignore` (default).
    */
   claimableBalanceCount?: number;
   hasClaimableBalances?: boolean;
+  /**
+   * True when the run short-circuited because the Horizon circuit breaker was
+   * open, so no account checks were actually performed (Issue #434).
+   *
+   * PII-safe by construction: it carries no account data, address, or balance,
+   * only the fact that the breaker tripped. The sticky comment renders a
+   * localized "circuit breaker open" banner from this flag so a resilience
+   * safeguard is never mistaken for an account-level failure.
+   */
+  circuitOpen?: boolean;
 }
 
 export interface NetworkPassphraseMismatch {
@@ -395,7 +405,7 @@ export interface HomeDomainCheckResult {
  * Evaluate the issuer's SEP-0001 home domain alignment against the
  * fetched Horizon account data.
  *
- * This is a **pure, synchronous** function â€” it only inspects the
+ * This is a **pure, synchronous** function — it only inspects the
  * `home_domain` field already present on the `HorizonAccount` object.
  * Full SEP-0001 HTTP stellar.toml fetching and signature verification
  * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
@@ -416,12 +426,12 @@ export function evaluateHomeDomain(
   const mode: HomeDomainCheckMode = config.homeDomainCheckMode ?? "warn";
   const expected = config.expectedHomeDomain?.trim().toLowerCase();
 
-  // No issuer account available â€” treat the same as missing.
+  // No issuer account available — treat the same as missing.
   if (!issuerAccount) {
     return {
       outcome: "missing",
       expectedHomeDomain: config.expectedHomeDomain,
-      detail: 'Issuer account data was not available from Horizon â€” home domain could not be verified.',
+      detail: 'Issuer account data was not available from Horizon — home domain could not be verified.',
       blocksValid: mode === 'strict',
     };
   }
@@ -455,7 +465,7 @@ export function evaluateHomeDomain(
     outcome: "valid",
     actualHomeDomain: rawDomain,
     expectedHomeDomain: config.expectedHomeDomain,
-    detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` âœ“`,
+    detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` ✓`,
     blocksValid: false,
   };
 }
@@ -468,11 +478,11 @@ export function evaluateHomeDomain(
  * Thin wrapper around `FreshnessCheckResult` from `freshness.ts` that adds
  * the information needed by comment rendering and the checks table.
  *
- * - `status`          â€” 'ok' | 'stale' | 'unknown'
- * - `lagSeconds`      â€” measured lag, or null when unavailable
- * - `latestLedger`    â€” latest ledger sequence, or null
- * - `message`         â€” human-readable detail line (safe for Markdown comment)
- * - `blocksValid`     â€” true when `ledgerFreshnessFailOnStale=true` AND status='stale'
+ * - `status`          — 'ok' | 'stale' | 'unknown'
+ * - `lagSeconds`      — measured lag, or null when unavailable
+ * - `latestLedger`    — latest ledger sequence, or null
+ * - `message`         — human-readable detail line (safe for Markdown comment)
+ * - `blocksValid`     — true when `ledgerFreshnessFailOnStale=true` AND status='stale'
  */
 export interface LedgerFreshnessCheckResult {
   fresh?: boolean;
@@ -521,7 +531,7 @@ function base32Decode(input: string): Uint8Array | null {
 }
 
 /**
- * CRC-16/XMODEM (poly 0x1021, init 0x0000, no reflect, no xorout) â€” the
+ * CRC-16/XMODEM (poly 0x1021, init 0x0000, no reflect, no xorout) — the
  * checksum algorithm StrKey appends (little-endian) after the version byte
  * and payload.
  */
@@ -547,7 +557,7 @@ export function normalizeStellarAddress(address: string): string {
  * Validates a Stellar "G..." address against the full StrKey policy: 56
  * characters from the StrKey base32 alphabet, the ed25519 public key
  * version byte, and a matching CRC-16/XMODEM checksum. A regex match alone
- * only confirms shape â€” many regex-valid strings are not real StrKeys
+ * only confirms shape — many regex-valid strings are not real StrKeys
  * because their checksum bytes don't match the payload.
  */
 export function isValidStellarAddress(address: string): boolean {
@@ -694,7 +704,7 @@ export interface AddressExtractionResult {
  * M-address sequences, validates each one, and returns the first valid hit
  * together with a deduplicated list of every valid address found.
  *
- * Safe to call with arbitrary untrusted input â€” performs no network requests
+ * Safe to call with arbitrary untrusted input — performs no network requests
  * and never throws.
  *
  * @param text - Issue body, comment text, or any free-form string.
@@ -750,7 +760,7 @@ export function validateStellarAddress(address: string): void {
     return;
   }
 
-  if (!isValidStellarAddress(address)) {
+  if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
     throw new Error(
       `Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
         'with a valid StrKey checksum.',
@@ -844,15 +854,15 @@ export function formatStroops(stroops: bigint): string {
 /**
  * Renders the sponsor-aware reserve math behind a `ReserveRequirement` as a
  * short human-readable clause, e.g.
- * "protocol minimum **1.5 XLM** = (2 + 1 subentry) Ã— 0.5 XLM, floor **1.5 XLM**".
+ * "protocol minimum **1.5 XLM** = (2 + 1 subentry) × 0.5 XLM, floor **1.5 XLM**".
  */
 function explainReserveRequirement(reserve: ReserveRequirement): string {
   const sponsorClause =
     reserve.numSponsoring !== 0 || reserve.numSponsored !== 0
-      ? ` + ${reserve.numSponsoring} sponsoring âˆ’ ${reserve.numSponsored} sponsored`
+      ? ` + ${reserve.numSponsoring} sponsoring − ${reserve.numSponsored} sponsored`
       : '';
   const subentryWord = reserve.subentryCount === 1 ? 'subentry' : 'subentries';
-  const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) Ã— ${STELLAR_BASE_RESERVE_XLM} XLM`;
+  const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) × ${STELLAR_BASE_RESERVE_XLM} XLM`;
   return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
 }
 
@@ -929,8 +939,13 @@ export function runAccountChecks(
   let trustlineDetail: string;
   if (trustlineExistsRaw && isUnauthorized) {
     trustlineDetail = authorizationBlocks
-      ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${inlineCode(config.assetIssuer)}) â€” blocked by \`unauthorized_trustline_policy: fail\`.`
-      : `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer â€” transfers will fail until authorized.`;
+      ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${inlineCode(config.assetIssuer)}) — blocked by \`unauthorized_trustline_policy: fail\`.`
+      : `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer — transfers will fail until authorized.`;
+    // Issue #248: Add auth_revocable context when relevant
+    if (issuerAuthRevocable) {
+      trustlineDetail +=
+        ' The issuer has **AUTH_REVOCABLE** enabled, meaning authorized trustlines can be **revoked** at any time.';
+    }
   } else if (trustlineExistsRaw) {
     trustlineDetail = `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured.`;
     // Issue #248: Add clawback context when relevant (non-strict mode)
@@ -940,7 +955,7 @@ export function runAccountChecks(
   } else if (hasAnyTrustlines) {
     trustlineDetail = `Account has trustlines, but not for **${safeAssetCode}** issued by ${inlineCode(config.assetIssuer)}.`;
   } else {
-    trustlineDetail = 'Account has **zero trustlines** â€” add a trustline before receiving this asset.';
+    trustlineDetail = 'Account has **zero trustlines** — add a trustline before receiving this asset.';
   }
 
   const checks: CheckResultItem[] = [
@@ -958,8 +973,8 @@ export function runAccountChecks(
       passed: xlmReserveMet,
       label: "XLM reserve",
       detail: xlmReserveMet
-        ? `Balance **${inlineCode(xlmBalance)} XLM** meets the required **${reserveRequirement.required} XLM** â€” ${reserveExplanation}.`
-        : `Balance **${inlineCode(xlmBalance)} XLM** is below the required **${reserveRequirement.required} XLM** â€” ${reserveExplanation}.`,
+        ? `Balance **${inlineCode(xlmBalance)} XLM** meets the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`
+        : `Balance **${inlineCode(xlmBalance)} XLM** is below the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`,
     },
   ];
 
@@ -980,7 +995,8 @@ export function runAccountChecks(
       ? assetBalanceMet
         ? `Balance **${inlineCode(assetBalanceRaw)} ${safeAssetCode}** meets the minimum of **${minAssetBalanceRequired} ${safeAssetCode}**.`
         : `Balance **${inlineCode(assetBalanceRaw)} ${safeAssetCode}** is below the required **${minAssetBalanceRequired} ${safeAssetCode}**. Deficit: **${assetBalanceRequirement.missing} ${safeAssetCode}**.`
-      : `Cannot verify ${safeAssetCode} balance â€” trustline is not configured yet.`;
+      : `Cannot verify ${safeAssetCode} balance — trustline is not configured yet.`;
+
     checks.push({
       passed: assetBalanceMet || !trustlineExists,
       label: `${safeAssetCode} minimum balance`,
@@ -992,27 +1008,13 @@ export function runAccountChecks(
     checks.push({
       passed: false,
       label: `${safeAssetCode} clawback safety`,
-      detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${inlineCode(config.assetIssuer)}) â€” blocked by \`clawback_strict_mode: true\`.`,
+      detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${inlineCode(config.assetIssuer)}) — blocked by \`clawback_strict_mode: true\`.`,
     });
   }
 
   let homeDomainCheck: HomeDomainCheckResult | undefined;
   if (config.homeDomainCheckEnabled) {
     homeDomainCheck = evaluateHomeDomain(account, config);
-
-    // Emit metrics tag for dashboards and payout automation.
-    globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
-    globalMetrics.recordMetric('home_domain_check', 1, 'count', {
-      outcome: homeDomainCheck.outcome,
-      mode: config.homeDomainCheckMode ?? 'warn',
-    });
-
-    const homeDomainPassed = !homeDomainCheck.blocksValid || homeDomainCheck.outcome === 'valid';
-    checks.push({
-      passed: homeDomainPassed,
-      label: 'SEP-0001 home domain',
-      detail: homeDomainCheck.detail,
-    });
   }
 
   const buildResult = (): ValidationResult => {
@@ -1143,8 +1145,8 @@ export function unfundedAccountResult(
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
 
   // Build the "not found" detail, extended with mismatch context when available
-  // Uses centralized deterministic builder so publicâ†”testnet produce identical format.
-  let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon â€” it may not be funded or activated yet.`;
+  // Uses centralized deterministic builder so public↔testnet produce identical format.
+  let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
   if (mismatchHint) {
     notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
   }
@@ -1154,7 +1156,7 @@ export function unfundedAccountResult(
   const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
   const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
   if (claimablePolicy === 'count' && hasClaimables) {
-    notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon â€” these must be claimed after funding.`;
+    notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
   } else if (claimablePolicy === 'ignore' && hasClaimables) {
     // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
     // Metrics still tracked for observability if caller fetched count.
@@ -1182,11 +1184,11 @@ export function unfundedAccountResult(
     checks.push({
       passed: false,
       label: `${safeAssetCode} minimum balance`,
-      detail: `Cannot verify ${safeAssetCode} balance â€” Fund the account and establish a trustline first.`,
+      detail: `Cannot verify ${safeAssetCode} balance — Fund the account and establish a trustline first.`,
     });
   }
 
-  // Claimable balances informational check (Issue #260) â€” only when policy is count
+  // Claimable balances informational check (Issue #260) — only when policy is count
   const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
   if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
     checks.push({
@@ -1241,7 +1243,7 @@ export function unfundedAccountResult(
       // Unfunded path: home domain cannot be verified, treat as non-blocking regardless of mode
       passed: true,
       label: 'SEP-0001 home domain',
-      detail: 'Cannot verify issuer home domain â€” account is not yet funded.',
+      detail: 'Cannot verify issuer home domain — account is not yet funded.',
     });
   }
 
@@ -1310,14 +1312,14 @@ function toFailedCheckCodes(checks: CheckResultItem[]): string[] {
  * Reduces an error message to something safe to post in a public GitHub
  * comment: only the first line (never a multi-line stack trace) and capped
  * to a sane length. The underlying Error's full `.stack` is never passed
- * into this pipeline in the first place â€” callers only ever pass
- * `error.message` â€” but this is a defense-in-depth guard against a
+ * into this pipeline in the first place — callers only ever pass
+ * `error.message` — but this is a defense-in-depth guard against a
  * message that itself happens to be multi-line or unexpectedly long.
  */
 function sanitizeErrorMessageForComment(message: string): string {
   const firstLine = message.split(/\r?\n/)[0] ?? "";
   const MAX_LENGTH = 500;
-  return firstLine.length > MAX_LENGTH ? `${firstLine.slice(0, MAX_LENGTH)}â€¦` : firstLine;
+  return firstLine.length > MAX_LENGTH ? `${firstLine.slice(0, MAX_LENGTH)}…` : firstLine;
 }
 
 export function horizonFailureResult(
@@ -1326,7 +1328,7 @@ export function horizonFailureResult(
 ): ValidationResult {
   // `message` may originate from the configured Horizon endpoint's HTTP
   // response body (e.g. the `detail`/`title` fields of an error payload),
-  // which is not trusted content â€” sanitize and escape it before it lands
+  // which is not trusted content — sanitize and escape it before it lands
   // in the Markdown comment so it can't dump a stack trace, inject
   // formatting/links, or break out of the comment structure.
   const safeMessage = escapeMarkdownInline(
@@ -1383,7 +1385,7 @@ export function horizonFailureResult(
     checks.push({
       passed: true,
       label: 'SEP-0001 home domain',
-      detail: 'Cannot verify issuer home domain â€” Horizon was unreachable.',
+      detail: 'Cannot verify issuer home domain — Horizon was unreachable.',
     });
   }
 
@@ -1405,7 +1407,102 @@ export function horizonFailureResult(
     failedCheckLabels: toFailedCheckCodes(checks),
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     homeDomainCheck: config.homeDomainCheckEnabled
-      ? { outcome: 'skipped', detail: 'Cannot verify â€” Horizon unreachable.', blocksValid: false }
+      ? { outcome: 'skipped', detail: 'Cannot verify — Horizon unreachable.', blocksValid: false }
+      : undefined,
+  };
+}
+
+/**
+ * Builds a result for a circuit-breaker fast-fail (Issue #209 / #434).
+ *
+ * Kept distinct from `horizonFailureResult` because the semantics differ in
+ * an important way: when the circuit is open the request **never left the
+ * process**, so nothing whatsoever is known about the account. A
+ * `HORIZON_ERROR` result implies Horizon answered and the answer was bad.
+ * Reporting a tripped circuit as a Horizon error sends triagers hunting for
+ * an account problem (or a broken endpoint) that may not exist.
+ *
+ * PII-safe by construction: the comment, metrics, and debug fields carry only
+ * the boolean fact that the breaker tripped — no address, balance, issuer, or
+ * endpoint URL is added to the comment by this path.
+ */
+export function circuitOpenFailureResult(
+  message: string,
+  config: CheckConfig,
+): ValidationResult {
+  const safeMessage = escapeMarkdownInline(
+    sanitizeErrorMessageForComment(message),
+  );
+  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
+
+  const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
+  const checks: CheckResultItem[] = [
+    {
+      passed: false,
+      label: "Horizon availability",
+      // The breaker message is generated locally from configured thresholds and
+      // contains no account data, so it is safe to surface verbatim.
+      detail: safeMessage || skipped,
+    },
+    {
+      passed: false,
+      label: `${safeAssetCode} trustline`,
+      detail: skipped,
+    },
+    {
+      passed: false,
+      label: "XLM reserve",
+      detail: skipped,
+    },
+  ];
+
+  if (assetBalanceCheckEnabled) {
+    checks.push({
+      passed: false,
+      label: `${safeAssetCode} minimum balance`,
+      detail: skipped,
+    });
+  }
+
+  if (config.homeDomainCheckEnabled) {
+    globalMetrics.incrementCounter("home_domain_skipped");
+    globalMetrics.recordMetric("home_domain_check", 1, "count", {
+      outcome: "skipped",
+      mode: config.homeDomainCheckMode ?? "warn",
+    });
+    checks.push({
+      passed: true,
+      label: "SEP-0001 home domain",
+      detail:
+        "Cannot verify issuer home domain — the Horizon circuit breaker was open.",
+    });
+  }
+
+  return {
+    valid: false,
+    reasonCode: "CIRCUIT_OPEN",
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: "unknown",
+    xlmReserveMet: false,
+    assetBalance: "unknown",
+    assetBalanceMet: false,
+    circuitOpen: true,
+    checks,
+    remediation:
+      "The Horizon circuit breaker is open after repeated Horizon failures, so this run " +
+      "was short-circuited without contacting Horizon. This is a resilience safeguard, not a " +
+      "problem with the account. Wait for the recovery window to elapse and re-run the " +
+      "workflow; if it keeps happening, check the health of the configured Horizon endpoint.",
+    failedCheckLabels: toFailedCheckCodes(checks),
+    sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+    homeDomainCheck: config.homeDomainCheckEnabled
+      ? {
+          outcome: "skipped",
+          detail: "Cannot verify — the Horizon circuit breaker was open.",
+          blocksValid: false,
+        }
       : undefined,
   };
 }
@@ -1415,7 +1512,7 @@ export function horizonFailureResult(
  * the configured Horizon endpoint (see `HorizonTlsError`). Kept distinct
  * from `horizonFailureResult` so the comment clearly attributes the
  * failure to the endpoint's transport/certificate configuration rather
- * than to the account or trustline being checked â€” this matters most for
+ * than to the account or trustline being checked — this matters most for
  * private/enterprise Horizon mirrors, where a bad or expired certificate
  * is easy to misdiagnose as "the account isn't set up right."
  */
@@ -1437,12 +1534,12 @@ export function tlsFailureResult(
     {
       passed: false,
       label: `${safeAssetCode} trustline`,
-      detail: 'Check could not be completed â€” the Horizon TLS handshake failed before this account could be queried.',
+      detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
     },
     {
       passed: false,
       label: 'XLM reserve',
-      detail: 'Check could not be completed â€” the Horizon TLS handshake failed before this account could be queried.',
+      detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
     },
   ];
 
@@ -1563,9 +1660,9 @@ export interface ReserveRequirement {
 
 /**
  * Computes the real Stellar protocol minimum balance for an account:
- * `(2 base reserves + subentries + num_sponsoring âˆ’ num_sponsored) * base_reserve`.
+ * `(2 base reserves + subentries + num_sponsoring − num_sponsored) * base_reserve`.
  * Sponsored subentries don't count against the sponsoree's own reserve, and
- * subentries the account sponsors *for others* do â€” see CAP-0033. Clamped
+ * subentries the account sponsors *for others* do — see CAP-0033. Clamped
  * to zero so a stale/inconsistent sponsorship snapshot can never go negative.
  */
 export function computeProtocolMinReserve(
