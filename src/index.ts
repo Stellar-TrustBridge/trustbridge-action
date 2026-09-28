@@ -1575,8 +1575,6 @@ async function run(): Promise<void> {
     }
   }
 
-  setValidationOutputs(result);
-
   if (writeValidationJsonEnabled) {
     writeValidationJson({
       result,
@@ -1829,15 +1827,18 @@ async function run(): Promise<void> {
     }
   }
 
+  // Issue #535: publish every action output exactly once, at the end of the run.
+  // Comment URL, validation timestamp and the metric timings are only final at
+  // this point, so this call replaces the earlier partial call plus the
+  // redundant friendbot_* writes that followed it (toActionOutputs already
+  // emits those keys).
   setValidationOutputs(result, commentUrl, fullReportPath, {
     validatedAt,
+    timings: globalMetrics.getTimingBreakdown(),
     friendbotCalled,
     friendbotSuccess,
     friendbotTransactionHash,
   });
-  core.setOutput("friendbot_called", String(friendbotCalled));
-  core.setOutput("friendbot_success", String(friendbotSuccess));
-  core.setOutput("friendbot_transaction_hash", friendbotTransactionHash);
 
   // ---------------------------------------------------------------------------
   // Wallet labels (Issue #200)
@@ -1849,7 +1850,8 @@ async function run(): Promise<void> {
     if (issueNumber) {
       const { owner, repo } = github.context.repo;
       try {
-        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());        const labelResult = await applyWalletLabels(
+        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
+        const labelResult = await applyWalletLabels(
           octokit,
           owner,
           repo,

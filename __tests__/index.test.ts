@@ -21,6 +21,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as ts from "typescript";
 
 // ---------------------------------------------------------------------------
 // Import the modules under test (NOT index.ts itself — it auto-runs)
@@ -1099,6 +1100,185 @@ describe('Wave #38 — Integration tests: critical index.ts run() paths', () => 
     it('stickyComment=false posts new comment every time', () => {
       const stickyComment = false;
       expect(stickyComment).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Source guards for src/index.ts (Issues #534 and #535)
+//
+// Both issues are merge-artifact defects in the orchestration file, so the
+// regression has to be asserted against the parsed source rather than at
+// runtime: a bad merge that collapses two statements onto one line still
+// compiles, which is exactly how the collapsed `getOctokit` /
+// `applyWalletLabels` line (#534) and the duplicated `setValidationOutputs`
+// call (#535) survived review.
+//
+// The checks run over the TypeScript AST so they describe intent ("no two
+// statements start on the same line") instead of a line-regex approximation.
+// ---------------------------------------------------------------------------
+
+describe('src/index.ts source guards (#534, #535)', () => {
+  const sourcePath = path.join(path.resolve(__dirname, '..'), 'src/index.ts');
+  const sourceText = fs.readFileSync(sourcePath, 'utf8');
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  const lineOf = (node: ts.Node): number => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+
+  function visit(node: ts.Node, fn: (node: ts.Node) => void): void {
+    fn(node);
+    ts.forEachChild(node, (child) => visit(child, fn));
+  }
+
+  /** Every call to `callee(...)` inside src/index.ts, excluding the import. */
+  function callSites(calleeText: string): ts.CallExpression[] {
+    const calls: ts.CallExpression[] = [];
+    visit(sourceFile, (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(sourceFile) === calleeText &&
+        !ts.isImportDeclaration(node.parent)
+      ) {
+        calls.push(node);
+      }
+    });
+    return calls;
+  }
+
+  /** Line numbers of every call to `callee(...)` — compact enough for diffs. */
+  function callLines(calleeText: string): number[] {
+    return callSites(calleeText).map(lineOf);
+  }
+
+  describe('#534 — collapsed getOctokit / applyWalletLabels line', () => {
+    it('never places two statements on the same line', () => {
+      const collisions: string[] = [];
+
+      const checkStatementList = (list: ts.NodeArray<ts.Statement>) => {
+        for (let i = 1; i < list.length; i += 1) {
+          if (lineOf(list[i]!) === lineOf(list[i - 1]!)) {
+            collisions.push(
+              `line ${lineOf(list[i]!)}: "${list[i - 1]!.getText(sourceFile).slice(0, 60)}" + "${list[i]!.getText(sourceFile).slice(0, 60)}"`,
+            );
+          }
+        }
+      };
+
+      const checkLists = (node: ts.Node): void => {
+        if (ts.isSourceFile(node) || ts.isBlock(node)) {
+          checkStatementList(node.statements);
+        }
+        ts.forEachChild(node, checkLists);
+      };
+      checkLists(sourceFile);
+
+      expect(collisions).toEqual([]);
+    });
+
+    it('splits getOctokit and applyWalletLabels into separate statements', () => {
+      const getOctokitCalls = callSites('github.getOctokit');
+      const labelCalls = callSites('applyWalletLabels');
+
+      expect(getOctokitCalls.length).toBeGreaterThan(0);
+      expect(labelCalls.length).toBeGreaterThan(0);
+
+      /** Nearest enclosing statement of a node. */
+      const enclosingStatement = (node: ts.Node): ts.Statement => {
+        let current: ts.Node = node;
+        while (current.parent && !ts.isStatement(current)) {
+          current = current.parent;
+        }
+        return current as ts.Statement;
+      };
+
+      for (const call of labelCalls) {
+        const statement = enclosingStatement(call);
+        // The label call spans several lines, so the `const octokit = ...`
+        // declaration cannot have been merged onto the same line as it.
+        expect(statement.getText(sourceFile)).toContain('\n');
+        expect(statement.getText(sourceFile)).toContain('applyWalletLabels');
+      }
+    });
+
+    it('keeps the octokit declaration on its own statement', () => {
+      const declarations = sourceFile
+        .getFullText()
+        .split('\n')
+        .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+        .filter(({ line }) => line.startsWith('const octokit = github.getOctokit('));
+
+      expect(declarations.length).toBeGreaterThan(0);
+      for (const { line } of declarations) {
+        // `const octokit = github.getOctokit(...);` and nothing else on the line.
+        expect(line.endsWith(';')).toBe(true);
+        expect(line.indexOf(';')).toBe(line.length - 1);
+      }
+    });
+  });
+
+  describe('#535 — single setValidationOutputs call', () => {
+    it('calls setValidationOutputs exactly once', () => {
+      expect(callLines('setValidationOutputs')).toHaveLength(1);
+    });
+
+    it('passes result, commentUrl, fullReportPath and the extras bag', () => {
+      const [call] = callSites('setValidationOutputs');
+      const args = call!.arguments;
+
+      expect(args).toHaveLength(4);
+      expect(args[0]!.getText(sourceFile)).toBe('result');
+      expect(args[1]!.getText(sourceFile)).toBe('commentUrl');
+      expect(args[2]!.getText(sourceFile)).toBe('fullReportPath');
+
+      const extras = args[3]!;
+      expect(ts.isObjectLiteralExpression(extras)).toBe(true);
+
+      const extrasEntries = new Map<string, string>();
+      for (const prop of (extras as ts.ObjectLiteralExpression).properties) {
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          extrasEntries.set(prop.name.getText(sourceFile), prop.name.getText(sourceFile));
+        } else if (ts.isPropertyAssignment(prop)) {
+          extrasEntries.set(prop.name.getText(sourceFile), prop.initializer.getText(sourceFile));
+        }
+      }
+
+      expect(extrasEntries.get('validatedAt')).toBe('validatedAt');
+      expect(extrasEntries.get('timings')).toBe('globalMetrics.getTimingBreakdown()');
+      expect(extrasEntries.get('friendbotCalled')).toBe('friendbotCalled');
+      expect(extrasEntries.get('friendbotSuccess')).toBe('friendbotSuccess');
+      expect(extrasEntries.get('friendbotTransactionHash')).toBe('friendbotTransactionHash');
+    });
+
+    it('publishes outputs after the comment post so commentUrl is final', () => {
+      const outputsLine = lineOf(callSites('setValidationOutputs')[0]!);
+      const commentLines = callSites('postIssueComment').map(lineOf);
+
+      expect(commentLines.length).toBeGreaterThan(0);
+      for (const commentLine of commentLines) {
+        expect(outputsLine).toBeGreaterThan(commentLine);
+      }
+    });
+
+    it('no longer re-sets the friendbot outputs by hand', () => {
+      // toActionOutputs already emits friendbot_called/success/transaction_hash,
+      // so the explicit core.setOutput calls that followed the second
+      // setValidationOutputs call were pure duplication.
+      const manualFriendbotWrites = [...sourceFile.getFullText().matchAll(/core\.setOutput\(\s*["']friendbot_/g)];
+      expect(manualFriendbotWrites).toHaveLength(0);
+    });
+
+    it('has no other call that could publish the validation outputs twice', () => {
+      expect(callLines('setValidationOutputs')).toHaveLength(1);
+
+      // `result` must still reach setValidationOutputs — the guard above would
+      // otherwise pass trivially if the call were dropped entirely.
+      expect(sourceFile.getFullText()).toContain('setValidationOutputs(result');
     });
   });
 });

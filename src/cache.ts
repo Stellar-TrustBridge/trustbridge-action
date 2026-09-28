@@ -22,6 +22,12 @@
  */
 
 import * as core from '@actions/core';
+import * as actionsCache from '@actions/cache';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
+import { logger } from './logger';
 
 /** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
 const SUPPORTED_NAMED_BACKENDS = new Set<string>(['memory', 'github-actions']);
