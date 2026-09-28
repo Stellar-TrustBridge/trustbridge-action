@@ -79,10 +79,18 @@ const safeAddress = inlineCode(ctx.stellarAddress);
 const safeUrl = escapeMarkdownInline(kycUrl);
 ```
 
-### 4. No eval / no dynamic import
+### 4. No eval / no untrusted dynamic import
 
-Do not evaluate strings from the KYC response as code. Do not `import()`
-paths that contain provider-supplied data.
+Do not evaluate strings from the KYC response as code. Do not `import()` paths
+that contain provider-supplied data, issue-body text, or any other untrusted
+input.
+
+TrustBridge itself loads plugins with a dynamic `import()` in
+`src/pluginLoader.ts`, but only for **trusted repository files** that are on the
+allowlist and live under the workspace root. See
+[Plugin Architecture > Security model](../PLUGIN_ARCHITECTURE.md#security-model)
+for the full threat model. Your plugin code must not widen that surface by
+importing untrusted paths.
 
 ### 5. Fixed KYC URL only
 
@@ -201,7 +209,10 @@ jobs:
 
 > **Note:** The reference plugin reads `apiKey` from `process.env.KYC_API_KEY`.
 > TrustBridge only loads plugins from the workspace when
-> `trustbridge_plugins_path: plugins/kyc.ts` is set.
+> `trustbridge_plugins_path: plugins/kyc.ts` is set. The loader resolves the
+> path against the workspace root, checks it against the allowlist, and
+> validates the exported plugin shape before running it - see
+> [Plugin Architecture > Security model](../PLUGIN_ARCHITECTURE.md#security-model).
 
 ### 4. Consuming the KYC plugin in your custom action wrapper
 

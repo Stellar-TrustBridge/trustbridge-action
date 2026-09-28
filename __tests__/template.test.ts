@@ -52,13 +52,13 @@ describe('validateTemplatePath', () => {
   it('accepts a relative path inside workspace', () => {
     const workspace = '/workspace/repo';
     const resolved = validateTemplatePath('.trustbridge/comment.md', workspace);
-    expect(resolved).toBe('/workspace/repo/.trustbridge/comment.md');
+    expect(resolved).toBe(path.resolve(workspace, '.trustbridge', 'comment.md'));
   });
 
   it('accepts an absolute path inside workspace', () => {
     const workspace = '/workspace/repo';
     const resolved = validateTemplatePath('/workspace/repo/templates/partial.md', workspace);
-    expect(resolved).toBe('/workspace/repo/templates/partial.md');
+    expect(resolved).toBe(path.resolve(workspace, 'templates', 'partial.md'));
   });
 
   it('rejects path traversal with ../', () => {
@@ -87,7 +87,7 @@ describe('validateTemplatePath', () => {
     // The root itself resolves to exactly resolvedRoot — not a child, but not outside.
     // validateTemplatePath allows this (resolved === resolvedRoot).
     const resolved = validateTemplatePath('/workspace/repo', workspace);
-    expect(resolved).toBe('/workspace/repo');
+    expect(resolved).toBe(path.resolve(workspace));
   });
 });
 

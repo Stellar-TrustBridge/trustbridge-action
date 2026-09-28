@@ -19,7 +19,12 @@ import {
   inferStellarNetwork,
   buildFaqLinkForCheck,
 } from './links';
-import { buildOnboardingChecklist, extractChecklistState, inlineCode } from './markdown';
+import {
+  buildOnboardingChecklist,
+  escapeMarkdownInline,
+  extractChecklistState,
+  inlineCode,
+} from './markdown';
 import { buildTemplateContext, loadCommentTemplate } from './template';
 import { getOctokitProxyOptions } from './proxy';
 import { MetricsCollector } from './metrics';
@@ -198,6 +203,44 @@ export function formatCommentBody(
       );
     }
 
+    // Circuit breaker banner (Issue #434) — a run that fast-failed because the
+    // Horizon circuit was open must say so, otherwise the Results list looks
+    // like a plain account failure and triage chases the wrong root cause.
+    // Rendered immediately after Results so it is the first thing a maintainer
+    // reads. Contains no account data, addresses, or balances.
+    if (result.circuitOpen) {
+      lines.push(
+        "",
+        `> ⚡ **${strings.circuitBreakerHeading}**`,
+        `> - ${strings.circuitBreakerOpen}`,
+        `> - ${strings.circuitBreakerRecoveryHint}`,
+        `> - ${strings.circuitBreakerReasonCode}`,
+      );
+    }
+
+    // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
+    if (config.onboardingChecklist !== false) {
+      // Preserve any manually-checked boxes from the previous sticky comment
+      // (Issue #311).  extractChecklistState parses only the known allowlisted
+      // labels (across every supported locale) so a crafted comment body
+      // cannot inject arbitrary state and a locale switch does not lose state.
+      const previousChecks =
+        config.existingCommentBody
+          ? extractChecklistState(config.existingCommentBody)
+          : undefined;
+
+      lines.push(
+        "",
+        buildOnboardingChecklist(result, {
+          assetCode: config.assetCode,
+          minXlmReserve: config.minXlmReserve,
+          locale: config.locale,
+          previousChecks,
+        }),
+      );
+    }
+
+
     // Ledger freshness / lag alert (Issue #107) — surfaced as a distinct banner
     // so contributors clearly understand it is about Horizon data quality, not
     // their wallet state.
@@ -238,26 +281,61 @@ export function formatCommentBody(
       lines.push("", deltaSection);
     }
 
-  // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
-  if (config.onboardingChecklist !== false) {
-    // Preserve any manually-checked boxes from the previous sticky comment
-    // (Issue #311).  extractChecklistState parses only the known allowlisted
-    // label keys so a crafted comment body cannot inject arbitrary state.
-    const previousChecks =
-      config.existingCommentBody
-        ? extractChecklistState(config.existingCommentBody)
-        : undefined;
-
+    // Validation gate (Issue #450) — the machine-readable verdict that the
+    // `ready` / `reason_code` action outputs expose. Surfacing it here means a
+    // dashboard triager can read the reason code straight from the comment
+    // instead of digging through the Actions log.
+    const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
     lines.push(
-      '',
-      buildOnboardingChecklist(result, {
-        assetCode: config.assetCode,
-        minXlmReserve: config.minXlmReserve,
-        previousChecks,
-      }),
+      "",
+      `### ${strings.validationGateHeading}`,
+      "",
+      gate.ready
+        ? `- ${strings.readyToProceed}`
+        : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`,
+      `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`,
+      `- ${strings.failedChecks} ${gate.failedChecks}`,
+      `- ${strings.readyFlag} \`${String(gate.ready)}\``,
+      `- ${strings.reasonCode} ${inlineCode(reasonCode)}`,
+      "",
+      `### ${strings.balancesHeading}`,
+      "",
+      `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`,
+      result.reserveRequirement
+        ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
+        : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``,
+      // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
+      (() => {
+        const asset = config.assetCode;
+        const bal = result.assetBalance ?? "0";
+        const trustline = result.trustlineExists;
+        if (bal === "unknown") {
+          return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? "exists" : "missing"})`;
+        }
+        if (!trustline) {
+          return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
+        }
+        // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
+        const limitNote = result.trustlineLimit
+          ? ` (limit \`${result.trustlineLimit} ${asset}\`)`
+          : "";
+        return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
+      })(),
+      "",
+      `### ${strings.setupCostHeading}`,
+      "",
+      `- ${strings.minimumAccountBalance} **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`,
+      `- ${strings.baseReservePerTrustline} **${STELLAR_BASE_RESERVE_XLM} XLM**`,
+      `- ${strings.typicalMinimumToFund} **~${estimateTrustlineSetupCost()} XLM**`,
+      "",
+      `### ${strings.addTrustlineHeading}`,
+      "",
+      `- [${strings.viewAccountOnLab}](${buildAccountViewerLink(config.stellarAddress, stellarLabNetwork)})`,
+      `- [${strings.openTransactionBuilder}](${buildChangeTrustLink(stellarLabNetwork)})`,
+      `- [${strings.lobstrWallet}](${buildLobstrLink()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
     );
 
-    // SEP-0007 wallet deep links (Issue #44)
+    // SEP-0007 wallet deep links (Issue #44) — independent of the checklist flag.
     if (config.sep0007DeepLinks) {
       const payLink = buildSep0007PayLink({
         destination: config.stellarAddress,
@@ -275,46 +353,26 @@ export function formatCommentBody(
         `- [${strings.sendXlmToActivate.replace("{amount}", String(STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`,
       );
     }
-  }
 
-  // Custom comment template partial (#312) — injected just before the footer.
-  // Path validation, size check, content security, and interpolation escaping
-  // are all handled in loadCommentTemplate / validateTemplateContent.
-  if (config.customCommentTemplatePath) {
-    try {
-      const templateCtx = buildTemplateContext({
-        stellarAddress: config.stellarAddress,
-        assetCode: config.assetCode,
-        assetIssuer: config.assetIssuer,
-        horizonUrl: config.horizonUrl,
-        network: inferStellarNetwork(config.horizonUrl),
-        valid: result.valid,
-        locale: config.locale ?? 'en',
-      });
-      const partial = loadCommentTemplate(config.customCommentTemplatePath, templateCtx);
-      if (partial !== undefined) {
-        lines.push('', partial);
-      } else {
-        // File not found — warn without blocking the comment.
-        core.warning(
-          `custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
-            'The template partial will be omitted from this comment.',
-        );
-      }
-    } catch (templateErr) {
-      const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
-      core.warning(
-        `Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
-          'The template partial will be omitted from this comment.',
+    // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready.
+    // Prefer the dashboard proof link over a raw XDR to avoid leaking nonces in
+    // public issues.
+    const sep0010Snippet = buildSep0010ChallengeSnippet({
+      challengeXdr: config.sep0010ChallengeXdr,
+      dashboardUrl: config.sep0010DashboardUrl,
+      network: stellarLabNetwork,
+      stellarAddress: config.stellarAddress,
+    });
+    if (sep0010Snippet) {
+      lines.push(
+        "",
+        "### Proof of wallet control (SEP-0010)",
+        "",
+        sep0010Snippet,
+        "",
+        "_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._",
       );
     }
-  }
-
-  lines.push(
-    '',
-    '---',
-    TRUSTBRIDGE_FOOTER,
-  );
 
     // Sponsorship info explainer (Issue #141)
     if (
@@ -322,18 +380,64 @@ export function formatCommentBody(
       (result.sponsorshipInfo.numSponsoring > 0 ||
         result.sponsorshipInfo.numSponsored > 0)
     ) {
+      const { numSponsoring, numSponsored } = result.sponsorshipInfo;
+      const netSponsorship = numSponsoring - numSponsored;
+
       lines.push(
         "",
         "### Sponsorship status",
         "",
-        result.sponsorshipInfo.numSponsored > 0
+        numSponsored > 0
           ? `**This account is sponsored.** Another account is covering some or all of its reserve requirements.`
           : "**This account sponsors other accounts** and may have reduced available balance.",
         "",
-        `- Accounts this account sponsors: **${result.sponsorshipInfo.numSponsoring}**`,
-        `- Accounts sponsoring this account: **${result.sponsorshipInfo.numSponsored}**`,
+        `- Accounts this account sponsors: **${numSponsoring}**`,
+        `- Accounts sponsoring this account: **${numSponsored}**`,
+        `- Net sponsorship effect: **${netSponsorship > 0 ? "+" : ""}${netSponsorship}** ${
+          netSponsorship > 0
+            ? "reserve entries (increases requirement)"
+            : netSponsorship < 0
+              ? "reserve entries (reduces requirement)"
+              : "entries (balanced)"
+        }`,
         "",
-        "**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost. [Learn more about sponsorship.](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships)",
+      );
+
+      if (result.reserveRequirement) {
+        const baseReserve = 2 * 0.5;
+        const subentryReserve = result.reserveRequirement.subentryCount * 0.5;
+        const sponsorshipAdjustment = netSponsorship * 0.5;
+
+        lines.push(
+          "**Reserve calculation breakdown:**",
+          "",
+          "```",
+          `Base reserves (2):           ${baseReserve.toFixed(1)} XLM`,
+          `Subentries (${result.reserveRequirement.subentryCount}):            ${subentryReserve > 0 ? "+" : " "}${subentryReserve.toFixed(1)} XLM`,
+          numSponsoring > 0 || numSponsored > 0
+            ? `Sponsorship (${numSponsoring} - ${numSponsored}):    ${sponsorshipAdjustment >= 0 ? "+" : ""}${sponsorshipAdjustment.toFixed(1)} XLM`
+            : "",
+          "---------------------------------",
+          `Protocol minimum:            ${result.reserveRequirement.protocolMinimum.toFixed(1)} XLM`,
+          result.reserveRequirement.configuredFloor > result.reserveRequirement.protocolMinimum
+            ? `Configured floor:            ${result.reserveRequirement.configuredFloor.toFixed(1)} XLM`
+            : "",
+          `Required (final):            ${result.reserveRequirement.required.toFixed(1)} XLM`,
+          "```",
+          "",
+        );
+      }
+
+      lines.push(
+        "**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost.",
+        "",
+        numSponsored > 0 && numSponsoring === 0
+          ? `> \u2139\ufe0f **For contributors:** Since this account is fully sponsored, you may need less XLM than the displayed requirement. However, the sponsor must maintain sufficient reserves.`
+          : numSponsoring > 0
+            ? `> \u26a0\ufe0f **Sponsoring ${numSponsoring} account${numSponsoring > 1 ? "s" : ""} adds ${(numSponsoring * 0.5).toFixed(1)} XLM to your reserve requirement.** Deep sponsorship chains (sponsor-of-sponsor patterns) can cause unexpected reserve exhaustion if intermediate sponsors become underfunded.`
+            : "",
+        "",
+        "[Learn more about sponsorship](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships) | [CAP-0033 spec](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0033.md)",
       );
     }
 
@@ -413,6 +517,39 @@ export function formatCommentBody(
       const diagnosticsBlock = buildDiagnosticsBlock(config.diagnosticsConfig);
       if (diagnosticsBlock) {
         lines.push(diagnosticsBlock);
+      }
+    }
+
+    // Custom comment template partial (#312) — injected just before the footer.
+    // Path validation, size check, content security, and interpolation escaping
+    // are all handled in loadCommentTemplate / validateTemplateContent.
+    if (config.customCommentTemplatePath) {
+      try {
+        const templateCtx = buildTemplateContext({
+          stellarAddress: config.stellarAddress,
+          assetCode: config.assetCode,
+          assetIssuer: config.assetIssuer,
+          horizonUrl: config.horizonUrl,
+          network: inferStellarNetwork(config.horizonUrl),
+          valid: result.valid,
+          locale: config.locale ?? 'en',
+        });
+        const partial = loadCommentTemplate(config.customCommentTemplatePath, templateCtx);
+        if (partial !== undefined) {
+          lines.push('', partial);
+        } else {
+          // File not found — warn without blocking the comment.
+          core.warning(
+            `custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
+              'The template partial will be omitted from this comment.',
+          );
+        }
+      } catch (templateErr) {
+        const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
+        core.warning(
+          `Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
+            'The template partial will be omitted from this comment.',
+        );
       }
     }
 
@@ -937,6 +1074,107 @@ export async function findStickyComment(
   return undefined;
 }
 
+/**
+ * Find TrustBridge's first (oldest) comment on the issue, if any.
+ *
+ * Scans comments in chronological order to find the initial TrustBridge comment
+ * to thread replies under when `comment_mode: 'reply'` is used (#419).
+ */
+export async function findFirstTrustBridgeComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  options: FindStickyCommentOptions = {},
+): Promise<number | undefined> {
+  const maxPages = options.maxPages ?? MAX_STICKY_COMMENT_SEARCH_PAGES;
+
+  // Primary: GraphQL pagination
+  if (typeof octokit.graphql === "function") {
+    try {
+      const query = `
+        query FindFirstTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) {
+              comments(first: 100, after: $cursor) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      let cursor: string | null = null;
+      let pageCount = 0;
+      let graphqlHandled = false;
+
+      while (pageCount < maxPages) {
+        pageCount++;
+        const data = (await octokit.graphql(query, {
+          owner,
+          repo,
+          issueNumber,
+          cursor,
+        })) as IssueCommentsGraphqlPage;
+
+        const comments = data?.repository?.issue?.comments;
+        if (!comments || !Array.isArray(comments.nodes)) {
+          break;
+        }
+
+        graphqlHandled = true;
+
+        for (const comment of comments.nodes) {
+          if (isTrustBridgeComment(comment.body)) {
+            return comment.databaseId;
+          }
+        }
+
+        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
+          break;
+        }
+        cursor = comments.pageInfo.endCursor;
+      }
+
+      if (graphqlHandled) {
+        return undefined;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      core.debug(
+        `GraphQL first comment search failed, falling back to REST: ${message}`,
+      );
+    }
+  }
+
+  // Fallback: REST pagination
+  if (
+    typeof octokit.paginate === "function" &&
+    octokit.rest?.issues?.listComments
+  ) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100,
+    });
+    const match = comments.find((comment) =>
+      isTrustBridgeComment(comment.body),
+    );
+    return match?.id;
+  }
+
+  return undefined;
+}
+
 export async function postIssueComment(
   token: string,
   body: string,
@@ -1062,6 +1300,41 @@ export async function postIssueComment(
           `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
         );
       }
+    }
+
+    // Reply mode (Issue #419): locate the first TrustBridge comment in the thread
+    // and post a threaded reply referencing it. GitHub's issue comments REST API
+    // does not support a native `in_reply_to` parameter (unlike review comments),
+    // so chronological threading is achieved by linking back to the root comment.
+    // If no prior TrustBridge comment exists, it falls back to creating the initial comment.
+    if (effectiveMode === 'reply') {
+      let parentCommentId: number | undefined;
+      try {
+        parentCommentId = await findFirstTrustBridgeComment(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+        );
+      } catch (error) {
+        core.debug(`reply mode: could not find parent comment: ${error}`);
+      }
+
+      const replyBody = parentCommentId
+        ? `> _Reply to [TrustBridge check #${parentCommentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentCommentId})_\n\n${body}`
+        : body;
+
+      const response = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: replyBody,
+      });
+
+      core.info(
+        `Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`,
+      );
+      return response.data.html_url;
     }
 
     const response = await octokit.rest.issues.createComment({

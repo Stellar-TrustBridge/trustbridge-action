@@ -10,7 +10,7 @@
 | **Issue Comments** (post / update / sticky) | ✅ | ✅ | ✅ | Uses `GITHUB_API_URL` for Octokit `baseUrl`. Core Issues API endpoints present since early GHES. |
 | **Pull Request Comments** | ✅ | ✅ | ✅ | PRs are issues under the hood; same REST path. |
 | **Discussion Comments** (GraphQL) | ✅ | ✅ | ✅ | Uses `GITHUB_GRAPHQL_URL`. Requires `discussions: write` permission. |
-| **Checks API** (`use_check_runs`) | ✅ | ✅ | ✅ | Same `@actions/github` Octokit client. Requires `checks: write` permission. Fail-open on 403. |
+| **Checks API** (`use_check_runs`) | ✅ | ✅ | ✅ | Same `@actions/github` Octokit client. Requires `checks: write` permission. Fail-open on 403. See [USAGE.md — GitHub Checks API](USAGE.md#github-checks-api-for-required-status-gates). |
 | **OIDC Federation** (`webhook_auth_mode: oidc`) | ✅ | ⚠️ | ⚠️ | Requires GHES OIDC provider support (GHES 3.8+). Verify your GHES version supports `actions/id-token`. |
 | **SARIF Output** (`sarif_output_path`) | ✅ | ✅ | ✅ | File write only; no API calls. |
 | **Artifact Upload** (`actions/upload-artifact`) | ✅ | ✅ | ✅ | Uses standard Actions artifact API. Works identically on GHES self-hosted runners. |

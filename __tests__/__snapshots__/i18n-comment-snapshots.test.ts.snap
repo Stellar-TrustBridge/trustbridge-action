@@ -20,15 +20,17 @@ Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 
 _Complete these steps in order. Boxes update automatically from live Horizon checks._
 
-- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Validation gate
 
 - Ready to proceed: all checks passed.
 - Passed checks: 3/3
 - Failed checks: 0
+- Ready: \`true\`
+- Reason code: \`SUCCESS\`
 
 ### Balances
 
@@ -94,15 +96,17 @@ Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 
 _Complete these steps in order. Boxes update automatically from live Horizon checks._
 
-- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Validation gate
 
 - Blocked by: Account funded, USDC trustline, XLM reserve
 - Passed checks: 0/3
 - Failed checks: 3
+- Ready: \`false\`
+- Reason code: \`FAILED\`
 
 ### Balances
 
@@ -168,19 +172,21 @@ Activo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34
 - ✅ **USDC trustline** — Trustline for USDC is configured.
 - ✅ **XLM reserve** — Balance 10.5 XLM meets the minimum of 1.5 XLM.
 
-### Onboarding checklist
+### Lista de incorporación
 
-_Complete these steps in order. Boxes update automatically from live Horizon checks._
+_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
 
-- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [x] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [x] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Puerta de validación
 
 - Listo para proceder: todas las comprobaciones pasaron.
 - Comprobaciones pasadas: 3/3
 - Comprobaciones fallidas: 0
+- Listo: \`true\`
+- Código de razón: \`SUCCESS\`
 
 ### Saldos
 
@@ -242,19 +248,21 @@ Activo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34
 - ❌ **USDC trustline** — Cannot verify trustline until the account exists. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing)
 - ❌ **XLM reserve** — Cannot verify XLM balance without an active account. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low)
 
-### Onboarding checklist
+### Lista de incorporación
 
-_Complete these steps in order. Boxes update automatically from live Horizon checks._
+_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
 
-- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [ ] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Puerta de validación
 
 - Bloqueado por: Account funded, USDC trustline, XLM reserve
 - Comprobaciones pasadas: 0/3
 - Comprobaciones fallidas: 3
+- Listo: \`false\`
+- Código de razón: \`FAILED\`
 
 ### Saldos
 
@@ -320,19 +328,21 @@ Ativo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 - ✅ **USDC trustline** — Trustline for USDC is configured.
 - ✅ **XLM reserve** — Balance 10.5 XLM meets the minimum of 1.5 XLM.
 
-### Onboarding checklist
+### Lista de integração
 
-_Complete these steps in order. Boxes update automatically from live Horizon checks._
+_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._
 
-- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [x] **Financiar a conta** — Ative a conta com XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [x] **Adicionar linha de confiança USDC** — Configure a linha de confiança do ativo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verificar saldo XLM** — Atinja a reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Portão de validação
 
 - Pronto para prosseguir: todas as verificações passaram.
 - Verificações aprovadas: 3/3
 - Verificações falhadas: 0
+- Pronto: \`true\`
+- Código de motivo: \`SUCCESS\`
 
 ### Saldos
 
@@ -394,19 +404,21 @@ Ativo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 - ❌ **USDC trustline** — Cannot verify trustline until the account exists. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing)
 - ❌ **XLM reserve** — Cannot verify XLM balance without an active account. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low)
 
-### Onboarding checklist
+### Lista de integração
 
-_Complete these steps in order. Boxes update automatically from live Horizon checks._
+_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._
 
-- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#account-is-reported-unfunded))
-- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#trustline-is-missing))
-- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/TROUBLESHOOTING.md#xlm-reserve-too-low))
+- [ ] **Financiar a conta** — Ative a conta com XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Adicionar linha de confiança USDC** — Configure a linha de confiança do ativo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Atinja a reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
 
 ### Portão de validação
 
 - Bloqueado por: Account funded, USDC trustline, XLM reserve
 - Verificações aprovadas: 0/3
 - Verificações falhadas: 3
+- Pronto: \`false\`
+- Código de motivo: \`FAILED\`
 
 ### Saldos
 

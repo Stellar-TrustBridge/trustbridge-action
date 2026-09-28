@@ -779,6 +779,34 @@ with:
 
 Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
 
+## Comment threading strategy (`comment_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  comment_mode: sticky # default: 'sticky' | 'new' | 'reply'
+```
+
+- **`sticky`** (default): Updates the previous TrustBridge comment in place, preserving checklist state across re-runs.
+- **`new`**: Always posts a new top-level comment on every run for a complete audit trail.
+- **`reply`**: Posts a chronological reply referencing the first TrustBridge check comment in the thread.
+
+## Comment posting policy (`posting_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  posting_mode: post # default: 'post' | 'dry-run' | 'off'
+```
+
+- **`post`** (default): Writes or updates the issue comment.
+- **`dry-run`**: Formats the complete comment body and populates all action outputs, but skips GitHub API calls to post comments.
+- **`off`**: Skips comment generation and posting entirely.
+
+> **Backwards compatibility note:** If `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`, TrustBridge automatically falls back to checking `comment_mode` as the posting policy.
+
 ## Onboarding checklist (default on)
 
 ```yaml
@@ -833,8 +861,57 @@ Maintainers testing on their own issues or branches can opt in to skipping walle
   - TrustBridge **never reads CODEOWNERS from untrusted fork PR branches**.
   - On pull requests from forks, it queries the trusted base branch via the GitHub API. If inaccessible, it safely falls back to standard validation without skipping.
 
+### `skip_for_maintainers` and the deprecated `skip_if_maintainer` alias (Issue #448)
+
+`skip_for_maintainers` is the **canonical** input name. `skip_if_maintainer` is a
+**deprecated alias** kept only so existing workflows keep working; it is
+scheduled for removal in a future major release.
+
+| Input | Status | Notes |
+| --- | --- | --- |
+| `skip_for_maintainers` | **Canonical** | Preferred. Always wins when set explicitly. |
+| `skip_if_maintainer` | **Deprecated** | Consulted only when `skip_for_maintainers` is unset. Emits a deprecation warning when used. |
+
+**Precedence rules** (implemented in `resolveMaintainerSkipInput` in `src/inputs.ts`):
+
+1. If `skip_for_maintainers` holds an explicit boolean (`true`/`false`/`1`/`0`/`yes`/`no`), that value is used — **the alias can never override it**.
+2. Otherwise, if `skip_if_maintainer` holds an explicit boolean, that value is used and a deprecation warning is emitted.
+3. If neither is set, the value is `false` (opt-in only).
+
+> [!IMPORTANT]
+> **Migration**: rename `skip_if_maintainer` to `skip_for_maintainers`. Because the
+> canonical input always wins, renaming is behaviour-preserving as long as you do
+> not set both to different values.
+
+**Conflict handling**: if both inputs are supplied with *different* boolean
+values, TrustBridge uses `skip_for_maintainers` and emits an explicit warning.
+It does **not** silently pick a value.
+
+```yaml
+# Deprecated — still works, but warns
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_if_maintainer: true
+
+# Preferred
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_for_maintainers: true
+
+# Conflict: skip_for_maintainers: false wins, with a warning
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_for_maintainers: false
+    skip_if_maintainer: true
+```
+
 > [!WARNING]
 > **Risk note**: Do **not** enable `skip_for_maintainers: true` on contributor-facing workflows or pull requests where external contributors might forge or bypass checks. Use only for internal maintainer test workflows or triage automation.
+>
+> The deprecated alias carries the **same** risk as the canonical input — it
+> enables exactly the same opt-out. Renaming an input does not change the
+> security posture, so migrating does not require a security review; it is
+> purely a naming cleanup ahead of the alias being removed.
 
 ---
 
@@ -2619,6 +2696,8 @@ permissions:
 - Check conclusion is `success` if all checks pass, `failure` otherwise
 - Annotations are visible in the Actions UI under the "Annotations" panel
 - Fail-open: if Checks API returns 403 (permission denied), a warning is logged and validation continues
+
+> For GitHub Enterprise Server (GHES) support, permission considerations, and fail-open behavior, see [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md#api-feature-matrix).
 
 **Example — gated merge queue:**
 
