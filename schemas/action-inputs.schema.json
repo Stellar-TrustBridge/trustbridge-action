@@ -149,6 +149,16 @@
     },
     "comment_mode": {
       "type": "string",
+      "description": "Comment threading strategy: sticky, new, or reply.",
+      "default": "sticky",
+      "enum": [
+        "sticky",
+        "new",
+        "reply"
+      ]
+    },
+    "posting_mode": {
+      "type": "string",
       "description": "Comment posting mode: post, dry-run, or off.",
       "default": "post",
       "enum": [
@@ -156,6 +166,15 @@
         "dry-run",
         "off"
       ]
+    },
+    "use_check_runs": {
+      "type": "string",
+      "description": "When true, creates a GitHub Check Run with individual validation check annotations. Requires checks: write permission.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     },
     "onboarding_checklist": {
       "type": "string",
@@ -692,6 +711,15 @@
       "type": "string",
       "description": "Optional workspace-relative path to a Markdown partial file appended to the TrustBridge issue comment. Supports {{variable}} interpolation. Leave empty to disable.",
       "default": ""
+    },
+    "dashboard_roster_allow_http": {
+      "type": "string",
+      "description": "Allow insecure HTTP for dashboard roster endpoint in development environments.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     }
   }
 }

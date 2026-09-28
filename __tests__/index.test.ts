@@ -86,22 +86,30 @@ function makeFundedAccount() {
 }
 
 // ---------------------------------------------------------------------------
-// Wave #30 — comment_mode: input parsing
+// ---------------------------------------------------------------------------
+// Wave #30 / Issue #418 — posting_mode input parsing and comment_mode fallback
 // ---------------------------------------------------------------------------
 
-describe("Wave #30 — comment_mode input parsing", () => {
-  const VALID_MODES = ["post", "dry-run", "off"];
+describe("posting_mode and comment_mode input parsing (Issue #418)", () => {
+  const VALID_POSTING_MODES = ["post", "dry-run", "off"];
+  const VALID_COMMENT_MODES = ["sticky", "new", "reply"];
 
-  it.each(VALID_MODES)('accepts valid mode "%s"', (mode) => {
+  it.each(VALID_POSTING_MODES)('accepts valid posting_mode "%s"', (mode) => {
     const normalised = mode.trim().toLowerCase();
-    expect(VALID_MODES).toContain(normalised);
+    expect(VALID_POSTING_MODES).toContain(normalised);
   });
 
-  it("rejects invalid comment_mode values", () => {
+  it("rejects invalid posting_mode values", () => {
     const invalid = ["invalid-mode", "skip", "silent", "", "  "];
     for (const mode of invalid) {
       const normalised = mode.trim().toLowerCase();
-      expect(VALID_MODES).not.toContain(normalised);
+      expect(VALID_POSTING_MODES).not.toContain(normalised);
+    }
+  });
+
+  it("accepts valid comment_mode threading values", () => {
+    for (const mode of VALID_COMMENT_MODES) {
+      expect(VALID_COMMENT_MODES).toContain(mode);
     }
   });
 
@@ -593,16 +601,17 @@ describe("Wave #30 + #38 — action.yml structural checks", () => {
     content = fs.readFileSync(actionPath, "utf8");
   });
 
-  it("comment_mode input is declared", () => {
+  it("comment_mode input is declared with sticky default", () => {
     expect(content).toContain("comment_mode:");
+    expect(content).toContain("default: 'sticky'");
   });
 
-  it("comment_mode default is 'post'", () => {
-    // Search the full file for the default line near comment_mode
+  it("posting_mode input is declared with post default", () => {
+    expect(content).toContain("posting_mode:");
     expect(content).toContain("default: 'post'");
   });
 
-  it("comment_mode description mentions dry-run and off", () => {
+  it("posting_mode description mentions dry-run and off", () => {
     // Both terms appear somewhere in the file (description is multi-line YAML)
     expect(content).toContain("dry-run");
     expect(content).toContain('"off"');

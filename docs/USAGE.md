@@ -779,6 +779,34 @@ with:
 
 Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
 
+## Comment threading strategy (`comment_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  comment_mode: sticky # default: 'sticky' | 'new' | 'reply'
+```
+
+- **`sticky`** (default): Updates the previous TrustBridge comment in place, preserving checklist state across re-runs.
+- **`new`**: Always posts a new top-level comment on every run for a complete audit trail.
+- **`reply`**: Posts a chronological reply referencing the first TrustBridge check comment in the thread.
+
+## Comment posting policy (`posting_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  posting_mode: post # default: 'post' | 'dry-run' | 'off'
+```
+
+- **`post`** (default): Writes or updates the issue comment.
+- **`dry-run`**: Formats the complete comment body and populates all action outputs, but skips GitHub API calls to post comments.
+- **`off`**: Skips comment generation and posting entirely.
+
+> **Backwards compatibility note:** If `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`, TrustBridge automatically falls back to checking `comment_mode` as the posting policy.
+
 ## Onboarding checklist (default on)
 
 ```yaml
@@ -2619,6 +2647,8 @@ permissions:
 - Check conclusion is `success` if all checks pass, `failure` otherwise
 - Annotations are visible in the Actions UI under the "Annotations" panel
 - Fail-open: if Checks API returns 403 (permission denied), a warning is logged and validation continues
+
+> For GitHub Enterprise Server (GHES) support, permission considerations, and fail-open behavior, see [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md#api-feature-matrix).
 
 **Example — gated merge queue:**
 

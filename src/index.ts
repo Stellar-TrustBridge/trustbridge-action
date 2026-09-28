@@ -20,6 +20,7 @@ import { fetchAccount, HorizonError, waitForFundedAccount, applyWalletLabels, ap
 import type { HorizonAccount, HorizonBalance } from './horizon';
 import { SimpleCache } from './cache';
 import { checkLedgerFreshness } from './freshness';
+import { createCheckRun } from './checks-run';
 import {
   formatCommentBody,
   postIssueComment,
@@ -726,8 +727,9 @@ async function run(): Promise<void> {
       `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
     );
   }
-  const commentMode = postingModeRaw as PostingMode;
-  const shouldPostComment = commentMode === "post";
+  const postingMode = postingModeRaw as PostingMode;
+  const commentMode = postingMode;
+  const shouldPostComment = postingMode === "post";
 
   // Threading strategy for issue comments (#322 / #456)
   const commentThreadingMode = (
@@ -1036,7 +1038,10 @@ async function run(): Promise<void> {
 
   // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
   // GitHub Checks API integration (Wave #26 — optional, off by default)
-  const useCheckRuns = false;
+  const useCheckRuns = parseBooleanInput(
+    core.getInput("use_check_runs"),
+    false,
+  );
 
   // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
   const checkLedgerFreshnessEnabled = parseBooleanInput(
@@ -1768,7 +1773,7 @@ async function run(): Promise<void> {
   let commentUrl: string | undefined;
   if (!shouldPostComment) {
     core.info(
-      `comment_mode=${commentMode} — skipping issue comment post (outputs still set).`,
+      `posting_mode=${postingMode} — skipping issue comment post (outputs still set).`,
     );
   } else if (discussionNodeId) {
     // Discussion events carry a GraphQL node id, not an issue number —
@@ -1838,6 +1843,24 @@ async function run(): Promise<void> {
   core.setOutput("friendbot_called", String(friendbotCalled));
   core.setOutput("friendbot_success", String(friendbotSuccess));
   core.setOutput("friendbot_transaction_hash", friendbotTransactionHash);
+
+  // ---------------------------------------------------------------------------
+  // GitHub Checks API integration (Wave #26 / Issue #421)
+  // When use_check_runs is true, creates a Check Run with check annotations.
+  // ---------------------------------------------------------------------------
+  if (useCheckRuns && result) {
+    try {
+      await createCheckRun(result, githubToken, {
+        stellarAddress: effectiveResolvedAddress,
+      });
+    } catch (checkRunError) {
+      const message =
+        checkRunError instanceof Error
+          ? checkRunError.message
+          : String(checkRunError);
+      core.warning(`Failed to create Check Run (non-fatal): ${message}`);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Wallet labels (Issue #200)

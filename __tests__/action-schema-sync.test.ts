@@ -242,6 +242,16 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
     expect(actionInputs.has('home_domain_check_enabled')).toBe(true);
   });
 
+  it('finds use_check_runs in action.yml as optional input', () => {
+    expect(actionInputs.has('use_check_runs')).toBe(true);
+    expect(actionInputs.get('use_check_runs')?.required).toBe(false);
+  });
+
+  it('finds posting_mode and comment_mode in action.yml as separate inputs', () => {
+    expect(actionInputs.has('posting_mode')).toBe(true);
+    expect(actionInputs.has('comment_mode')).toBe(true);
+  });
+
   // ── 3. Every action.yml input appears in the schema ───────────────────────
 
   it('every action.yml input has a matching schema property', () => {

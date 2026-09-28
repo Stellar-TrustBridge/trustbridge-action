@@ -372,6 +372,14 @@ inputs:
     required: false
     default: 'post'
 
+  use_check_runs:
+    description: >-
+      When true, creates a GitHub Check Run with individual validation check
+      annotations and a conclusion reflecting the overall validation result.
+      Requires 'checks: write' permission. Default false.
+    required: false
+    default: 'false'
+
   use_friendbot:
     description: >-
       Automatically call Stellar Friendbot to fund unfunded (404) accounts on

@@ -323,4 +323,20 @@ User-Agent: trustbridge-action/1
 
 ---
 
+## Action Inputs: `posting_mode` vs `comment_mode` (Issue #418)
+
+### Summary of Change
+In previous versions, `comment_mode` had conflicting declarations across action specifications:
+1. Controlling GitHub comment posting behavior (`post`, `dry-run`, `off`).
+2. Controlling comment threading strategy (`sticky`, `new`, `reply`).
+
+### Resolution & Inputs
+- **`posting_mode`**: Dedicated input for comment posting policy. Allowed values: `'post'` (default), `'dry-run'`, `'off'`.
+- **`comment_mode`**: Dedicated input for comment threading strategy. Allowed values: `'sticky'` (default), `'new'`, `'reply'`.
+
+### Backward Compatibility
+To avoid breaking existing workflows that configured `comment_mode: dry-run` or `comment_mode: off`, `src/index.ts` automatically falls back to using `comment_mode` as `posting_mode` when `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`.
+
+---
+
 [← Back to README](../README.md)

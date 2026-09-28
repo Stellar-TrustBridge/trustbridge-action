@@ -937,6 +937,107 @@ export async function findStickyComment(
   return undefined;
 }
 
+/**
+ * Find TrustBridge's first (oldest) comment on the issue, if any.
+ *
+ * Scans comments in chronological order to find the initial TrustBridge comment
+ * to thread replies under when `comment_mode: 'reply'` is used (#419).
+ */
+export async function findFirstTrustBridgeComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  options: FindStickyCommentOptions = {},
+): Promise<number | undefined> {
+  const maxPages = options.maxPages ?? MAX_STICKY_COMMENT_SEARCH_PAGES;
+
+  // Primary: GraphQL pagination
+  if (typeof octokit.graphql === "function") {
+    try {
+      const query = `
+        query FindFirstTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) {
+              comments(first: 100, after: $cursor) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      let cursor: string | null = null;
+      let pageCount = 0;
+      let graphqlHandled = false;
+
+      while (pageCount < maxPages) {
+        pageCount++;
+        const data = (await octokit.graphql(query, {
+          owner,
+          repo,
+          issueNumber,
+          cursor,
+        })) as IssueCommentsGraphqlPage;
+
+        const comments = data?.repository?.issue?.comments;
+        if (!comments || !Array.isArray(comments.nodes)) {
+          break;
+        }
+
+        graphqlHandled = true;
+
+        for (const comment of comments.nodes) {
+          if (isTrustBridgeComment(comment.body)) {
+            return comment.databaseId;
+          }
+        }
+
+        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
+          break;
+        }
+        cursor = comments.pageInfo.endCursor;
+      }
+
+      if (graphqlHandled) {
+        return undefined;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      core.debug(
+        `GraphQL first comment search failed, falling back to REST: ${message}`,
+      );
+    }
+  }
+
+  // Fallback: REST pagination
+  if (
+    typeof octokit.paginate === "function" &&
+    octokit.rest?.issues?.listComments
+  ) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100,
+    });
+    const match = comments.find((comment) =>
+      isTrustBridgeComment(comment.body),
+    );
+    return match?.id;
+  }
+
+  return undefined;
+}
+
 export async function postIssueComment(
   token: string,
   body: string,
@@ -1062,6 +1163,41 @@ export async function postIssueComment(
           `Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`,
         );
       }
+    }
+
+    // Reply mode (Issue #419): locate the first TrustBridge comment in the thread
+    // and post a threaded reply referencing it. GitHub's issue comments REST API
+    // does not support a native `in_reply_to` parameter (unlike review comments),
+    // so chronological threading is achieved by linking back to the root comment.
+    // If no prior TrustBridge comment exists, it falls back to creating the initial comment.
+    if (effectiveMode === 'reply') {
+      let parentCommentId: number | undefined;
+      try {
+        parentCommentId = await findFirstTrustBridgeComment(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+        );
+      } catch (error) {
+        core.debug(`reply mode: could not find parent comment: ${error}`);
+      }
+
+      const replyBody = parentCommentId
+        ? `> _Reply to [TrustBridge check #${parentCommentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentCommentId})_\n\n${body}`
+        : body;
+
+      const response = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: replyBody,
+      });
+
+      core.info(
+        `Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`,
+      );
+      return response.data.html_url;
     }
 
     const response = await octokit.rest.issues.createComment({
