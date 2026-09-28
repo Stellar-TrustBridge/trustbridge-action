@@ -139,7 +139,7 @@ describe('fetchDashboardRoster', () => {
       ok: true,
       body: asyncIterable
     });
-    const result = await fetchDashboardRoster('https://valid.com', '', 1000, mockFetch as any);
+    const result = await fetchDashboardRoster('https://valid.com', '', 1000, true, mockFetch as any);
     expect(result).toEqual({ gabc: 'G123' });
   });
 
@@ -152,7 +152,7 @@ describe('fetchDashboardRoster', () => {
       body: {}, // No getReader or Symbol.asyncIterator
       arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
     });
-    const result = await fetchDashboardRoster('https://valid.com', '', 1000, mockFetch as any);
+    const result = await fetchDashboardRoster('https://valid.com', '', 1000, true, mockFetch as any);
     expect(result).toEqual({ gabc: 'G123' });
   });
 });
