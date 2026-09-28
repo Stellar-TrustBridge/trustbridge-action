@@ -100,6 +100,24 @@ export declare class HorizonPinMismatchError extends HorizonError {
     readonly actualFingerprint: string;
     constructor(message: string, expectedFingerprint: string, actualFingerprint: string);
 }
+/**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+export declare class HorizonCircuitOpenError extends HorizonError {
+    constructor(message: string);
+}
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
 export type FetchLike = (url: string | import("node-fetch").Request, init?: import("node-fetch").RequestInit) => Promise<import("node-fetch").Response>;
 export interface FetchAccountOptions {
     timeoutMs?: number;

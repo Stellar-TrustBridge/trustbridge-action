@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "description": "GitHub Action to verify Stellar account trustlines and XLM reserve before issue assignment workflows",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt && node scripts/normalize-maps.js",
+    "preview-comment": "ts-node --transpile-only scripts/preview-comment.ts",
     "test:map-paths": "node scripts/check-map-paths.js",
     "bundle-size": "npm test -- --testPathPattern bundle-size --no-coverage",
     "typecheck": "tsc --noEmit",
@@ -17,7 +21,9 @@
     "mock:start": "docker compose -f mock/horizon/docker-compose.yml up -d --wait",
     "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down",
     "license:check": "node scripts/check-licenses.js",
-    "license:report": "license-checker --production --json --out licenses-report.json --excludePrivatePackages"
+    "license:report": "license-checker --production --json --out licenses-report.json --excludePrivatePackages",
+    "mutation": "stryker run",
+    "mutation:ci": "stryker run --reporters clear-text,progress,html,json"
   },
   "repository": {
     "type": "git",
@@ -33,24 +39,28 @@
   "author": "Stellar-TrustBridge",
   "license": "MIT",
   "dependencies": {
-    "@actions/cache": "^3.3.0",
+    "@actions/cache": "^6.2.0",
     "@actions/core": "^2.0.3",
     "@actions/github": "^6.0.1",
-    "https-proxy-agent": "^5.0.1",
+    "https-proxy-agent": "^9.1.0",
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^8.7.1",
+    "@stryker-mutator/jest-runner": "^8.7.1",
+    "@stryker-mutator/typescript-checker": "^8.7.1",
     "@types/jest": "^29.5.14",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.2",
     "@types/node-fetch": "^2.6.12",
     "@typescript-eslint/eslint-plugin": "^8.68.0",
     "@typescript-eslint/parser": "^8.70.0",
     "@vercel/ncc": "^0.38.3",
-    "eslint": "^10.10.0",
+    "eslint": "^10.11.0",
     "jest": "^30.5.0",
     "license-checker": "^25.0.1",
     "ts-jest": "^29.4.12",
-    "typescript": "^5.7.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.70.0"
   }
 }

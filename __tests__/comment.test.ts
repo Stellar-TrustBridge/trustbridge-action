@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as github from '@actions/github';
@@ -10,6 +10,7 @@ import {
   COMMENT_SIZE_LIMIT_BYTES,
   COMMENT_TRUNCATION_NOTICE_BYTES,
   findStickyComment,
+  findFirstTrustBridgeComment,
   formatCommentBody,
   isTrustBridgeComment,
   postIssueComment,
@@ -516,6 +517,63 @@ describe('findStickyComment', () => {
   });
 });
 
+describe('findFirstTrustBridgeComment (Issue #419)', () => {
+  it('finds the first matching comment via GraphQL when multiple comments exist', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([
+        { id: 'IC_1', databaseId: 101, body: 'unrelated comment' },
+        { id: 'IC_2', databaseId: 102, body: `${STICKY_COMMENT_MARKER}\nfirst TrustBridge result` },
+        { id: 'IC_3', databaseId: 103, body: `${STICKY_COMMENT_MARKER}\nsecond TrustBridge result` },
+      ]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(102);
+  });
+
+  it('falls back to REST pagination if GraphQL fails and finds the first match', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
+    octokit.paginate.mockResolvedValue([
+      { id: 1, body: 'unrelated comment' },
+      { id: 2, body: `${STICKY_COMMENT_MARKER}\nfirst match` },
+      { id: 3, body: `${STICKY_COMMENT_MARKER}\nsecond match` },
+    ]);
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(2);
+  });
+
+  it('returns undefined when no comment has the marker', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBeUndefined();
+  });
+});
+
 describe('postIssueComment', () => {
   const mockedGithub = github as unknown as {
     context: {
@@ -608,6 +666,102 @@ describe('postIssueComment', () => {
     expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-3');
     expect(octokit.rest.issues.createComment).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('posts a threaded reply referencing the first TrustBridge comment when commentMode is reply', async () => {
+    const octokit = makeOctokit();
+    // Simulate first TrustBridge comment at id 42, later comment at id 99
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nsecond comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'reply check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-100');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: expect.stringContaining('> _Reply to [TrustBridge check #42](https://github.com/test-owner/test-repo/issues/7#issuecomment-42)_'),
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to creating a normal top-level comment when commentMode is reply and no prior comment exists', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'first check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-1');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'first check result',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('creates a fresh top-level comment without reply header when commentMode is new', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'new mode body', {
+      commentMode: 'new',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-2');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'new mode body',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('updates existing comment in place when commentMode is sticky', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 88, body: `${STICKY_COMMENT_MARKER}\nsticky body` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-88' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'updated sticky body', {
+      commentMode: 'sticky',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-88');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment_id: 88,
+        body: 'updated sticky body',
+      }),
+    );
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
   });
 
   it('suppresses comment update when maintainer added :zzz: reaction within snooze window', async () => {
@@ -1274,5 +1428,180 @@ describe('formatCommentBody with custom_comment_template_path', () => {
     expect(body).toContain('\\]\\[evil\\]\\(https://steal.example\\)');
     // Footer is still present — comment is never broken by escaped content
     expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #450 — reason_code + ready in the validation-gate section
+// ---------------------------------------------------------------------------
+
+describe('Issue #450 — validation gate exposes reason_code and ready', () => {
+  const gateConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const passing: ValidationResult = {
+    valid: true,
+    accountFunded: true,
+    trustlineExists: true,
+    xlmBalance: '10.5000000',
+    xlmReserveMet: true,
+    checks: [
+      { passed: true, label: 'Account funded', detail: 'ok' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  const failing: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: '0',
+    xlmReserveMet: false,
+    checks: [
+      { passed: false, label: 'Account funded', detail: 'unfunded' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  it('shows reason_code and ready on the success path', () => {
+    const body = formatCommentBody(passing, gateConfig);
+    expect(body).toContain('### Validation gate');
+    expect(body).toContain('- Ready: `true`');
+    expect(body).toContain('- Reason code: `SUCCESS`');
+  });
+
+  it('shows reason_code and ready on a failure path', () => {
+    const body = formatCommentBody(failing, gateConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `FAILED`');
+  });
+
+  it('prefers an explicit reasonCode from the result', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+    expect(body).not.toContain('- Reason code: `FAILED`');
+  });
+
+  it('stays consistent with the reason_code action output on a known failure', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'TRUSTLINE_MISSING' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `TRUSTLINE_MISSING`');
+  });
+
+  it('localizes the reason_code and ready labels', () => {
+    const body = formatCommentBody(passing, { ...gateConfig, locale: 'es' });
+    expect(body).toContain('### Puerta de validación');
+    expect(body).toContain('- Listo: `true`');
+    expect(body).toContain('- Código de razón: `SUCCESS`');
+  });
+
+  it('neutralizes a backtick inside reason_code via the code span', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'BAD`CODE' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `BAD\\`CODE`');
+  });
+
+  it('keeps snake_case reason codes literal and copy-pasteable', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    // Inside a code span, underscores need no escaping — a machine-readable
+    // code must be copy-pasteable straight from the comment.
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-breaker banner
+// ---------------------------------------------------------------------------
+
+describe('Issue #434 — circuit-breaker open comment section', () => {
+  const circuitConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const circuitOpenResult: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    reasonCode: 'CIRCUIT_OPEN',
+    circuitOpen: true,
+    checks: [
+      {
+        passed: false,
+        label: 'Horizon availability',
+        detail: 'Circuit breaker is open.',
+      },
+    ],
+  };
+
+  it('renders a circuit-breaker banner when the circuit was open', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('**Circuit breaker open**');
+    expect(body).toContain('was **not** checked');
+    expect(body).toContain('Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('states that the account was not checked and offers a recovery hint', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('recovery window');
+    expect(body).toContain('re-run the workflow');
+  });
+
+  it('mirrors the CIRCUIT_OPEN reason code into the validation gate', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('omits the banner for a normal account failure', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        reasonCode: 'ACCOUNT_NOT_FUNDED',
+        checks: [{ passed: false, label: 'Account funded', detail: 'unfunded' }],
+      },
+      circuitConfig,
+    );
+    expect(body).not.toContain('Circuit breaker open');
+  });
+
+  it('localizes the circuit-breaker banner', () => {
+    const body = formatCommentBody(circuitOpenResult, {
+      ...circuitConfig,
+      locale: 'es',
+    });
+    expect(body).toContain('**Disyuntor abierto**');
+    expect(body).toContain('Código de razón: `CIRCUIT_OPEN`');
+  });
+
+  it('leaks no account data in the banner (PII-safe)', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    const bannerStart = body.indexOf('**Circuit breaker open**');
+    expect(bannerStart).toBeGreaterThan(-1);
+    const bannerBlock = body.slice(bannerStart).split('\n### ')[0] ?? '';
+    // The banner carries no address, issuer, or endpoint URL.
+    expect(bannerBlock).not.toContain(circuitConfig.stellarAddress);
+    expect(bannerBlock).not.toContain(circuitConfig.assetIssuer);
+    expect(bannerBlock).not.toContain(circuitConfig.horizonUrl);
+    // Balances stay "unknown" rather than leaking a stale figure.
+    expect(body).toContain('**Native XLM balance:** _unknown_');
   });
 });

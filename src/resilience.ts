@@ -118,6 +118,12 @@ export interface RetryPolicy {
 
 /**
  * Default retry policy for API calls.
+ * - maxRetries: 3 attempts
+ * - initialDelayMs: 1000ms (1 second)
+ * - maxDelayMs: 30000ms (30 seconds)
+ * - backoffMultiplier: 2x exponential backoff
+ * - timeoutMs: 15000ms (15 seconds) request timeout
+ * - maxTotalWaitMs: 120000ms (2 minutes) total wait budget
  */
 export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   maxRetries: 3,
@@ -141,11 +147,13 @@ export function calculateBackoffDelay(
 
 /**
  * Add random jitter to a delay to prevent thundering herd.
+ * Ensures the result is >= 0 and optionally respects a maximum cap.
  */
-export function addJitter(delayMs: number, jitterPercent: number = 10): number {
+export function addJitter(delayMs: number, jitterPercent: number = 10, maxDelayMs?: number): number {
   const jitter = delayMs * (jitterPercent / 100);
   const randomJitter = (Math.random() - 0.5) * 2 * jitter;
-  return Math.max(0, delayMs + randomJitter);
+  const jittered = Math.max(0, delayMs + randomJitter);
+  return maxDelayMs !== undefined ? Math.min(jittered, maxDelayMs) : jittered;
 }
 
 /**
@@ -267,7 +275,7 @@ export async function retryWithBackoff<T>(
       }
 
       const delayMs = calculateBackoffDelay(attempt, policy);
-      const delayWithJitter = addJitter(delayMs);
+      const delayWithJitter = addJitter(delayMs, 10, policy.maxDelayMs);
       
       if (delayWithJitter > policy.maxDelayMs || totalWaitMs + delayWithJitter > policy.maxTotalWaitMs) {
         throw new Error(

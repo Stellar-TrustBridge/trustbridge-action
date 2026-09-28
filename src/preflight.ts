@@ -3,6 +3,7 @@
  *
  * #145 — issues:write preflight check
  * #220 — extended to `pull_request` / `pull_request_target` events
+ * #443 — optional Horizon fallback health probe
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
  * issue/PR comments **before** any expensive Horizon calls are made.  Failing
@@ -27,6 +28,11 @@
  *    `GITHUB_TOKEN` by default, so the probe can pass here and the later
  *    `createComment`/`updateComment` call can still 403. That failure is
  *    caught separately and logged as a non-fatal warning by the caller.
+ * 3. **Optional Horizon health probe** (#443) — when enabled, HEAD (falling
+ *    back to GET) the Horizon root on both the primary and fallback URLs so
+ *    operators discover a bad secondary before a run fails mid-flight.
+ *    Soft-warns by default; `horizon_probe_hard_fail: true` turns a failed
+ *    probe into a hard failure.
  *
  * ## Failure modes
  *
@@ -46,6 +52,10 @@
  * - `preflight_only` input: when `true`, the action runs the preflight and
  *   exits immediately without calling Horizon.  Useful for diagnosing
  *   permission issues in new repositories without spending API quota.
+ * - The Horizon health probe is opt-in (`horizon_probe: true`) and bounded by
+ *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
+ *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
+ *   workflows.
  */
 
 import * as github from '@actions/github';
@@ -73,6 +83,26 @@ export interface PreflightOptions {
    * issue/PR context), return `{ skip: true }` immediately.
    */
   requireIssueContext?: boolean;
+  /**
+   * #443 — when `true`, run the optional Horizon health probe against the
+   * primary and fallback URLs.  Defaults to `false` (opt-in).
+   */
+  horizonProbe?: boolean;
+  /** Primary Horizon URL to probe (e.g. `horizon_url`). */
+  horizonUrl?: string;
+  /** Optional fallback Horizon URL to probe (e.g. `horizon_url_fallback`). */
+  horizonUrlFallback?: string;
+  /**
+   * #443 — when `true`, a failed Horizon probe throws instead of warning.
+   * Defaults to `false` (soft-warn).
+   */
+  horizonProbeHardFail?: boolean;
+  /** Per-URL probe timeout in milliseconds.  Defaults to 5000. */
+  horizonProbeTimeoutMs?: number;
+  /** Injectable fetch for tests.  Defaults to the global `fetch`. */
+  fetchImpl?: typeof fetch;
+  /** Injectable logger for tests.  Defaults to `console.warn`. */
+  warn?: (message: string) => void;
 }
 
 /**
@@ -177,11 +207,124 @@ export async function runIssuesPreflight(
     );
   }
 
+  // ── 3. Optional Horizon health probe (#443) ───────────────────────────────
+  if (options.horizonProbe === true) {
+    await runHorizonHealthProbe(options);
+  }
+
   return {
     skip: false,
     message: `issues:write preflight passed — issue/PR #${issueNumber} is accessible.`,
     issueNumber,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Horizon health probe (#443)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe the Horizon root on the primary and (when set) fallback URLs.
+ *
+ * Uses `HEAD` first and falls back to `GET` when the server rejects HEAD
+ * (some Horizon deployments return 405).  A probe is considered healthy when
+ * the response status is `< 400`.
+ *
+ * By default a failed probe only emits a warning; set
+ * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
+ */
+export async function runHorizonHealthProbe(
+  options: PreflightOptions,
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const warn = options.warn ?? ((message: string) => console.warn(message));
+  const timeoutMs = options.horizonProbeTimeoutMs ?? 5000;
+
+  const targets: Array<{ label: string; url: string }> = [];
+  if (options.horizonUrl) {
+    targets.push({ label: 'primary', url: options.horizonUrl });
+  }
+  if (options.horizonUrlFallback) {
+    targets.push({ label: 'fallback', url: options.horizonUrlFallback });
+  }
+
+  for (const target of targets) {
+    const result = await probeHorizonUrl(target.url, fetchImpl, timeoutMs);
+    if (result.ok) {
+      continue;
+    }
+
+    const message =
+      `Horizon ${target.label} URL health probe failed for ${target.url}: ${result.reason}. ` +
+      'The run will continue, but fetch failures may fall back to this URL mid-run.';
+
+    if (options.horizonProbeHardFail === true) {
+      throw new PreflightError(message, result.status ?? 0);
+    }
+    warn(message);
+  }
+}
+
+interface ProbeResult {
+  ok: boolean;
+  reason: string;
+  status?: number;
+}
+
+async function probeHorizonUrl(
+  url: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<ProbeResult> {
+  const head = await fetchWithTimeout(fetchImpl, url, 'HEAD', timeoutMs);
+  if (head.ok) {
+    return { ok: true, reason: 'ok', status: head.status };
+  }
+
+  // Some servers reject HEAD (405/501) — retry with GET before giving up.
+  if (head.status === 405 || head.status === 501) {
+    const get = await fetchWithTimeout(fetchImpl, url, 'GET', timeoutMs);
+    return get.ok
+      ? { ok: true, reason: 'ok', status: get.status }
+      : { ok: false, reason: get.reason, status: get.status };
+  }
+
+  return { ok: false, reason: head.reason, status: head.status };
+}
+
+async function fetchWithTimeout(
+  fetchImpl: typeof fetch,
+  url: string,
+  method: 'HEAD' | 'GET',
+  timeoutMs: number,
+): Promise<ProbeResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, {
+      method,
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    if (response.status < 400) {
+      return { ok: true, reason: 'ok', status: response.status };
+    }
+    return {
+      ok: false,
+      reason: `HTTP ${response.status}`,
+      status: response.status,
+    };
+  } catch (error: unknown) {
+    const reason =
+      error instanceof Error && error.name === 'AbortError'
+        ? `timed out after ${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,17 +346,19 @@ export class PreflightError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Best-effort extraction of an HTTP status code from an Octokit error.
+ * Returns `undefined` when the error does not carry a numeric `status`.
+ */
 function extractHttpStatus(error: unknown): number | undefined {
-  if (
-    error !== null &&
-    typeof error === 'object' &&
-    'status' in error &&
-    typeof (error as { status: unknown }).status === 'number'
-  ) {
-    return (error as { status: number }).status;
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === 'number') {
+      return status;
+    }
   }
   return undefined;
 }

@@ -39,8 +39,8 @@ export interface PluginLoadConfig {
  */
 export declare class PluginLoadError extends Error {
     readonly pluginPath: string;
-    readonly reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed';
-    constructor(message: string, pluginPath: string, reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed');
+    readonly reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id';
+    constructor(message: string, pluginPath: string, reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id');
 }
 /**
  * Load a single plugin module from a workspace-relative path.
@@ -58,6 +58,8 @@ export declare function loadPlugin(workspaceRoot: string, pluginPath: string, op
  *
  * Only paths listed in `allowedPluginPaths` are loaded. Missing or invalid
  * plugins are logged as warnings but do not block the run (fail-open).
+ * Two plugins exporting the same `id` throw a `PluginLoadError` with reason
+ * `duplicate_id`.
  *
  * Returns an array of successfully loaded plugins.
  */

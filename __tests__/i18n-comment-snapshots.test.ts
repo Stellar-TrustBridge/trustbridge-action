@@ -229,3 +229,56 @@ describe('i18n key parity (issue #291)', () => {
     expect(es).not.toBe(pt);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #420: Mojibake regression tests — verify no corrupted encodings
+// ---------------------------------------------------------------------------
+
+describe('i18n mojibake regression guard (issue #420)', () => {
+  // Regex matching typical mojibake sequences produced by decoding UTF-8 as Windows-1252 / ISO-8859-1
+  const MOJIBAKE_REGEX = /[ÃÂâ][\x80-\xff]|Ã[\x80-\xff]|Â[\x80-\xff]|â[\x80-\xff]|â€”|âœ“|Ã—|âˆ’|â€¦/;
+
+  for (const locale of LOCALES) {
+    describe(`locale: ${locale}`, () => {
+      it(`no static string keys contain mojibake for locale "${locale}"`, () => {
+        const strings = getStrings(locale);
+        for (const [key, value] of Object.entries(strings)) {
+          if (typeof value === 'string') {
+            expect(value).not.toMatch(MOJIBAKE_REGEX);
+          }
+        }
+      });
+
+      it(`no function string generators return mojibake for locale "${locale}"`, () => {
+        const strings = getStrings(locale);
+        for (const [key, fn] of Object.entries(strings)) {
+          if (typeof fn === 'function') {
+            const result = (fn as (...args: string[]) => string)(
+              'TEST_ARG_1',
+              'TEST_ARG_2',
+              'TEST_ARG_3',
+            );
+            expect(result).not.toMatch(MOJIBAKE_REGEX);
+          }
+        }
+      });
+
+      it(`formatted comment bodies contain no mojibake for locale "${locale}"`, () => {
+        const successBody = formatCommentBody(successResult, { ...baseConfig, locale });
+        const unfundedBody = formatCommentBody(unfundedResult, { ...baseConfig, locale });
+        expect(successBody).not.toMatch(MOJIBAKE_REGEX);
+        expect(unfundedBody).not.toMatch(MOJIBAKE_REGEX);
+      });
+    });
+  }
+
+  it('verifies proper UTF-8 accents and symbols are preserved in es and pt headings', () => {
+    const esStrings = getStrings('es');
+    const ptStrings = getStrings('pt');
+    expect(esStrings.heading).toContain('Verificación');
+    expect(ptStrings.heading).toContain('Verificação');
+    expect(esStrings.heading).toContain('—');
+    expect(ptStrings.heading).toContain('—');
+  });
+});
+
