@@ -10,6 +10,7 @@ import {
   COMMENT_SIZE_LIMIT_BYTES,
   COMMENT_TRUNCATION_NOTICE_BYTES,
   findStickyComment,
+  findFirstTrustBridgeComment,
   formatCommentBody,
   isTrustBridgeComment,
   postIssueComment,
@@ -516,6 +517,63 @@ describe('findStickyComment', () => {
   });
 });
 
+describe('findFirstTrustBridgeComment (Issue #419)', () => {
+  it('finds the first matching comment via GraphQL when multiple comments exist', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([
+        { id: 'IC_1', databaseId: 101, body: 'unrelated comment' },
+        { id: 'IC_2', databaseId: 102, body: `${STICKY_COMMENT_MARKER}\nfirst TrustBridge result` },
+        { id: 'IC_3', databaseId: 103, body: `${STICKY_COMMENT_MARKER}\nsecond TrustBridge result` },
+      ]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(102);
+  });
+
+  it('falls back to REST pagination if GraphQL fails and finds the first match', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
+    octokit.paginate.mockResolvedValue([
+      { id: 1, body: 'unrelated comment' },
+      { id: 2, body: `${STICKY_COMMENT_MARKER}\nfirst match` },
+      { id: 3, body: `${STICKY_COMMENT_MARKER}\nsecond match` },
+    ]);
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(2);
+  });
+
+  it('returns undefined when no comment has the marker', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBeUndefined();
+  });
+});
+
 describe('postIssueComment', () => {
   const mockedGithub = github as unknown as {
     context: {
@@ -608,6 +666,102 @@ describe('postIssueComment', () => {
     expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-3');
     expect(octokit.rest.issues.createComment).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('posts a threaded reply referencing the first TrustBridge comment when commentMode is reply', async () => {
+    const octokit = makeOctokit();
+    // Simulate first TrustBridge comment at id 42, later comment at id 99
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nsecond comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'reply check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-100');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: expect.stringContaining('> _Reply to [TrustBridge check #42](https://github.com/test-owner/test-repo/issues/7#issuecomment-42)_'),
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to creating a normal top-level comment when commentMode is reply and no prior comment exists', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'first check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-1');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'first check result',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('creates a fresh top-level comment without reply header when commentMode is new', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'new mode body', {
+      commentMode: 'new',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-2');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'new mode body',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('updates existing comment in place when commentMode is sticky', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 88, body: `${STICKY_COMMENT_MARKER}\nsticky body` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-88' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'updated sticky body', {
+      commentMode: 'sticky',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-88');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment_id: 88,
+        body: 'updated sticky body',
+      }),
+    );
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
   });
 
   it('suppresses comment update when maintainer added :zzz: reaction within snooze window', async () => {

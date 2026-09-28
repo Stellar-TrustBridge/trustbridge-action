@@ -3,6 +3,12 @@ import * as actionsCache from '@actions/cache';
 import * as core from '@actions/core';
 import * as fs from 'fs';
 
+jest.mock('@actions/cache', () => ({
+  isFeatureAvailable: jest.fn(),
+  saveCache: jest.fn(),
+  restoreCache: jest.fn(),
+}));
+
 jest.mock('@actions/core');
 jest.mock('@actions/cache');
 

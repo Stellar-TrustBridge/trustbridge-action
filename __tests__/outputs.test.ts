@@ -1,8 +1,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as core from '@actions/core';
 import { ValidationResult } from '../src/checks';
 import { toActionOutputs, setValidationOutputs, writeValidationJson } from '../src/outputs';
+
+jest.mock('@actions/core');
+
+const mockSetOutput = core.setOutput as jest.MockedFunction<typeof core.setOutput>;
 
 const result: ValidationResult = {
   valid: true,
@@ -540,5 +545,104 @@ describe('Matrix outputs integration with other features', () => {
     
     const readyMap = JSON.parse(outputs.matrix_ready_map);
     expect(readyMap.alice).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #535 — a single setValidationOutputs call publishes every action output
+//
+// src/index.ts used to call setValidationOutputs twice (once mid-run, once at
+// the end) and then re-set the friendbot_* outputs by hand. `run()` now makes
+// exactly one call, carrying commentUrl, validatedAt and the timing breakdown.
+// These tests pin the contract that single call has to satisfy.
+// ---------------------------------------------------------------------------
+
+describe('setValidationOutputs (Issue #535)', () => {
+  const TIMINGS = {
+    input_parse_ms: 12,
+    horizon_fetch_ms: 145,
+    checks_ms: 7,
+    comment_post_ms: 31,
+    total_ms: 195,
+  };
+
+  function outputsByName(): Map<string, string> {
+    return new Map(mockSetOutput.mock.calls.map(([name, value]) => [name, String(value)]));
+  }
+
+  beforeEach(() => {
+    mockSetOutput.mockReset();
+  });
+
+  it('sets every action.yml output exactly once in a single call', () => {
+    setValidationOutputs(result);
+
+    const names = mockSetOutput.mock.calls.map(([name]) => name);
+    expect(names).toHaveLength(new Set(names).size);
+
+    const actionOutputNames = parseActionYmlOutputs(
+      fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'action.yml'), 'utf8'),
+    );
+    const written = outputsByName();
+    for (const name of actionOutputNames) {
+      expect(written.has(name)).toBe(true);
+    }
+  });
+
+  it('publishes comment_url, validated_at and timings from the one call', () => {
+    setValidationOutputs(result, 'https://github.com/o/r/issues/1#issuecomment-9', '/report.md', {
+      validatedAt: '2024-01-15T10:00:00Z',
+      timings: TIMINGS,
+    });
+
+    const written = outputsByName();
+    expect(written.get('comment_url')).toBe('https://github.com/o/r/issues/1#issuecomment-9');
+    expect(written.get('full_report_path')).toBe('/report.md');
+    expect(written.get('validated_at')).toBe('2024-01-15T10:00:00Z');
+    expect(written.get('timing_input_parse_ms')).toBe('12');
+    expect(written.get('timing_horizon_fetch_ms')).toBe('145');
+    expect(written.get('timing_checks_ms')).toBe('7');
+    expect(written.get('timing_comment_post_ms')).toBe('31');
+    expect(written.get('timing_total_ms')).toBe('195');
+    expect(JSON.parse(written.get('timings_json') as string)).toEqual(TIMINGS);
+  });
+
+  it('publishes the friendbot outputs that index.ts used to set separately', () => {
+    setValidationOutputs(result, undefined, undefined, {
+      friendbotCalled: true,
+      friendbotSuccess: false,
+      friendbotTransactionHash: 'abc123',
+    });
+
+    const written = outputsByName();
+    expect(written.get('friendbot_called')).toBe('true');
+    expect(written.get('friendbot_success')).toBe('false');
+    expect(written.get('friendbot_transaction_hash')).toBe('abc123');
+
+    // ...and each exactly once, so removing the redundant writes is safe.
+    const names = mockSetOutput.mock.calls.map(([name]) => name);
+    expect(names.filter((n) => n.startsWith('friendbot_'))).toHaveLength(3);
+  });
+
+  it('defaults friendbot_transaction_hash to an empty string when absent', () => {
+    setValidationOutputs(result);
+
+    expect(outputsByName().get('friendbot_transaction_hash')).toBe('');
+    expect(outputsByName().get('friendbot_called')).toBe('false');
+    expect(outputsByName().get('friendbot_success')).toBe('false');
+  });
+
+  it('defaults timings to zero rather than leaving outputs undefined', () => {
+    setValidationOutputs(result);
+
+    const written = outputsByName();
+    expect(written.get('timing_total_ms')).toBe('0');
+    expect(JSON.parse(written.get('timings_json') as string)).toEqual({
+      input_parse_ms: 0,
+      horizon_fetch_ms: 0,
+      checks_ms: 0,
+      comment_post_ms: 0,
+      total_ms: 0,
+    });
   });
 });

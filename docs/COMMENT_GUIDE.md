@@ -19,6 +19,38 @@ Every TrustBridge issue comment follows a fixed section order:
 
 ---
 
+## Comment threading & posting modes (`comment_mode` & `posting_mode`)
+
+TrustBridge separates the comment posting policy from the comment threading strategy:
+
+### Posting policy (`posting_mode`)
+
+- **`post`** (default): Post or update comments on GitHub.
+- **`dry-run`**: Build comment body and set all action outputs, but skip GitHub API calls to post comments.
+- **`off`**: Completely skip comment generation.
+
+> **Backwards compatibility:** If `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`, TrustBridge automatically falls back to treating `comment_mode` as the posting policy.
+
+### Threading strategy (`comment_mode`)
+
+- **`sticky`** (default): Find and update TrustBridge's previous comment in place on the issue or discussion (`sticky_comment: true`).
+- **`new`**: Always post a fresh top-level comment on every run (`sticky_comment: false`), providing a complete audit log.
+- **`reply`**: Thread comments chronologically under the first TrustBridge check comment.
+
+#### Reply mode implementation & GitHub API behavior (Issue #419)
+
+GitHub's REST API for Issues (`/repos/{owner}/{repo}/issues/{issue_number}/comments`) does not support a native `in_reply_to` parameter (which is exclusive to pull request review comments).
+
+When `comment_mode: 'reply'` is configured, TrustBridge:
+1. Locates the **first (oldest)** TrustBridge comment on the issue using `findFirstTrustBridgeComment` (via GraphQL pagination with REST fallback).
+2. If an existing TrustBridge comment is found (e.g. comment `#12345`), TrustBridge prepends a Markdown reference header to the comment body:
+```markdown
+> _Reply to [TrustBridge check #12345](https://github.com/owner/repo/issues/1#issuecomment-12345)_
+```
+3. If no previous TrustBridge comment exists on the issue, TrustBridge posts the initial comment cleanly without a reply prefix.
+4. On GitHub Discussions, TrustBridge uses GraphQL `addDiscussionComment` with `replyToId` to post threaded replies in the discussion thread.
+
+---
 ## FAQ deep links
 
 ### How they work
@@ -266,4 +298,26 @@ Only `string`-typed fields of `CommentStrings` are supported (function-typed che
 - Template loader: `src/template.ts` (`loadCommentTemplate`, `validateTemplatePath`, `validateTemplateContent`, `interpolateTemplate`, `buildTemplateContext`)
 - Integration point: `formatCommentBody` in `src/comment.ts` — partial injected before `---` footer
 - Tests: `__tests__/template.test.ts` (unit), `__tests__/comment.test.ts` (integration, injection scenarios)
+
+## Local Comment Preview
+
+Contributors can preview how a comment will render locally without needing to run the full action or post to a live issue. This is useful when modifying `src/comment.ts` or testing custom comment templates.
+
+Run the preview script against any JSON fixture from the `fixtures/` directory:
+
+```bash
+npm run preview-comment fixtures/account-funded.json
+```
+
+By default, the script prints the generated Markdown to `stdout`. To save the output to a file, provide a second argument:
+
+```bash
+npm run preview-comment fixtures/account-funded.json preview.md
+```
+
+You can customize the check configuration by setting `INPUT_*` environment variables before running the script:
+
+```bash
+INPUT_ASSET_CODE="EURC" INPUT_MIN_XLM_RESERVE="2.5" npm run preview-comment fixtures/account-funded.json
+```
 
