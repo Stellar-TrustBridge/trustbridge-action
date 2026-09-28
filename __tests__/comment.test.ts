@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as github from '@actions/github';
@@ -1428,5 +1428,180 @@ describe('formatCommentBody with custom_comment_template_path', () => {
     expect(body).toContain('\\]\\[evil\\]\\(https://steal.example\\)');
     // Footer is still present — comment is never broken by escaped content
     expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #450 — reason_code + ready in the validation-gate section
+// ---------------------------------------------------------------------------
+
+describe('Issue #450 — validation gate exposes reason_code and ready', () => {
+  const gateConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const passing: ValidationResult = {
+    valid: true,
+    accountFunded: true,
+    trustlineExists: true,
+    xlmBalance: '10.5000000',
+    xlmReserveMet: true,
+    checks: [
+      { passed: true, label: 'Account funded', detail: 'ok' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  const failing: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: '0',
+    xlmReserveMet: false,
+    checks: [
+      { passed: false, label: 'Account funded', detail: 'unfunded' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  it('shows reason_code and ready on the success path', () => {
+    const body = formatCommentBody(passing, gateConfig);
+    expect(body).toContain('### Validation gate');
+    expect(body).toContain('- Ready: `true`');
+    expect(body).toContain('- Reason code: `SUCCESS`');
+  });
+
+  it('shows reason_code and ready on a failure path', () => {
+    const body = formatCommentBody(failing, gateConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `FAILED`');
+  });
+
+  it('prefers an explicit reasonCode from the result', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+    expect(body).not.toContain('- Reason code: `FAILED`');
+  });
+
+  it('stays consistent with the reason_code action output on a known failure', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'TRUSTLINE_MISSING' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `TRUSTLINE_MISSING`');
+  });
+
+  it('localizes the reason_code and ready labels', () => {
+    const body = formatCommentBody(passing, { ...gateConfig, locale: 'es' });
+    expect(body).toContain('### Puerta de validación');
+    expect(body).toContain('- Listo: `true`');
+    expect(body).toContain('- Código de razón: `SUCCESS`');
+  });
+
+  it('neutralizes a backtick inside reason_code via the code span', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'BAD`CODE' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `BAD\\`CODE`');
+  });
+
+  it('keeps snake_case reason codes literal and copy-pasteable', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    // Inside a code span, underscores need no escaping — a machine-readable
+    // code must be copy-pasteable straight from the comment.
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-breaker banner
+// ---------------------------------------------------------------------------
+
+describe('Issue #434 — circuit-breaker open comment section', () => {
+  const circuitConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const circuitOpenResult: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    reasonCode: 'CIRCUIT_OPEN',
+    circuitOpen: true,
+    checks: [
+      {
+        passed: false,
+        label: 'Horizon availability',
+        detail: 'Circuit breaker is open.',
+      },
+    ],
+  };
+
+  it('renders a circuit-breaker banner when the circuit was open', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('**Circuit breaker open**');
+    expect(body).toContain('was **not** checked');
+    expect(body).toContain('Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('states that the account was not checked and offers a recovery hint', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('recovery window');
+    expect(body).toContain('re-run the workflow');
+  });
+
+  it('mirrors the CIRCUIT_OPEN reason code into the validation gate', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('omits the banner for a normal account failure', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        reasonCode: 'ACCOUNT_NOT_FUNDED',
+        checks: [{ passed: false, label: 'Account funded', detail: 'unfunded' }],
+      },
+      circuitConfig,
+    );
+    expect(body).not.toContain('Circuit breaker open');
+  });
+
+  it('localizes the circuit-breaker banner', () => {
+    const body = formatCommentBody(circuitOpenResult, {
+      ...circuitConfig,
+      locale: 'es',
+    });
+    expect(body).toContain('**Disyuntor abierto**');
+    expect(body).toContain('Código de razón: `CIRCUIT_OPEN`');
+  });
+
+  it('leaks no account data in the banner (PII-safe)', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    const bannerStart = body.indexOf('**Circuit breaker open**');
+    expect(bannerStart).toBeGreaterThan(-1);
+    const bannerBlock = body.slice(bannerStart).split('\n### ')[0] ?? '';
+    // The banner carries no address, issuer, or endpoint URL.
+    expect(bannerBlock).not.toContain(circuitConfig.stellarAddress);
+    expect(bannerBlock).not.toContain(circuitConfig.assetIssuer);
+    expect(bannerBlock).not.toContain(circuitConfig.horizonUrl);
+    // Balances stay "unknown" rather than leaking a stale figure.
+    expect(body).toContain('**Native XLM balance:** _unknown_');
   });
 });

@@ -134,7 +134,7 @@
     },
     "horizon_timeout_ms": {
       "type": "string",
-      "description": "Horizon request timeout in milliseconds (1000\u201360000).",
+      "description": "Horizon request timeout in milliseconds (1000–60000).",
       "pattern": "^[0-9]+$",
       "default": "15000"
     },
@@ -196,13 +196,13 @@
     },
     "wait_until_funded_timeout_ms": {
       "type": "string",
-      "description": "Maximum time to poll for funding in milliseconds (0\u2013600000). Only used when wait_until_funded is true.",
+      "description": "Maximum time to poll for funding in milliseconds (0–600000). Only used when wait_until_funded is true.",
       "pattern": "^[0-9]+$",
       "default": "120000"
     },
     "wait_until_funded_interval_ms": {
       "type": "string",
-      "description": "Delay between funding polls in milliseconds (1000\u201360000). Only used when wait_until_funded is true.",
+      "description": "Delay between funding polls in milliseconds (1000–60000). Only used when wait_until_funded is true.",
       "pattern": "^[0-9]+$",
       "default": "5000"
     },
@@ -274,7 +274,7 @@
     },
     "sep0007_origin_domain": {
       "type": "string",
-      "description": "Optional origin domain embedded in SEP-0007 URIs for wallet validation (SEP-0007 \u00a73.4).",
+      "description": "Optional origin domain embedded in SEP-0007 URIs for wallet validation (SEP-0007 §3.4).",
       "default": ""
     },
     "auto_wallet_labels": {
@@ -380,7 +380,7 @@
     },
     "check_ledger_freshness": {
       "type": "string",
-      "description": "Enable ledger freshness guard \u2014 warns or fails when Horizon is serving stale data.",
+      "description": "Enable ledger freshness guard — warns or fails when Horizon is serving stale data.",
       "enum": [
         "true",
         "false"
@@ -438,7 +438,10 @@
     "use_friendbot": {
       "type": "string",
       "description": "Automatically call Stellar Friendbot to fund unfunded (404) accounts on supported test networks.",
-      "enum": ["true", "false"],
+      "enum": [
+        "true",
+        "false"
+      ],
       "default": "false"
     },
     "friendbot_url": {
@@ -712,14 +715,92 @@
       "description": "Optional workspace-relative path to a Markdown partial file appended to the TrustBridge issue comment. Supports {{variable}} interpolation. Leave empty to disable.",
       "default": ""
     },
+    "posting_mode": {
+      "type": "string",
+      "description": "Controls whether TrustBridge posts an issue comment: \"post\" (default) writes/updates the sticky comment, \"dry-run\" builds the comment but does not call the GitHub API, and \"off\" skips comment generation entirely. Outputs are always set regardless of mode.",
+      "enum": [
+        "post",
+        "dry-run",
+        "off"
+      ],
+      "default": "post"
+    },
     "dashboard_roster_allow_http": {
       "type": "string",
-      "description": "Allow insecure HTTP for dashboard roster endpoint in development environments.",
+      "description": "Allow non-HTTPS URLs for dashboard_roster_url. Defaults to false. Only enable this for local testing or mock endpoints, as it bypasses HTTPS-only SSRF protections.",
       "enum": [
         "true",
         "false"
       ],
       "default": "false"
+    },
+    "ready_pass_label": {
+      "type": "string",
+      "description": "Deprecated alias for pass_label. Used only when pass_label is empty. Leave empty to use the default pass label.",
+      "default": ""
+    },
+    "ready_label_pass": {
+      "type": "string",
+      "description": "Deprecated alias for pass_label with a lower precedence than ready_pass_label. Used only when both pass_label and ready_pass_label are empty. (Issue #306)",
+      "default": ""
+    },
+    "ready_fail_label": {
+      "type": "string",
+      "description": "Deprecated alias for fail_label. Used only when fail_label is empty. Leave empty to use the default fail label.",
+      "default": ""
+    },
+    "ready_label_fail": {
+      "type": "string",
+      "description": "Deprecated alias for fail_label with a lower precedence than ready_fail_label. Used only when both fail_label and ready_fail_label are empty. (Issue #306)",
+      "default": ""
+    },
+    "codeowners_path": {
+      "type": "string",
+      "description": "Optional repository-relative path to a CODEOWNERS file used to decide whether the workflow actor is a maintainer. Defaults to the conventional CODEOWNERS locations (.github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS). Only used when skip_for_maintainers is true. (Issue #241, #448)",
+      "default": ""
+    },
+    "github_username": {
+      "type": "string",
+      "description": "Optional GitHub username used for account-level lookups that cannot be derived from the workflow event context. Leave empty to use the event actor. (Issue #257)",
+      "default": ""
+    },
+    "previous_validation_path": {
+      "type": "string",
+      "description": "Optional workspace-relative path to the previous run's validation.json artifact. When set, the comment includes a delta section comparing this run against the previous one. No extra API scopes are required. Leave empty to disable the delta section. (Issue #148)",
+      "default": ""
+    },
+    "report_output_path": {
+      "type": "string",
+      "description": "Workspace-relative path for the Markdown validation report written during the run. Defaults to trustbridge-report.md at the workspace root.",
+      "default": "trustbridge-report.md"
+    },
+    "use_check_runs": {
+      "type": "string",
+      "description": "When true, publish the validation result as a GitHub Check Run on the commit instead of (or in addition to) the issue comment. Requires github_token with checks: write. Defaults to false.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "privacy_mode": {
+      "type": "string",
+      "description": "When true, redact Stellar addresses and balances from the workflow log output. The sticky comment is unaffected. Defaults to false.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "soroban_rpc_url": {
+      "type": "string",
+      "description": "Optional Soroban RPC URL used together with contract_id to resolve a contract-derived Stellar address. Leave empty to skip contract resolution. (Issue #318)",
+      "default": ""
+    },
+    "contract_id": {
+      "type": "string",
+      "description": "Optional Soroban contract ID used with soroban_rpc_url to resolve a contract-derived Stellar address. Leave empty to skip contract resolution. (Issue #318)",
+      "default": ""
     }
   }
 }

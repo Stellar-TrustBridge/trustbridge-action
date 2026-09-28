@@ -102,7 +102,13 @@ function generateAddressVariants(): Array<{ input: string; valid: boolean }> {
     // Invalid prefix
     { input: 'A' + validBase.slice(1), valid: false },
     { input: 'S' + validBase.slice(1), valid: false },
-    { input: 'C' + validBase.slice(1), valid: false }, // Contract address
+    // Contract address (Soroban) — valid shape, validated separately by
+    // validateContractAddress(). Contract addresses carry no ed25519 version
+    // byte, so they are checked structurally rather than by pubkey checksum.
+    { input: 'C' + validBase.slice(1), valid: true },
+    { input: 'C' + 'A'.repeat(54), valid: false }, // too short
+    { input: 'C' + '0'.repeat(55), valid: false }, // not base32
+    { input: 'c' + validBase.slice(1), valid: false }, // lowercase prefix
     
     // Invalid length
     { input: 'G', valid: false },

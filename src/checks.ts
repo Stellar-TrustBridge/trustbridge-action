@@ -141,7 +141,7 @@ export interface CheckConfig {
    *
    * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
    *   balances are ignored; an address with only claimable balances still shows
-   *   “not found / unfundedâ€. No extra Horizon request is made.
+   *   “not found / unfunded”. No extra Horizon request is made.
    * - `"count"` — when the account is 404, TrustBridge also checks
    *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
    *   5s). If claimable balances exist, the comment notes them but `accountFunded`
@@ -317,6 +317,16 @@ export interface ValidationResult {
    */
   claimableBalanceCount?: number;
   hasClaimableBalances?: boolean;
+  /**
+   * True when the run short-circuited because the Horizon circuit breaker was
+   * open, so no account checks were actually performed (Issue #434).
+   *
+   * PII-safe by construction: it carries no account data, address, or balance,
+   * only the fact that the breaker tripped. The sticky comment renders a
+   * localized "circuit breaker open" banner from this flag so a resilience
+   * safeguard is never mistaken for an account-level failure.
+   */
+  circuitOpen?: boolean;
 }
 
 export interface NetworkPassphraseMismatch {
@@ -750,7 +760,7 @@ export function validateStellarAddress(address: string): void {
     return;
   }
 
-  if (!isValidStellarAddress(address)) {
+  if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
     throw new Error(
       `Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
         'with a valid StrKey checksum.',
@@ -931,6 +941,11 @@ export function runAccountChecks(
     trustlineDetail = authorizationBlocks
       ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${inlineCode(config.assetIssuer)}) — blocked by \`unauthorized_trustline_policy: fail\`.`
       : `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer — transfers will fail until authorized.`;
+    // Issue #248: Add auth_revocable context when relevant
+    if (issuerAuthRevocable) {
+      trustlineDetail +=
+        ' The issuer has **AUTH_REVOCABLE** enabled, meaning authorized trustlines can be **revoked** at any time.';
+    }
   } else if (trustlineExistsRaw) {
     trustlineDetail = `Trustline for **${safeAssetCode}** (${inlineCode(config.assetIssuer)}) is configured.`;
     // Issue #248: Add clawback context when relevant (non-strict mode)
@@ -981,6 +996,7 @@ export function runAccountChecks(
         ? `Balance **${inlineCode(assetBalanceRaw)} ${safeAssetCode}** meets the minimum of **${minAssetBalanceRequired} ${safeAssetCode}**.`
         : `Balance **${inlineCode(assetBalanceRaw)} ${safeAssetCode}** is below the required **${minAssetBalanceRequired} ${safeAssetCode}**. Deficit: **${assetBalanceRequirement.missing} ${safeAssetCode}**.`
       : `Cannot verify ${safeAssetCode} balance — trustline is not configured yet.`;
+
     checks.push({
       passed: assetBalanceMet || !trustlineExists,
       label: `${safeAssetCode} minimum balance`,
@@ -999,20 +1015,6 @@ export function runAccountChecks(
   let homeDomainCheck: HomeDomainCheckResult | undefined;
   if (config.homeDomainCheckEnabled) {
     homeDomainCheck = evaluateHomeDomain(account, config);
-
-    // Emit metrics tag for dashboards and payout automation.
-    globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
-    globalMetrics.recordMetric('home_domain_check', 1, 'count', {
-      outcome: homeDomainCheck.outcome,
-      mode: config.homeDomainCheckMode ?? 'warn',
-    });
-
-    const homeDomainPassed = !homeDomainCheck.blocksValid || homeDomainCheck.outcome === 'valid';
-    checks.push({
-      passed: homeDomainPassed,
-      label: 'SEP-0001 home domain',
-      detail: homeDomainCheck.detail,
-    });
   }
 
   const buildResult = (): ValidationResult => {
@@ -1406,6 +1408,101 @@ export function horizonFailureResult(
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     homeDomainCheck: config.homeDomainCheckEnabled
       ? { outcome: 'skipped', detail: 'Cannot verify — Horizon unreachable.', blocksValid: false }
+      : undefined,
+  };
+}
+
+/**
+ * Builds a result for a circuit-breaker fast-fail (Issue #209 / #434).
+ *
+ * Kept distinct from `horizonFailureResult` because the semantics differ in
+ * an important way: when the circuit is open the request **never left the
+ * process**, so nothing whatsoever is known about the account. A
+ * `HORIZON_ERROR` result implies Horizon answered and the answer was bad.
+ * Reporting a tripped circuit as a Horizon error sends triagers hunting for
+ * an account problem (or a broken endpoint) that may not exist.
+ *
+ * PII-safe by construction: the comment, metrics, and debug fields carry only
+ * the boolean fact that the breaker tripped — no address, balance, issuer, or
+ * endpoint URL is added to the comment by this path.
+ */
+export function circuitOpenFailureResult(
+  message: string,
+  config: CheckConfig,
+): ValidationResult {
+  const safeMessage = escapeMarkdownInline(
+    sanitizeErrorMessageForComment(message),
+  );
+  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
+
+  const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
+  const checks: CheckResultItem[] = [
+    {
+      passed: false,
+      label: "Horizon availability",
+      // The breaker message is generated locally from configured thresholds and
+      // contains no account data, so it is safe to surface verbatim.
+      detail: safeMessage || skipped,
+    },
+    {
+      passed: false,
+      label: `${safeAssetCode} trustline`,
+      detail: skipped,
+    },
+    {
+      passed: false,
+      label: "XLM reserve",
+      detail: skipped,
+    },
+  ];
+
+  if (assetBalanceCheckEnabled) {
+    checks.push({
+      passed: false,
+      label: `${safeAssetCode} minimum balance`,
+      detail: skipped,
+    });
+  }
+
+  if (config.homeDomainCheckEnabled) {
+    globalMetrics.incrementCounter("home_domain_skipped");
+    globalMetrics.recordMetric("home_domain_check", 1, "count", {
+      outcome: "skipped",
+      mode: config.homeDomainCheckMode ?? "warn",
+    });
+    checks.push({
+      passed: true,
+      label: "SEP-0001 home domain",
+      detail:
+        "Cannot verify issuer home domain — the Horizon circuit breaker was open.",
+    });
+  }
+
+  return {
+    valid: false,
+    reasonCode: "CIRCUIT_OPEN",
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: "unknown",
+    xlmReserveMet: false,
+    assetBalance: "unknown",
+    assetBalanceMet: false,
+    circuitOpen: true,
+    checks,
+    remediation:
+      "The Horizon circuit breaker is open after repeated Horizon failures, so this run " +
+      "was short-circuited without contacting Horizon. This is a resilience safeguard, not a " +
+      "problem with the account. Wait for the recovery window to elapse and re-run the " +
+      "workflow; if it keeps happening, check the health of the configured Horizon endpoint.",
+    failedCheckLabels: toFailedCheckCodes(checks),
+    sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+    homeDomainCheck: config.homeDomainCheckEnabled
+      ? {
+          outcome: "skipped",
+          detail: "Cannot verify — the Horizon circuit breaker was open.",
+          blocksValid: false,
+        }
       : undefined,
   };
 }

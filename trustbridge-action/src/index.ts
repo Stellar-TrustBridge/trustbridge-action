@@ -1,43 +1,66 @@
 import * as core from '@actions/core';
-import * as github from '@actions/github';
-import { writeSummary } from './summary';
-import { evaluateMilestoneGate } from './milestone-gate';
+import { Horizon } from '@stellar/stellar-sdk';
+import { parseRetryAfter, sleep } from './resilience';
+
+const HORIZON_URL = process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org';
+const server = new Horizon.Server(HORIZON_URL);
+
+/**
+ * Poll Horizon until the given account is funded, honoring Retry-After
+ * headers from rate-limited (429) responses so we don't amplify 429s.
+ */
+export async function waitUntilFunded(
+  publicKey: string,
+  { timeoutMs = 60_000, intervalMs = 1_000 }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      await server.accounts().accountId(publicKey).call();
+      return true;
+    } catch (err: any) {
+      const status = err?.response?.status ?? err?.status;
+      const headers = err?.response?.headers ?? err?.headers ?? {};
+
+      if (status === 429) {
+        const retryAfter = parseRetryAfter(headers['retry-after'] ?? headers['Retry-After']);
+        const delay = retryAfter ?? intervalMs;
+        core.info(`Rate limited by Horizon; honoring Retry-After (${delay}ms) before next poll.`);
+        await sleep(delay);
+        continue;
+      }
+
+      // 404 means the account does not exist yet; keep polling.
+      if (status === 404) {
+        await sleep(intervalMs);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  return false;
+}
 
 async function run(): Promise<void> {
   try {
-    const token = core.getInput('github-token', { required: true });
-    const octokit = github.getOctokit(token);
+    const publicKey = core.getInput('public-key', { required: true });
+    const timeoutMs = Number(core.getInput('timeout-ms') || '60000');
 
-    const milestoneGateEnabled = core.getBooleanInput('milestone-gate-enabled');
-    const milestoneGateInputs = {
-      enabled: milestoneGateEnabled,
-      requiredMilestone: core.getInput('milestone-gate-required-milestone'),
-      allowOpenIssues: core.getBooleanInput('milestone-gate-allow-open-issues')
-    };
-
-    const gateResult = await evaluateMilestoneGate(octokit, github.context, milestoneGateInputs);
-
-    core.setOutput('milestone-gate-passed', gateResult.passed);
-    core.setOutput('milestone-gate-reason', gateResult.reason);
-
-    await writeSummary({
-      milestoneGate: {
-        enabled: milestoneGateInputs.enabled,
-        passed: gateResult.passed,
-        reason: gateResult.reason
-      }
-    });
-
-    if (milestoneGateInputs.enabled && !gateResult.passed) {
-      core.setFailed(`Milestone gate failed: ${gateResult.reason}`);
+    const funded = await waitUntilFunded(publicKey, { timeoutMs });
+    if (!funded) {
+      core.setFailed(`Account ${publicKey} was not funded within ${timeoutMs}ms.`);
+      return;
     }
+
+    core.setOutput('funded', 'true');
   } catch (error) {
-    if (error instanceof Error) {
-      core.setFailed(error.message);
-    } else {
-      core.setFailed(String(error));
-    }
+    core.setFailed(error instanceof Error ? error.message : String(error));
   }
 }
 
-run();
+if (require.main === module) {
+  void run();
+}
