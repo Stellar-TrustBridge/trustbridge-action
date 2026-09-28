@@ -13,7 +13,6 @@
  *  - Error handling (network, SSRF, fetch timeout)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as crypto from 'crypto';
 import {
   parseHashPin,

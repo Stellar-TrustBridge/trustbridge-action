@@ -15,8 +15,17 @@ import {
   LedgerFreshnessCheckResult,
   ValidationResult,
   rateBudgetExhaustedResult,
+  circuitOpenFailureResult,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount, applyWalletLabels, applyReadyLabels, callFriendbot } from './horizon';
+import {
+  fetchAccount,
+  HorizonError,
+  isCircuitOpenError,
+  waitForFundedAccount,
+  applyWalletLabels,
+  applyReadyLabels,
+  callFriendbot,
+} from './horizon';
 import type { HorizonAccount, HorizonBalance } from './horizon';
 import { SimpleCache } from './cache';
 import { checkLedgerFreshness } from './freshness';
@@ -48,6 +57,7 @@ import {
   resolveAddressFromAssigneeMap,
   resolveGitHubAuthToken,
   resolveInput,
+  resolveMaintainerSkipInput,
 } from "./inputs";
 import { formatFailureSummary } from "./summary";
 import { setValidationOutputs, writeValidationJson } from "./outputs";
@@ -401,11 +411,28 @@ async function run(): Promise<void> {
     }
   }
 
-  // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in)
-  const skipForMaintainers = parseBooleanInput(
-    core.getInput('skip_for_maintainers') || core.getInput('skip_if_maintainer'),
-    false,
+  // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
+  // Issue #448: `skip_for_maintainers` is canonical; `skip_if_maintainer` is a
+  // deprecated alias that is only consulted when the canonical input is unset.
+  const maintainerSkip = resolveMaintainerSkipInput(
+    core.getInput('skip_for_maintainers'),
+    core.getInput('skip_if_maintainer'),
   );
+  if (maintainerSkip.usedDeprecatedAlias) {
+    core.warning(
+      "`skip_if_maintainer` is deprecated and will be removed in a future major " +
+        "release. Use `skip_for_maintainers` instead — it is the canonical name " +
+        "and takes precedence whenever it is set explicitly.",
+    );
+  }
+  if (maintainerSkip.conflict) {
+    core.warning(
+      "Both `skip_for_maintainers` and the deprecated `skip_if_maintainer` were " +
+        "supplied with conflicting values. Using `skip_for_maintainers`; the " +
+        "deprecated alias is ignored.",
+    );
+  }
+  const skipForMaintainers = maintainerSkip.enabled;
   if (skipForMaintainers) {
     const actor =
       github.context.actor ||
@@ -1465,7 +1492,24 @@ async function run(): Promise<void> {
           claimableCount,
         );
       }
-    } else if (error instanceof HorizonError) {
+    } else if (isCircuitOpenError(error)) {
+        // #209/#434: the circuit breaker fast-failed the request, so Horizon was
+        // never contacted and the account state is entirely unknown. Report this
+        // as CIRCUIT_OPEN (not HORIZON_ERROR) and let the comment render a
+        // dedicated banner so a resilience safeguard is not misread as an
+        // account-level failure. statusCode is 0 — no HTTP response happened.
+        horizonFetchStatusCode = 0;
+        horizonFetchError = error.message;
+        core.error(error.message);
+        core.warning(
+          "Horizon circuit breaker is open — the account was not checked. " +
+            "Re-run the workflow after the recovery window elapses.",
+        );
+        globalMetrics.incrementCounter("errors");
+        globalMetrics.incrementCounter("horizon_circuit_open");
+        globalMetrics.recordMetric("horizon_circuit_open", 1, "count");
+        result = circuitOpenFailureResult(error.message, checkConfig);
+      } else if (error instanceof HorizonError) {
       horizonFetchStatusCode = error.statusCode;
       horizonFetchError = error.message;
       core.error(error.message);

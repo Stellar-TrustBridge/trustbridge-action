@@ -1,5 +1,15 @@
 // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
+exports[`Issue #436 — localized onboarding checklist renders a non-English snapshot for a failing account 1`] = `
+"### Lista de incorporación
+
+_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
+
+- [ ] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
+`;
+
 exports[`buildOnboardingChecklist renders a partial checklist when only funding and reserve pass 1`] = `
 "### Onboarding checklist
 

@@ -1,4 +1,45 @@
 export declare function parseBooleanInput(value: string, defaultValue: boolean): boolean;
+/**
+ * Result of {@link resolveMaintainerSkipInput}, carrying the resolved value
+ * plus provenance so the action can emit a precise warning instead of
+ * guessing which input the user meant.
+ */
+export interface MaintainerSkipResolution {
+    /** Effective value used for the maintainer skip gate. */
+    enabled: boolean;
+    /** Which input supplied the effective value. */
+    source: 'skip_for_maintainers' | 'skip_if_maintainer' | 'default';
+    /** True when both inputs were supplied with conflicting boolean values. */
+    conflict: boolean;
+    /** True when the deprecated alias was used and the canonical input was not. */
+    usedDeprecatedAlias: boolean;
+}
+/**
+ * Resolve the maintainer-skip input, honouring the canonical
+ * `skip_for_maintainers` name and the deprecated `skip_if_maintainer` alias
+ * (Issue #448).
+ *
+ * Precedence rules, in order:
+ *
+ * 1. `skip_for_maintainers` wins whenever it carries an explicit boolean.
+ *    A caller who writes `skip_for_maintainers: false` alongside a stale
+ *    `skip_if_maintainer: true` gets the explicit `false` — the canonical
+ *    input is never silently overridden.
+ * 2. The alias is consulted only when the canonical input is unset/empty.
+ *    This is what makes the alias usable at all: `action.yml` gives the
+ *    canonical input a `false` default, so "canonical is unset" is detected
+ *    from the raw (pre-default) input string rather than from the parsed
+ *    value.
+ * 3. If neither is supplied, the value is `false` (opt-in only).
+ *
+ * When both are supplied with conflicting values, `conflict` is set so the
+ * caller can warn; the canonical value is still the one used.
+ *
+ * @param canonicalValue Raw `skip_for_maintainers` input.
+ * @param aliasValue     Raw `skip_if_maintainer` input.
+ * @returns              Resolved value plus provenance.
+ */
+export declare function resolveMaintainerSkipInput(canonicalValue: string | undefined, aliasValue: string | undefined): MaintainerSkipResolution;
 export declare function parseNumberInput(value: string, defaultValue: number, options?: {
     min?: number;
     max?: number;

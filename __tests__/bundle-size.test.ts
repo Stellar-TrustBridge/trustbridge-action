@@ -14,6 +14,11 @@
  * The budget is intentionally conservative (current baseline + ~20–25%
  * headroom) so minor feature additions don't immediately trigger failures,
  * but large regressions are caught before merge.
+ *
+ * CI enforcement: this suite is run by the "bundle-size" job in
+ * .github/workflows/ci.yml, which fails the build when the budget is
+ * exceeded. See CONTRIBUTING.md § "Bundle size budget" for how to
+ * investigate size growth.
  */
 
 import * as fs from 'fs';
@@ -212,10 +217,23 @@ describe('bundle size measurement — edge cases', () => {
     expect(formatBytes(5_000_000)).toContain('MB');
   });
 
-  it('calculateBudgetUsage returns percentage', () => {
+  it('calculateBudgetUsage returns correct percentages', () => {
     expect(calculateBudgetUsage(1_000_000, 2_000_000)).toBe(50);
     expect(calculateBudgetUsage(2_000_000, 2_000_000)).toBe(100);
     expect(calculateBudgetUsage(2_500_000, 2_000_000)).toBe(125);
+  });
+
+  it('buildFailureMessage includes overage and next steps', () => {
+    const message = buildFailureMessage(2_500_000, 2_000_000);
+    expect(message).toContain('exceeds budget');
+    expect(message).toContain('Overage');
+    expect(message).toContain('CONTRIBUTING.md');
+  });
+
+  it('buildWarningMessage includes headroom information', () => {
+    const message = buildWarningMessage(1_900_000, 2_000_000, 1_800_000);
+    expect(message).toContain('approaching the budget threshold');
+    expect(message).toContain('Headroom');
   });
 
 });

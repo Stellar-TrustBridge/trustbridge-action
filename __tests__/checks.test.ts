@@ -20,6 +20,7 @@ import {
   buildValidationGate,
   horizonFailureResult,
   tlsFailureResult,
+  circuitOpenFailureResult,
   buildAssetBalanceRequirement,
   toStroops,
   formatStroops,
@@ -1160,6 +1161,62 @@ describe('FailureReasonCode mapping (Issue #67)', () => {
   it('assigns TLS_ERROR for TLS failure', async () => {
     const result = tlsFailureResult('Certificate verification failed', defaultConfig);
     expect(result.reasonCode).toBe('TLS_ERROR');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-open result
+// ---------------------------------------------------------------------------
+
+describe('circuitOpenFailureResult (Issue #434)', () => {
+  it('uses CIRCUIT_OPEN rather than HORIZON_ERROR', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    expect(result.reasonCode).toBe('CIRCUIT_OPEN');
+  });
+
+  it('flags the result so the comment can render a circuit banner', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    expect(result.circuitOpen).toBe(true);
+  });
+
+  it('fails closed with unknown balances (nothing is known about the account)', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    expect(result.valid).toBe(false);
+    expect(result.accountFunded).toBe(false);
+    expect(result.trustlineExists).toBe(false);
+    expect(result.xlmReserveMet).toBe(false);
+    expect(result.xlmBalance).toBe('unknown');
+    expect(result.assetBalance).toBe('unknown');
+  });
+
+  it('says the checks were skipped, not that the account failed them', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    const trustline = result.checks.find((c) => c.label.includes('trustline'));
+    expect(trustline?.passed).toBe(false);
+    expect(trustline?.detail).toMatch(/skipped/i);
+    expect(trustline?.detail).toMatch(/circuit breaker/i);
+  });
+
+  it('offers a recovery-oriented remediation', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    expect(result.remediation).toMatch(/resilience safeguard/i);
+    expect(result.remediation).toMatch(/re-run the/i);
+  });
+
+  it('emits no account data in the result (PII-safe)', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', defaultConfig);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(defaultConfig.assetIssuer);
+    expect(result.xlmBalance).toBe('unknown');
+  });
+
+  it('marks the home-domain check as skipped when enabled', () => {
+    const result = circuitOpenFailureResult('Circuit breaker is open.', {
+      ...defaultConfig,
+      homeDomainCheckEnabled: true,
+    });
+    expect(result.homeDomainCheck?.outcome).toBe('skipped');
+    expect(result.homeDomainCheck?.blocksValid).toBe(false);
   });
 });
 

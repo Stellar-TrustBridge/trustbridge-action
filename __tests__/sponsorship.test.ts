@@ -445,8 +445,10 @@ describe('Enhanced sponsorship context display', () => {
   });
 
   it('shows configured floor when it exceeds protocol minimum', () => {
-    const account = { ...baseAccount, num_sponsoring: 0, num_sponsored: 0, subentry_count: 1 };
-    // Protocol min = (2 + 1) * 0.5 = 1.5, but configured floor is also 1.5
+    // The reserve breakdown only renders for sponsored/sponsoring accounts, so
+    // this account sponsors 1 to exercise the "Configured floor" line.
+    const account = { ...baseAccount, num_sponsoring: 1, num_sponsored: 0, subentry_count: 1 };
+    // Protocol min = (2 + 1) * 0.5 = 1.5, but configured floor is 2.5
     const result = runAccountChecks(account, { ...baseCheckConfig, minXlmReserve: 2.5 });
     const comment = formatCommentBody(result, {
       ...commentConfig,
