@@ -922,6 +922,14 @@ outputs:
   friendbot_transaction_hash:
     description: 'Transaction hash from successful Friendbot funding, if called'
 
+  # Merge-resolution conflict report (Issue #524)
+  conflict_report:
+    description: 'JSON string of the merge-resolution conflict report (empty object when no conflicts)'
+  has_conflicts:
+    description: "Whether any input conflicts were detected (true/false). Gate with steps.trustbridge.outputs.has_conflicts == 'true'"
+
 runs:
+  using: "node20"
+  main: "dist/index.js"
   using: "node20"
   main: "dist/index.js"
