@@ -2,15 +2,16 @@
 # Finds `uses:` lines that reference an action by tag/branch (e.g. @v4,
 # @main) instead of a full 40-char commit SHA. Run locally before a PR,
 # or wire into CI as a fast pre-check ahead of the full zizmor run.
+# Scans workflow files, example docs, and embedded YAML examples in README.
 #
 # Usage: ./scripts/check-unpinned-actions.sh [path ...]
-# Defaults to scanning .github/workflows and docs/examples.
+# Defaults to scanning .github/workflows, docs/examples, and README.md.
 
 set -euo pipefail
 
 paths=("$@")
 if [ ${#paths[@]} -eq 0 ]; then
-  paths=(".github/workflows" "docs/examples")
+  paths=(".github/workflows" "docs/examples" "README.md")
 fi
 
 # Matches: uses: owner/repo@ref   where ref is NOT a 40-char hex SHA.
@@ -21,15 +22,29 @@ pattern='uses:[[:space:]]*[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@(?
 found=0
 for p in "${paths[@]}"; do
   [ -e "$p" ] || continue
-  while IFS= read -r -d '' file; do
-    matches=$(grep -nP "$pattern" "$file" || true)
-    if [ -n "$matches" ]; then
+
+  # Handle README.md specially: extract embedded YAML code blocks
+  if [ "$p" = "README.md" ] && [ -f "$p" ]; then
+    # Extract YAML blocks from README and check them
+    embedded=$(sed -n '/^```yaml$/,/^```$/p' "$p" | grep -nP "$pattern" || true)
+    if [ -n "$embedded" ]; then
       found=1
-      echo "== $file =="
-      echo "$matches" | sed 's/^/  /'
+      echo "== $p (embedded YAML examples) =="
+      echo "$embedded" | sed 's/^/  /'
       echo
     fi
-  done < <(find "$p" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
+  elif [ -d "$p" ]; then
+    # For directories, scan all YAML files
+    while IFS= read -r -d '' file; do
+      matches=$(grep -nP "$pattern" "$file" || true)
+      if [ -n "$matches" ]; then
+        found=1
+        echo "== $file =="
+        echo "$matches" | sed 's/^/  /'
+        echo
+      fi
+    done < <(find "$p" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
+  fi
 done
 
 if [ "$found" -eq 1 ]; then
