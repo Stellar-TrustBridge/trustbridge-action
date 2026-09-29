@@ -110,6 +110,19 @@ jobs:
       - name: Enforce bundle-size budget
         run: npm run test:bundle-size
 
+  verify-dist-manifest:
+    name: verify-dist-manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify dist/index.js SHA-256 matches dist-manifest.json
+        # Confirms the committed dist/dist-manifest.json is in sync with
+        # the committed dist/index.js.  Fails the PR if the manifest is
+        # missing or the digest does not match — rebuild and commit both.
+        run: node scripts/verify-dist-manifest.js
+
   check-unpinned-actions:
     name: check-unpinned-actions
     runs-on: ubuntu-latest

@@ -169,6 +169,22 @@ inputs:
     required: false
     default: 'false'
 
+  unauthorized_trustline_policy:
+    description: >-
+      How to treat a trustline that exists but is not yet authorized by the issuer
+      (AUTHORIZATION_REQUIRED): "warn" (default, surfaces warning), "fail" (blocks ready),
+      or "ignore" (skips check). (Issue #247)
+    required: false
+    default: 'warn'
+
+  clawback_strict_mode:
+    description: >-
+      When true, fail validation if the configured asset has clawback enabled
+      (is_clawback_enabled / AUTH_CLAWBACK_ENABLED). When false (default), surfaces
+      an informational notice without failing the run. (Issue #247)
+    required: false
+    default: 'false'
+
 outputs:
   gate_skipped:
     description: >-
@@ -338,3 +354,5 @@ When you add one of the gate labels, wallet validation will run automatically on
         check_ledger_freshness: ${{ inputs.check_ledger_freshness }}
         max_ledger_lag_seconds: ${{ inputs.max_ledger_lag_seconds }}
         ledger_freshness_fail_on_stale: ${{ inputs.ledger_freshness_fail_on_stale }}
+        unauthorized_trustline_policy: ${{ inputs.unauthorized_trustline_policy }}
+        clawback_strict_mode: ${{ inputs.clawback_strict_mode }}
