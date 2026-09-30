@@ -378,6 +378,66 @@ describe('formatCommentBody', () => {
     });
     expect(body).toContain('`0.0000000 USDC`');
   });
+
+  describe('per-asset trustline table from assets_json (Issue #552)', () => {
+    const usdcIssuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    const eurcIssuer = 'GCQT3YKVGZBWV2VE3TTV6LSUYOUJxLNJILDKEH2Y7RK3QUIYFJWKKRR2';
+
+    it('renders a per-asset table when config.assets is provided', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'EURC', assetIssuer: eurcIssuer, trustlineExists: true, balance: '12.5000000' },
+          { assetCode: 'FOO', assetIssuer: usdcIssuer, trustlineExists: false, balance: '0' },
+        ],
+      });
+
+      expect(body).toContain('### Asset trustlines');
+      expect(body).toContain('| Asset | Trustline | Balance | Issuer |');
+      expect(body).toContain('| EURC | ✅ exists | `12.5000000` |');
+      expect(body).toContain('| FOO | ❌ missing | `0` — no trustline |');
+      // Issuer is shortened but recognisable.
+      expect(body).toContain(`${eurcIssuer.slice(0, 4)}…${eurcIssuer.slice(-4)}`);
+    });
+
+    it('omits the section when no assets are configured (single-asset runs unchanged)', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+      });
+
+      expect(body).not.toContain('### Asset trustlines');
+      // Golden-path content is untouched.
+      expect(body).toContain('### Balances');
+    });
+
+    it('escapes markdown-sensitive asset codes (injection guard)', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'A_B[C](D)', assetIssuer: usdcIssuer, trustlineExists: true, balance: '1.0000000' },
+        ],
+      });
+
+      // The raw code must not appear unescaped anywhere in the body.
+      const esc = String.fromCharCode(92);
+      expect(body).toContain(`A${esc}_B${esc}[C${esc}]${esc}(D${esc})`);
+    });
+
+    it('renders unknown balance as informational placeholder', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'EURC', assetIssuer: eurcIssuer, trustlineExists: true, balance: 'unknown' },
+        ],
+      });
+
+      expect(body).toContain('| EURC | ✅ exists | _unknown_ |');
+    });
+  });
 });
 
 function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
@@ -400,20 +460,29 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
 }
 
 
-describe('findStickyComment', () => {
-  function issueGraphqlResponse(
-    nodes: Array<{ id: string; databaseId: number; body: string }>,
-    pageInfo: { hasNextPage: boolean; endCursor: string | null },
-  ) {
-    return {
-      repository: {
-        issue: {
-          comments: { nodes, pageInfo },
-        },
+/**
+ * Shape a GraphQL issue-comments response. Hoisted to module scope so both
+ * the `findStickyComment` and `findFirstTrustBridgeComment` suites can use
+ * it (previously defined inside one describe block but used by both, which
+ * broke compilation of this suite).
+ */
+function issueGraphqlResponse(
+  nodes: Array<{ id: string; databaseId: number; body: string }>,
+  pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
+    hasNextPage: false,
+    endCursor: null,
+  },
+) {
+  return {
+    repository: {
+      issue: {
+        comments: { nodes, pageInfo },
       },
-    };
-  }
+    },
+  };
+}
 
+describe('findStickyComment', () => {
   it('returns the databaseId of the comment containing the marker via GraphQL pagination across multiple pages', async () => {
     const octokit = makeOctokit();
     octokit.graphql

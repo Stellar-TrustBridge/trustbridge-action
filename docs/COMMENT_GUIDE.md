@@ -98,6 +98,30 @@ All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `
 
 ---
 
+## Per-asset trustline table (`assets_json`) (Issue #552)
+
+When the workflow sets `assets_json`, the run checks trustlines for every listed asset in addition to the primary `asset_code`/`asset_issuer` pair. The results are rendered as a dedicated table directly after the **Balances** section — matching the behaviour `action.yml` documents for the `assets_trustline_status` / `trustlines_summary` outputs.
+
+```markdown
+### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| EURC | ✅ exists | `12.5000000` | `GCQT…KRR2` |
+| FOO | ❌ missing | `0` — no trustline | `GA5Z…KZVN` |
+```
+
+Rendering rules:
+
+- **Section is omitted entirely** when `assets_json` is unset, empty, or every entry was deduplicated against the primary asset — single-asset comments are byte-identical to previous releases (golden snapshots unchanged).
+- Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
+- Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
+- A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+
+Implementation: `buildAssetTrustlineTable` in `src/markdown.ts`, wired into `formatCommentBody` via the `CommentConfig.assets` field (`src/comment.ts`), populated from the `assets_json` multi-asset check in `src/index.ts`.
+
+---
+
 ## Circuit-breaker banner (Issue #434)
 
 When the Horizon circuit breaker is open, `CircuitBreaker.execute` fast-fails the request **without contacting Horizon at all**. Nothing is known about the account, so the comment says so explicitly instead of rendering a list of account checks that look like ordinary failures:

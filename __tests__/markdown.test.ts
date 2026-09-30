@@ -2,6 +2,7 @@ import {
   escapeMarkdownInline,
   inlineCode,
   buildOnboardingChecklist,
+  buildAssetTrustlineTable,
   extractChecklistState,
   CHECKLIST_TRUSTLINE_KEY,
 } from '../src/markdown';
@@ -476,5 +477,45 @@ describe('Issue #436 — localized onboarding checklist', () => {
     const state = extractChecklistState(body);
     expect(state.get('Fund account')).toBe(true);
     expect(state.size).toBe(1);
+  });
+});
+
+describe('buildAssetTrustlineTable (Issue #552)', () => {
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  it('returns empty string for empty/missing rows (no empty section)', () => {
+    expect(buildAssetTrustlineTable([])).toBe('');
+    expect(buildAssetTrustlineTable(undefined as unknown as Parameters<typeof buildAssetTrustlineTable>[0])).toBe('');
+  });
+
+  it('renders heading, table header, and one row per asset', () => {
+    const md = buildAssetTrustlineTable([
+      { assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '12.5000000' },
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0' },
+    ]);
+
+    expect(md).toContain('### Asset trustlines');
+    expect(md).toContain('| Asset | Trustline | Balance | Issuer |');
+    expect(md).toContain('| EURC | ✅ exists | `12.5000000` |');
+    expect(md).toContain('| FOO | ❌ missing | `0` — no trustline |');
+  });
+
+  it('shortens long issuers and escapes markdown in asset codes', () => {
+    const md = buildAssetTrustlineTable([
+      { assetCode: 'A|B', assetIssuer: issuer, trustlineExists: true, balance: '1.0000000' },
+    ]);
+
+    // Pipe escaped so the table row cannot break out of its column.
+    expect(md).toContain('A\\|B');
+    expect(md).toContain(`${issuer.slice(0, 4)}…${issuer.slice(-4)}`);
+    expect(md).not.toContain(issuer);
+  });
+
+  it('supports a custom heading', () => {
+    const md = buildAssetTrustlineTable(
+      [{ assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '1.0000000' }],
+      { heading: 'Trustlines de activos' },
+    );
+    expect(md).toContain('### Trustlines de activos');
   });
 });

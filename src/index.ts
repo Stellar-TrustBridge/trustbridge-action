@@ -1818,6 +1818,14 @@ async function run(): Promise<void> {
     delta,
     diagnosticsConfig,
     customCommentTemplatePath: customCommentTemplatePath || undefined,
+    // Per-asset trustline table (Issue #552) — surface the assets_json
+    // check results in the comment instead of only logging them.
+    assets: multiAssetResults.map((m) => ({
+      assetCode: m.assetCode,
+      assetIssuer: m.assetIssuer,
+      trustlineExists: m.trustlineExists,
+      balance: m.balance,
+    })),
   });
 
   const buildCommentBody = (existingBody?: string) => {
@@ -1841,6 +1849,12 @@ async function run(): Promise<void> {
       delta,
       diagnosticsConfig,
       customCommentTemplatePath: customCommentTemplatePath || undefined,
+      assets: multiAssetResults.map((m) => ({
+        assetCode: m.assetCode,
+        assetIssuer: m.assetIssuer,
+        trustlineExists: m.trustlineExists,
+        balance: m.balance,
+      })),
     });
 
     const conflictSection = formatConflictReportMarkdown(conflictReport);

@@ -21,9 +21,11 @@ import {
 } from './links';
 import {
   buildOnboardingChecklist,
+  buildAssetTrustlineTable,
   escapeMarkdownInline,
   extractChecklistState,
   inlineCode,
+  type AssetTrustlineRow,
 } from './markdown';
 import { buildTemplateContext, loadCommentTemplate } from './template';
 import { getOctokitProxyOptions } from './proxy';
@@ -127,6 +129,14 @@ export interface CommentConfig extends CheckConfig {
    * Leave unset or empty to disable the feature entirely.
    */
   customCommentTemplatePath?: string;
+  /**
+   * Per-asset trustline status for the `assets_json` input (Issue #552).
+   * When non-empty, a per-asset breakdown table is rendered after the
+   * Balances section so the comment matches the behaviour documented in
+   * `action.yml` for `assets_trustline_status` / `trustlines_summary`.
+   * Leave undefined/empty to omit the section (single-asset runs).
+   */
+  assets?: AssetTrustlineRow[];
   existingCommentBody?: string;
 }
 
@@ -170,6 +180,13 @@ export function formatCommentBody(
   const snoozeMarker = formatSnoozeMarker(result.valid ? "pass" : "fail");
 
   const buildWithRemediation = (remediation: string | undefined): string => {
+    // Per-asset trustline table for `assets_json` (Issue #552). Rendered
+    // right after the Balances section so the per-asset state sits next to
+    // the primary asset balance line. When no additional assets are
+    // configured (or all entries were deduplicated) the table is empty and
+    // the comment stays byte-identical to single-asset runs.
+    const assetTable = buildAssetTrustlineTable(config.assets ?? []);
+
     const lines: string[] = [
       STICKY_COMMENT_MARKER,
       `<!-- trustbridge-action:schema-version:${COMMENT_SCHEMA_VERSION} -->`,
@@ -321,7 +338,9 @@ export function formatCommentBody(
           : "";
         return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
       })(),
-      "",
+      // Spread keeps the happy path byte-identical: when there is no table
+      // we emit exactly the one blank line that preceded this section.
+      ...(assetTable ? ["", assetTable, ""] : [""]),
       `### ${strings.setupCostHeading}`,
       "",
       `- ${strings.minimumAccountBalance} **${STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`,
