@@ -1282,6 +1282,28 @@ describe('src/index.ts source guards (#534, #535)', () => {
       expect(manualFriendbotWrites).toHaveLength(0);
     });
 
+    // Issue #550 — check_run_id / check_run_conclusion are declared in
+    // action.yml, so they must flow through setValidationOutputs as well
+    // instead of being written ad-hoc in this file.
+    it('no longer writes the check_run outputs by hand (Issue #550)', () => {
+      const manualCheckRunWrites = [
+        ...sourceFile.getFullText().matchAll(/core\.setOutput\(\s*["']check_run_/g),
+      ];
+      expect(manualCheckRunWrites).toHaveLength(0);
+    });
+
+    it('passes the check_run values through the setValidationOutputs extras (Issue #550)', () => {
+      const call = callSites('setValidationOutputs')[0];
+      expect(call).toBeDefined();
+
+      const extrasArg = call!.arguments[3];
+      expect(extrasArg).toBeDefined();
+
+      const extrasText = extrasArg!.getText(sourceFile);
+      expect(extrasText).toContain('checkRunId');
+      expect(extrasText).toContain('checkRunConclusion');
+    });
+
     it('has no other call that could publish the validation outputs twice', () => {
       expect(callLines('setValidationOutputs')).toHaveLength(1);
 

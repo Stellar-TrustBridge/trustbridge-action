@@ -645,4 +645,102 @@ describe('setValidationOutputs (Issue #535)', () => {
       total_ms: 0,
     });
   });
+
+  // Issue #550 — check_run_id / check_run_conclusion are declared in
+  // action.yml, so they must flow through setValidationOutputs too instead
+  // of being written ad-hoc in src/index.ts.
+  it('publishes check_run outputs passed through extras', () => {
+    setValidationOutputs(result, undefined, undefined, {
+      checkRunId: '1234567890',
+      checkRunConclusion: 'success',
+    });
+
+    const written = outputsByName();
+    expect(written.get('check_run_id')).toBe('1234567890');
+    expect(written.get('check_run_conclusion')).toBe('success');
+  });
+
+  it('defaults check_run outputs to empty strings when no Check Run was created', () => {
+    setValidationOutputs(result);
+
+    const written = outputsByName();
+    expect(written.get('check_run_id')).toBe('');
+    expect(written.get('check_run_conclusion')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #550 — every action.yml output key is set by setValidationOutputs
+//
+// action.yml is the published contract for consumers wiring
+// `steps.<id>.outputs.<key>` into their workflows. This suite parses the
+// declared outputs straight from action.yml and proves a single
+// setValidationOutputs call sets each of them — no more, no less. New
+// outputs must be added to both toActionOutputs and action.yml or CI fails
+// here, so the contract cannot silently drift again (check_run_id and
+// check_run_conclusion had: they were written ad-hoc in src/index.ts).
+// ---------------------------------------------------------------------------
+
+describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () => {
+  function outputsByName(): Map<string, string> {
+    return new Map(mockSetOutput.mock.calls.map(([name, value]) => [name, String(value)]));
+  }
+
+  beforeEach(() => {
+    mockSetOutput.mockReset();
+  });
+
+  it('sets every output declared in action.yml (exact key match)', () => {
+    setValidationOutputs(result);
+
+    const actionYml = fs.readFileSync(
+      path.join(path.resolve(__dirname, '..'), 'action.yml'),
+      'utf8',
+    );
+    const declared = parseActionYmlOutputs(actionYml);
+    expect(declared.size).toBeGreaterThan(0);
+
+    const written = outputsByName();
+    const missing = [...declared].filter((name) => !written.has(name));
+
+    expect(missing).toEqual([]);
+  });
+
+  it('sets exactly the declared outputs — no undocumented extras', () => {
+    setValidationOutputs(result);
+
+    const actionYml = fs.readFileSync(
+      path.join(path.resolve(__dirname, '..'), 'action.yml'),
+      'utf8',
+    );
+    const declared = parseActionYmlOutputs(actionYml);
+    const written = new Set(mockSetOutput.mock.calls.map(([name]) => name));
+    const extras = [...written].filter((name) => !declared.has(name));
+
+    expect(extras).toEqual([]);
+  });
+
+  it('publishes each declared output exactly once', () => {
+    setValidationOutputs(result);
+
+    const names = mockSetOutput.mock.calls.map(([name]) => name);
+    const duplicates = names.filter(
+      (name, idx) => names.indexOf(name) !== idx,
+    );
+
+    expect(duplicates).toEqual([]);
+  });
+
+  it('every value published is a string (GitHub Actions outputs are strings)', () => {
+    setValidationOutputs(result, 'https://github.com/o/r/issues/1#issuecomment-1', '/tmp/report.md', {
+      validatedAt: '2024-01-15T10:00:00Z',
+      timings: { total_ms: 42 },
+      checkRunId: '42',
+      checkRunConclusion: 'failure',
+    });
+
+    for (const [, value] of mockSetOutput.mock.calls) {
+      expect(typeof value).toBe('string');
+    }
+  });
 });

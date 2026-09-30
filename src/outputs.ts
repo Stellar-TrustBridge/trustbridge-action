@@ -36,6 +36,15 @@ export interface ActionOutputExtras {
   friendbotCalled?: boolean;
   friendbotSuccess?: boolean;
   friendbotTransactionHash?: string;
+  /**
+   * #550 — GitHub Check Run outputs. When `use_check_runs` is enabled,
+   * index.ts passes the created run's id and conclusion here so
+   * `setValidationOutputs` stays the single publisher of every action.yml
+   * output. Absent values publish as empty strings, matching the
+   * "empty otherwise" contract documented in action.yml.
+   */
+  checkRunId?: string;
+  checkRunConclusion?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +215,13 @@ export interface ActionOutputs {
   actual_network_passphrase: string;
   assignee_results_json: string;
   matrix_ready_map: string;
+  /**
+   * GitHub Checks API integration (Wave #26 / Issue #421). ID of the created
+   * Check Run when `use_check_runs` is true, empty otherwise.
+   */
+  check_run_id: string;
+  /** Conclusion of the created Check Run (success/failure), empty when skipped. */
+  check_run_conclusion: string;
   // #459 Friendbot outputs
   friendbot_called: string;
   friendbot_success: string;
@@ -293,6 +309,10 @@ export function toActionOutputs(
     actual_network_passphrase: mismatch?.actualPassphrase ?? '',
     assignee_results_json: assigneeResultsJson,
     matrix_ready_map: matrixReadyMap,
+    // #550 — Check Run outputs published through the single output publisher.
+    // Empty strings when no Check Run was created, per the action.yml contract.
+    check_run_id: extras.checkRunId ?? '',
+    check_run_conclusion: extras.checkRunConclusion ?? '',
     friendbot_called: String(Boolean(extras.friendbotCalled)),
     friendbot_success: String(Boolean(extras.friendbotSuccess)),
     friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',

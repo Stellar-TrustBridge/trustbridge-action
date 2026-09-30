@@ -1947,7 +1947,39 @@ async function run(): Promise<void> {
   // Comment URL, validation timestamp and the metric timings are only final at
   // this point, so this call replaces the earlier partial call plus the
   // redundant friendbot_* writes that followed it (toActionOutputs already
-  // emits those keys).
+  // emits those keys).  // ---------------------------------------------------------------------------
+  // GitHub Checks API integration (Wave #26 / Issue #421)
+  // When use_check_runs is true, creates a Check Run with check annotations.
+  // The check_run_id / check_run_conclusion outputs are published through
+  // setValidationOutputs below (Issue #550) so it remains the single
+  // publisher of every action.yml output.
+  // ---------------------------------------------------------------------------
+  let checkRunId: string | undefined;
+  let checkRunConclusion: string | undefined;
+  if (useCheckRuns && result) {
+    if (!githubToken) {
+      core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
+    } else {
+      try {
+        const checkRun = await createCheckRun(result, githubToken, {
+          stellarAddress: effectiveResolvedAddress,
+        });
+        checkRunId = checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : undefined;
+        checkRunConclusion = checkRun.success ? determineCheckConclusion(result) : undefined;
+      } catch (checkRunError) {
+        const message =
+          checkRunError instanceof Error ? checkRunError.message : String(checkRunError);
+        core.warning(`Failed to create Check Run (non-fatal): ${message}`);
+      }
+    }
+  }
+
+  // Issue #535: publish every action output exactly once, at the end of the run.
+  // Comment URL, validation timestamp and the metric timings are only final at
+  // this point, so this call replaces the earlier partial call plus the
+  // redundant friendbot_* writes that followed it (toActionOutputs already
+  // emits those keys). The Check Run outputs moved here in Issue #550 for the
+  // same reason: every action.yml output is published by this one call.
   setValidationOutputs(result, commentUrl, fullReportPath, {
     validatedAt,
     timings: globalMetrics.getTimingBreakdown(),
@@ -1955,35 +1987,9 @@ async function run(): Promise<void> {
     friendbotSuccess,
     friendbotTransactionHash,
     conflictReport,
+    checkRunId,
+    checkRunConclusion,
   });
-
-  // ---------------------------------------------------------------------------
-  // GitHub Checks API integration (Wave #26 / Issue #421)
-  // When use_check_runs is true, creates a Check Run with check annotations.
-  // ---------------------------------------------------------------------------
-  if (useCheckRuns && result) {
-    if (!githubToken) {
-      core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
-      core.setOutput('check_run_id', '');
-      core.setOutput('check_run_conclusion', '');
-    } else {
-      try {
-        const checkRun = await createCheckRun(result, githubToken, {
-          stellarAddress: effectiveResolvedAddress,
-        });
-        core.setOutput('check_run_id', checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : '');
-        core.setOutput('check_run_conclusion', checkRun.success ? determineCheckConclusion(result) : '');
-      } catch (checkRunError) {
-        const message =
-          checkRunError instanceof Error
-            ? checkRunError.message
-            : String(checkRunError);
-        core.warning(`Failed to create Check Run (non-fatal): ${message}`);
-        core.setOutput('check_run_id', '');
-        core.setOutput('check_run_conclusion', '');
-      }
-    }
-  }
 
   // ---------------------------------------------------------------------------
   // Wallet labels (Issue #200)
