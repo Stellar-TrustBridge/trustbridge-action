@@ -42,6 +42,28 @@ describe('.github/workflows/ci.yml', () => {
     // Per-file gate for src/horizon.ts must stay wired up as documented.
     expect(Object.keys(jestConfig.coverageThreshold)).toContain('./src/horizon.ts');
   });
+
+  it('documents the CI jobs in CONTRIBUTING.md without stale job or command references', () => {
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
+    const contributingPath = path.join(__dirname, '../CONTRIBUTING.md');
+    const contributing = fs.readFileSync(contributingPath, 'utf8');
+
+    for (const job of [
+      'check',
+      'test-coverage',
+      'license-check',
+      'dist-drift',
+      'bundle-size',
+      'verify-dist-manifest',
+      'check-unpinned-actions',
+    ]) {
+      expect(workflow).toContain(`${job}:`);
+      expect(contributing).toContain(`\`${job}\``);
+    }
+
+    expect(contributing).not.toContain('npm run check-error-catalog');
+    expect(contributing).not.toContain('mutation-ci job');
+  });
 });
 
 describe('.github/workflows/release.yml', () => {
