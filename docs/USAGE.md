@@ -1862,9 +1862,11 @@ jobs:
 | Approach                                                               | Pros                                                                               | Cons                                                                                      |
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | **Local artifact path** (`previous_validation_path`) — **recommended** | Explicit matching; no Actions API logic inside the action; soft-fails on first run | Consumer must download/retain artifacts (or copy from a known store)                      |
-| **GitHub Actions API auto-discover** (not implemented)                 | Zero wiring for consumers                                                          | Needs `actions: read`; brittle around artifact names, matrix jobs, retention; rate limits |
+| **GitHub Actions API auto-discover** (fallback, Issue #212)            | Zero wiring for consumers                                                          | Needs `actions: read`; brittle around artifact names, matrix jobs, retention; rate limits |
 
 `actions/download-artifact@v4` only downloads artifacts from the _current_ workflow run by default. For cron-to-cron comparison, retain the file outside GitHub (S3, gist, commit to an internal branch) **or** use `gh api` / a custom step to fetch the previous successful run’s artifact ID, then pass the downloaded path to `previous_validation_path`.
+
+> **Note on the auto-discover fallback:** when no local path is configured, TrustBridge queries the Actions API for the previous run's `validation.json` artifact. This is strictly best-effort and **fails open**: if the workflow token lacks `actions: read` (a 403 on a private repo), artifacts are unavailable, or any API error occurs, the delta section is silently omitted and the run is never blocked. A 403 on one run's artifact listing or download also does not stop the scan of the remaining prior runs (Issue #551).
 
 ### Privacy mode
 

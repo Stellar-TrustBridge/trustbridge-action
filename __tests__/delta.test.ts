@@ -342,4 +342,192 @@ describe('discoverPreviousValidationArtifact', () => {
       fetchMock.mockRestore();
     }
   });
+
+  // Issue #550-era gap called out by Issue #551: the function documents
+  // "Fails open on 403 / API errors" (the classic response when the provided
+  // GITHUB_TOKEN lacks `actions: read` on a private repo), but only network
+  // rejections were covered. Each HTTP 403 surface below must resolve to
+  // `null` without throwing and without leaking the token anywhere.
+  describe('Actions API returns 403 (Issue #551)', () => {
+    const OLD_ENV_403 = process.env;
+
+    beforeEach(() => {
+      jest.resetModules();
+      process.env = { ...OLD_ENV_403 };
+      process.env.GITHUB_REPOSITORY = 'owner/repo';
+      process.env.GITHUB_RUN_ID = '123';
+    });
+
+    afterEach(() => {
+      process.env = OLD_ENV_403;
+      jest.restoreAllMocks();
+    });
+
+    function fetchResponse(status: number, body: unknown = {}): Response {
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    }
+
+    it('returns null when listing workflow runs is 403 (token lacks actions:read)', async () => {
+      const { discoverPreviousValidationArtifact } = require('../src/delta');
+
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(fetchResponse(403, { message: 'Forbidden' }));
+
+      const result = await discoverPreviousValidationArtifact('ghp_test');
+
+      expect(result).toBeNull();
+      // Exactly one call: the runs list. No artifact/download calls follow.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![0]).toContain('/actions/runs?');
+    });
+
+    it('skips a run whose artifacts listing is 403 and keeps scanning (fail open per run)', async () => {
+      const { discoverPreviousValidationArtifact } = require('../src/delta');
+
+      // Two prior runs. The first returns 403 on its artifacts listing (e.g.
+      // a run from another workflow with restricted visibility); the second
+      // has no matching artifact. The loop must continue past the 403.
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(
+          fetchResponse(200, {
+            workflow_runs: [{ id: 111 }, { id: 222 }],
+          }),
+        )
+        .mockResolvedValueOnce(fetchResponse(403, { message: 'Forbidden' }))
+        .mockResolvedValueOnce(fetchResponse(200, { artifacts: [] }));
+
+      const result = await discoverPreviousValidationArtifact('ghp_test');
+
+      expect(result).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const calledUrls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(calledUrls[1]).toContain('/actions/runs/111/artifacts');
+      expect(calledUrls[2]).toContain('/actions/runs/222/artifacts');
+    });
+
+    it('continues scanning when an artifact download is 403', async () => {
+      const { discoverPreviousValidationArtifact } = require('../src/delta');
+
+      // Run 111 has a matching artifact whose download endpoint answers 403
+      // (insufficient token scope for download). The loop must not throw and
+      // must not attempt any further fetch for that run.
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(
+          fetchResponse(200, { workflow_runs: [{ id: 111 }] }),
+        )
+        .mockResolvedValueOnce(
+          fetchResponse(200, {
+            artifacts: [{ name: 'validation-json', id: 42, expired: false }],
+          }),
+        )
+        .mockResolvedValueOnce(fetchResponse(403, { message: 'Forbidden' }));
+
+      const result = await discoverPreviousValidationArtifact('ghp_test');
+
+      expect(result).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(fetchMock.mock.calls[2]![0])).toContain(
+        '/actions/artifacts/42/zip',
+      );
+    });
+
+    it('recovers and returns the artifact when a later run succeeds after a 403', async () => {
+      const { discoverPreviousValidationArtifact } = require('../src/delta');
+
+      // Prior run 111 artifacts listing is 403; run 222 exposes a valid
+      // validation.json artifact. Auto-discovery must still find it.
+      const artifactPayload = {
+        schemaVersion: VALIDATION_ARTIFACT_SCHEMA_VERSION,
+        timestamp: '2026-09-01T00:00:00.000Z',
+        address,
+        asset: { code: 'USDC', issuer },
+        checks: [
+          { label: 'Account funded', passed: true, detail: 'ok' },
+          { label: 'USDC trustline', passed: false, detail: 'missing' },
+        ],
+        balances: { xlm: '5.0000000' },
+      };
+
+      // Minimal stored (uncompressed) ZIP wrapping validation.json.
+      const makeStoredZip = (file: string, content: string): Buffer => {
+        const name = Buffer.from(file, 'utf8');
+        const data = Buffer.from(content, 'utf8');
+        const header = Buffer.alloc(30);
+        header.writeUInt32LE(0x04034b50, 0);
+        header.writeUInt16LE(0, 8); // stored
+        header.writeUInt32LE(data.length, 18);
+        header.writeUInt32LE(data.length, 22);
+        header.writeUInt16LE(name.length, 26);
+        header.writeUInt16LE(0, 28);
+        return Buffer.concat([header, name, data]);
+      };
+
+      const zipBytes = makeStoredZip(
+        'validation.json',
+        JSON.stringify(artifactPayload),
+      );
+      const zipArrayBuffer = zipBytes.buffer.slice(
+        zipBytes.byteOffset,
+        zipBytes.byteOffset + zipBytes.byteLength,
+      ) as ArrayBuffer;
+
+      const downloadResponse = {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => zipArrayBuffer,
+      } as unknown as Response;
+
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(
+          fetchResponse(200, { workflow_runs: [{ id: 111 }, { id: 222 }] }),
+        )
+        .mockResolvedValueOnce(fetchResponse(403, { message: 'Forbidden' }))
+        .mockResolvedValueOnce(
+          fetchResponse(200, {
+            artifacts: [{ name: 'validation-json', id: 42, expired: false }],
+          }),
+        )
+        .mockResolvedValueOnce(downloadResponse);
+
+      const result = await discoverPreviousValidationArtifact('ghp_test');
+
+      expect(result).not.toBeNull();
+      expect(result!.checks).toHaveLength(2);
+      expect(result!.checks.map((c: { label: string }) => c.label)).toEqual([
+        'Account funded',
+        'USDC trustline',
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it('never includes the token in any outgoing header echo or result', async () => {
+      const { discoverPreviousValidationArtifact } = require('../src/delta');
+
+      const token = 'ghp_super_secret_token_value';
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(fetchResponse(403, { message: 'Forbidden' }));
+
+      const result = await discoverPreviousValidationArtifact(token);
+
+      expect(result).toBeNull();
+      // The Authorization header must still be present for the API call...
+      const init = fetchMock.mock.calls[0]![1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBe(
+        `Bearer ${token}`,
+      );
+      // ...but the token must never appear in the returned payload.
+      expect(JSON.stringify(result)).not.toContain(token);
+    });
+  });
 });
