@@ -19,16 +19,25 @@ Thanks for your interest in contributing to TrustBridge! This document explains 
 - Keep existing code style, naming, and structure.
 - Run the relevant checks before opening a pull request.
 
-## Checks
+## CI Checks
 
-Before opening a pull request, run the available checks from the `trustbridge-action` directory:
+The `.github/workflows/ci.yml` workflow runs on pushes and pull requests targeting `main`, and can also be started manually. Jobs that set up Node use Node.js 20; the workflow grants read-only repository contents permissions. Before opening a pull request, run the relevant checks from the repository root:
 
 ```bash
-cd trustbridge-action
-npm run check-error-catalog
+npm run typecheck
+npm test
+npm run lint --if-present
 ```
 
-The `check-error-catalog` script runs `scripts/check-error-catalog.js` and verifies that the error catalog is in sync with the code. If it exits non-zero, the catalog has drifted and must be regenerated/updated before the change can be merged. See `trustbridge-action/docs/ERROR_HANDLING.md` for details on the error catalog and how to fix drift.
+CI also runs these gates:
+
+- `check`: verifies the action package files, then runs typecheck, tests, and lint.
+- `test-coverage`: runs `npm run test:coverage` and enforces the thresholds in `jest.config.js`.
+- `license-check`: runs `npm run license:check`.
+- `dist-drift`: typechecks tests, builds the distribution, checks source maps, and fails if the build changes committed files in `dist/`.
+- `bundle-size`: runs `npm run test:bundle-size`.
+- `verify-dist-manifest`: runs `node scripts/verify-dist-manifest.js`.
+- `check-unpinned-actions`: runs `bash scripts/check-unpinned-actions.sh .github/workflows docs/examples`.
 
 ## Mutation Testing
 
@@ -39,7 +48,7 @@ cd trustbridge-action
 npm run mutation
 ```
 
-Mutation testing generates synthetic code defects (mutants) and verifies that your test suite catches each one. Results are saved to `stryker-report.html`. For CI details, see `.github/workflows/ci.yml` (mutation-ci job). See `stryker.config.mjs` for score thresholds and configuration.
+Mutation testing generates synthetic code defects (mutants) and verifies that your test suite catches each one. For changes to security-critical validation, run `npm run mutation`; results are saved to `stryker-report.html`. Mutation testing is not part of `.github/workflows/ci.yml`. See `stryker.config.mjs` for score thresholds and configuration.
 
 ## Pull Requests
 
