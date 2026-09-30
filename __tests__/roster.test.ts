@@ -155,4 +155,21 @@ describe('fetchDashboardRoster', () => {
     const result = await fetchDashboardRoster('https://valid.com', '', 1000, true, mockFetch as any);
     expect(result).toEqual({ gabc: 'G123' });
   });
+
+  it('enforces timeout on fetch requests', async () => {
+    // Test that AbortSignal timeout is passed to fetch
+    const mockFetchWithTimeout = jest.fn().mockImplementationOnce(() => {
+      throw new Error('AbortError: The operation was aborted.');
+    });
+    await expect(fetchDashboardRoster('https://valid.com', '', 500, true, mockFetchWithTimeout as any)).rejects.toThrow('Failed to fetch dashboard roster');
+
+    // Verify fetch was called with the correct signal
+    expect(mockFetchWithTimeout).toHaveBeenCalledWith(
+      'https://valid.com',
+      expect.objectContaining({
+        method: 'GET',
+        signal: expect.any(AbortSignal)
+      })
+    );
+  });
 });
