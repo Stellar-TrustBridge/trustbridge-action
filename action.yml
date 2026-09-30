@@ -103,13 +103,11 @@ inputs:
     default: 'true'
   comment_mode:
     description: >-
-      Controls the comment threading strategy. One of: 'sticky' (default —
-      updates TrustBridge's previous comment in place, equivalent to
-      sticky_comment:true), 'new' (always posts a new comment for a full audit
-      trail — equivalent to sticky_comment:false), or 'reply' (posts a reply
-      to the first TrustBridge bot comment in the thread rather than updating
-      it, creating a chronological reply chain). When set, comment_mode takes
-      precedence over the sticky_comment input.
+      Controls only how a posted comment is threaded. One of 'sticky' (default,
+      update the previous comment), 'new' (post a new top-level comment), or
+      'reply' (post a chronological reply). Use posting_mode to control whether
+      comments are posted. Legacy post/dry-run/off values in comment_mode remain
+      supported only when posting_mode is unset.
     required: false
     default: 'sticky'
   wait_until_funded:
@@ -366,11 +364,12 @@ inputs:
   posting_mode:
     description: >-
       Controls whether TrustBridge posts an issue comment: "post" (default)
-      writes/updates the sticky comment, "dry-run" builds the comment but does
-      not call the GitHub API, and "off" skips comment generation entirely.
-      Outputs are always set regardless of mode.
+      posts using the comment_mode threading strategy, "dry-run" builds the
+      comment but does not call the GitHub API, and "off" skips comment posting.
+      Outputs are always set regardless of mode. If unset, legacy post/dry-run/off
+      values in comment_mode are honored; otherwise the effective default is post.
     required: false
-    default: 'post'
+    default: ''
 
   use_check_runs:
     description: >-
@@ -564,7 +563,8 @@ inputs:
   project_id:
     description: >-
       Optional GitHub Projects v2 ID (node ID e.g. PVT_...) to update item status
-      when validation passes or fails. (Issue #222)
+      when validation passes or fails. Requires a token with Projects read/write
+      access; issue and pull request events are supported. (Issue #222)
     required: false
     default: ""
 
@@ -588,7 +588,8 @@ inputs:
 
   project_token:
     description: >-
-      Optional GitHub token with `project` or `write:org` scope if different from github_token. (Issue #222)
+      Optional GitHub token with Projects read/write access if different from
+      github_token. When omitted, github_token is used. (Issue #222)
     required: false
     default: ""
 
@@ -923,6 +924,15 @@ outputs:
     description: 'JSON string of the merge-resolution conflict report (empty object when no conflicts)'
   has_conflicts:
     description: "Whether any input conflicts were detected (true/false). Gate with steps.trustbridge.outputs.has_conflicts == 'true'"
+  assets_trustline_status:
+    description: >-
+      JSON array of additional assets from assets_json with asset_code,
+      asset_issuer, trustline_exists, and balance fields. Empty when no
+      additional assets were checked.
+  trustlines_summary:
+    description: >-
+      Human-readable count of additional assets with trustlines, formatted as
+      "N of M additional trustlines present".
 
 runs:
   using: "node20"

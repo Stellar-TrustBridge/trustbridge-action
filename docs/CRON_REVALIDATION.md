@@ -57,15 +57,15 @@ if: !github.event.repository.fork
 
 ---
 
-## Comment mode & safety (`comment_mode`)
+## Comment posting and threading policy
 
-TrustBridge provides a dedicated `comment_mode` setting to control comment side-effects during automated runs:
+Use `posting_mode` to control whether an issue comment is posted. `comment_mode` is only for the threading strategy (`sticky`, `new`, or `reply`).
 
 | Mode | Behavior | Use case |
 | --- | --- | --- |
-| `dry-run` | Validates accounts and sets all step outputs (`ready`, `reason_code`, `checks_json`) without calling the GitHub comment API | Audit-only cron sweeps, balance checks, pre-payout verification |
-| `post` (default) | Creates or updates the sticky comment on the target issue | Live contributor notification workflows |
-| `off` | Skips comment formatting entirely | CI performance / headless checks |
+| `posting_mode: dry-run` | Validates accounts and sets all step outputs (`ready`, `reason_code`, `checks_json`) without calling the GitHub comment API | Audit-only cron sweeps, balance checks, pre-payout verification |
+| `posting_mode: post` (default) | Posts using the selected `comment_mode` threading strategy | Live contributor notification workflows |
+| `posting_mode: off` | Skips comment posting while validation and outputs continue | CI performance / headless checks |
 
 ---
 
@@ -74,8 +74,8 @@ TrustBridge provides a dedicated `comment_mode` setting to control comment side-
 | Input | Recommended cron value | Reason |
 | --- | --- | --- |
 | `fail_on_missing` | `false` | Keeps the cron job green; ❌ appears in the issue comment, not as a CI badge failure |
-| `comment_mode` | `dry-run` (or `post`) | `dry-run` is safest for audit sweeps; `post` updates sticky comment on issue |
-| `sticky_comment` | `true` (default) | Updates the existing TrustBridge comment instead of posting a new one per run |
+| `posting_mode` | `dry-run` (or `post`) | `dry-run` is safest for audit sweeps; `post` uses the selected threading strategy |
+| `comment_mode` | `sticky` (default) | Updates the existing TrustBridge comment instead of posting a new one per run |
 | `debug_mode` | `false` | Reduces log noise; enable only for targeted investigation |
 | `horizon_cache_ttl_ms` | `0` or `60000` | Set to `0` to always fetch live data; set to `60000` to reduce Horizon calls when the same address appears on multiple issues |
 
@@ -91,7 +91,7 @@ A cron job failing because one contributor's wallet drifted would break your CI 
 
 ## Inline variant (no secondary workflow file)
 
-If you cannot or do not want to dispatch a second workflow, you can call `trustbridge-action` directly inside the cron job. When running in a cron job without issue context, set `comment_mode: dry-run` so checks run cleanly and outputs are populated for downstream maintainer alerts:
+If you cannot or do not want to dispatch a second workflow, you can call `trustbridge-action` directly inside the cron job. When running in a cron job without issue context, set `posting_mode: dry-run` so checks run cleanly and outputs are populated for downstream maintainer alerts:
 
 ```yaml
 - name: Re-validate wallet (inline)
@@ -100,7 +100,7 @@ If you cannot or do not want to dispatch a second workflow, you can call `trustb
     stellar_address_input: ${{ env.CURRENT_ADDRESS }}
     github_token: ${{ secrets.GITHUB_TOKEN }}
     fail_on_missing: false      # required for cron
-    comment_mode: dry-run       # safe for headless cron runs
+    posting_mode: dry-run       # safe for headless cron runs
     asset_code: ${{ env.ASSET_CODE }}
     asset_issuer: ${{ env.ASSET_ISSUER }}
     min_xlm_reserve: ${{ env.MIN_XLM_RESERVE }}

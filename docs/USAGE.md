@@ -774,10 +774,10 @@ with:
 with:
   github_token: ${{ secrets.GITHUB_TOKEN }}
   stellar_address_input: ${{ steps.address.outputs.address }}
-  sticky_comment: true # default — update the previous comment instead of posting a new one
+  comment_mode: sticky # default — update the previous comment
 ```
 
-Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
+Set `comment_mode: new` if you want a new top-level comment on every run instead (e.g. for a full audit trail). `sticky_comment` remains available for older workflows; `comment_mode` takes precedence when supplied. See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
 
 ## Comment threading strategy (`comment_mode`)
 
@@ -799,13 +799,14 @@ with:
   github_token: ${{ secrets.GITHUB_TOKEN }}
   stellar_address_input: ${{ steps.address.outputs.address }}
   posting_mode: post # default: 'post' | 'dry-run' | 'off'
+  comment_mode: sticky # independent threading choice
 ```
 
-- **`post`** (default): Writes or updates the issue comment.
+- **`post`** (default): Posts using the selected `comment_mode` threading strategy.
 - **`dry-run`**: Formats the complete comment body and populates all action outputs, but skips GitHub API calls to post comments.
-- **`off`**: Skips comment generation and posting entirely.
+- **`off`**: Skips comment posting; validation and outputs still run.
 
-> **Backwards compatibility note:** If `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`, TrustBridge automatically falls back to checking `comment_mode` as the posting policy.
+`posting_mode` controls whether a comment is posted; `comment_mode` controls how a posted comment is threaded. For backwards compatibility, legacy `post`, `dry-run`, or `off` values in `comment_mode` are treated as `posting_mode` only when `posting_mode` is omitted. New workflows should use the two inputs independently as shown above.
 
 ## Onboarding checklist (default on)
 
@@ -2987,7 +2988,7 @@ The repository's [`dry-run.yml`](../.github/workflows/dry-run.yml) workflow runs
 the action against the deterministic WireMock Horizon server in a Node 20/22
 matrix. Each job also starts a local mock receiver that verifies the signature
 over the raw request body with a timing-safe comparison and rejects payloads
-whose `schema_version` is not `"1"`. The workflow uses `comment_mode: dry-run`
+whose `schema_version` is not `"1"`. The workflow uses `posting_mode: dry-run`
 and never calls a live dashboard or sends the test secret to logs.
 
 Use this workflow as the reference for validating changes to Horizon requests,

@@ -103,7 +103,7 @@ jobs:
           stellar_address_input: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
           github_token: ${{ github.token }}
           horizon_url: http://127.0.0.1:8089
-          comment_mode: dry-run
+          posting_mode: dry-run
           fail_on_missing: true
           webhook_url: http://127.0.0.1:8787/webhook
           webhook_secret: ${{ env.WEBHOOK_SECRET }}

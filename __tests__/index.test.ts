@@ -39,7 +39,7 @@ import { buildSep0007PayLink } from "../src/links";
 import { parseBooleanInput } from "../src/inputs";
 import { formatCommentBody, isTrustBridgeSlashCommand } from "../src/comment";
 import { toActionOutputs } from "../src/outputs";
-import { handleAutoUnassign } from "../src/index";
+import { handleAutoUnassign, resolveCommentModes } from "../src/index";
 import { applyReadyLabels } from "../src/horizon";
 
 // ---------------------------------------------------------------------------
@@ -88,40 +88,51 @@ function makeFundedAccount() {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Wave #30 / Issue #418 — posting_mode input parsing and comment_mode fallback
+// Issue #528 — posting policy and threading strategy are resolved independently
 // ---------------------------------------------------------------------------
 
-describe("posting_mode and comment_mode input parsing (Issue #418)", () => {
-  const VALID_POSTING_MODES = ["post", "dry-run", "off"];
-  const VALID_COMMENT_MODES = ["sticky", "new", "reply"];
+describe("posting_mode and comment_mode input resolution (Issue #528)", () => {
+  it.each(["post", "dry-run", "off"])("accepts posting_mode %s", (mode) => {
+    expect(resolveCommentModes(mode, "sticky")).toEqual({
+      postingMode: mode,
+      commentThreadingMode: "sticky",
+    });
+  });
 
-  it.each(VALID_POSTING_MODES)('accepts valid posting_mode "%s"', (mode) => {
-    const normalised = mode.trim().toLowerCase();
-    expect(VALID_POSTING_MODES).toContain(normalised);
+  it("uses comment_mode only for threading when posting_mode is explicit", () => {
+    expect(resolveCommentModes("dry-run", "reply")).toEqual({
+      postingMode: "dry-run",
+      commentThreadingMode: "reply",
+    });
+    expect(resolveCommentModes("post", "new")).toEqual({
+      postingMode: "post",
+      commentThreadingMode: "new",
+    });
+    expect(resolveCommentModes("post", "dry-run")).toEqual({
+      postingMode: "post",
+      commentThreadingMode: undefined,
+    });
+  });
+
+  it("retains legacy posting values only when posting_mode is unset", () => {
+    expect(resolveCommentModes("", "off")).toEqual({
+      postingMode: "off",
+      commentThreadingMode: undefined,
+    });
+    expect(resolveCommentModes("", "dry-run").postingMode).toBe("dry-run");
+  });
+
+  it("defaults to post and does not interpret threading modes as posting policy", () => {
+    expect(resolveCommentModes("", "reply")).toEqual({
+      postingMode: "post",
+      commentThreadingMode: "reply",
+    });
   });
 
   it("rejects invalid posting_mode values", () => {
-    const invalid = ["invalid-mode", "skip", "silent", "", "  "];
-    for (const mode of invalid) {
-      const normalised = mode.trim().toLowerCase();
-      expect(VALID_POSTING_MODES).not.toContain(normalised);
-    }
-  });
-
-  it("accepts valid comment_mode threading values", () => {
-    for (const mode of VALID_COMMENT_MODES) {
-      expect(VALID_COMMENT_MODES).toContain(mode);
-    }
-  });
-
-  it("dry-run and off are treated identically for comment gating", () => {
-    // Both modes should evaluate shouldPostComment = false
-    for (const mode of ["dry-run", "off"]) {
-      const shouldPost = mode === "post";
-      expect(shouldPost).toBe(false);
-    }
-    // Only 'post' should trigger posting
-    expect("post" === "post").toBe(true);
+    expect(() => resolveCommentModes("invalid-mode", "sticky")).toThrow(
+      /Invalid posting_mode/,
+    );
   });
 });
 
@@ -607,9 +618,9 @@ describe("Wave #30 + #38 — action.yml structural checks", () => {
     expect(content).toContain("default: 'sticky'");
   });
 
-  it("posting_mode input is declared with post default", () => {
+  it("posting_mode input leaves metadata default empty for legacy detection", () => {
     expect(content).toContain("posting_mode:");
-    expect(content).toContain("default: 'post'");
+    expect(content).toContain("default: ''");
   });
 
   it("posting_mode description mentions dry-run and off", () => {
@@ -1310,6 +1321,23 @@ describe('src/index.ts source guards (#534, #535)', () => {
       // `result` must still reach setValidationOutputs — the guard above would
       // otherwise pass trivially if the call were dropped entirely.
       expect(sourceFile.getFullText()).toContain('setValidationOutputs(result');
+    });
+  });
+
+  describe('#526 — GitHub Projects v2 status integration', () => {
+    it('invokes the project updater with the selected outcome and issue/PR node ID', () => {
+      const projectCalls = callSites('updateProjectV2Status');
+      expect(projectCalls).toHaveLength(1);
+
+      const source = sourceFile.getFullText();
+      expect(source).toContain('const targetProjectStatus = result.valid');
+      expect(source).toContain('github.context.payload.issue?.node_id');
+      expect(source).toContain('github.context.payload.pull_request?.node_id');
+      expect(source).toContain('targetStatusValue: targetProjectStatus');
+      expect(source).toContain('projectId,');
+      expect(source).toContain('statusFieldName: projectStatusField');
+      expect(source).toContain('github.getOctokit(');
+      expect(source).toContain('projectToken,');
     });
   });
 });

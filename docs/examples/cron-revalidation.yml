@@ -47,10 +47,10 @@
 #
 # Comment mode & Safety
 # ---------------------
-# • comment_mode: "dry-run" — validates and sets outputs without
+# • posting_mode: "dry-run" — validates and sets outputs without
 #   making GitHub comment API calls (safest for audit runs).
-# • comment_mode: "post" (default) — posts/updates sticky comment.
-# • comment_mode: "off" — completely skips comment generation.
+# • posting_mode: "post" (default) — posts using comment_mode threading.
+# • posting_mode: "off" — skips comment posting; validation outputs remain.
 #
 # Recommended settings for cron runs
 # ------------------------------------

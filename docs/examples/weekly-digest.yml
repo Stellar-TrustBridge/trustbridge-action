@@ -93,7 +93,7 @@ jobs:
           github_token: ${{ secrets.TRUSTBRIDGE_TOKEN || secrets.GITHUB_TOKEN }}
           fail_on_missing: 'false'
           # Do not post per-issue comments — the digest handles that.
-          comment_mode: 'off'
+          posting_mode: 'off'
           sticky_comment: 'false'
           debug_mode: 'false'
 

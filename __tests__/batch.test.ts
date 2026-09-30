@@ -314,7 +314,7 @@ describe('runBatchValidation', () => {
 describe('batch mode comment posting (Issue #537)', () => {
   const BATCH_ADDRESSES = [VALID_ADDR_1, VALID_ADDR_UNFUNDED];
 
-  /** Inputs that reproduce a `comment_mode: post` batch run on the runner. */
+  /** Inputs that reproduce a posted batch comment with an explicit thread mode. */
   function batchInputs(overrides: Record<string, string> = {}): Record<string, string> {
     return {
       github_token: 'ghs_test_token',
@@ -326,7 +326,8 @@ describe('batch mode comment posting (Issue #537)', () => {
       asset_issuer: DEFAULT_CONFIG.assetIssuer,
       min_xlm_reserve: '1.5',
       horizon_url: 'https://horizon.stellar.org',
-      comment_mode: 'post',
+      posting_mode: 'post',
+      comment_mode: 'new',
       sticky_comment: 'false',
       wait_until_funded: 'false',
       use_cache: 'false',
@@ -385,7 +386,7 @@ describe('batch mode comment posting (Issue #537)', () => {
     }
   });
 
-  it('posts the batch summary markdown when comment_mode is post', async () => {
+  it('posts the batch summary markdown when posting_mode is post', async () => {
     await run();
 
     expect(mockPostIssueComment).toHaveBeenCalledTimes(1);
@@ -442,7 +443,7 @@ describe('batch mode comment posting (Issue #537)', () => {
     });
   });
 
-  it('still emits the batch outputs when comment_mode is post', async () => {
+  it('still emits the batch outputs when posting_mode is post', async () => {
     await run();
 
     const outputs = (core.setOutput as jest.Mock).mock.calls;

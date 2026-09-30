@@ -2,7 +2,7 @@
 #
 # Use this workflow in a fork PR to test TrustBridge without `issues: write`.
 #
-# comment_mode: dry-run builds the comment but skips the GitHub API call.
+# posting_mode: dry-run builds the comment but skips the GitHub API call.
 # All outputs (account_funded, ready, etc.) are still set.
 # The comment Markdown is written to the job summary and step log.
 #
@@ -35,7 +35,7 @@ jobs:
   dry-run:
     runs-on: ubuntu-latest
 
-    # Fork PRs: read-only permissions are sufficient for comment_mode: dry-run
+    # Fork PRs: read-only permissions are sufficient for posting_mode: dry-run
     permissions:
       issues: read
       contents: read
@@ -52,11 +52,11 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
           # ------------------------------------------------------------------
-          # comment_mode: dry-run
+          # posting_mode: dry-run
           # Builds the comment body and writes it to the job summary.
           # Does NOT call the GitHub Issues API — safe for fork PRs.
           # ------------------------------------------------------------------
-          comment_mode: dry-run
+          posting_mode: dry-run
 
           # ------------------------------------------------------------------
           # Fixture mode (optional)

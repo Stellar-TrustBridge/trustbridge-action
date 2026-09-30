@@ -211,6 +211,32 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
     expect(() => loadSchema(SCHEMA_PATH)).not.toThrow();
   });
 
+  it('schema properties contain no duplicate JSON keys', () => {
+    const schemaText = fs.readFileSync(SCHEMA_PATH, 'utf8');
+    const propertyNames = [...schemaText.matchAll(/^    "([^\"]+)":\s*\{/gm)]
+      .map((match) => match[1]!);
+
+    expect(propertyNames.filter((name) => name === 'comment_mode')).toHaveLength(1);
+    expect(propertyNames.filter((name) => name === 'posting_mode')).toHaveLength(1);
+    expect(new Set(propertyNames).size).toBe(propertyNames.length);
+  });
+
+  it('keeps comment_mode for threading and posting_mode aligned with action.yml', () => {
+    const schemaText = fs.readFileSync(SCHEMA_PATH, 'utf8');
+    const parsed = JSON.parse(schemaText) as {
+      properties: Record<string, { default?: string; enum?: string[] }>;
+    };
+
+    expect(parsed.properties.comment_mode).toMatchObject({
+      default: 'sticky',
+      enum: ['sticky', 'new', 'reply'],
+    });
+    expect(parsed.properties.posting_mode).toMatchObject({
+      default: '',
+      enum: ['post', 'dry-run', 'off'],
+    });
+  });
+
   it('schema has a "properties" object', () => {
     expect(schema.properties).toBeDefined();
     expect(typeof schema.properties).toBe('object');

@@ -7,7 +7,7 @@
  *   3. Path traversal attempts are rejected.
  *   4. A missing fixture_path fails with a clear error.
  *   5. An invalid JSON fixture fails with a clear error.
- *   6. The fixture works with comment_mode: dry-run (no GitHub API calls needed).
+ *   6. The fixture works with posting_mode: dry-run (no GitHub API calls needed).
  */
 
 import * as fs from 'fs';
@@ -218,7 +218,7 @@ describe('Issue #304 — bundled fixture files in fixtures/', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Offline workflow: fixture + comment_mode: dry-run (no network, no GitHub API)
+// Offline workflow: fixture + posting_mode: dry-run (no network, no GitHub API)
 // ---------------------------------------------------------------------------
 
 import { runAccountChecks, validateStellarAddress } from '../src/checks';

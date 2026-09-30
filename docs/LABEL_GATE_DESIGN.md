@@ -392,7 +392,7 @@ Programs should define their own labels and document them in their contributing 
 
 ### Testing approach
 
-- Use `comment_mode: dry-run` in a local workflow to exercise label gate logic without posting comments.
+- Use `posting_mode: dry-run` in a local workflow to exercise label gate logic without posting comments.
 - Mock issue labels in test workflow inputs.
 - Verify outputs are correctly forwarded or set to sentinel values.
 

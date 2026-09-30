@@ -114,6 +114,52 @@ describe('toActionOutputs', () => {
     });
   });
 
+  it('serializes additional asset trustline statuses and a count summary', () => {
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      assetsTrustlineStatus: [
+        {
+          assetCode: 'EURC',
+          assetIssuer: 'GEURC...',
+          trustlineExists: true,
+          balance: '12.0000000',
+        },
+        {
+          assetCode: 'USDT',
+          assetIssuer: 'GUSDT...',
+          trustlineExists: false,
+          balance: '0',
+        },
+      ],
+    });
+
+    expect(JSON.parse(outputs.assets_trustline_status)).toEqual([
+      {
+        asset_code: 'EURC',
+        asset_issuer: 'GEURC...',
+        trustline_exists: true,
+        balance: '12.0000000',
+      },
+      {
+        asset_code: 'USDT',
+        asset_issuer: 'GUSDT...',
+        trustline_exists: false,
+        balance: '0',
+      },
+    ]);
+    expect(outputs.trustlines_summary).toBe(
+      '1 of 2 additional trustlines present',
+    );
+  });
+
+  it('uses empty status and summary outputs when no additional assets were checked', () => {
+    const outputs = toActionOutputs(result);
+
+    expect(outputs.assets_trustline_status).toBe('[]');
+    expect(outputs.trustlines_summary).toBe(
+      '0 of 0 additional trustlines present',
+    );
+  });
+
   it('includes a comment URL and full_report_path when provided', () => {
     const outputs = toActionOutputs(result, 'https://github.com/comment', '/workspace/trustbridge-report.md');
     expect(outputs).toMatchObject({

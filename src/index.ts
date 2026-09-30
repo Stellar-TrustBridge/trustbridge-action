@@ -61,7 +61,12 @@ import {
 } from "./inputs";
 import { formatFailureSummary } from "./summary";
 import { setValidationOutputs, writeValidationJson, buildConflictReport, formatConflictReportMarkdown } from "./outputs";
-import type { ConflictReport, ConflictSource } from "./outputs";
+import type {
+  AssetTrustlineStatus,
+  ConflictReport,
+  ConflictSource,
+} from "./outputs";
+import { updateProjectV2Status } from "./projects";
 import {
   computeValidationDelta,
   loadPreviousValidationArtifact,
@@ -95,6 +100,40 @@ import { traceActionRun, emitTraceSummary, clearTraceSpans } from './tracing';
 
 export type PostingMode = 'post' | 'dry-run' | 'off';
 export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
+export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
+const VALID_COMMENT_THREADING_MODES: CommentThreadingMode[] = ['sticky', 'new', 'reply'];
+
+export function resolveCommentModes(
+  postingModeInput: string,
+  commentModeInput: string,
+): { postingMode: PostingMode; commentThreadingMode?: CommentThreadingMode } {
+  const normalizedPostingMode = postingModeInput.trim().toLowerCase();
+  const normalizedCommentMode = commentModeInput.trim().toLowerCase();
+  const legacyPostingMode = VALID_POSTING_MODES.includes(
+    normalizedCommentMode as PostingMode,
+  )
+    ? (normalizedCommentMode as PostingMode)
+    : undefined;
+  const postingModeRaw =
+    normalizedPostingMode || legacyPostingMode || 'post';
+
+  if (!VALID_POSTING_MODES.includes(postingModeRaw as PostingMode)) {
+    throw new Error(
+      `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
+    );
+  }
+
+  const commentThreadingMode = VALID_COMMENT_THREADING_MODES.includes(
+    normalizedCommentMode as CommentThreadingMode,
+  )
+    ? (normalizedCommentMode as CommentThreadingMode)
+    : undefined;
+
+  return {
+    postingMode: postingModeRaw as PostingMode,
+    commentThreadingMode,
+  };
+}
 
 /**
  * Resolve the GitHub assignee login from the current Actions event payload.
@@ -778,35 +817,12 @@ async function run(): Promise<void> {
   );
   const clawbackStrictMode = parseBooleanInput(core.getInput('clawback_strict_mode'), false);
 
-  // Issue #456 — split posting mode (post | dry-run | off) and comment_mode (threading)
-  const postingModeInput = core.getInput("posting_mode");
-  const commentModeInput = core.getInput("comment_mode");
-  let postingModeRaw = "post";
-  if (postingModeInput) {
-    postingModeRaw = postingModeInput.trim().toLowerCase();
-  } else if (
-    commentModeInput &&
-    (VALID_POSTING_MODES as readonly string[]).includes(commentModeInput.trim().toLowerCase())
-  ) {
-    // Backwards-compatibility fallback when comment_mode was used for posting
-    postingModeRaw = commentModeInput.trim().toLowerCase();
-  }
-
-  if (!(VALID_POSTING_MODES as readonly string[]).includes(postingModeRaw)) {
-    throw new Error(
-      `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
-    );
-  }
-  const postingMode = postingModeRaw as PostingMode;
-  const commentMode = postingMode;
+  // Issue #456 / #528 — posting policy and threading strategy are independent.
+  const { postingMode, commentThreadingMode } = resolveCommentModes(
+    core.getInput("posting_mode"),
+    core.getInput("comment_mode"),
+  );
   const shouldPostComment = postingMode === "post";
-
-  // Threading strategy for issue comments (#322 / #456)
-  const commentThreadingMode = (
-    commentModeInput && ['sticky', 'new', 'reply'].includes(commentModeInput.trim().toLowerCase())
-  )
-    ? (commentModeInput.trim().toLowerCase() as import('./comment').CommentMode)
-    : undefined;
 
   // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
   // instead of calling live Horizon. No network call is made.
@@ -841,7 +857,9 @@ async function run(): Promise<void> {
   const projectStatusField = core.getInput("project_status_field") || "Status";
   const projectStatusPass = core.getInput("project_status_pass") || "";
   const projectStatusFail = core.getInput("project_status_fail") || "";
-  const projectToken = core.getInput("project_token") || githubToken;
+  const projectTokenInput = core.getInput("project_token") || "";
+  if (projectTokenInput) core.setSecret(projectTokenInput);
+  const projectToken = projectTokenInput || githubToken;
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
@@ -1615,13 +1633,7 @@ async function run(): Promise<void> {
   // Multi-asset trustline checks (Issue #201)
   // Run trustline checks for additional assets from assets_json.
   // ---------------------------------------------------------------------------
-  interface MultiAssetResult {
-    assetCode: string;
-    assetIssuer: string;
-    trustlineExists: boolean;
-    balance: string;
-  }
-  let multiAssetResults: MultiAssetResult[] = [];
+  let multiAssetResults: AssetTrustlineStatus[] = [];
   if (assetsJsonRaw.trim()) {
     const extraAssets = parseAssetsJson(assetsJsonRaw);
     const dedupedAssets = extraAssets.filter(
@@ -2077,6 +2089,49 @@ async function run(): Promise<void> {
       result,
       unassignOnNotReady,
     });
+  }
+
+  // GitHub Projects v2 integration (Issue #222)
+  const targetProjectStatus = result.valid
+    ? projectStatusPass
+    : projectStatusFail;
+  if (projectId.trim() && targetProjectStatus.trim()) {
+    const contentNodeId =
+      github.context.payload.issue?.node_id ??
+      github.context.payload.pull_request?.node_id ??
+      "";
+
+    if (!projectToken) {
+      core.warning(
+        "[Projects v2] A project status is configured, but no GitHub token is available; skipping status update.",
+      );
+    } else if (!contentNodeId) {
+      core.warning(
+        "[Projects v2] A project status is configured, but this event has no issue or pull request node ID; skipping status update.",
+      );
+    } else {
+      try {
+        const octokit = github.getOctokit(
+          projectToken,
+          getOctokitProxyOptions(),
+        );
+        await updateProjectV2Status({
+          octokit,
+          projectId,
+          contentNodeId,
+          statusFieldName: projectStatusField,
+          targetStatusValue: targetProjectStatus,
+        });
+      } catch (projectError) {
+        const message =
+          projectError instanceof Error
+            ? projectError.message
+            : String(projectError);
+        core.warning(
+          `[Projects v2] Failed to initialize status update (non-fatal): ${message}`,
+        );
+      }
+    }
   }
 
   // Signed dashboard webhook notification (Issue #101)

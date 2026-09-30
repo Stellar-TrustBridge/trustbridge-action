@@ -27,9 +27,9 @@ TrustBridge separates the comment posting policy from the comment threading stra
 
 - **`post`** (default): Post or update comments on GitHub.
 - **`dry-run`**: Build comment body and set all action outputs, but skip GitHub API calls to post comments.
-- **`off`**: Completely skip comment generation.
+- **`off`**: Skip comment posting; validation and action outputs still run.
 
-> **Backwards compatibility:** If `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`, TrustBridge automatically falls back to treating `comment_mode` as the posting policy.
+`posting_mode` controls whether the comment is posted; `comment_mode` controls how a posted comment is threaded. For backwards compatibility only, legacy `post`, `dry-run`, or `off` values in `comment_mode` are treated as `posting_mode` when `posting_mode` is omitted. New workflows should use the inputs independently.
 
 ### Threading strategy (`comment_mode`)
 

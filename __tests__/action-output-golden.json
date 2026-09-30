@@ -33,6 +33,7 @@
   "timing_total_ms",
   "timings_json",
   "trustline_exists",
+  "trustlines_summary",
   "validated_at",
   "xlm_balance"
 ]

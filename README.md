@@ -654,9 +654,9 @@ The test suite includes comprehensive fuzz/property tests and reusable workflow 
 
 ### Test Coverage (Wave #38 & #30)
 
-Integration tests for the `comment_mode` dry-run path and dashboard webhook harness:
+Integration tests for the `posting_mode` dry-run path and dashboard webhook harness:
 
-- **Index integration tests** (`__tests__/index.test.ts`): Full jest.mock suite covering `comment_mode` (`post`/`dry-run`/`off`/invalid), dashboard webhook payload content and failure handling, Soroban C-address fast-fail validation, SEP-0007 deep link inclusion, `fail_on_missing` across all modes, and scale output independence.
+- **Index integration tests** (`__tests__/index.test.ts`): Full jest.mock suite covering independent `posting_mode` and `comment_mode` resolution, dashboard webhook payload content and failure handling, Soroban C-address fast-fail validation, SEP-0007 deep link inclusion, `fail_on_missing` across all modes, and scale output independence.
 - **Workflow sanity tests** (`__tests__/workflow.test.ts`): YAML structure assertions for `ci.yml`, `release.yml`, and `action.yml` confirming lint/test/build gates and Wave #30/#38 inputs.
 
 Contributing guidelines: [CONTRIBUTING.md](CONTRIBUTING.md).
