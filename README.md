@@ -642,7 +642,7 @@ CI runs `build-and-test` in parallel on both versions (see [`.github/workflows/c
 ### Comment Golden Snapshots & Coverage Gates
 
 - **Comment Golden Snapshots**: TrustBridge enforces golden snapshots for Markdown issue comments (`__tests__/comment.test.ts`) across success and failure paths to prevent formatting regressions during active Waves and release cycles.
-- **Jest Coverage Gate**: Enforces strict statement, branch, function, and line coverage thresholds for `src/horizon.ts` (fetch, retries, caching, RPC fallback) and globally in `jest.config.js`.
+- **Jest Coverage Gate**: Enforced in CI via the dedicated `test-coverage` job running `npm run test:coverage`. Thresholds live in `jest.config.js` — strict statement, branch, function, and line coverage for `src/horizon.ts` (fetch, retries, caching, RPC fallback) and globally.
 
 ### Test Coverage (Wave #39 & #32)
 

@@ -16,6 +16,32 @@ describe('.github/workflows/ci.yml', () => {
     expect(content).toContain('npm test');
     expect(content).toContain('npm run lint');
   });
+
+  it('runs a dedicated coverage job enforcing the jest.config.js thresholds', () => {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+
+    // Dedicated CI job runs the exact npm script documented in the README.
+    expect(content).toContain('test-coverage:');
+    expect(content).toContain('run: npm run test:coverage');
+
+    // The gate it enforces must exist in jest.config.js with real thresholds.
+    const jestConfigPath = path.join(__dirname, '../jest.config.js');
+    expect(fs.existsSync(jestConfigPath)).toBe(true);
+    const jestConfig = require(jestConfigPath);
+    expect(jestConfig.coverageDirectory).toBe('coverage');
+
+    const globalThresholds = jestConfig.coverageThreshold?.global;
+    expect(globalThresholds).toBeDefined();
+    for (const metric of ['branches', 'functions', 'lines', 'statements'] as const) {
+      const value = globalThresholds[metric];
+      expect(typeof value).toBe('number');
+      expect(value).toBeGreaterThan(0);
+      expect(value).toBeLessThanOrEqual(100);
+    }
+
+    // Per-file gate for src/horizon.ts must stay wired up as documented.
+    expect(Object.keys(jestConfig.coverageThreshold)).toContain('./src/horizon.ts');
+  });
 });
 
 describe('.github/workflows/release.yml', () => {
