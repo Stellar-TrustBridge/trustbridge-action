@@ -30,6 +30,17 @@ npm run check-error-catalog
 
 The `check-error-catalog` script runs `scripts/check-error-catalog.js` and verifies that the error catalog is in sync with the code. If it exits non-zero, the catalog has drifted and must be regenerated/updated before the change can be merged. See `trustbridge-action/docs/ERROR_HANDLING.md` for details on the error catalog and how to fix drift.
 
+## Mutation Testing
+
+For changes to security-critical code in `src/validation.ts` (SSRF validation and StrKey address checks), run mutation tests locally to ensure test coverage catches weakened checks:
+
+```bash
+cd trustbridge-action
+npm run mutation
+```
+
+Mutation testing generates synthetic code defects (mutants) and verifies that your test suite catches each one. Results are saved to `stryker-report.html`. For CI details, see `.github/workflows/ci.yml` (mutation-ci job). See `stryker.config.mjs` for score thresholds and configuration.
+
 ## Pull Requests
 
 - Reference the issue your change addresses.

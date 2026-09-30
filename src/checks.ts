@@ -44,8 +44,8 @@ export type HomeDomainCheckMode = "warn" | "strict";
 /**
  * Claimable-balance policy (Issue #260).
  *
- * - `"ignore"` — funded means Horizon account exists; claimable balances do not affect funded.
- * - `"count"` — unfunded accounts with claimable balances surface an informational hint.
+ * - `"ignore"` - funded means Horizon account exists; claimable balances do not affect funded.
+ * - `"count"` - unfunded accounts with claimable balances surface an informational hint.
  */
 export type ClaimableBalancePolicy = "ignore" | "count";
 
@@ -139,16 +139,16 @@ export interface CheckConfig {
   /**
    * How to treat claimable balances when determining `funded` status.
    *
-   * - `"ignore"` (default) — funded = Horizon account exists (200). Claimable
+   * - `”ignore”` (default) - funded = Horizon account exists (200). Claimable
    *   balances are ignored; an address with only claimable balances still shows
    *   “not found / unfunded”. No extra Horizon request is made.
-   * - `"count"` — when the account is 404, TrustBridge also checks
+   * - `”count”` - when the account is 404, TrustBridge also checks
    *   `GET /claimable_balances?claimant=address` (1 extra request, capped at
    *   5s). If claimable balances exist, the comment notes them but `accountFunded`
    *   remains false and `valid` is not set true unless documented. This is
    *   informational only and never auto-claims.
    *
-   * Default `"ignore"` matches today’s behavior and avoids extra request budget.
+   * Default `”ignore”` matches today’s behavior and avoids extra request budget.
    * Empty claimables (0) are treated as no hint in either mode.
    */
   claimableBalancePolicy?: ClaimableBalancePolicy;
