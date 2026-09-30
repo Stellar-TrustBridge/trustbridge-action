@@ -50,12 +50,16 @@ Download the checksum manifest from the GitHub Release and verify:
 gh release download "$TAG" --pattern trustbridge-checksums.txt
 
 # Verify checksums
+# Use the appropriate flag for your platform:
+#  - Linux: sha256sum -c trustbridge-checksums.txt
+#  - macOS: sha256 -c trustbridge-checksums.txt
+#  - Windows (PowerShell): Get-Content trustbridge-checksums.txt | ForEach-Object { $_ -match '^([0-9a-f]{64})\s+(.+)$' | Out-Null; (Get-FileHash -Path $Matches[2] -Algorithm SHA256).Hash -eq $Matches[1] }
 sha256sum -c trustbridge-checksums.txt
 ```
 
 Replace `v1.0.1` with the release tag. A successful result proves that:
-1. The bundle digest matches a SLSA provenance statement signed by the repository's release workflow for that tag
-2. The checksums in the manifest match the actual files
+1. The bundle digest matches a SLSA provenance statement signed by the repository's release workflow for that tag.
+2. The checksums in the manifest match the actual files.
 
 If verification fails, do not publish or move the major tag; inspect the release run and rebuild from a clean tag.
 

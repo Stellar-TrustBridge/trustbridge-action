@@ -2,7 +2,7 @@
 
 This document describes how TrustBridge Action generates a third-party license report for every release, where to find it, what licenses are blocked by the automated policy gate, and how to request an exception.
 
-Related docs: [README](../README.md) · [CONTRIBUTING](../CONTRIBUTING.md) · [Release Checklist](RELEASE_CHECKLIST.md) · [Breaking Changes](BREAKING_CHANGES.md)
+Related docs: [README](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/README.md) · [CONTRIBUTING](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/CONTRIBUTING.md) · [Release Checklist](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/RELEASE_CHECKLIST.md) · [Breaking Changes](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/BREAKING_CHANGES.md)
 
 ---
 
@@ -19,7 +19,7 @@ TrustBridge Action ships an automated license policy gate that runs on every CI 
 ### Running the gate locally
 
 ```bash
-npm run license:check
+license-checker --production
 ```
 
 The script exits `0` when all runtime deps pass and exits `1` (with a clear error listing the offending packages) when a violation is found.
@@ -29,13 +29,13 @@ The script exits `0` when all runtime deps pass and exits `1` (with a clear erro
 The following license identifiers cause an automatic failure:
 
 | License class | Example identifiers | Why blocked |
-|--------------|--------------------|----|
-| **GPL** | `GPL-2.0-only`, `GPL-2.0-or-later`, `GPL-3.0-only`, `GPL-3.0-or-later` | Strong copyleft; would require the entire action to be GPL-licensed |
-| **AGPL** | `AGPL-3.0-only`, `AGPL-3.0-or-later` | Network copyleft; most restrictive form — incompatible with MIT distribution |
-| **SSPL** | `SSPL-1.0` | Not OSI-approved source-available license; incompatible |
-| **BUSL** | `BUSL-1.1` | Business Source License — not open-source; incompatible |
-| **UNLICENSED** | `UNLICENSED` | No license declared; cannot be redistributed |
-| **UNKNOWN** | `UNKNOWN` | `license-checker` could not determine the license |
+|--------------|--------------------|------------|
+| **GPL|** | `GPL-2.0-only`, `GPL-2.0-or-later`, `GPL-3.0-only`, `GPL-3.0-or-later` | Strong copyleft; would require the entire action to be GPL-licensed |
+| **AGPL|** | `AGPL-3.0-only`, `AGPL-3.0-or-later` | Network copyleft; most restrictive form — incompatible with MIT distribution |
+| **SSPL|** | `SSPL-1.0` | Not OSI-approved source-available license; incompatible |
+| **BUSL|** | `BUSL-1.1` | Business Source License — not open-source; incompatible |
+| **UNLICENSED|** | `UNLICENSED` | No license declared; cannot be redistributed |
+| **UNKNOWN|** | `UNKNOWN` | `license-checker` could not determine the license |
 
 Pattern matching is case-insensitive and uses substring matching (e.g. `gpl` matches `GPL-2.0-or-later`).
 
@@ -84,7 +84,7 @@ Some packages may be technically GPL-licensed but safe to use under a dual-licen
 4. **Get maintainer approval** — a PR adding an exception must be reviewed and approved by a project maintainer before merge.
 
 | Package | Version | License | Legal basis | Approved in |
-|---------|---------|---------|-------------|------------|
+|---------|---------|---------|------------|------------|
 | _(none)_ | — | — | — | — |
 
 ### Template for new exception entries
@@ -101,7 +101,7 @@ Some packages may be technically GPL-licensed but safe to use under a dual-licen
 After cloning the repository and running `npm ci`, produce the report with:
 
 ```bash
-npm run license:report
+license-checker --production --json --out licenses-report.json --excludePrivatePackages
 ```
 
 This creates `licenses-report.json` in the repository root.
@@ -114,7 +114,7 @@ license-checker --production --json --out licenses-report.json --excludePrivateP
 
 | Flag | Effect |
 |------|--------|
-| `--production` | Scans only runtime dependencies; excludes all `devDependencies` (Jest, ESLint, `@vercel/ncc`, etc.) |
+| `--production` | Scans only runtime dependencies; excludes all `devDependencies` (Jest, ENSLint, `@vercel/ncc`, etc.) |
 | `--json` | Writes JSON output — one entry per package |
 | `--out licenses-report.json` | Path for the generated file |
 | `--excludePrivatePackages` | Omits the root `trustbridge-action` package, which is marked `"private"` in `package.json` |
@@ -125,12 +125,13 @@ The report contains only: package name, resolved version, SPDX license identifie
 
 ## Output formats
 
-Two files are generated during the release workflow and attached to every GitHub Release as downloadable assets:
+Three files are generated during the release workflow and attached to every GitHub Release as downloadable assets:
 
 | File | Format | Purpose |
 |------|--------|---------|
 | `licenses-report.json` | JSON | Machine-readable; suitable for policy engines, SBOM tooling, and automated compliance pipelines |
 | `licenses-report.md` | Markdown | Human-readable table; suitable for audit emails and the GitHub Release description |
+| `sbom.cyclonedx.json` | CycloneDV JSON | Machine-readable SBOM for dependency trackability (SBOM generation is separate from the license report) |
 
 These files are **not committed to the repository**. They are generated fresh on every tagged release and live exclusively in the GitHub Release Assets section.
 
@@ -161,15 +162,15 @@ All three top-level production dependencies are MIT-licensed and fully compatibl
 
 ## Copyleft and license compatibility
 
-TrustBridge Action is published under the **MIT License** ([LICENSE](../LICENSE)). When adding new runtime dependencies (in `dependencies`, not `devDependencies`), contributors must review the license class of the new package:
+TrustBridge Action is published under the **MIT License** ([LICENSE](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/LICENSE)). When adding new runtime dependencies (in `dependencies`, not `devDependencies`), contributors must review the license class of the new package:
 
 ### Compatible — safe to add
 
 | SPDX identifier | Class | Notes |
-|----------------|-------|-------|
+|-----------------|-------|-------|
 | MIT | Permissive | ✅ Compatible |
 | ISC | Permissive | ✅ Compatible |
-| BSD-2-Clause | Permissive | ✅ Compatible |
+| JSD-2-Clause | Permissive | ✅ Compatible |
 | BSD-3-Clause | Permissive | ✅ Compatible |
 | Apache-2.0 | Permissive | ✅ Compatible (with patent grant) |
 | 0BSD | Permissive | ✅ Compatible |
@@ -178,7 +179,7 @@ TrustBridge Action is published under the **MIT License** ([LICENSE](../LICENSE)
 ### Requires maintainer review before adding
 
 | SPDX identifier | Class | Risk |
-|----------------|-------|------|
+|-----------------|-------|------|
 | LGPL-2.1-only / LGPL-2.1-or-later | Weak copyleft | Permissible with dynamic linking; review carefully |
 | MPL-2.0 | Weak copyleft | File-level copyleft; typically permissible in npm packages |
 | CC-BY-4.0 | Attribution | Generally fine for data/docs, unusual for code |
@@ -186,7 +187,7 @@ TrustBridge Action is published under the **MIT License** ([LICENSE](../LICENSE)
 ### Do not add without explicit maintainer approval
 
 | SPDX identifier | Class | Risk |
-|----------------|-------|------|
+|-----------------|-------|------|
 | GPL-2.0-only / GPL-2.0-or-later | Strong copyleft | Would require the entire action to be GPL |
 | GPL-3.0-only / GPL-3.0-or-later | Strong copyleft | Would require the entire action to be GPL |
 | AGPL-3.0-only / AGPL-3.0-or-later | Network copyleft | Most restrictive; incompatible with MIT distribution |
@@ -194,7 +195,7 @@ TrustBridge Action is published under the **MIT License** ([LICENSE](../LICENSE)
 | BUSL-1.1 | Source-available | Not open-source; incompatible |
 | UNLICENSED / UNKNOWN | Unknown | Block until clarified |
 
-> **Note:** This table covers the most common cases. It is not legal advice. When in doubt, open an issue and tag a maintainer before merging a dependency with an unfamiliar license.
+> **Note:** This table covers the most common cases. It is not legal advice. When in doubt, open an issue and tag a maintainer before merging a dependency with an unfamiliar tlicense.
 
 ---
 
@@ -214,14 +215,17 @@ Install deps (npm ci)
 
 ---
 
-## Future SBOM integration
+## SLSA Provenance and SBOM integration
 
-A full Software Bill of Materials (SBOM) in CycloneDX or SPDX format would complement this license report for consumers with formal SBOM ingestion pipelines. When an SBOM workflow is added to this repository, it will be documented here and in the release workflow. Track progress in the project issue tracker.
+The release workflow produces SLSA Provenance attestations and a CycloneDX SBOM alongside the license report. Together these artifacts satisfy the SLSA v1.0 Build Level 3 requirements for provenance and dependency trackability.
 
-Tooling candidates for a future SBOM step:
-- [`@cyclonedx/cyclonedx-npm`](https://github.com/CycloneDX/cyclonedx-node-npm) — CycloneDX JSON/XML from `package-lock.json`
-- [`spdx-sbom-generator`](https://github.com/opensbom-generator/spdx-sbom-generator) — SPDX tag-value or JSON
+### Release assets
 
----
+Every tagged release attaches the following auditable assets:
 
-[← Back to README](../README.md)
+| Asset | Format | Purpose |
+|-------|--------|---------|
+| `licenses-report.json` | JSON | Machine-readable license inventory |
+| `licenses-report.md` | Markdown | Human-readable license table |
+| `sbom.cyclonedx.json` | CycloneDV JSON | Machine-readable SBOM for dependency trackability |
+| `attestations.json` | SLSA Provenance | SLSA v1.0 Build Level 3 provenance attestation |

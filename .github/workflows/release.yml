@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -34,10 +36,34 @@ jobs:
         # commit both files before tagging a release.
         run: node scripts/verify-dist-manifest.js
 
+      - name: Verify license assets
+        # SLSA provenance and the release checklist require the license files
+        # to be present and shipped with the release.  Fail fast if they are
+        # missing so we never publish a release without them.
+        run: |
+          test -f LICENSE
+          test -f NOTICE
+          test -f docs/LICENSE_REPORT.md || test -f docs/LICENSE_REPORT
+
+      - name: Generate SLSA provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: |
+            dist/index.js
+            dist/dist-manifest.json
+            LICENSE
+            NOTICE
+            docs/LICENSE_REPORT.md
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2.3.2
         with:
           generate_release_notes: true
+          files: |
+            LICENSE
+            NOTICE
+            docs/LICENSE_REPORT.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

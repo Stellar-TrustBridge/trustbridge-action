@@ -179,5 +179,5 @@ if (runtimeViolations.length > 0) {
 
 // All clear
 const total = Object.keys(licenseMap).length;
-console.log(`✅  License policy gate passed — ${total} packages scanned, 0 runtime violations.\n`);
+console.log(`✅  All ${total} runtime dependencies pass the license policy gate.`);
 process.exit(0);
