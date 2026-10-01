@@ -167,15 +167,6 @@
         "off"
       ]
     },
-    "use_check_runs": {
-      "type": "string",
-      "description": "When true, creates a GitHub Check Run with individual validation check annotations. Requires checks: write permission.",
-      "enum": [
-        "true",
-        "false"
-      ],
-      "default": "false"
-    },
     "onboarding_checklist": {
       "type": "string",
       "description": "Include an onboarding checklist in the issue comment.",
