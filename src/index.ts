@@ -555,12 +555,19 @@ async function run(): Promise<void> {
   const sorobanFullRoster = parseBooleanInput(core.getInput('soroban_full_roster'), false);
   const sorobanRosterPageLimit = parseNumberInput(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
 
+  // Issue #549: github_username is used as a fallback lookup key for Soroban get_address
+  // when the workflow event context (issues.assigned / pull_request) does not provide an
+  // assignee login.  Typical case: workflow_dispatch or cron runs where the caller knows
+  // the contributor's username but no GitHub event assignee is present.
+  const githubUsername = (core.getInput('github_username') || '').trim();
+
   // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
-  const sorobanRpcUrl = '';
-  const contractId = '';
+  const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
+  const contractId = core.getInput('contract_id') || '';
   let contractResolvedAddress: string | undefined;
   if (sorobanRpcUrl && contractId) {
-    const assigneeLogin = resolveAssigneeLoginFromContext();
+    // Precedence: event-derived assignee login → github_username input → skip lookup
+    const assigneeLogin = resolveAssigneeLoginFromContext() ?? (githubUsername || undefined);
     if (assigneeLogin) {
       try {
         if (sorobanFullRoster) {
@@ -755,8 +762,8 @@ async function run(): Promise<void> {
   // Multi-asset trustline validation (Issue #4)
   const assetsJsonRaw = core.getInput("assets_json") || "";
 
-  // Soroban contract registry (Issue #7)
-  const githubUsername = "";
+  // Soroban contract registry (Issue #7) — github_username is now read earlier
+  // (before the contract lookup block) so the fallback is available when needed.
 
   // Plugin runner flag (Issue #198) — default off
   const usePluginRunner = parseBooleanInput(
