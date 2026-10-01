@@ -1,0 +1,136 @@
+# TrustBridge Reusable Workflow — workflow_dispatch smoke test (Issue #554)
+#
+# PURPOSE
+# -------
+# Provides a standalone `workflow_dispatch` trigger for manually smoke-testing
+# the trustbridge-reusable.yml workflow without needing an issues.assigned or
+# pull_request event to fire it.
+#
+# WHEN TO USE
+# -----------
+# - Before merging changes to trustbridge-reusable.yml, run this smoke test to
+#   confirm the workflow wires inputs/outputs correctly end-to-end.
+# - Use `posting_mode: dry-run` (the default) to validate without posting any
+#   issue comments.
+# - Use a known-funded testnet address to exercise the happy path.
+# - Use a known-unfunded address (or empty) to exercise the not-ready path.
+#
+# HOW TO TRIGGER
+# --------------
+# From the GitHub UI:
+#   Actions → "TrustBridge Reusable — smoke test" → Run workflow
+#
+# From the CLI:
+#   gh workflow run reusable-smoke.yml \
+#     -f stellar_address_input=G... \
+#     -f posting_mode=dry-run
+#
+# PLACE THIS FILE AT
+# ------------------
+# .github/workflows/reusable-smoke.yml  (in the trustbridge-action repo itself)
+# or any consumer repo that has a copy of trustbridge-reusable.yml.
+
+name: TrustBridge Reusable — smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      stellar_address_input:
+        description: >-
+          Stellar G-address to validate. Use a funded testnet address to test
+          the happy path, or leave empty to test the missing-address error path.
+        required: false
+        default: ''
+
+      horizon_url:
+        description: 'Horizon API base URL (defaults to public mainnet)'
+        required: false
+        default: 'https://horizon.stellar.org'
+
+      asset_code:
+        description: 'Asset code to check trustline for'
+        required: false
+        default: 'USDC'
+
+      asset_issuer:
+        description: 'Asset issuer Stellar address (G-address)'
+        required: false
+        default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+      min_xlm_reserve:
+        description: 'Minimum native XLM balance required'
+        required: false
+        default: '1.5'
+
+      posting_mode:
+        description: >-
+          Comment posting mode: dry-run (default — no comment posted),
+          post (posts a comment to the issue), or off (skips comment entirely).
+        required: false
+        default: 'dry-run'
+
+      fail_on_missing:
+        description: >-
+          Fail the smoke-test job when checks do not pass (true/false).
+          Set to false when smoke-testing with an address that is not ready.
+        required: false
+        default: 'false'
+
+      debug_mode:
+        description: 'Enable extra action logs for troubleshooting (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  smoke-test:
+    name: Smoke test — trustbridge-reusable.yml
+    runs-on: ubuntu-latest
+
+    # The reusable workflow needs issues:write to post comments when
+    # posting_mode is set to post. For dry-run this is harmless.
+    permissions:
+      issues: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Print smoke-test parameters
+        run: |
+          echo "### TrustBridge Reusable Workflow — smoke test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| stellar_address_input | \`${{ inputs.stellar_address_input || '(empty)' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| horizon_url | \`${{ inputs.horizon_url }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| asset_code | \`${{ inputs.asset_code }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| posting_mode | \`${{ inputs.posting_mode }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| fail_on_missing | \`${{ inputs.fail_on_missing }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run TrustBridge Action (smoke)
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
+        with:
+          stellar_address_input: ${{ inputs.stellar_address_input }}
+          github_token: ${{ github.token }}
+          horizon_url: ${{ inputs.horizon_url }}
+          asset_code: ${{ inputs.asset_code }}
+          asset_issuer: ${{ inputs.asset_issuer }}
+          min_xlm_reserve: ${{ inputs.min_xlm_reserve }}
+          posting_mode: ${{ inputs.posting_mode }}
+          fail_on_missing: ${{ inputs.fail_on_missing }}
+          debug_mode: ${{ inputs.debug_mode }}
+
+      - name: Print outputs
+        if: always()
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "#### Outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Output | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ready | \`${{ steps.trustbridge.outputs.ready }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| reason_code | \`${{ steps.trustbridge.outputs.reason_code }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| account_funded | \`${{ steps.trustbridge.outputs.account_funded }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| trustline_exists | \`${{ steps.trustbridge.outputs.trustline_exists }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| xlm_balance | \`${{ steps.trustbridge.outputs.xlm_balance }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| validated_at | \`${{ steps.trustbridge.outputs.validated_at }}\` |" >> "$GITHUB_STEP_SUMMARY"
