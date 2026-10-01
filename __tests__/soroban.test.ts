@@ -450,3 +450,93 @@ describe('contract fixture compatibility (issue #294)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #549 — github_username fallback for Soroban get_address lookup
+//
+// When the GitHub event context does not provide an assignee login (e.g.
+// workflow_dispatch or cron runs), the caller must pass the username
+// explicitly via the `github_username` action input.  The Soroban layer
+// accepts any non-empty string as the lookup key — it has no concept of
+// "event context" vs "explicit input".  These tests verify that
+// lookupAddressFromContract works correctly when the caller supplies a
+// username that originated from the `github_username` input rather than
+// from an event payload.
+// ---------------------------------------------------------------------------
+
+describe('Issue #549 — github_username fallback: lookupAddressFromContract accepts explicit username', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('resolves address when username comes from github_username input (not event context)', async () => {
+    // Simulate the scenario where no event-context assignee is available and
+    // the caller passes the github_username input value directly.
+    const explicitUsername = 'contributor-without-event-context';
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => makeRpcResponse(VALID_ADDRESS),
+    } as never);
+
+    const result = await lookupAddressFromContract(explicitUsername, baseConfig);
+
+    expect(result.address).toBe(VALID_ADDRESS);
+    expect(result.fromRegistry).toBe(true);
+  });
+
+  it('encodes the github_username value correctly in the XDR lookup key', () => {
+    const githubUsername = 'wave-contributor-42';
+    const xdr = buildGetAddressXdr(VALID_CONTRACT, githubUsername);
+    const decoded = JSON.parse(Buffer.from(xdr, 'base64').toString('utf8'));
+
+    // The username must be passed verbatim as the first arg to get_address
+    expect(decoded.args[0]).toBe(githubUsername);
+    expect(decoded.fn).toBe('get_address');
+  });
+
+  it('returns null when the github_username is not registered in the contract', async () => {
+    const unregisteredUser = 'newcomer-not-in-registry';
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => makeRpcResponse(null),
+    } as never);
+
+    const result = await lookupAddressFromContract(unregisteredUser, baseConfig);
+
+    expect(result.address).toBeNull();
+    expect(result.fromRegistry).toBe(false);
+  });
+
+  it('propagates retryable errors regardless of whether username came from event or input', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+    } as never);
+
+    await expect(
+      lookupAddressFromContract('any-username', baseConfig),
+    ).rejects.toMatchObject({
+      name: 'ContractLookupError',
+      retryable: true,
+    });
+  });
+
+  it('buildGetAddressXdr produces distinct XDR for github_username vs event-derived username', () => {
+    // Demonstrates that the lookup key is username-specific regardless of source
+    const eventDerivedUsername = 'github-assignee-from-event';
+    const explicitGithubUsername = 'github-username-from-input';
+
+    const xdr1 = buildGetAddressXdr(VALID_CONTRACT, eventDerivedUsername);
+    const xdr2 = buildGetAddressXdr(VALID_CONTRACT, explicitGithubUsername);
+
+    expect(xdr1).not.toBe(xdr2);
+
+    const decoded1 = JSON.parse(Buffer.from(xdr1, 'base64').toString('utf8'));
+    const decoded2 = JSON.parse(Buffer.from(xdr2, 'base64').toString('utf8'));
+
+    expect(decoded1.args[0]).toBe(eventDerivedUsername);
+    expect(decoded2.args[0]).toBe(explicitGithubUsername);
+  });
+});
