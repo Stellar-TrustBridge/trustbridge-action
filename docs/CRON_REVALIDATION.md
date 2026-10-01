@@ -127,14 +127,24 @@ Regardless of strategy, always include the **run URL** in the alert so maintaine
 
 ## Dry run
 
-Pass `dry_run: true` via `workflow_dispatch` to log which issues would be revalidated without dispatching any sub-runs or posting any comments:
+Pass `posting_mode: dry-run` on the inner TrustBridge step to log which issues would be revalidated without dispatching any sub-runs or posting any comments. Expose it as a `workflow_dispatch` input on the cron workflow so maintainers can trigger a no-op sweep from the GitHub Actions UI:
 
 ```yaml
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        default: "true"
+      posting_mode:
+        description: 'Set to dry-run to skip comment posting (default: dry-run for safety)'
+        default: "dry-run"
+```
+
+Then wire it through to the TrustBridge step:
+
+```yaml
+- name: Re-validate wallet (inline)
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    posting_mode: ${{ inputs.posting_mode || 'dry-run' }}
 ```
 
 Use this to verify the label filter and address-extraction logic before enabling the schedule.
@@ -196,8 +206,8 @@ Key inputs for digest mode:
 | Input | Recommended value | Reason |
 |-------|-------------------|--------|
 | `fail_on_missing` | `false` | Keep the digest job green |
-| `sticky_comment` | `false` | Per-issue, no comment to post |
-| `comment_mode` | `new` | Per-issue, no comment to post |
+| `posting_mode` | `dry-run` | Per-issue runs collect results only — no comment is posted to individual issues |
+| `comment_mode` | `new` | Threading strategy for the weekly summary comment posted to the tracking issue |
 
 ### Size limits and PII
 
