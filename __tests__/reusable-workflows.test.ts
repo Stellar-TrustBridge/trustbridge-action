@@ -857,3 +857,110 @@ describe('Label-gate pass-through output contract (#466)', () => {
     expect(designContent).toContain("gate_skipped != 'true'");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #554 — workflow_dispatch smoke trigger for trustbridge-reusable.yml
+//
+// Verifies that:
+//  1. The production reusable workflow declares a workflow_dispatch trigger.
+//  2. The dispatch inputs cover the minimum set needed for a smoke test.
+//  3. The smoke-test example workflow exists in docs/examples/.
+//  4. The job step uses posting_mode (not the deprecated comment_mode) for
+//     suppressing comments on dispatch runs.
+// ---------------------------------------------------------------------------
+
+describe('Issue #554 — workflow_dispatch smoke trigger: trustbridge-reusable.yml', () => {
+  const reusableWorkflowPath = path.join(
+    __dirname,
+    '../.github/workflows/trustbridge-reusable.yml',
+  );
+  const smokeExamplePath = path.join(
+    __dirname,
+    '../docs/examples/reusable-smoke.yml',
+  );
+
+  let reusableContent: string;
+  let smokeContent: string;
+
+  beforeAll(() => {
+    reusableContent = fs.readFileSync(reusableWorkflowPath, 'utf8');
+    smokeContent = fs.readFileSync(smokeExamplePath, 'utf8');
+  });
+
+  // ── Production reusable workflow ─────────────────────────────────────────
+
+  it('trustbridge-reusable.yml declares a workflow_dispatch trigger', () => {
+    expect(reusableContent).toContain('workflow_dispatch:');
+  });
+
+  it('trustbridge-reusable.yml retains the workflow_call trigger (no regression)', () => {
+    expect(reusableContent).toContain('workflow_call:');
+  });
+
+  it('workflow_dispatch inputs include stellar_address_input', () => {
+    // The dispatch block must declare stellar_address_input so maintainers can
+    // supply a G-address from the GitHub Actions UI.
+    const dispatchSection = reusableContent.slice(
+      reusableContent.indexOf('workflow_dispatch:'),
+      reusableContent.indexOf('workflow_call:'),
+    );
+    expect(dispatchSection).toContain('stellar_address_input:');
+  });
+
+  it('workflow_dispatch inputs include posting_mode defaulting to dry-run', () => {
+    const dispatchSection = reusableContent.slice(
+      reusableContent.indexOf('workflow_dispatch:'),
+      reusableContent.indexOf('workflow_call:'),
+    );
+    expect(dispatchSection).toContain('posting_mode:');
+    expect(dispatchSection).toContain('dry-run');
+  });
+
+  it('action step passes posting_mode from inputs', () => {
+    // Ensures dispatch smoke runs default to dry-run and never accidentally
+    // post a comment to an unrelated issue.
+    expect(reusableContent).toContain("posting_mode: ${{ inputs.posting_mode");
+  });
+
+  it('action step does NOT reference a non-existent dry_run input', () => {
+    // Regression guard: the old pattern used a non-existent dry_run input.
+    // posting_mode is the correct surface.
+    expect(reusableContent).not.toMatch(/inputs\.dry_run/);
+  });
+
+  // ── Smoke example workflow ────────────────────────────────────────────────
+
+  it('docs/examples/reusable-smoke.yml exists', () => {
+    expect(fs.existsSync(smokeExamplePath)).toBe(true);
+  });
+
+  it('smoke example declares workflow_dispatch trigger', () => {
+    expect(smokeContent).toContain('workflow_dispatch:');
+  });
+
+  it('smoke example includes stellar_address_input dispatch input', () => {
+    expect(smokeContent).toContain('stellar_address_input:');
+  });
+
+  it('smoke example defaults posting_mode to dry-run', () => {
+    expect(smokeContent).toContain("default: 'dry-run'");
+  });
+
+  it('smoke example uses posting_mode (not legacy comment_mode) for suppression', () => {
+    expect(smokeContent).toContain('posting_mode:');
+    expect(smokeContent).not.toMatch(/comment_mode.*dry-run/);
+  });
+
+  it('smoke example wires posting_mode to the action step', () => {
+    expect(smokeContent).toContain('posting_mode: ${{ inputs.posting_mode }}');
+  });
+
+  it('smoke example sets fail_on_missing to false by default (safe for smoke)', () => {
+    expect(smokeContent).toContain("default: 'false'");
+  });
+
+  it('smoke example includes a Print outputs step for run-log visibility', () => {
+    expect(smokeContent).toContain('Print outputs');
+    expect(smokeContent).toContain('steps.trustbridge.outputs.ready');
+  });
+});
