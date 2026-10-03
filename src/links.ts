@@ -168,12 +168,22 @@ export function canonicalHorizonUrl(network: StellarNetwork): string {
     : 'https://horizon-testnet.stellar.org';
 }
 
-export function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork): string {
+export function buildAccountViewerLink(
+  stellarAddress: string,
+  network: StellarNetwork,
+  dashboardUrl?: string,
+): string {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
+    throw new Error('Invalid dashboard URL');
+  }
   const params = new URLSearchParams({ network, account: stellarAddress });
   return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
 }
 
-export function buildChangeTrustLink(network: StellarNetwork): string {
+export function buildChangeTrustLink(network: StellarNetwork, dashboardUrl?: string): string {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
+    throw new Error('Invalid dashboard URL');
+  }
   const params = new URLSearchParams({ network });
   return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
 }
