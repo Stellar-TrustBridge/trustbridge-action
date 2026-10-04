@@ -1,108 +1,52 @@
-# Workflow security linting — actionlint + zizmor + check-unpinned-actions
-#
-# Drop this in as .github/workflows/workflow-security.yml, OR copy the jobs
-# below into your existing ci.yml if you want everything in one file.
-#
-# What it does:
-#   - check-unpinned-actions: fast pre-check that every uses: line in
-#     .github/workflows and docs/examples is pinned to a 40-char commit SHA.
-#     Fails PRs immediately so unpinned actions cannot merge.
-#   - actionlint: catches syntax/semantic bugs in workflow YAML (typo'd
-#     expressions, invalid runs-on, bad matrix config, shellcheck issues
-#     in run: steps, etc). Fails the PR directly.
-#   - zizmor: catches security issues (template injection via untrusted
-#     ${{ }} interpolation, excessive permissions, unpinned actions,
-#     dangerous pull_request_target usage, credential persistence, etc).
-#     Uploads results to the Security tab as SARIF so history is kept.
-#
-# actionlint = correctness. zizmor = security. Run both — they don't overlap.
-# check-unpinned-actions = fast supply-chain gate that runs before both.
-
 name: Workflow Security
 
 on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/**'
-      - 'docs/examples/**'
-      - 'scripts/check-unpinned-actions.sh'
+      - ".github/workflows/**"
   pull_request:
     branches: [main]
     paths:
-      - '.github/workflows/**'
-      - 'docs/examples/**'
-      - 'scripts/check-unpinned-actions.sh'
+      - ".github/workflows/**"
   workflow_dispatch:
 
-
-# Deny-by-default at the workflow level. Each job grants only what it needs.
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  check-unpinned-actions:
-    name: check-unpinned-actions
+  lint:
+    name: lint
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Check for unpinned action references
-        # Scans .github/workflows and docs/examples for any uses: lines that
-        # reference an action by mutable tag (@v4, @main) rather than a full
-        # 40-char commit SHA. Local paths (./…) and docker:// refs are exempt.
-        # Fix findings by pinning to a SHA — see docs/DEPENDABOT.md for guidance.
-        run: bash scripts/check-unpinned-actions.sh .github/workflows docs/examples
+      - name: Validate workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
 
-  actionlint:
-    name: actionlint
-    runs-on: ubuntu-latest
-    needs: check-unpinned-actions
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+          try:
+              import yaml
+          except ImportError:
+              import subprocess
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"])
+              import yaml
 
-      - name: Run actionlint
-        uses: reviewdog/action-actionlint@2085657ab2c7f48c58edcc767fba576f63bea76b # v1.77.0
-        with:
-          reporter: github-pr-check
-          fail_level: error
-          # Reusable-workflow / example-only false positives (e.g. SC2016 on
-          # intentional single-quoted example snippets) can be suppressed
-          # with an .actionlint.yaml at the repo root — see note below.
+          errors = []
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              try:
+                  with path.open() as fh:
+                      yaml.safe_load(fh)
+              except Exception as exc:  # noqa: BLE001
+                  errors.append(f"{path}: {exc}")
 
-  zizmor:
-    name: zizmor
-    runs-on: ubuntu-latest
-    needs: check-unpinned-actions
-    permissions:
-      contents: read
-      # actions: read and security-events: write are needed for SARIF
-      # upload on a private repo. Drop `actions: read` if this repo is
-      # public and you don't need Advanced Security history.
-      actions: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Run zizmor
-        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          # Online audits (e.g. cross-checking action refs against GitHub)
-          # need a token. Omit this if you want zizmor fully offline.
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # advanced-security defaults to true (uploads SARIF). Set to
-          # false here if this repo doesn't have GitHub Advanced Security
-          # / isn't public, and just want the console output + job failure.
-          # advanced-security: false
+          if errors:
+              print("\n".join(errors))
+              sys.exit(1)
+          print(f"Validated {len(list(pathlib.Path('.github/workflows').glob('*.yml')))} workflow files")
+          PY

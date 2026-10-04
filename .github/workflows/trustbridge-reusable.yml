@@ -4,52 +4,11 @@
 # Designed to be invoked via `workflow_call` and configured as a required status
 # check in branch protection / rulesets.
 #
-# workflow_dispatch support (Issue #554):
-# Maintainers can manually trigger a smoke-test of this reusable workflow
-# from the GitHub Actions UI or via `gh workflow run`. Inputs map 1-to-1
-# with the workflow_call inputs so no extra configuration is required.
-# The dispatch run uses `posting_mode: dry-run` by default so no issue
-# comment is posted — only validation outputs are printed to the run log.
-#
 # See docs/USAGE.md for setup instructions and branch protection guidance.
 
 name: TrustBridge Reusable Check
 
 on:
-  workflow_dispatch:
-    inputs:
-      stellar_address_input:
-        description: 'Stellar G-address to validate in the smoke test'
-        required: false
-        default: ''
-      assignee_address_map:
-        description: 'JSON map or path mapping GitHub usernames to Stellar G-addresses (optional)'
-        required: false
-        default: ''
-      horizon_url:
-        description: 'Stellar Horizon API base URL'
-        required: false
-        default: 'https://horizon.stellar.org'
-      asset_code:
-        description: 'Asset code to check trustline for'
-        required: false
-        default: 'USDC'
-      asset_issuer:
-        description: 'Asset issuer Stellar address (G-address)'
-        required: false
-        default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
-      min_xlm_reserve:
-        description: 'Minimum native XLM balance required'
-        required: false
-        default: '1.5'
-      posting_mode:
-        description: 'Comment posting mode: post, dry-run (default), or off'
-        required: false
-        default: 'dry-run'
-      debug_mode:
-        description: 'Enable extra action logs for troubleshooting (true/false)'
-        required: false
-        default: 'false'
   workflow_call:
     inputs:
       stellar_address_input:
@@ -272,20 +231,6 @@ jobs:
       badge_markdown: ${{ steps.trustbridge.outputs.badge_markdown }}
       badge_url: ${{ steps.trustbridge.outputs.badge_url }}
     steps:
-      # Print a summary of which trigger fired so smoke-test runs are easy to
-      # distinguish in the Actions log from production workflow_call runs.
-      - name: Smoke-test preamble (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "### TrustBridge Reusable Workflow — smoke test" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| stellar_address_input | \`${{ inputs.stellar_address_input || '(empty)' }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| horizon_url | \`${{ inputs.horizon_url || 'https://horizon.stellar.org' }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| asset_code | \`${{ inputs.asset_code || 'USDC' }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| posting_mode | \`${{ inputs.posting_mode || 'dry-run' }}\` |" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Run TrustBridge Action
         id: trustbridge
         uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
@@ -300,14 +245,10 @@ jobs:
           asset_issuer: ${{ inputs.asset_issuer || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
           min_xlm_reserve: ${{ inputs.min_xlm_reserve || '1.5' }}
           min_trustline_limit: ${{ inputs.min_trustline_limit }}
-          # posting_mode: workflow_dispatch exposes this directly; workflow_call
-          # callers use the inherited inputs.posting_mode (maps to comment_mode
-          # legacy slot) — default dry-run for dispatch smoke runs.
-          posting_mode: ${{ inputs.posting_mode || 'dry-run' }}
+          comment_mode: ${{ inputs.comment_mode || 'dry-run' }}
           fail_on_missing: ${{ inputs.fail_on_missing }}
           debug_mode: ${{ inputs.debug_mode || 'false' }}
           sticky_comment: ${{ inputs.sticky_comment }}
-          comment_mode: ${{ inputs.comment_mode }}
           wait_until_funded: ${{ inputs.wait_until_funded }}
           wait_until_funded_timeout_ms: ${{ inputs.wait_until_funded_timeout_ms }}
           wait_until_funded_interval_ms: ${{ inputs.wait_until_funded_interval_ms }}
@@ -329,17 +270,3 @@ jobs:
           webhook_auth_mode: ${{ inputs.webhook_auth_mode }}
           webhook_oidc_audience: ${{ inputs.webhook_oidc_audience }}
 
-      # Print outputs to the job summary so smoke-test runs are self-contained.
-      - name: Smoke-test result summary (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "#### Outputs" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Output | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| ready | \`${{ steps.trustbridge.outputs.ready }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| reason_code | \`${{ steps.trustbridge.outputs.reason_code }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| account_funded | \`${{ steps.trustbridge.outputs.account_funded }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| trustline_exists | \`${{ steps.trustbridge.outputs.trustline_exists }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| xlm_balance | \`${{ steps.trustbridge.outputs.xlm_balance }}\` |" >> "$GITHUB_STEP_SUMMARY"
