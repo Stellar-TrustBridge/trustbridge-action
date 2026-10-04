@@ -233,7 +233,7 @@ jobs:
     steps:
       - name: Run TrustBridge Action
         id: trustbridge
-        uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
+        uses: ./
         with:
           stellar_address_input: ${{ inputs.stellar_address_input }}
           assignee_address_map: ${{ inputs.assignee_address_map }}
