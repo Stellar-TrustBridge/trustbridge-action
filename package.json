@@ -44,7 +44,7 @@
     "@actions/core": "^3.0.1",
     "@actions/github": "^6.0.1",
     "https-proxy-agent": "^7.0.6",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "@stryker-mutator/core": "^8.7.1",
