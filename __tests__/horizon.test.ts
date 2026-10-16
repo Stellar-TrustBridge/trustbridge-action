@@ -1495,3 +1495,209 @@ describe('applyReadyLabels pagination (Issue #694)', () => {
     expect(addLabels).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #558 — Hardened Horizon mock fixtures: clawback and auth_required
+// ---------------------------------------------------------------------------
+describe('HorizonBalanceCredit: clawback and auth_required fixture assertions', () => {
+  it('accepts a credit balance with is_clawback_enabled=true', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_clawback_enabled: true,
+    };
+    expect(balance.is_clawback_enabled).toBe(true);
+    expect(isCreditBalance(balance)).toBe(true);
+  });
+
+  it('accepts a credit balance with is_clawback_enabled=false (issuer opted out)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_clawback_enabled: false,
+    };
+    expect(balance.is_clawback_enabled).toBe(false);
+  });
+
+  it('accepts a credit balance with is_authorized=true (issuer has AUTH_REQUIRED)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: true,
+      is_authorized_to_maintain_liabilities: true,
+    };
+    expect(balance.is_authorized).toBe(true);
+    expect(balance.is_authorized_to_maintain_liabilities).toBe(true);
+  });
+
+  it('accepts a credit balance with is_authorized=false (frozen / not yet authorized)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '0.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: false,
+      is_authorized_to_maintain_liabilities: false,
+    };
+    expect(balance.is_authorized).toBe(false);
+  });
+
+  it('accepts a credit balance with both clawback and auth flags set', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '1.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: true,
+      is_authorized_to_maintain_liabilities: true,
+      is_clawback_enabled: true,
+    };
+    expect(balance.is_authorized).toBe(true);
+    expect(balance.is_clawback_enabled).toBe(true);
+  });
+
+  it('omits optional auth/clawback fields gracefully (backward-compatible fixture)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      // is_authorized, is_clawback_enabled intentionally absent
+    };
+    expect(balance.is_authorized).toBeUndefined();
+    expect(balance.is_clawback_enabled).toBeUndefined();
+    expect(isCreditBalance(balance)).toBe(true);
+  });
+});
+
+describe('HorizonAccount: account-level flags fixture assertions', () => {
+  it('accepts an account with auth_required=true in flags', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_immutable: false,
+        auth_clawback_enabled: false,
+      },
+    };
+    expect(account.flags?.auth_required).toBe(true);
+    expect(account.flags?.auth_revocable).toBe(true);
+    expect(account.flags?.auth_immutable).toBe(false);
+    expect(account.flags?.auth_clawback_enabled).toBe(false);
+  });
+
+  it('accepts an account with auth_clawback_enabled=true in flags', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: true,
+      },
+    };
+    expect(account.flags?.auth_clawback_enabled).toBe(true);
+  });
+
+  it('accepts an account without flags field (older Horizon snapshot)', () => {
+    const account = makeAccount();
+    expect(account.flags).toBeUndefined();
+    // hasTrustline should still work regardless
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
+  });
+
+  it('hasTrustline returns true even when trustline has is_clawback_enabled set', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '5.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: TEST_ADDRESS_2,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+          is_clawback_enabled: true,
+          is_authorized: true,
+          is_authorized_to_maintain_liabilities: true,
+        },
+      ],
+    };
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
+  });
+
+  it('fetchAccount round-trips a fixture containing clawback and auth flags', async () => {
+    const accountWithFlags: import('../src/horizon').HorizonAccount = {
+      id: TEST_ADDRESS,
+      account_id: TEST_ADDRESS,
+      sequence: '1',
+      subentry_count: 2,
+      num_sponsoring: 0,
+      num_sponsored: 0,
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: true,
+      },
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '5.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: TEST_ADDRESS_2,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+          is_authorized: true,
+          is_authorized_to_maintain_liabilities: true,
+          is_clawback_enabled: true,
+        },
+      ],
+    };
+    const mock = makeMockFetch(async () => makeMockResponse(200, accountWithFlags));
+
+    const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+      maxRetries: 0,
+      cacheTtlMs: 0,
+      fetchFn: mock,
+    });
+
+    expect(result.flags?.auth_required).toBe(true);
+    expect(result.flags?.auth_clawback_enabled).toBe(true);
+    const usdcBalance = result.balances.find(
+      (b) => isCreditBalance(b) && b.asset_code === 'USDC',
+    ) as import('../src/horizon').HorizonBalanceCredit | undefined;
+    expect(usdcBalance).toBeDefined();
+    expect(usdcBalance?.is_clawback_enabled).toBe(true);
+    expect(usdcBalance?.is_authorized).toBe(true);
+  });
+});

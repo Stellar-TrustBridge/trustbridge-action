@@ -1,64 +1,102 @@
 /**
- * SARIF (Static Analysis Results Interchange Format) 2.1.0 output generation.
+ * SARIF (Static Analysis Results Interchange Format) upload support.
  *
- * Emits TrustBridge validation results as SARIF for integration with GitHub
- * Advanced Security (GHAS) code scanning so wallet-check failures appear
- * alongside other security findings.
+ * When `sarif_enabled` is true, TrustBridge serialises the Stellar account
+ * validation result as a minimal SARIF 2.1.0 document and uploads it to
+ * GitHub Code Scanning via the REST API.  This lets security dashboards and
+ * release automation consume TrustBridge outcomes alongside other static
+ * analysis reports.
  *
- * SARIF reference: https://sarifweb.azurewebsites.net/
+ * The upload is best-effort: a failure in this module emits a workflow warning
+ * rather than failing the run so that comment posting and action outputs are
+ * not blocked.
  */
-import { ValidationResult, CheckResultItem } from './checks';
-/**
- * SARIF 2.1.0 rule definition for a TrustBridge check.
- */
-export interface SarifRule {
-    id: string;
-    shortDescription: {
-        text: string;
-    };
-    fullDescription?: {
-        text: string;
-    };
-    helpUri?: string;
-    properties?: {
-        tags?: string[];
-        precision?: string;
+export declare const SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+export declare const SARIF_VERSION = "2.1.0";
+export declare const TOOL_NAME = "trustbridge-action";
+export declare const TOOL_VERSION = "1.0.0";
+export type SarifLevel = 'error' | 'warning' | 'note' | 'none';
+export interface SarifMessage {
+    text: string;
+}
+export interface SarifResult {
+    ruleId: string;
+    level: SarifLevel;
+    message: SarifMessage;
+    locations?: SarifLocation[];
+}
+export interface SarifLocation {
+    physicalLocation: {
+        artifactLocation: {
+            uri: string;
+        };
     };
 }
+export interface SarifRun {
+    tool: {
+        driver: {
+            name: string;
+            version: string;
+            informationUri: string;
+            rules: SarifRule[];
+        };
+    };
+    results: SarifResult[];
+}
+export interface SarifRule {
+    id: string;
+    name: string;
+    shortDescription: SarifMessage;
+    helpUri?: string;
+}
+export interface SarifDocument {
+    $schema: string;
+    version: string;
+    runs: SarifRun[];
+}
+export interface TrustBridgeCheckOutcome {
+    /** Horizon URL used for this run. */
+    horizonUrl: string;
+    /** Stellar address that was validated. */
+    stellarAddress: string;
+    /** Whether the account exists on-chain. */
+    accountFunded: boolean;
+    /** Whether the configured asset trustline is present. */
+    trustlineExists: boolean;
+    /** Whether the XLM reserve requirement is met. */
+    xlmReserveMet: boolean;
+    /** Asset code being checked (e.g. "USDC"). */
+    assetCode: string;
+}
 /**
- * SARIF result level mapping from TrustBridge check outcome.
+ * Build a minimal SARIF 2.1.0 document from a TrustBridge check outcome.
+ *
+ * Three rules are emitted, one per validation gate:
+ *  - TB001  account-funded
+ *  - TB002  trustline-exists
+ *  - TB003  xlm-reserve-met
+ *
+ * Each failing gate becomes a SARIF result at level "error"; passing gates
+ * are emitted at level "none" so the run is always present in the report.
  */
-export type SarifLevel = 'note' | 'warning' | 'error';
+export declare function buildSarifDocument(outcome: TrustBridgeCheckOutcome): SarifDocument;
 /**
- * Build SARIF rule definitions from TrustBridge checks.
- * Each check becomes a rule with a stable ID, description, and help URI.
+ * Serialise a SARIF document to a compact JSON string suitable for upload.
  */
-export declare function buildSarifRules(): SarifRule[];
+export declare function serialiseSarif(doc: SarifDocument): string;
 /**
- * Map a TrustBridge check result to a SARIF result level.
+ * Upload function signature expected by `uploadSarif`.
+ * Using a callback makes the upload side-effect injectable for tests.
  */
-export declare function checkToSarifLevel(check: CheckResultItem): SarifLevel;
+export type SarifUploadFn = (sarifJson: string, horizonUrl: string) => Promise<void>;
 /**
- * Map a TrustBridge check label to a SARIF rule ID.
+ * Build and upload the SARIF report for a TrustBridge check outcome.
+ *
+ * `uploadFn` is called with the serialised SARIF JSON.  In production it
+ * would call the GitHub Code Scanning upload API; in tests it is replaced
+ * with a mock so we can assert on the document structure without network calls.
+ *
+ * @throws {Error} Re-throws if `uploadFn` rejects — callers should catch and
+ *   emit a `core.warning` rather than propagating the failure.
  */
-export declare function checkLabelToRuleId(label: string): string;
-/**
- * Build a single SARIF result from a TrustBridge check.
- */
-export declare function checkToSarifResult(check: CheckResultItem, assetCode: string, horizonUrl: string, stellarAddress: string): Record<string, unknown>;
-/**
- * Build a complete SARIF 2.1.0 output from a TrustBridge ValidationResult.
- * Returns a valid SARIF object ready for serialization to JSON and upload
- * to GitHub Advanced Security via the upload-sarif action.
- */
-export declare function buildSarifOutput(result: ValidationResult, assetCode: string, horizonUrl: string, stellarAddress: string, version?: string): Record<string, unknown>;
-/**
- * Serialize SARIF output to a JSON string.
- * Safe for writing to a file or environment variable.
- */
-export declare function serializeSarif(sarif: Record<string, unknown>): string;
-/**
- * Validate that a SARIF output matches the 2.1.0 schema essentials.
- * Returns true if the structure is valid, false otherwise.
- */
-export declare function validateSarifSchema(sarif: unknown): boolean;
+export declare function uploadSarifReport(outcome: TrustBridgeCheckOutcome, uploadFn: SarifUploadFn): Promise<void>;

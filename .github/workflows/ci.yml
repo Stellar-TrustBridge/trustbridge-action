@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,6 +28,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Test
         run: npm test

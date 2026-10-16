@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "lint": "eslint src __tests__ --ext .ts",

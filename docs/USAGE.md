@@ -2212,6 +2212,116 @@ Key recommendations for cron runs:
 
 ---
 
+## OIDC federation (keyless Horizon authentication)
+
+Some Horizon providers and enterprise deployments accept a GitHub Actions
+[OIDC token](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect)
+in place of a static API key. This lets workflows authenticate with a
+provider-issued short-lived token without storing long-lived secrets.
+
+### How it works
+
+1. GitHub mints a JWT for the job that contains the repository, branch, and
+   workflow claims.
+2. The Horizon provider (or an API gateway in front of it) validates the JWT
+   against GitHub's OIDC discovery document
+   (`https://token.actions.githubusercontent.com/.well-known/openid-configuration`).
+3. The provider exchanges the JWT for a scoped, time-limited credential that
+   grants read access to the Horizon `/accounts` endpoint.
+4. TrustBridge sends the credential in the `Authorization` header of each
+   Horizon request.
+
+### Required workflow permissions
+
+Add `id-token: write` alongside the standard `issues: write` permission so
+GitHub Actions can mint the OIDC token for the job:
+
+```yaml
+permissions:
+  issues: write        # post issue comments
+  contents: read       # standard for checkout-less actions
+  id-token: write      # mint OIDC token for Horizon provider authentication
+```
+
+### Copy-paste example
+
+```yaml
+name: TrustBridge — OIDC Horizon auth
+
+on:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate'
+        required: true
+
+jobs:
+  verify-stellar-account:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      id-token: write   # required to request the JWT from GitHub's OIDC provider
+
+    steps:
+      # Step 1: obtain the OIDC token and exchange it for a provider credential.
+      # The exact exchange mechanism depends on your Horizon provider — replace
+      # the script below with your provider's token-exchange command or action.
+      - name: Exchange OIDC token for Horizon credential
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Request an OIDC token scoped to your Horizon provider's audience.
+            // Replace 'https://horizon-provider.example.com' with the actual
+            // audience string registered with your provider.
+            const token = await core.getIDToken('https://horizon-provider.example.com');
+            core.setSecret(token);
+            core.setOutput('token', token);
+
+      # Step 2: Resolve the Stellar address from the event.
+      - name: Resolve Stellar address
+        id: address
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "address=${{ github.event.inputs.stellar_address }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "address=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Step 3: Run TrustBridge with the OIDC-issued Horizon endpoint.
+      # The provider validates the bearer token and forwards the Horizon request.
+      - name: TrustBridge check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.address.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Point at the OIDC-protected Horizon gateway for your provider.
+          # The provider must accept 'Authorization: Bearer <oidc_token>' and
+          # proxy requests to a real Stellar Horizon node.
+          horizon_url: https://horizon-provider.example.com
+          # Use the fallback public Horizon in case the OIDC gateway is unavailable.
+          horizon_url_fallback: https://horizon.stellar.org
+          fail_on_missing: true
+```
+
+### Input reference for OIDC setups
+
+| Input | Notes |
+|-------|-------|
+| `horizon_url` | Set to your OIDC-protected Horizon gateway URL. |
+| `horizon_url_fallback` | Optional public Horizon fallback if the gateway is unreachable. |
+| `fail_on_missing` | Keep `true` in production to block merges on unfunded accounts. |
+| `debug_mode` | Set `true` to log Horizon request details (addresses are redacted). |
+
+> **Security note:** The OIDC token is scoped to the audience you specify and
+> expires after a few minutes. Never log the raw token value — use
+> `core.setSecret(token)` to mask it in Actions log output, as shown above.
+
+---
+
 ## Pinning versions
 
 | Reference  | When to use                                   |

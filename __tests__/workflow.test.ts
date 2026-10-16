@@ -17,9 +17,27 @@ describe('.github/workflows/ci.yml', () => {
     expect(content).toContain('actions/setup-node@');
     expect(content).toContain('npm ci');
     expect(content).toContain('npm run lint');
+    expect(content).toContain('npm run typecheck');
     expect(content).toContain('npm test');
     expect(content).toContain('npm run build');
     expect(content).toContain('dist/index.js');
+  });
+
+  it('uses the check job name', () => {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+    expect(content).toContain('check:');
+  });
+
+  it('does not contain || true shell fallbacks on typecheck or test steps', () => {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+    // CI must propagate failures — no silent pass-through on typecheck or tests
+    const lines = content.split('\n');
+    const typecheckLine = lines.find((l) => l.includes('npm run typecheck'));
+    const testLine = lines.find((l) => l.trim() === 'run: npm test');
+    expect(typecheckLine).toBeDefined();
+    expect(typecheckLine).not.toContain('|| true');
+    expect(testLine).toBeDefined();
+    expect(testLine).not.toContain('|| true');
   });
 
   it('includes comment golden snapshots and coverage verification steps', () => {

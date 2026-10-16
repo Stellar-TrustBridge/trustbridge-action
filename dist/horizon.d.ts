@@ -12,6 +12,20 @@ export interface HorizonBalanceCredit {
     asset_issuer: string;
     buying_liabilities: string;
     selling_liabilities: string;
+    /** Maximum balance this trustline can hold (optional). */
+    limit?: string;
+    /**
+     * Present only when the issuer has AUTHORIZATION_REQUIRED set. Absent
+     * means the issuer does not require per-account authorization.
+     */
+    is_authorized?: boolean;
+    is_authorized_to_maintain_liabilities?: boolean;
+    /**
+     * Per-trustline clawback flag (Horizon protocol 17+). Reflects the
+     * issuer's AUTH_CLAWBACK_ENABLED setting unless overridden on this
+     * specific trustline.
+     */
+    is_clawback_enabled?: boolean;
 }
 export type HorizonBalance = HorizonBalanceNative | HorizonBalanceCredit;
 export interface HorizonAccount {
@@ -22,6 +36,16 @@ export interface HorizonAccount {
     balances: HorizonBalance[];
     num_sponsoring: number;
     num_sponsored: number;
+    /**
+     * Bitmask of account flags set by the issuer (AUTH_REQUIRED, AUTH_REVOCABLE, etc.).
+     * Omitted by older Horizon snapshots — treat as absent when not present.
+     */
+    flags?: {
+        auth_required?: boolean;
+        auth_revocable?: boolean;
+        auth_immutable?: boolean;
+        auth_clawback_enabled?: boolean;
+    };
 }
 export interface HorizonErrorResponse {
     type?: string;

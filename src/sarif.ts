@@ -1,302 +1,196 @@
 /**
- * SARIF (Static Analysis Results Interchange Format) 2.1.0 output generation.
+ * SARIF (Static Analysis Results Interchange Format) upload support.
  *
- * Emits TrustBridge validation results as SARIF for integration with GitHub
- * Advanced Security (GHAS) code scanning so wallet-check failures appear
- * alongside other security findings.
+ * When `sarif_enabled` is true, TrustBridge serialises the Stellar account
+ * validation result as a minimal SARIF 2.1.0 document and uploads it to
+ * GitHub Code Scanning via the REST API.  This lets security dashboards and
+ * release automation consume TrustBridge outcomes alongside other static
+ * analysis reports.
  *
- * SARIF reference: https://sarifweb.azurewebsites.net/
+ * The upload is best-effort: a failure in this module emits a workflow warning
+ * rather than failing the run so that comment posting and action outputs are
+ * not blocked.
  */
 
-import { ValidationResult, CheckResultItem } from './checks';
+export const SARIF_SCHEMA =
+  'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json';
+export const SARIF_VERSION = '2.1.0';
+export const TOOL_NAME = 'trustbridge-action';
+export const TOOL_VERSION = '1.0.0';
 
-/**
- * SARIF 2.1.0 rule definition for a TrustBridge check.
- */
-export interface SarifRule {
-  id: string;
-  shortDescription: {
-    text: string;
-  };
-  fullDescription?: {
-    text: string;
-  };
-  helpUri?: string;
-  properties?: {
-    tags?: string[];
-    precision?: string;
+export type SarifLevel = 'error' | 'warning' | 'note' | 'none';
+
+export interface SarifMessage {
+  text: string;
+}
+
+export interface SarifResult {
+  ruleId: string;
+  level: SarifLevel;
+  message: SarifMessage;
+  locations?: SarifLocation[];
+}
+
+export interface SarifLocation {
+  physicalLocation: {
+    artifactLocation: {
+      uri: string;
+    };
   };
 }
 
-/**
- * SARIF result level mapping from TrustBridge check outcome.
- */
-export type SarifLevel = 'note' | 'warning' | 'error';
+export interface SarifRun {
+  tool: {
+    driver: {
+      name: string;
+      version: string;
+      informationUri: string;
+      rules: SarifRule[];
+    };
+  };
+  results: SarifResult[];
+}
 
-/** Rule ID for the generic "account has the required trustline" finding. */
-export const TRUSTLINE_RULE_ID = 'TB002';
-/** Rule ID for "trustline exists but the issuer has not authorized it". */
-export const UNAUTHORIZED_TRUSTLINE_RULE_ID = 'TB006';
+export interface SarifRule {
+  id: string;
+  name: string;
+  shortDescription: SarifMessage;
+  helpUri?: string;
+}
+
+export interface SarifDocument {
+  $schema: string;
+  version: string;
+  runs: SarifRun[];
+}
+
+export interface TrustBridgeCheckOutcome {
+  /** Horizon URL used for this run. */
+  horizonUrl: string;
+  /** Stellar address that was validated. */
+  stellarAddress: string;
+  /** Whether the account exists on-chain. */
+  accountFunded: boolean;
+  /** Whether the configured asset trustline is present. */
+  trustlineExists: boolean;
+  /** Whether the XLM reserve requirement is met. */
+  xlmReserveMet: boolean;
+  /** Asset code being checked (e.g. "USDC"). */
+  assetCode: string;
+}
 
 /**
- * Build SARIF rule definitions from TrustBridge checks.
- * Each check becomes a rule with a stable ID, description, and help URI.
+ * Build a minimal SARIF 2.1.0 document from a TrustBridge check outcome.
+ *
+ * Three rules are emitted, one per validation gate:
+ *  - TB001  account-funded
+ *  - TB002  trustline-exists
+ *  - TB003  xlm-reserve-met
+ *
+ * Each failing gate becomes a SARIF result at level "error"; passing gates
+ * are emitted at level "none" so the run is always present in the report.
  */
-export function buildSarifRules(): SarifRule[] {
-  return [
+export function buildSarifDocument(outcome: TrustBridgeCheckOutcome): SarifDocument {
+  const rules: SarifRule[] = [
     {
       id: 'TB001',
-      shortDescription: {
-        text: 'Stellar account is funded and active on the network',
-      },
-      fullDescription: {
-        text: 'Account must exist and be activated on the Stellar network before it can hold trustlines and balances.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/accounts',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-        precision: 'high',
-      },
+      name: 'AccountFunded',
+      shortDescription: { text: 'Stellar account must be funded and activated on-chain.' },
+      helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/accounts',
     },
     {
       id: 'TB002',
+      name: 'TrustlineExists',
       shortDescription: {
-        text: 'Account has a trustline for the required asset',
+        text: `Account must hold a trustline for the configured asset (${outcome.assetCode}).`,
       },
-      fullDescription: {
-        text: 'The account must explicitly trust the asset issuer before it can receive the asset.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/account-data#trustlines',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-        precision: 'high',
-      },
+      helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/assets',
     },
     {
       id: 'TB003',
-      shortDescription: {
-        text: 'Account meets minimum XLM reserve requirement',
-      },
-      fullDescription: {
-        text: 'The account must maintain a minimum XLM balance to keep the account open and pay transaction fees.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/fees-and-metering#reserve',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-        precision: 'high',
-      },
-    },
-    {
-      id: 'TB004',
-      shortDescription: {
-        text: 'Horizon API is accessible and responding',
-      },
-      fullDescription: {
-        text: 'TrustBridge must be able to reach the configured Horizon API endpoint to verify account state.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/data/apis/horizon',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'infrastructure'],
-        precision: 'high',
-      },
-    },
-    {
-      id: 'TB005',
-      shortDescription: {
-        text: 'Asset trustline does not have clawback enabled',
-      },
-      fullDescription: {
-        text: 'The issuer can reclaim clawback-enabled assets at any time. Emitted when clawback_strict_mode blocks a clawback-enabled trustline.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'wallet-readiness', 'clawback'],
-        precision: 'high',
-      },
-    },
-    {
-      id: 'TB006',
-      shortDescription: {
-        text: 'Asset trustline is authorized by the issuer',
-      },
-      fullDescription: {
-        text: 'The issuer requires AUTHORIZATION_REQUIRED and has not authorized this trustline, so transfers of the asset fail. Emitted when unauthorized_trustline_policy: fail blocks a trustline that exists but is not authorized.',
-      },
-      helpUri: 'https://developers.stellar.org/docs/tokens/control-asset-access#authorization-required-0x1',
-      properties: {
-        tags: ['trustbridge', 'stellar', 'wallet-readiness', 'authorization'],
-        precision: 'high',
-      },
+      name: 'XlmReserveMet',
+      shortDescription: { text: 'Account native XLM balance must meet the minimum reserve.' },
+      helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/lumens',
     },
   ];
-}
 
-/**
- * Map a TrustBridge check result to a SARIF result level.
- */
-export function checkToSarifLevel(check: CheckResultItem): SarifLevel {
-  return check.passed ? 'note' : 'error';
-}
+  const checks: Array<{ ruleId: string; passed: boolean; message: string }> = [
+    {
+      ruleId: 'TB001',
+      passed: outcome.accountFunded,
+      message: outcome.accountFunded
+        ? `Account ${outcome.stellarAddress} is funded and active.`
+        : `Account ${outcome.stellarAddress} was not found on Horizon — it may not be funded yet.`,
+    },
+    {
+      ruleId: 'TB002',
+      passed: outcome.trustlineExists,
+      message: outcome.trustlineExists
+        ? `Trustline for ${outcome.assetCode} is present.`
+        : `Trustline for ${outcome.assetCode} is missing.`,
+    },
+    {
+      ruleId: 'TB003',
+      passed: outcome.xlmReserveMet,
+      message: outcome.xlmReserveMet
+        ? 'XLM balance meets the minimum reserve requirement.'
+        : 'XLM balance is below the minimum reserve requirement.',
+    },
+  ];
 
-/**
- * Map a TrustBridge check label to a SARIF rule ID.
- */
-export function checkLabelToRuleId(label: string): string {
-  if (label.includes('Account funded')) return 'TB001';
-  // Checked before 'trustline' so clawback labels never fall into TB002.
-  if (label.includes('clawback')) return 'TB005';
-  if (label.includes('trustline')) return 'TB002';
-  if (label.includes('XLM reserve')) return 'TB003';
-  if (label.includes('Horizon availability')) return 'TB004';
-  return 'TB000'; // Unknown
-}
-
-/**
- * Resolve the SARIF severity for an unauthorized trustline according to the
- * effective `unauthorized_trustline_policy` (Issue #729).
- *
- * - `fail` — blocking policy failure: reported as an `error` under the
- *   dedicated {@link UNAUTHORIZED_TRUSTLINE_RULE_ID} rule.
- * - `warn` (default) — informational only: the trustline check passes, so the
- *   finding stays at `note` severity under the generic trustline rule.
- * - `ignore` — the policy asks for no finding at all, so `undefined` means
- *   "omit the authorization result".
- */
-export function unauthorizedTrustlineSarifSeverity(
-  result: Pick<ValidationResult, 'trustlineAuthorized' | 'unauthorizedTrustlinePolicy'>,
-): { level: SarifLevel; ruleId: string } | undefined {
-  if (result.trustlineAuthorized !== false) return undefined;
-  const policy = result.unauthorizedTrustlinePolicy ?? 'warn';
-  if (policy === 'ignore') return undefined;
-  if (policy === 'fail') {
-    return { level: 'error', ruleId: UNAUTHORIZED_TRUSTLINE_RULE_ID };
-  }
-  return { level: 'note', ruleId: TRUSTLINE_RULE_ID };
-}
-
-/**
- * Build a single SARIF result from a TrustBridge check.
- */
-export function checkToSarifResult(
-  check: CheckResultItem,
-  assetCode: string,
-  horizonUrl: string,
-  stellarAddress: string,
-  severityOverride?: { level: SarifLevel; ruleId: string },
-): Record<string, unknown> {
-  const ruleId = severityOverride?.ruleId ?? checkLabelToRuleId(check.label);
-  const level = severityOverride?.level ?? checkToSarifLevel(check);
+  const results: SarifResult[] = checks.map(({ ruleId, passed, message }) => ({
+    ruleId,
+    level: passed ? 'none' : 'error',
+    message: { text: message },
+  }));
 
   return {
-    ruleId,
-    level,
-    message: {
-      text: check.detail,
-    },
-    locations: [
-      {
-        physicalLocation: {
-          artifactLocation: {
-            uri: horizonUrl,
-            description: {
-              text: `Stellar Horizon endpoint for account ${stellarAddress}`,
-            },
-          },
-        },
-      },
-    ],
-    properties: {
-      assetCode,
-      checkLabel: check.label,
-      passed: check.passed,
-    },
-  };
-}
-
-/**
- * Build a complete SARIF 2.1.0 output from a TrustBridge ValidationResult.
- * Returns a valid SARIF object ready for serialization to JSON and upload
- * to GitHub Advanced Security via the upload-sarif action.
- */
-export function buildSarifOutput(
-  result: ValidationResult,
-  assetCode: string,
-  horizonUrl: string,
-  stellarAddress: string,
-  version: string = '1.0.0',
-): Record<string, unknown> {
-  const rules = buildSarifRules();
-  // Issue #729 — the authorization finding only appears when the policy asks
-  // for it: `fail` promotes the trustline result to an `error` under TB006,
-  // `warn` keeps it at `note` severity, `ignore` omits it entirely.
-  const unauthorizedSeverity = unauthorizedTrustlineSarifSeverity(result);
-  const results = result.checks.map((check) =>
-    checkToSarifResult(
-      check,
-      assetCode,
-      horizonUrl,
-      stellarAddress,
-      unauthorizedSeverity && check.label.toLowerCase().includes('trustline')
-        ? unauthorizedSeverity
-        : undefined,
-    ),
-  );
-  const sarif = {
-    version: '2.1.0',
-    $schema:
-      'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    $schema: SARIF_SCHEMA,
+    version: SARIF_VERSION,
     runs: [
       {
         tool: {
           driver: {
-            name: 'TrustBridge Action',
-            version,
+            name: TOOL_NAME,
+            version: TOOL_VERSION,
             informationUri: 'https://github.com/Stellar-TrustBridge/trustbridge-action',
-            semanticVersion: version,
             rules,
           },
         },
         results,
-        properties: {
-          trustbridgeVersion: version,
-          runTimestamp: new Date().toISOString(),
-          validationGate: {
-            ready: result.valid,
-            totalChecks: result.checks.length,
-            passedChecks: result.checks.filter((c) => c.passed).length,
-            failedChecks: result.checks.filter((c) => !c.passed).length,
-          },
-        },
       },
     ],
   };
-
-  return sarif;
 }
 
 /**
- * Serialize SARIF output to a JSON string.
- * Safe for writing to a file or environment variable.
+ * Serialise a SARIF document to a compact JSON string suitable for upload.
  */
-export function serializeSarif(sarif: Record<string, unknown>): string {
-  return JSON.stringify(sarif, null, 2);
+export function serialiseSarif(doc: SarifDocument): string {
+  return JSON.stringify(doc, null, 2);
 }
 
 /**
- * Validate that a SARIF output matches the 2.1.0 schema essentials.
- * Returns true if the structure is valid, false otherwise.
+ * Upload function signature expected by `uploadSarif`.
+ * Using a callback makes the upload side-effect injectable for tests.
  */
-export function validateSarifSchema(sarif: unknown): boolean {
-  if (!sarif || typeof sarif !== 'object') return false;
-  const s = sarif as Record<string, unknown>;
-  if (s.version !== '2.1.0') return false;
-  if (!Array.isArray(s.runs) || s.runs.length === 0) return false;
+export type SarifUploadFn = (sarifJson: string, horizonUrl: string) => Promise<void>;
 
-  const run = s.runs[0] as Record<string, unknown>;
-  if (!run.tool || !run.tool || typeof run.tool !== 'object') return false;
-  const tool = run.tool as Record<string, unknown>;
-  if (!tool.driver) return false;
-  if (!Array.isArray(run.results)) return false;
-
-  return true;
+/**
+ * Build and upload the SARIF report for a TrustBridge check outcome.
+ *
+ * `uploadFn` is called with the serialised SARIF JSON.  In production it
+ * would call the GitHub Code Scanning upload API; in tests it is replaced
+ * with a mock so we can assert on the document structure without network calls.
+ *
+ * @throws {Error} Re-throws if `uploadFn` rejects — callers should catch and
+ *   emit a `core.warning` rather than propagating the failure.
+ */
+export async function uploadSarifReport(
+  outcome: TrustBridgeCheckOutcome,
+  uploadFn: SarifUploadFn,
+): Promise<void> {
+  const doc = buildSarifDocument(outcome);
+  const json = serialiseSarif(doc);
+  await uploadFn(json, outcome.horizonUrl);
 }
