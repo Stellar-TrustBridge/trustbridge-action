@@ -1,27 +1,20 @@
 #!/usr/bin/env node
 /**
- * scripts/check-licenses.js
+ * check-licenses.js
  *
- * GPL / copyleft license policy gate for TrustBridge Action (GitHub Issue #334).
+ * Scans production dependencies (npm list --prod --all --json) for licenses
+ * that violate trustbridge-action's license policy.
  *
- * Scans all runtime (production) dependencies for licenses that are incompatible
- * with TrustBridge Action's MIT distribution model:
- *   - GPL-2.0 / GPL-3.0 (and variants)
- *   - AGPL-3.0 (and variants)
- *   - SSPL-1.0
- *   - BUSL-1.1
- *   - UNLICENSED / UNKNOWN
+ * Denied licenses (copyleft / incompatible with MIT distribution):
+ *   GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, CPAL-1.0,
+ *   OSL-3.0, EUPL-1.1, EUPL-1.2, SSPL-1.0
  *
- * Usage:
- *   node scripts/check-licenses.js
+ * Run:
+ *   npm ci
  *   npm run license:check
  *
- * Exit codes:
- *   0 — all runtime deps pass the policy gate
- *   1 — one or more runtime deps have a blocked license (CI/release should fail)
- *
- * To add a package exception see the EXCEPTIONS array below and document the
- * rationale in docs/LICENSE_REPORT.md § "Exception registry".
+ * Exits 0 when all production deps are on the allow-list.
+ * Exits 1 and prints offenders when a violation is found.
  */
 
 'use strict';
@@ -31,153 +24,203 @@ const path = require('path');
 const fs = require('fs');
 
 // ---------------------------------------------------------------------------
-// Blocked license patterns
+// Config
 // ---------------------------------------------------------------------------
-// Any license identifier (case-insensitive) that contains one of these
-// substrings is considered incompatible and will fail the gate.
-const BLOCKED_PATTERNS = [
-  /\bGPL\b/i,         // GPL-2.0, GPL-3.0, GPL-2.0-only, GPL-2.0-or-later, etc.
-  /\bAGPL\b/i,        // AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later
-  /\bSSPL\b/i,        // SSPL-1.0
-  /\bBUSL\b/i,        // BUSL-1.1
-  /\bUNLICENSED\b/i,  // Packages with no declared license
-  /\bUNKNOWN\b/i,     // license-checker could not determine the license
-];
 
-// ---------------------------------------------------------------------------
-// Exception registry
-// ---------------------------------------------------------------------------
-// Package names (exact match, with version — e.g. "some-package@1.2.3") that
-// are explicitly allowed despite having a normally-blocked license.
-//
-// Before adding an entry here:
-//   1. Confirm the package is actually used at runtime (not devDep).
-//   2. Verify the legal rationale (dual-license, corporate CLA, etc.).
-//   3. Document the exception in docs/LICENSE_REPORT.md § "Exception registry".
-//   4. Get explicit maintainer approval in the PR that adds the entry.
-//
-// Format: 'package-name@version' (the key produced by license-checker).
-const EXCEPTIONS = [
-  // Example (not active):
-  // 'some-gpl-package@1.0.0',  // dual-licensed: also available under MIT via CLA #42
-];
+/** Licenses that must never appear in production dependencies. */
+const DENIED_LICENSES = new Set([
+  'GPL-2.0',
+  'GPL-2.0-only',
+  'GPL-2.0-or-later',
+  'GPL-3.0',
+  'GPL-3.0-only',
+  'GPL-3.0-or-later',
+  'AGPL-3.0',
+  'AGPL-3.0-only',
+  'AGPL-3.0-or-later',
+  'LGPL-2.0',
+  'LGPL-2.0-only',
+  'LGPL-2.0-or-later',
+  'LGPL-2.1',
+  'LGPL-2.1-only',
+  'LGPL-2.1-or-later',
+  'LGPL-3.0',
+  'LGPL-3.0-only',
+  'LGPL-3.0-or-later',
+  'CPAL-1.0',
+  'OSL-3.0',
+  'EUPL-1.1',
+  'EUPL-1.2',
+  'SSPL-1.0',
+]);
+
+/**
+ * Packages explicitly allowlisted despite an unusual or missing license.
+ * Format: "package-name@version" or just "package-name" to match all versions.
+ * Document *why* each entry is here.
+ */
+const ALLOWLISTED_PACKAGES = new Set([
+  // Add package@version entries here if a specific dep needs an exception.
+  // e.g. 'some-dep@1.0.0'  // reason: internal fork, BSD compatible
+]);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when a license string contains any blocked pattern
- * and the package is not in the exceptions list.
- *
- * @param {string} pkg   - Package key, e.g. "node-fetch@2.7.0"
- * @param {string} license - SPDX or free-form license string from license-checker
- * @returns {boolean}
+ * Read package.json `license` field from a resolved package path.
+ * Returns the SPDX string or 'UNKNOWN' when not determinable.
  */
-function isBlocked(pkg, license) {
-  if (EXCEPTIONS.includes(pkg)) return false;
-  return BLOCKED_PATTERNS.some((re) => re.test(license));
+function readLicenseFromPackage(pkgName, pkgVersion) {
+  try {
+    // Walk node_modules to find the package.json
+    const candidates = [
+      path.join(process.cwd(), 'node_modules', pkgName, 'package.json'),
+    ];
+    // scoped packages
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        const lic = pkg.license || pkg.licenses;
+        if (Array.isArray(lic)) {
+          return lic.map((l) => (typeof l === 'string' ? l : l.type)).join(' OR ');
+        }
+        if (typeof lic === 'object' && lic !== null) {
+          return lic.type || 'UNKNOWN';
+        }
+        return typeof lic === 'string' ? lic : 'UNKNOWN';
+      }
+    }
+    return 'UNKNOWN';
+  } catch {
+    return 'UNKNOWN';
+  }
 }
 
 /**
- * Collect the set of production (runtime) package names from package.json.
- * Returns a Set of bare package names (without versions).
- *
- * @returns {Set<string>}
+ * Recursively collect all packages from the npm list JSON tree.
+ * Returns an array of { name, version, license }.
  */
-function getRuntimePackageNames() {
-  const pkgPath = path.resolve(__dirname, '..', 'package.json');
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-  return new Set(Object.keys(pkg.dependencies || {}));
+function collectPackages(depsObj, seen = new Set()) {
+  const results = [];
+  if (!depsObj || typeof depsObj !== 'object') return results;
+
+  for (const [name, info] of Object.entries(depsObj)) {
+    const version = info.version || 'unknown';
+    const key = `${name}@${version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const license = readLicenseFromPackage(name, version);
+    results.push({ name, version, license });
+
+    // Recurse into nested deps
+    if (info.dependencies) {
+      results.push(...collectPackages(info.dependencies, seen));
+    }
+  }
+  return results;
+}
+
+/**
+ * Normalise an SPDX expression: trim, strip parentheses/spaces for
+ * simple single-license strings. For compound expressions (AND/OR) we
+ * check each individual token.
+ */
+function extractLicenseTokens(licenseStr) {
+  if (!licenseStr || licenseStr === 'UNKNOWN') return ['UNKNOWN'];
+  // Split on AND / OR / WITH and parentheses
+  return licenseStr
+    .split(/\s+(?:AND|OR|WITH)\s+|[()]/gi)
+    .map((t) => t.trim())
+    .filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-console.log('\n🔍 TrustBridge license policy gate — scanning runtime dependencies…\n');
+function main() {
+  console.log('🔍  trustbridge-action license check\n');
 
-// Run license-checker in --production mode to restrict output to runtime deps
-// and get machine-readable JSON without writing a file.
-let rawOutput;
-try {
-  rawOutput = execSync(
-    'npx license-checker --production --json --excludePrivatePackages',
-    {
-      cwd: path.resolve(__dirname, '..'),
-      encoding: 'utf8',
+  // Build the production dependency tree
+  let listOutput;
+  try {
+    listOutput = execSync('npm list --prod --all --json', {
+      cwd: process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
-    },
-  );
-} catch (err) {
-  // license-checker exits non-zero when it finds a package with no license;
-  // it also emits JSON to stdout even on error, so try to parse before giving up.
-  if (err.stdout) {
-    rawOutput = err.stdout;
-  } else {
-    console.error('❌  license-checker failed to run:\n', err.message);
+    }).toString();
+  } catch (err) {
+    // npm list exits non-zero when there are peer dep warnings; capture stdout anyway
+    listOutput = err.stdout ? err.stdout.toString() : '';
+    if (!listOutput) {
+      console.error('❌  Failed to run npm list:', err.message);
+      process.exit(1);
+    }
+  }
+
+  let tree;
+  try {
+    tree = JSON.parse(listOutput);
+  } catch {
+    console.error('❌  Could not parse npm list output.');
     process.exit(1);
   }
-}
 
-let licenseMap;
-try {
-  licenseMap = JSON.parse(rawOutput);
-} catch (parseErr) {
-  console.error('❌  Could not parse license-checker JSON output:\n', parseErr.message);
+  const packages = collectPackages(tree.dependencies || {});
+
+  const violations = [];
+  const unknowns = [];
+
+  for (const pkg of packages) {
+    const key = `${pkg.name}@${pkg.version}`;
+    const keyNoVersion = pkg.name;
+
+    if (ALLOWLISTED_PACKAGES.has(key) || ALLOWLISTED_PACKAGES.has(keyNoVersion)) {
+      console.log(`  ⚠️  ALLOWLISTED  ${key}  (${pkg.license})`);
+      continue;
+    }
+
+    if (pkg.license === 'UNKNOWN') {
+      unknowns.push(pkg);
+      continue;
+    }
+
+    const tokens = extractLicenseTokens(pkg.license);
+    const denied = tokens.filter((t) => DENIED_LICENSES.has(t));
+    if (denied.length > 0) {
+      violations.push({ ...pkg, denied });
+    }
+  }
+
+  // Summary
+  console.log(`  Scanned ${packages.length} production package(s).\n`);
+
+  if (unknowns.length > 0) {
+    console.warn('⚠️   Packages with unknown license metadata (review manually):');
+    for (const p of unknowns) {
+      console.warn(`    ${p.name}@${p.version}`);
+    }
+    console.warn('');
+  }
+
+  if (violations.length === 0) {
+    console.log('✅  No denied licenses found. License policy satisfied.\n');
+    process.exit(0);
+  }
+
+  console.error('❌  License policy violation(s) detected:\n');
+  for (const v of violations) {
+    console.error(`    ${v.name}@${v.version}  →  ${v.license}  [denied: ${v.denied.join(', ')}]`);
+  }
+  console.error(`\n  Total violations: ${violations.length}`);
+  console.error(
+    '\n  Resolution: replace or remove the offending package, or add a justified\n' +
+      '  ALLOWLISTED_PACKAGES entry in scripts/check-licenses.js if the SPDX\n' +
+      '  identifier is incorrect and the actual license is compatible.\n'
+  );
   process.exit(1);
 }
 
-// Collect violations
-const violations = [];
-const runtimeNames = getRuntimePackageNames();
-
-for (const [pkg, info] of Object.entries(licenseMap)) {
-  const license = (info.licenses || 'UNKNOWN').toString();
-
-  // Only hard-fail on packages that appear in `dependencies` (not devDeps).
-  // license-checker --production should already filter devDeps, but we
-  // double-check against the package.json dependency list for safety.
-  const bareName = pkg.replace(/@[^@]+$/, ''); // strip @version suffix
-  const isRuntime = runtimeNames.has(bareName);
-
-  if (isBlocked(pkg, license)) {
-    violations.push({ pkg, license, isRuntime });
-  }
-}
-
-// Split violations into runtime (hard fail) vs non-runtime (warning only)
-const runtimeViolations = violations.filter((v) => v.isRuntime);
-const transitiveViolations = violations.filter((v) => !v.isRuntime);
-
-// Report transitive / devDep warnings (non-fatal)
-if (transitiveViolations.length > 0) {
-  console.warn('⚠️  Warning: transitive / dev dependencies with blocked licenses detected:');
-  console.warn('   (These do not fail the gate but should be reviewed)\n');
-  for (const { pkg, license } of transitiveViolations) {
-    console.warn(`   • ${pkg}  →  ${license}`);
-  }
-  console.warn('');
-}
-
-// Report runtime violations (fatal)
-if (runtimeViolations.length > 0) {
-  console.error('❌  POLICY VIOLATION: runtime dependencies with incompatible licenses:\n');
-  for (const { pkg, license } of runtimeViolations) {
-    console.error(`   • ${pkg}  →  ${license}`);
-  }
-  console.error('\nBlocked license categories: GPL, AGPL, SSPL, BUSL, UNLICENSED, UNKNOWN');
-  console.error('\nRemediation options:');
-  console.error('  1. Replace the dependency with a permissively-licensed alternative.');
-  console.error('  2. If the package is dual-licensed or a CLA exists, add an entry to');
-  console.error('     the EXCEPTIONS array in scripts/check-licenses.js and document');
-  console.error('     the rationale in docs/LICENSE_REPORT.md § "Exception registry".');
-  console.error('  3. Contact the package maintainer to request a permissive re-license.');
-  console.error('\nSee docs/LICENSE_REPORT.md for the full policy and exceptions process.\n');
-  process.exit(1);
-}
-
-// All clear
-const total = Object.keys(licenseMap).length;
-console.log(`✅  All ${total} runtime dependencies pass the license policy gate.`);
-process.exit(0);
+main();

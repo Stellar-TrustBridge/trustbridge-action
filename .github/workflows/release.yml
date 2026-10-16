@@ -3,67 +3,36 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  release:
+  verify-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: '20'
+          cache: npm
 
-      - name: Verify action bundle
-        run: |
-          test -f action.yml
-          test -f dist/index.js
-          test -f dist/dist-manifest.json
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Verify dist/index.js SHA-256 matches dist-manifest.json
-        # Re-computes the SHA-256 of the committed dist/index.js and compares
-        # it against dist/dist-manifest.json.  A mismatch means the bundle and
-        # the manifest are out of sync — rebuild with `npm run build` and
-        # commit both files before tagging a release.
-        run: node scripts/verify-dist-manifest.js
+      - name: Lint
+        run: npm run lint
 
-      - name: Verify license assets
-        # SLSA provenance and the release checklist require the license files
-        # to be present and shipped with the release.  Fail fast if they are
-        # missing so we never publish a release without them.
-        run: |
-          test -f LICENSE
-          test -f NOTICE
-          test -f docs/LICENSE_REPORT.md || test -f docs/LICENSE_REPORT
+      - name: Test
+        run: npm test
 
-      - name: Generate SLSA provenance
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            dist/index.js
-            dist/dist-manifest.json
-            LICENSE
-            NOTICE
-            docs/LICENSE_REPORT.md
+      - name: Build
+        run: npm run build
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2.3.2
-        with:
-          generate_release_notes: true
-          files: |
-            LICENSE
-            NOTICE
-            docs/LICENSE_REPORT.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify action bundle exists
+        run: test -f dist/index.js

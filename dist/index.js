@@ -1,6 +1,1855 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 4914:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.issue = exports.issueCommand = void 0;
+const os = __importStar(__nccwpck_require__(857));
+const utils_1 = __nccwpck_require__(302);
+/**
+ * Commands
+ *
+ * Command Format:
+ *   ::name key=value,key=value::message
+ *
+ * Examples:
+ *   ::warning::This is the message
+ *   ::set-env name=MY_VAR::some value
+ */
+function issueCommand(command, properties, message) {
+    const cmd = new Command(command, properties, message);
+    process.stdout.write(cmd.toString() + os.EOL);
+}
+exports.issueCommand = issueCommand;
+function issue(name, message = '') {
+    issueCommand(name, {}, message);
+}
+exports.issue = issue;
+const CMD_STRING = '::';
+class Command {
+    constructor(command, properties, message) {
+        if (!command) {
+            command = 'missing.command';
+        }
+        this.command = command;
+        this.properties = properties;
+        this.message = message;
+    }
+    toString() {
+        let cmdStr = CMD_STRING + this.command;
+        if (this.properties && Object.keys(this.properties).length > 0) {
+            cmdStr += ' ';
+            let first = true;
+            for (const key in this.properties) {
+                if (this.properties.hasOwnProperty(key)) {
+                    const val = this.properties[key];
+                    if (val) {
+                        if (first) {
+                            first = false;
+                        }
+                        else {
+                            cmdStr += ',';
+                        }
+                        cmdStr += `${key}=${escapeProperty(val)}`;
+                    }
+                }
+            }
+        }
+        cmdStr += `${CMD_STRING}${escapeData(this.message)}`;
+        return cmdStr;
+    }
+}
+function escapeData(s) {
+    return (0, utils_1.toCommandValue)(s)
+        .replace(/%/g, '%25')
+        .replace(/\r/g, '%0D')
+        .replace(/\n/g, '%0A');
+}
+function escapeProperty(s) {
+    return (0, utils_1.toCommandValue)(s)
+        .replace(/%/g, '%25')
+        .replace(/\r/g, '%0D')
+        .replace(/\n/g, '%0A')
+        .replace(/:/g, '%3A')
+        .replace(/,/g, '%2C');
+}
+//# sourceMappingURL=command.js.map
+
+/***/ }),
+
+/***/ 7484:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.platform = exports.toPlatformPath = exports.toWin32Path = exports.toPosixPath = exports.markdownSummary = exports.summary = exports.getIDToken = exports.getState = exports.saveState = exports.group = exports.endGroup = exports.startGroup = exports.info = exports.notice = exports.warning = exports.error = exports.debug = exports.isDebug = exports.setFailed = exports.setCommandEcho = exports.setOutput = exports.getBooleanInput = exports.getMultilineInput = exports.getInput = exports.addPath = exports.setSecret = exports.exportVariable = exports.ExitCode = void 0;
+const command_1 = __nccwpck_require__(4914);
+const file_command_1 = __nccwpck_require__(4753);
+const utils_1 = __nccwpck_require__(302);
+const os = __importStar(__nccwpck_require__(857));
+const path = __importStar(__nccwpck_require__(6928));
+const oidc_utils_1 = __nccwpck_require__(5306);
+/**
+ * The code to exit an action
+ */
+var ExitCode;
+(function (ExitCode) {
+    /**
+     * A code indicating that the action was successful
+     */
+    ExitCode[ExitCode["Success"] = 0] = "Success";
+    /**
+     * A code indicating that the action was a failure
+     */
+    ExitCode[ExitCode["Failure"] = 1] = "Failure";
+})(ExitCode || (exports.ExitCode = ExitCode = {}));
+//-----------------------------------------------------------------------
+// Variables
+//-----------------------------------------------------------------------
+/**
+ * Sets env variable for this action and future actions in the job
+ * @param name the name of the variable to set
+ * @param val the value of the variable. Non-string values will be converted to a string via JSON.stringify
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function exportVariable(name, val) {
+    const convertedVal = (0, utils_1.toCommandValue)(val);
+    process.env[name] = convertedVal;
+    const filePath = process.env['GITHUB_ENV'] || '';
+    if (filePath) {
+        return (0, file_command_1.issueFileCommand)('ENV', (0, file_command_1.prepareKeyValueMessage)(name, val));
+    }
+    (0, command_1.issueCommand)('set-env', { name }, convertedVal);
+}
+exports.exportVariable = exportVariable;
+/**
+ * Registers a secret which will get masked from logs
+ * @param secret value of the secret
+ */
+function setSecret(secret) {
+    (0, command_1.issueCommand)('add-mask', {}, secret);
+}
+exports.setSecret = setSecret;
+/**
+ * Prepends inputPath to the PATH (for this action and future actions)
+ * @param inputPath
+ */
+function addPath(inputPath) {
+    const filePath = process.env['GITHUB_PATH'] || '';
+    if (filePath) {
+        (0, file_command_1.issueFileCommand)('PATH', inputPath);
+    }
+    else {
+        (0, command_1.issueCommand)('add-path', {}, inputPath);
+    }
+    process.env['PATH'] = `${inputPath}${path.delimiter}${process.env['PATH']}`;
+}
+exports.addPath = addPath;
+/**
+ * Gets the value of an input.
+ * Unless trimWhitespace is set to false in InputOptions, the value is also trimmed.
+ * Returns an empty string if the value is not defined.
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   string
+ */
+function getInput(name, options) {
+    const val = process.env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] || '';
+    if (options && options.required && !val) {
+        throw new Error(`Input required and not supplied: ${name}`);
+    }
+    if (options && options.trimWhitespace === false) {
+        return val;
+    }
+    return val.trim();
+}
+exports.getInput = getInput;
+/**
+ * Gets the values of an multiline input.  Each value is also trimmed.
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   string[]
+ *
+ */
+function getMultilineInput(name, options) {
+    const inputs = getInput(name, options)
+        .split('\n')
+        .filter(x => x !== '');
+    if (options && options.trimWhitespace === false) {
+        return inputs;
+    }
+    return inputs.map(input => input.trim());
+}
+exports.getMultilineInput = getMultilineInput;
+/**
+ * Gets the input value of the boolean type in the YAML 1.2 "core schema" specification.
+ * Support boolean input list: `true | True | TRUE | false | False | FALSE` .
+ * The return value is also in boolean type.
+ * ref: https://yaml.org/spec/1.2/spec.html#id2804923
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   boolean
+ */
+function getBooleanInput(name, options) {
+    const trueValue = ['true', 'True', 'TRUE'];
+    const falseValue = ['false', 'False', 'FALSE'];
+    const val = getInput(name, options);
+    if (trueValue.includes(val))
+        return true;
+    if (falseValue.includes(val))
+        return false;
+    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}\n` +
+        `Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
+}
+exports.getBooleanInput = getBooleanInput;
+/**
+ * Sets the value of an output.
+ *
+ * @param     name     name of the output to set
+ * @param     value    value to store. Non-string values will be converted to a string via JSON.stringify
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setOutput(name, value) {
+    const filePath = process.env['GITHUB_OUTPUT'] || '';
+    if (filePath) {
+        return (0, file_command_1.issueFileCommand)('OUTPUT', (0, file_command_1.prepareKeyValueMessage)(name, value));
+    }
+    process.stdout.write(os.EOL);
+    (0, command_1.issueCommand)('set-output', { name }, (0, utils_1.toCommandValue)(value));
+}
+exports.setOutput = setOutput;
+/**
+ * Enables or disables the echoing of commands into stdout for the rest of the step.
+ * Echoing is disabled by default if ACTIONS_STEP_DEBUG is not set.
+ *
+ */
+function setCommandEcho(enabled) {
+    (0, command_1.issue)('echo', enabled ? 'on' : 'off');
+}
+exports.setCommandEcho = setCommandEcho;
+//-----------------------------------------------------------------------
+// Results
+//-----------------------------------------------------------------------
+/**
+ * Sets the action status to failed.
+ * When the action exits it will be with an exit code of 1
+ * @param message add error issue message
+ */
+function setFailed(message) {
+    process.exitCode = ExitCode.Failure;
+    error(message);
+}
+exports.setFailed = setFailed;
+//-----------------------------------------------------------------------
+// Logging Commands
+//-----------------------------------------------------------------------
+/**
+ * Gets whether Actions Step Debug is on or not
+ */
+function isDebug() {
+    return process.env['RUNNER_DEBUG'] === '1';
+}
+exports.isDebug = isDebug;
+/**
+ * Writes debug message to user log
+ * @param message debug message
+ */
+function debug(message) {
+    (0, command_1.issueCommand)('debug', {}, message);
+}
+exports.debug = debug;
+/**
+ * Adds an error issue
+ * @param message error issue message. Errors will be converted to string via toString()
+ * @param properties optional properties to add to the annotation.
+ */
+function error(message, properties = {}) {
+    (0, command_1.issueCommand)('error', (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
+}
+exports.error = error;
+/**
+ * Adds a warning issue
+ * @param message warning issue message. Errors will be converted to string via toString()
+ * @param properties optional properties to add to the annotation.
+ */
+function warning(message, properties = {}) {
+    (0, command_1.issueCommand)('warning', (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
+}
+exports.warning = warning;
+/**
+ * Adds a notice issue
+ * @param message notice issue message. Errors will be converted to string via toString()
+ * @param properties optional properties to add to the annotation.
+ */
+function notice(message, properties = {}) {
+    (0, command_1.issueCommand)('notice', (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
+}
+exports.notice = notice;
+/**
+ * Writes info to log with console.log.
+ * @param message info message
+ */
+function info(message) {
+    process.stdout.write(message + os.EOL);
+}
+exports.info = info;
+/**
+ * Begin an output group.
+ *
+ * Output until the next `groupEnd` will be foldable in this group
+ *
+ * @param name The name of the output group
+ */
+function startGroup(name) {
+    (0, command_1.issue)('group', name);
+}
+exports.startGroup = startGroup;
+/**
+ * End an output group.
+ */
+function endGroup() {
+    (0, command_1.issue)('endgroup');
+}
+exports.endGroup = endGroup;
+/**
+ * Wrap an asynchronous function call in a group.
+ *
+ * Returns the same type as the function itself.
+ *
+ * @param name The name of the group
+ * @param fn The function to wrap in the group
+ */
+function group(name, fn) {
+    return __awaiter(this, void 0, void 0, function* () {
+        startGroup(name);
+        let result;
+        try {
+            result = yield fn();
+        }
+        finally {
+            endGroup();
+        }
+        return result;
+    });
+}
+exports.group = group;
+//-----------------------------------------------------------------------
+// Wrapper action state
+//-----------------------------------------------------------------------
+/**
+ * Saves state for current action, the state can only be retrieved by this action's post job execution.
+ *
+ * @param     name     name of the state to store
+ * @param     value    value to store. Non-string values will be converted to a string via JSON.stringify
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function saveState(name, value) {
+    const filePath = process.env['GITHUB_STATE'] || '';
+    if (filePath) {
+        return (0, file_command_1.issueFileCommand)('STATE', (0, file_command_1.prepareKeyValueMessage)(name, value));
+    }
+    (0, command_1.issueCommand)('save-state', { name }, (0, utils_1.toCommandValue)(value));
+}
+exports.saveState = saveState;
+/**
+ * Gets the value of an state set by this action's main execution.
+ *
+ * @param     name     name of the state to get
+ * @returns   string
+ */
+function getState(name) {
+    return process.env[`STATE_${name}`] || '';
+}
+exports.getState = getState;
+function getIDToken(aud) {
+    return __awaiter(this, void 0, void 0, function* () {
+        return yield oidc_utils_1.OidcClient.getIDToken(aud);
+    });
+}
+exports.getIDToken = getIDToken;
+/**
+ * Summary exports
+ */
+var summary_1 = __nccwpck_require__(1847);
+Object.defineProperty(exports, "summary", ({ enumerable: true, get: function () { return summary_1.summary; } }));
+/**
+ * @deprecated use core.summary
+ */
+var summary_2 = __nccwpck_require__(1847);
+Object.defineProperty(exports, "markdownSummary", ({ enumerable: true, get: function () { return summary_2.markdownSummary; } }));
+/**
+ * Path exports
+ */
+var path_utils_1 = __nccwpck_require__(1976);
+Object.defineProperty(exports, "toPosixPath", ({ enumerable: true, get: function () { return path_utils_1.toPosixPath; } }));
+Object.defineProperty(exports, "toWin32Path", ({ enumerable: true, get: function () { return path_utils_1.toWin32Path; } }));
+Object.defineProperty(exports, "toPlatformPath", ({ enumerable: true, get: function () { return path_utils_1.toPlatformPath; } }));
+/**
+ * Platform utilities exports
+ */
+exports.platform = __importStar(__nccwpck_require__(8968));
+//# sourceMappingURL=core.js.map
+
+/***/ }),
+
+/***/ 4753:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+// For internal use, subject to change.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.prepareKeyValueMessage = exports.issueFileCommand = void 0;
+// We use any as a valid input type
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const crypto = __importStar(__nccwpck_require__(6982));
+const fs = __importStar(__nccwpck_require__(9896));
+const os = __importStar(__nccwpck_require__(857));
+const utils_1 = __nccwpck_require__(302);
+function issueFileCommand(command, message) {
+    const filePath = process.env[`GITHUB_${command}`];
+    if (!filePath) {
+        throw new Error(`Unable to find environment variable for file command ${command}`);
+    }
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Missing file at path: ${filePath}`);
+    }
+    fs.appendFileSync(filePath, `${(0, utils_1.toCommandValue)(message)}${os.EOL}`, {
+        encoding: 'utf8'
+    });
+}
+exports.issueFileCommand = issueFileCommand;
+function prepareKeyValueMessage(key, value) {
+    const delimiter = `ghadelimiter_${crypto.randomUUID()}`;
+    const convertedValue = (0, utils_1.toCommandValue)(value);
+    // These should realistically never happen, but just in case someone finds a
+    // way to exploit uuid generation let's not allow keys or values that contain
+    // the delimiter.
+    if (key.includes(delimiter)) {
+        throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
+    }
+    if (convertedValue.includes(delimiter)) {
+        throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
+    }
+    return `${key}<<${delimiter}${os.EOL}${convertedValue}${os.EOL}${delimiter}`;
+}
+exports.prepareKeyValueMessage = prepareKeyValueMessage;
+//# sourceMappingURL=file-command.js.map
+
+/***/ }),
+
+/***/ 5306:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.OidcClient = void 0;
+const http_client_1 = __nccwpck_require__(4844);
+const auth_1 = __nccwpck_require__(4552);
+const core_1 = __nccwpck_require__(7484);
+class OidcClient {
+    static createHttpClient(allowRetry = true, maxRetry = 10) {
+        const requestOptions = {
+            allowRetries: allowRetry,
+            maxRetries: maxRetry
+        };
+        return new http_client_1.HttpClient('actions/oidc-client', [new auth_1.BearerCredentialHandler(OidcClient.getRequestToken())], requestOptions);
+    }
+    static getRequestToken() {
+        const token = process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'];
+        if (!token) {
+            throw new Error('Unable to get ACTIONS_ID_TOKEN_REQUEST_TOKEN env variable');
+        }
+        return token;
+    }
+    static getIDTokenUrl() {
+        const runtimeUrl = process.env['ACTIONS_ID_TOKEN_REQUEST_URL'];
+        if (!runtimeUrl) {
+            throw new Error('Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable');
+        }
+        return runtimeUrl;
+    }
+    static getCall(id_token_url) {
+        var _a;
+        return __awaiter(this, void 0, void 0, function* () {
+            const httpclient = OidcClient.createHttpClient();
+            const res = yield httpclient
+                .getJson(id_token_url)
+                .catch(error => {
+                throw new Error(`Failed to get ID Token. \n 
+        Error Code : ${error.statusCode}\n 
+        Error Message: ${error.message}`);
+            });
+            const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
+            if (!id_token) {
+                throw new Error('Response json body do not have ID Token field');
+            }
+            return id_token;
+        });
+    }
+    static getIDToken(audience) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                // New ID Token is requested from action service
+                let id_token_url = OidcClient.getIDTokenUrl();
+                if (audience) {
+                    const encodedAudience = encodeURIComponent(audience);
+                    id_token_url = `${id_token_url}&audience=${encodedAudience}`;
+                }
+                (0, core_1.debug)(`ID token url is ${id_token_url}`);
+                const id_token = yield OidcClient.getCall(id_token_url);
+                (0, core_1.setSecret)(id_token);
+                return id_token;
+            }
+            catch (error) {
+                throw new Error(`Error message: ${error.message}`);
+            }
+        });
+    }
+}
+exports.OidcClient = OidcClient;
+//# sourceMappingURL=oidc-utils.js.map
+
+/***/ }),
+
+/***/ 1976:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toPlatformPath = exports.toWin32Path = exports.toPosixPath = void 0;
+const path = __importStar(__nccwpck_require__(6928));
+/**
+ * toPosixPath converts the given path to the posix form. On Windows, \\ will be
+ * replaced with /.
+ *
+ * @param pth. Path to transform.
+ * @return string Posix path.
+ */
+function toPosixPath(pth) {
+    return pth.replace(/[\\]/g, '/');
+}
+exports.toPosixPath = toPosixPath;
+/**
+ * toWin32Path converts the given path to the win32 form. On Linux, / will be
+ * replaced with \\.
+ *
+ * @param pth. Path to transform.
+ * @return string Win32 path.
+ */
+function toWin32Path(pth) {
+    return pth.replace(/[/]/g, '\\');
+}
+exports.toWin32Path = toWin32Path;
+/**
+ * toPlatformPath converts the given path to a platform-specific path. It does
+ * this by replacing instances of / and \ with the platform-specific path
+ * separator.
+ *
+ * @param pth The path to platformize.
+ * @return string The platform-specific path.
+ */
+function toPlatformPath(pth) {
+    return pth.replace(/[/\\]/g, path.sep);
+}
+exports.toPlatformPath = toPlatformPath;
+//# sourceMappingURL=path-utils.js.map
+
+/***/ }),
+
+/***/ 8968:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getDetails = exports.isLinux = exports.isMacOS = exports.isWindows = exports.arch = exports.platform = void 0;
+const os_1 = __importDefault(__nccwpck_require__(857));
+const exec = __importStar(__nccwpck_require__(5236));
+const getWindowsInfo = () => __awaiter(void 0, void 0, void 0, function* () {
+    const { stdout: version } = yield exec.getExecOutput('powershell -command "(Get-CimInstance -ClassName Win32_OperatingSystem).Version"', undefined, {
+        silent: true
+    });
+    const { stdout: name } = yield exec.getExecOutput('powershell -command "(Get-CimInstance -ClassName Win32_OperatingSystem).Caption"', undefined, {
+        silent: true
+    });
+    return {
+        name: name.trim(),
+        version: version.trim()
+    };
+});
+const getMacOsInfo = () => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c, _d;
+    const { stdout } = yield exec.getExecOutput('sw_vers', undefined, {
+        silent: true
+    });
+    const version = (_b = (_a = stdout.match(/ProductVersion:\s*(.+)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '';
+    const name = (_d = (_c = stdout.match(/ProductName:\s*(.+)/)) === null || _c === void 0 ? void 0 : _c[1]) !== null && _d !== void 0 ? _d : '';
+    return {
+        name,
+        version
+    };
+});
+const getLinuxInfo = () => __awaiter(void 0, void 0, void 0, function* () {
+    const { stdout } = yield exec.getExecOutput('lsb_release', ['-i', '-r', '-s'], {
+        silent: true
+    });
+    const [name, version] = stdout.trim().split('\n');
+    return {
+        name,
+        version
+    };
+});
+exports.platform = os_1.default.platform();
+exports.arch = os_1.default.arch();
+exports.isWindows = exports.platform === 'win32';
+exports.isMacOS = exports.platform === 'darwin';
+exports.isLinux = exports.platform === 'linux';
+function getDetails() {
+    return __awaiter(this, void 0, void 0, function* () {
+        return Object.assign(Object.assign({}, (yield (exports.isWindows
+            ? getWindowsInfo()
+            : exports.isMacOS
+                ? getMacOsInfo()
+                : getLinuxInfo()))), { platform: exports.platform,
+            arch: exports.arch,
+            isWindows: exports.isWindows,
+            isMacOS: exports.isMacOS,
+            isLinux: exports.isLinux });
+    });
+}
+exports.getDetails = getDetails;
+//# sourceMappingURL=platform.js.map
+
+/***/ }),
+
+/***/ 1847:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.summary = exports.markdownSummary = exports.SUMMARY_DOCS_URL = exports.SUMMARY_ENV_VAR = void 0;
+const os_1 = __nccwpck_require__(857);
+const fs_1 = __nccwpck_require__(9896);
+const { access, appendFile, writeFile } = fs_1.promises;
+exports.SUMMARY_ENV_VAR = 'GITHUB_STEP_SUMMARY';
+exports.SUMMARY_DOCS_URL = 'https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary';
+class Summary {
+    constructor() {
+        this._buffer = '';
+    }
+    /**
+     * Finds the summary file path from the environment, rejects if env var is not found or file does not exist
+     * Also checks r/w permissions.
+     *
+     * @returns step summary file path
+     */
+    filePath() {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (this._filePath) {
+                return this._filePath;
+            }
+            const pathFromEnv = process.env[exports.SUMMARY_ENV_VAR];
+            if (!pathFromEnv) {
+                throw new Error(`Unable to find environment variable for $${exports.SUMMARY_ENV_VAR}. Check if your runtime environment supports job summaries.`);
+            }
+            try {
+                yield access(pathFromEnv, fs_1.constants.R_OK | fs_1.constants.W_OK);
+            }
+            catch (_a) {
+                throw new Error(`Unable to access summary file: '${pathFromEnv}'. Check if the file has correct read/write permissions.`);
+            }
+            this._filePath = pathFromEnv;
+            return this._filePath;
+        });
+    }
+    /**
+     * Wraps content in an HTML tag, adding any HTML attributes
+     *
+     * @param {string} tag HTML tag to wrap
+     * @param {string | null} content content within the tag
+     * @param {[attribute: string]: string} attrs key-value list of HTML attributes to add
+     *
+     * @returns {string} content wrapped in HTML element
+     */
+    wrap(tag, content, attrs = {}) {
+        const htmlAttrs = Object.entries(attrs)
+            .map(([key, value]) => ` ${key}="${value}"`)
+            .join('');
+        if (!content) {
+            return `<${tag}${htmlAttrs}>`;
+        }
+        return `<${tag}${htmlAttrs}>${content}</${tag}>`;
+    }
+    /**
+     * Writes text in the buffer to the summary buffer file and empties buffer. Will append by default.
+     *
+     * @param {SummaryWriteOptions} [options] (optional) options for write operation
+     *
+     * @returns {Promise<Summary>} summary instance
+     */
+    write(options) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const overwrite = !!(options === null || options === void 0 ? void 0 : options.overwrite);
+            const filePath = yield this.filePath();
+            const writeFunc = overwrite ? writeFile : appendFile;
+            yield writeFunc(filePath, this._buffer, { encoding: 'utf8' });
+            return this.emptyBuffer();
+        });
+    }
+    /**
+     * Clears the summary buffer and wipes the summary file
+     *
+     * @returns {Summary} summary instance
+     */
+    clear() {
+        return __awaiter(this, void 0, void 0, function* () {
+            return this.emptyBuffer().write({ overwrite: true });
+        });
+    }
+    /**
+     * Returns the current summary buffer as a string
+     *
+     * @returns {string} string of summary buffer
+     */
+    stringify() {
+        return this._buffer;
+    }
+    /**
+     * If the summary buffer is empty
+     *
+     * @returns {boolen} true if the buffer is empty
+     */
+    isEmptyBuffer() {
+        return this._buffer.length === 0;
+    }
+    /**
+     * Resets the summary buffer without writing to summary file
+     *
+     * @returns {Summary} summary instance
+     */
+    emptyBuffer() {
+        this._buffer = '';
+        return this;
+    }
+    /**
+     * Adds raw text to the summary buffer
+     *
+     * @param {string} text content to add
+     * @param {boolean} [addEOL=false] (optional) append an EOL to the raw text (default: false)
+     *
+     * @returns {Summary} summary instance
+     */
+    addRaw(text, addEOL = false) {
+        this._buffer += text;
+        return addEOL ? this.addEOL() : this;
+    }
+    /**
+     * Adds the operating system-specific end-of-line marker to the buffer
+     *
+     * @returns {Summary} summary instance
+     */
+    addEOL() {
+        return this.addRaw(os_1.EOL);
+    }
+    /**
+     * Adds an HTML codeblock to the summary buffer
+     *
+     * @param {string} code content to render within fenced code block
+     * @param {string} lang (optional) language to syntax highlight code
+     *
+     * @returns {Summary} summary instance
+     */
+    addCodeBlock(code, lang) {
+        const attrs = Object.assign({}, (lang && { lang }));
+        const element = this.wrap('pre', this.wrap('code', code), attrs);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML list to the summary buffer
+     *
+     * @param {string[]} items list of items to render
+     * @param {boolean} [ordered=false] (optional) if the rendered list should be ordered or not (default: false)
+     *
+     * @returns {Summary} summary instance
+     */
+    addList(items, ordered = false) {
+        const tag = ordered ? 'ol' : 'ul';
+        const listItems = items.map(item => this.wrap('li', item)).join('');
+        const element = this.wrap(tag, listItems);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML table to the summary buffer
+     *
+     * @param {SummaryTableCell[]} rows table rows
+     *
+     * @returns {Summary} summary instance
+     */
+    addTable(rows) {
+        const tableBody = rows
+            .map(row => {
+            const cells = row
+                .map(cell => {
+                if (typeof cell === 'string') {
+                    return this.wrap('td', cell);
+                }
+                const { header, data, colspan, rowspan } = cell;
+                const tag = header ? 'th' : 'td';
+                const attrs = Object.assign(Object.assign({}, (colspan && { colspan })), (rowspan && { rowspan }));
+                return this.wrap(tag, data, attrs);
+            })
+                .join('');
+            return this.wrap('tr', cells);
+        })
+            .join('');
+        const element = this.wrap('table', tableBody);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds a collapsable HTML details element to the summary buffer
+     *
+     * @param {string} label text for the closed state
+     * @param {string} content collapsable content
+     *
+     * @returns {Summary} summary instance
+     */
+    addDetails(label, content) {
+        const element = this.wrap('details', this.wrap('summary', label) + content);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML image tag to the summary buffer
+     *
+     * @param {string} src path to the image you to embed
+     * @param {string} alt text description of the image
+     * @param {SummaryImageOptions} options (optional) addition image attributes
+     *
+     * @returns {Summary} summary instance
+     */
+    addImage(src, alt, options) {
+        const { width, height } = options || {};
+        const attrs = Object.assign(Object.assign({}, (width && { width })), (height && { height }));
+        const element = this.wrap('img', null, Object.assign({ src, alt }, attrs));
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML section heading element
+     *
+     * @param {string} text heading text
+     * @param {number | string} [level=1] (optional) the heading level, default: 1
+     *
+     * @returns {Summary} summary instance
+     */
+    addHeading(text, level) {
+        const tag = `h${level}`;
+        const allowedTag = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)
+            ? tag
+            : 'h1';
+        const element = this.wrap(allowedTag, text);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML thematic break (<hr>) to the summary buffer
+     *
+     * @returns {Summary} summary instance
+     */
+    addSeparator() {
+        const element = this.wrap('hr', null);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML line break (<br>) to the summary buffer
+     *
+     * @returns {Summary} summary instance
+     */
+    addBreak() {
+        const element = this.wrap('br', null);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML blockquote to the summary buffer
+     *
+     * @param {string} text quote text
+     * @param {string} cite (optional) citation url
+     *
+     * @returns {Summary} summary instance
+     */
+    addQuote(text, cite) {
+        const attrs = Object.assign({}, (cite && { cite }));
+        const element = this.wrap('blockquote', text, attrs);
+        return this.addRaw(element).addEOL();
+    }
+    /**
+     * Adds an HTML anchor tag to the summary buffer
+     *
+     * @param {string} text link text/content
+     * @param {string} href hyperlink
+     *
+     * @returns {Summary} summary instance
+     */
+    addLink(text, href) {
+        const element = this.wrap('a', text, { href });
+        return this.addRaw(element).addEOL();
+    }
+}
+const _summary = new Summary();
+/**
+ * @deprecated use `core.summary`
+ */
+exports.markdownSummary = _summary;
+exports.summary = _summary;
+//# sourceMappingURL=summary.js.map
+
+/***/ }),
+
+/***/ 302:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+// We use any as a valid input type
+/* eslint-disable @typescript-eslint/no-explicit-any */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toCommandProperties = exports.toCommandValue = void 0;
+/**
+ * Sanitizes an input into a string so it can be passed into issueCommand safely
+ * @param input input to sanitize into a string
+ */
+function toCommandValue(input) {
+    if (input === null || input === undefined) {
+        return '';
+    }
+    else if (typeof input === 'string' || input instanceof String) {
+        return input;
+    }
+    return JSON.stringify(input);
+}
+exports.toCommandValue = toCommandValue;
+/**
+ *
+ * @param annotationProperties
+ * @returns The command properties to send with the actual annotation command
+ * See IssueCommandProperties: https://github.com/actions/runner/blob/main/src/Runner.Worker/ActionCommandManager.cs#L646
+ */
+function toCommandProperties(annotationProperties) {
+    if (!Object.keys(annotationProperties).length) {
+        return {};
+    }
+    return {
+        title: annotationProperties.title,
+        file: annotationProperties.file,
+        line: annotationProperties.startLine,
+        endLine: annotationProperties.endLine,
+        col: annotationProperties.startColumn,
+        endColumn: annotationProperties.endColumn
+    };
+}
+exports.toCommandProperties = toCommandProperties;
+//# sourceMappingURL=utils.js.map
+
+/***/ }),
+
+/***/ 5236:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getExecOutput = exports.exec = void 0;
+const string_decoder_1 = __nccwpck_require__(3193);
+const tr = __importStar(__nccwpck_require__(6665));
+/**
+ * Exec a command.
+ * Output will be streamed to the live console.
+ * Returns promise with return code
+ *
+ * @param     commandLine        command to execute (can include additional args). Must be correctly escaped.
+ * @param     args               optional arguments for tool. Escaping is handled by the lib.
+ * @param     options            optional exec options.  See ExecOptions
+ * @returns   Promise<number>    exit code
+ */
+function exec(commandLine, args, options) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const commandArgs = tr.argStringToArray(commandLine);
+        if (commandArgs.length === 0) {
+            throw new Error(`Parameter 'commandLine' cannot be null or empty.`);
+        }
+        // Path to tool to execute should be first arg
+        const toolPath = commandArgs[0];
+        args = commandArgs.slice(1).concat(args || []);
+        const runner = new tr.ToolRunner(toolPath, args, options);
+        return runner.exec();
+    });
+}
+exports.exec = exec;
+/**
+ * Exec a command and get the output.
+ * Output will be streamed to the live console.
+ * Returns promise with the exit code and collected stdout and stderr
+ *
+ * @param     commandLine           command to execute (can include additional args). Must be correctly escaped.
+ * @param     args                  optional arguments for tool. Escaping is handled by the lib.
+ * @param     options               optional exec options.  See ExecOptions
+ * @returns   Promise<ExecOutput>   exit code, stdout, and stderr
+ */
+function getExecOutput(commandLine, args, options) {
+    var _a, _b;
+    return __awaiter(this, void 0, void 0, function* () {
+        let stdout = '';
+        let stderr = '';
+        //Using string decoder covers the case where a mult-byte character is split
+        const stdoutDecoder = new string_decoder_1.StringDecoder('utf8');
+        const stderrDecoder = new string_decoder_1.StringDecoder('utf8');
+        const originalStdoutListener = (_a = options === null || options === void 0 ? void 0 : options.listeners) === null || _a === void 0 ? void 0 : _a.stdout;
+        const originalStdErrListener = (_b = options === null || options === void 0 ? void 0 : options.listeners) === null || _b === void 0 ? void 0 : _b.stderr;
+        const stdErrListener = (data) => {
+            stderr += stderrDecoder.write(data);
+            if (originalStdErrListener) {
+                originalStdErrListener(data);
+            }
+        };
+        const stdOutListener = (data) => {
+            stdout += stdoutDecoder.write(data);
+            if (originalStdoutListener) {
+                originalStdoutListener(data);
+            }
+        };
+        const listeners = Object.assign(Object.assign({}, options === null || options === void 0 ? void 0 : options.listeners), { stdout: stdOutListener, stderr: stdErrListener });
+        const exitCode = yield exec(commandLine, args, Object.assign(Object.assign({}, options), { listeners }));
+        //flush any remaining characters
+        stdout += stdoutDecoder.end();
+        stderr += stderrDecoder.end();
+        return {
+            exitCode,
+            stdout,
+            stderr
+        };
+    });
+}
+exports.getExecOutput = getExecOutput;
+//# sourceMappingURL=exec.js.map
+
+/***/ }),
+
+/***/ 6665:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.argStringToArray = exports.ToolRunner = void 0;
+const os = __importStar(__nccwpck_require__(857));
+const events = __importStar(__nccwpck_require__(4434));
+const child = __importStar(__nccwpck_require__(5317));
+const path = __importStar(__nccwpck_require__(6928));
+const io = __importStar(__nccwpck_require__(4994));
+const ioUtil = __importStar(__nccwpck_require__(5207));
+const timers_1 = __nccwpck_require__(3557);
+/* eslint-disable @typescript-eslint/unbound-method */
+const IS_WINDOWS = process.platform === 'win32';
+/*
+ * Class for running command line tools. Handles quoting and arg parsing in a platform agnostic way.
+ */
+class ToolRunner extends events.EventEmitter {
+    constructor(toolPath, args, options) {
+        super();
+        if (!toolPath) {
+            throw new Error("Parameter 'toolPath' cannot be null or empty.");
+        }
+        this.toolPath = toolPath;
+        this.args = args || [];
+        this.options = options || {};
+    }
+    _debug(message) {
+        if (this.options.listeners && this.options.listeners.debug) {
+            this.options.listeners.debug(message);
+        }
+    }
+    _getCommandString(options, noPrefix) {
+        const toolPath = this._getSpawnFileName();
+        const args = this._getSpawnArgs(options);
+        let cmd = noPrefix ? '' : '[command]'; // omit prefix when piped to a second tool
+        if (IS_WINDOWS) {
+            // Windows + cmd file
+            if (this._isCmdFile()) {
+                cmd += toolPath;
+                for (const a of args) {
+                    cmd += ` ${a}`;
+                }
+            }
+            // Windows + verbatim
+            else if (options.windowsVerbatimArguments) {
+                cmd += `"${toolPath}"`;
+                for (const a of args) {
+                    cmd += ` ${a}`;
+                }
+            }
+            // Windows (regular)
+            else {
+                cmd += this._windowsQuoteCmdArg(toolPath);
+                for (const a of args) {
+                    cmd += ` ${this._windowsQuoteCmdArg(a)}`;
+                }
+            }
+        }
+        else {
+            // OSX/Linux - this can likely be improved with some form of quoting.
+            // creating processes on Unix is fundamentally different than Windows.
+            // on Unix, execvp() takes an arg array.
+            cmd += toolPath;
+            for (const a of args) {
+                cmd += ` ${a}`;
+            }
+        }
+        return cmd;
+    }
+    _processLineBuffer(data, strBuffer, onLine) {
+        try {
+            let s = strBuffer + data.toString();
+            let n = s.indexOf(os.EOL);
+            while (n > -1) {
+                const line = s.substring(0, n);
+                onLine(line);
+                // the rest of the string ...
+                s = s.substring(n + os.EOL.length);
+                n = s.indexOf(os.EOL);
+            }
+            return s;
+        }
+        catch (err) {
+            // streaming lines to console is best effort.  Don't fail a build.
+            this._debug(`error processing line. Failed with error ${err}`);
+            return '';
+        }
+    }
+    _getSpawnFileName() {
+        if (IS_WINDOWS) {
+            if (this._isCmdFile()) {
+                return process.env['COMSPEC'] || 'cmd.exe';
+            }
+        }
+        return this.toolPath;
+    }
+    _getSpawnArgs(options) {
+        if (IS_WINDOWS) {
+            if (this._isCmdFile()) {
+                let argline = `/D /S /C "${this._windowsQuoteCmdArg(this.toolPath)}`;
+                for (const a of this.args) {
+                    argline += ' ';
+                    argline += options.windowsVerbatimArguments
+                        ? a
+                        : this._windowsQuoteCmdArg(a);
+                }
+                argline += '"';
+                return [argline];
+            }
+        }
+        return this.args;
+    }
+    _endsWith(str, end) {
+        return str.endsWith(end);
+    }
+    _isCmdFile() {
+        const upperToolPath = this.toolPath.toUpperCase();
+        return (this._endsWith(upperToolPath, '.CMD') ||
+            this._endsWith(upperToolPath, '.BAT'));
+    }
+    _windowsQuoteCmdArg(arg) {
+        // for .exe, apply the normal quoting rules that libuv applies
+        if (!this._isCmdFile()) {
+            return this._uvQuoteCmdArg(arg);
+        }
+        // otherwise apply quoting rules specific to the cmd.exe command line parser.
+        // the libuv rules are generic and are not designed specifically for cmd.exe
+        // command line parser.
+        //
+        // for a detailed description of the cmd.exe command line parser, refer to
+        // http://stackoverflow.com/questions/4094699/how-does-the-windows-command-interpreter-cmd-exe-parse-scripts/7970912#7970912
+        // need quotes for empty arg
+        if (!arg) {
+            return '""';
+        }
+        // determine whether the arg needs to be quoted
+        const cmdSpecialChars = [
+            ' ',
+            '\t',
+            '&',
+            '(',
+            ')',
+            '[',
+            ']',
+            '{',
+            '}',
+            '^',
+            '=',
+            ';',
+            '!',
+            "'",
+            '+',
+            ',',
+            '`',
+            '~',
+            '|',
+            '<',
+            '>',
+            '"'
+        ];
+        let needsQuotes = false;
+        for (const char of arg) {
+            if (cmdSpecialChars.some(x => x === char)) {
+                needsQuotes = true;
+                break;
+            }
+        }
+        // short-circuit if quotes not needed
+        if (!needsQuotes) {
+            return arg;
+        }
+        // the following quoting rules are very similar to the rules that by libuv applies.
+        //
+        // 1) wrap the string in quotes
+        //
+        // 2) double-up quotes - i.e. " => ""
+        //
+        //    this is different from the libuv quoting rules. libuv replaces " with \", which unfortunately
+        //    doesn't work well with a cmd.exe command line.
+        //
+        //    note, replacing " with "" also works well if the arg is passed to a downstream .NET console app.
+        //    for example, the command line:
+        //          foo.exe "myarg:""my val"""
+        //    is parsed by a .NET console app into an arg array:
+        //          [ "myarg:\"my val\"" ]
+        //    which is the same end result when applying libuv quoting rules. although the actual
+        //    command line from libuv quoting rules would look like:
+        //          foo.exe "myarg:\"my val\""
+        //
+        // 3) double-up slashes that precede a quote,
+        //    e.g.  hello \world    => "hello \world"
+        //          hello\"world    => "hello\\""world"
+        //          hello\\"world   => "hello\\\\""world"
+        //          hello world\    => "hello world\\"
+        //
+        //    technically this is not required for a cmd.exe command line, or the batch argument parser.
+        //    the reasons for including this as a .cmd quoting rule are:
+        //
+        //    a) this is optimized for the scenario where the argument is passed from the .cmd file to an
+        //       external program. many programs (e.g. .NET console apps) rely on the slash-doubling rule.
+        //
+        //    b) it's what we've been doing previously (by deferring to node default behavior) and we
+        //       haven't heard any complaints about that aspect.
+        //
+        // note, a weakness of the quoting rules chosen here, is that % is not escaped. in fact, % cannot be
+        // escaped when used on the command line directly - even though within a .cmd file % can be escaped
+        // by using %%.
+        //
+        // the saving grace is, on the command line, %var% is left as-is if var is not defined. this contrasts
+        // the line parsing rules within a .cmd file, where if var is not defined it is replaced with nothing.
+        //
+        // one option that was explored was replacing % with ^% - i.e. %var% => ^%var^%. this hack would
+        // often work, since it is unlikely that var^ would exist, and the ^ character is removed when the
+        // variable is used. the problem, however, is that ^ is not removed when %* is used to pass the args
+        // to an external program.
+        //
+        // an unexplored potential solution for the % escaping problem, is to create a wrapper .cmd file.
+        // % can be escaped within a .cmd file.
+        let reverse = '"';
+        let quoteHit = true;
+        for (let i = arg.length; i > 0; i--) {
+            // walk the string in reverse
+            reverse += arg[i - 1];
+            if (quoteHit && arg[i - 1] === '\\') {
+                reverse += '\\'; // double the slash
+            }
+            else if (arg[i - 1] === '"') {
+                quoteHit = true;
+                reverse += '"'; // double the quote
+            }
+            else {
+                quoteHit = false;
+            }
+        }
+        reverse += '"';
+        return reverse
+            .split('')
+            .reverse()
+            .join('');
+    }
+    _uvQuoteCmdArg(arg) {
+        // Tool runner wraps child_process.spawn() and needs to apply the same quoting as
+        // Node in certain cases where the undocumented spawn option windowsVerbatimArguments
+        // is used.
+        //
+        // Since this function is a port of quote_cmd_arg from Node 4.x (technically, lib UV,
+        // see https://github.com/nodejs/node/blob/v4.x/deps/uv/src/win/process.c for details),
+        // pasting copyright notice from Node within this function:
+        //
+        //      Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+        //
+        //      Permission is hereby granted, free of charge, to any person obtaining a copy
+        //      of this software and associated documentation files (the "Software"), to
+        //      deal in the Software without restriction, including without limitation the
+        //      rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+        //      sell copies of the Software, and to permit persons to whom the Software is
+        //      furnished to do so, subject to the following conditions:
+        //
+        //      The above copyright notice and this permission notice shall be included in
+        //      all copies or substantial portions of the Software.
+        //
+        //      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        //      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        //      FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        //      AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        //      LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+        //      FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+        //      IN THE SOFTWARE.
+        if (!arg) {
+            // Need double quotation for empty argument
+            return '""';
+        }
+        if (!arg.includes(' ') && !arg.includes('\t') && !arg.includes('"')) {
+            // No quotation needed
+            return arg;
+        }
+        if (!arg.includes('"') && !arg.includes('\\')) {
+            // No embedded double quotes or backslashes, so I can just wrap
+            // quote marks around the whole thing.
+            return `"${arg}"`;
+        }
+        // Expected input/output:
+        //   input : hello"world
+        //   output: "hello\"world"
+        //   input : hello""world
+        //   output: "hello\"\"world"
+        //   input : hello\world
+        //   output: hello\world
+        //   input : hello\\world
+        //   output: hello\\world
+        //   input : hello\"world
+        //   output: "hello\\\"world"
+        //   input : hello\\"world
+        //   output: "hello\\\\\"world"
+        //   input : hello world\
+        //   output: "hello world\\" - note the comment in libuv actually reads "hello world\"
+        //                             but it appears the comment is wrong, it should be "hello world\\"
+        let reverse = '"';
+        let quoteHit = true;
+        for (let i = arg.length; i > 0; i--) {
+            // walk the string in reverse
+            reverse += arg[i - 1];
+            if (quoteHit && arg[i - 1] === '\\') {
+                reverse += '\\';
+            }
+            else if (arg[i - 1] === '"') {
+                quoteHit = true;
+                reverse += '\\';
+            }
+            else {
+                quoteHit = false;
+            }
+        }
+        reverse += '"';
+        return reverse
+            .split('')
+            .reverse()
+            .join('');
+    }
+    _cloneExecOptions(options) {
+        options = options || {};
+        const result = {
+            cwd: options.cwd || process.cwd(),
+            env: options.env || process.env,
+            silent: options.silent || false,
+            windowsVerbatimArguments: options.windowsVerbatimArguments || false,
+            failOnStdErr: options.failOnStdErr || false,
+            ignoreReturnCode: options.ignoreReturnCode || false,
+            delay: options.delay || 10000
+        };
+        result.outStream = options.outStream || process.stdout;
+        result.errStream = options.errStream || process.stderr;
+        return result;
+    }
+    _getSpawnOptions(options, toolPath) {
+        options = options || {};
+        const result = {};
+        result.cwd = options.cwd;
+        result.env = options.env;
+        result['windowsVerbatimArguments'] =
+            options.windowsVerbatimArguments || this._isCmdFile();
+        if (options.windowsVerbatimArguments) {
+            result.argv0 = `"${toolPath}"`;
+        }
+        return result;
+    }
+    /**
+     * Exec a tool.
+     * Output will be streamed to the live console.
+     * Returns promise with return code
+     *
+     * @param     tool     path to tool to exec
+     * @param     options  optional exec options.  See ExecOptions
+     * @returns   number
+     */
+    exec() {
+        return __awaiter(this, void 0, void 0, function* () {
+            // root the tool path if it is unrooted and contains relative pathing
+            if (!ioUtil.isRooted(this.toolPath) &&
+                (this.toolPath.includes('/') ||
+                    (IS_WINDOWS && this.toolPath.includes('\\')))) {
+                // prefer options.cwd if it is specified, however options.cwd may also need to be rooted
+                this.toolPath = path.resolve(process.cwd(), this.options.cwd || process.cwd(), this.toolPath);
+            }
+            // if the tool is only a file name, then resolve it from the PATH
+            // otherwise verify it exists (add extension on Windows if necessary)
+            this.toolPath = yield io.which(this.toolPath, true);
+            return new Promise((resolve, reject) => __awaiter(this, void 0, void 0, function* () {
+                this._debug(`exec tool: ${this.toolPath}`);
+                this._debug('arguments:');
+                for (const arg of this.args) {
+                    this._debug(`   ${arg}`);
+                }
+                const optionsNonNull = this._cloneExecOptions(this.options);
+                if (!optionsNonNull.silent && optionsNonNull.outStream) {
+                    optionsNonNull.outStream.write(this._getCommandString(optionsNonNull) + os.EOL);
+                }
+                const state = new ExecState(optionsNonNull, this.toolPath);
+                state.on('debug', (message) => {
+                    this._debug(message);
+                });
+                if (this.options.cwd && !(yield ioUtil.exists(this.options.cwd))) {
+                    return reject(new Error(`The cwd: ${this.options.cwd} does not exist!`));
+                }
+                const fileName = this._getSpawnFileName();
+                const cp = child.spawn(fileName, this._getSpawnArgs(optionsNonNull), this._getSpawnOptions(this.options, fileName));
+                let stdbuffer = '';
+                if (cp.stdout) {
+                    cp.stdout.on('data', (data) => {
+                        if (this.options.listeners && this.options.listeners.stdout) {
+                            this.options.listeners.stdout(data);
+                        }
+                        if (!optionsNonNull.silent && optionsNonNull.outStream) {
+                            optionsNonNull.outStream.write(data);
+                        }
+                        stdbuffer = this._processLineBuffer(data, stdbuffer, (line) => {
+                            if (this.options.listeners && this.options.listeners.stdline) {
+                                this.options.listeners.stdline(line);
+                            }
+                        });
+                    });
+                }
+                let errbuffer = '';
+                if (cp.stderr) {
+                    cp.stderr.on('data', (data) => {
+                        state.processStderr = true;
+                        if (this.options.listeners && this.options.listeners.stderr) {
+                            this.options.listeners.stderr(data);
+                        }
+                        if (!optionsNonNull.silent &&
+                            optionsNonNull.errStream &&
+                            optionsNonNull.outStream) {
+                            const s = optionsNonNull.failOnStdErr
+                                ? optionsNonNull.errStream
+                                : optionsNonNull.outStream;
+                            s.write(data);
+                        }
+                        errbuffer = this._processLineBuffer(data, errbuffer, (line) => {
+                            if (this.options.listeners && this.options.listeners.errline) {
+                                this.options.listeners.errline(line);
+                            }
+                        });
+                    });
+                }
+                cp.on('error', (err) => {
+                    state.processError = err.message;
+                    state.processExited = true;
+                    state.processClosed = true;
+                    state.CheckComplete();
+                });
+                cp.on('exit', (code) => {
+                    state.processExitCode = code;
+                    state.processExited = true;
+                    this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
+                    state.CheckComplete();
+                });
+                cp.on('close', (code) => {
+                    state.processExitCode = code;
+                    state.processExited = true;
+                    state.processClosed = true;
+                    this._debug(`STDIO streams have closed for tool '${this.toolPath}'`);
+                    state.CheckComplete();
+                });
+                state.on('done', (error, exitCode) => {
+                    if (stdbuffer.length > 0) {
+                        this.emit('stdline', stdbuffer);
+                    }
+                    if (errbuffer.length > 0) {
+                        this.emit('errline', errbuffer);
+                    }
+                    cp.removeAllListeners();
+                    if (error) {
+                        reject(error);
+                    }
+                    else {
+                        resolve(exitCode);
+                    }
+                });
+                if (this.options.input) {
+                    if (!cp.stdin) {
+                        throw new Error('child process missing stdin');
+                    }
+                    cp.stdin.end(this.options.input);
+                }
+            }));
+        });
+    }
+}
+exports.ToolRunner = ToolRunner;
+/**
+ * Convert an arg string to an array of args. Handles escaping
+ *
+ * @param    argString   string of arguments
+ * @returns  string[]    array of arguments
+ */
+function argStringToArray(argString) {
+    const args = [];
+    let inQuotes = false;
+    let escaped = false;
+    let arg = '';
+    function append(c) {
+        // we only escape double quotes.
+        if (escaped && c !== '"') {
+            arg += '\\';
+        }
+        arg += c;
+        escaped = false;
+    }
+    for (let i = 0; i < argString.length; i++) {
+        const c = argString.charAt(i);
+        if (c === '"') {
+            if (!escaped) {
+                inQuotes = !inQuotes;
+            }
+            else {
+                append(c);
+            }
+            continue;
+        }
+        if (c === '\\' && escaped) {
+            append(c);
+            continue;
+        }
+        if (c === '\\' && inQuotes) {
+            escaped = true;
+            continue;
+        }
+        if (c === ' ' && !inQuotes) {
+            if (arg.length > 0) {
+                args.push(arg);
+                arg = '';
+            }
+            continue;
+        }
+        append(c);
+    }
+    if (arg.length > 0) {
+        args.push(arg.trim());
+    }
+    return args;
+}
+exports.argStringToArray = argStringToArray;
+class ExecState extends events.EventEmitter {
+    constructor(options, toolPath) {
+        super();
+        this.processClosed = false; // tracks whether the process has exited and stdio is closed
+        this.processError = '';
+        this.processExitCode = 0;
+        this.processExited = false; // tracks whether the process has exited
+        this.processStderr = false; // tracks whether stderr was written to
+        this.delay = 10000; // 10 seconds
+        this.done = false;
+        this.timeout = null;
+        if (!toolPath) {
+            throw new Error('toolPath must not be empty');
+        }
+        this.options = options;
+        this.toolPath = toolPath;
+        if (options.delay) {
+            this.delay = options.delay;
+        }
+    }
+    CheckComplete() {
+        if (this.done) {
+            return;
+        }
+        if (this.processClosed) {
+            this._setResult();
+        }
+        else if (this.processExited) {
+            this.timeout = timers_1.setTimeout(ExecState.HandleTimeout, this.delay, this);
+        }
+    }
+    _debug(message) {
+        this.emit('debug', message);
+    }
+    _setResult() {
+        // determine whether there is an error
+        let error;
+        if (this.processExited) {
+            if (this.processError) {
+                error = new Error(`There was an error when attempting to execute the process '${this.toolPath}'. This may indicate the process failed to start. Error: ${this.processError}`);
+            }
+            else if (this.processExitCode !== 0 && !this.options.ignoreReturnCode) {
+                error = new Error(`The process '${this.toolPath}' failed with exit code ${this.processExitCode}`);
+            }
+            else if (this.processStderr && this.options.failOnStdErr) {
+                error = new Error(`The process '${this.toolPath}' failed because one or more lines were written to the STDERR stream`);
+            }
+        }
+        // clear the timeout
+        if (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = null;
+        }
+        this.done = true;
+        this.emit('done', error, this.processExitCode);
+    }
+    static HandleTimeout(state) {
+        if (state.done) {
+            return;
+        }
+        if (!state.processClosed && state.processExited) {
+            const message = `The STDIO streams did not close within ${state.delay /
+                1000} seconds of the exit event from process '${state.toolPath}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`;
+            state._debug(message);
+        }
+        state._setResult();
+    }
+}
+//# sourceMappingURL=toolrunner.js.map
+
+/***/ }),
+
 /***/ 1648:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -151,7 +2000,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getApiBaseUrl = exports.getProxyFetch = exports.getProxyAgentDispatcher = exports.getProxyAgent = exports.getAuthString = void 0;
-const httpClient = __importStar(__nccwpck_require__(9659));
+const httpClient = __importStar(__nccwpck_require__(4844));
 const undici_1 = __nccwpck_require__(6752);
 function getAuthString(token, options) {
     if (!token && !options.auth) {
@@ -255,7 +2104,95 @@ exports.getOctokitOptions = getOctokitOptions;
 
 /***/ }),
 
-/***/ 9659:
+/***/ 4552:
+/***/ (function(__unused_webpack_module, exports) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PersonalAccessTokenCredentialHandler = exports.BearerCredentialHandler = exports.BasicCredentialHandler = void 0;
+class BasicCredentialHandler {
+    constructor(username, password) {
+        this.username = username;
+        this.password = password;
+    }
+    prepareRequest(options) {
+        if (!options.headers) {
+            throw Error('The request has no headers');
+        }
+        options.headers['Authorization'] = `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`;
+    }
+    // This handler cannot handle 401
+    canHandleAuthentication() {
+        return false;
+    }
+    handleAuthentication() {
+        return __awaiter(this, void 0, void 0, function* () {
+            throw new Error('not implemented');
+        });
+    }
+}
+exports.BasicCredentialHandler = BasicCredentialHandler;
+class BearerCredentialHandler {
+    constructor(token) {
+        this.token = token;
+    }
+    // currently implements pre-authorization
+    // TODO: support preAuth = false where it hooks on 401
+    prepareRequest(options) {
+        if (!options.headers) {
+            throw Error('The request has no headers');
+        }
+        options.headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    // This handler cannot handle 401
+    canHandleAuthentication() {
+        return false;
+    }
+    handleAuthentication() {
+        return __awaiter(this, void 0, void 0, function* () {
+            throw new Error('not implemented');
+        });
+    }
+}
+exports.BearerCredentialHandler = BearerCredentialHandler;
+class PersonalAccessTokenCredentialHandler {
+    constructor(token) {
+        this.token = token;
+    }
+    // currently implements pre-authorization
+    // TODO: support preAuth = false where it hooks on 401
+    prepareRequest(options) {
+        if (!options.headers) {
+            throw Error('The request has no headers');
+        }
+        options.headers['Authorization'] = `Basic ${Buffer.from(`PAT:${this.token}`).toString('base64')}`;
+    }
+    // This handler cannot handle 401
+    canHandleAuthentication() {
+        return false;
+    }
+    handleAuthentication() {
+        return __awaiter(this, void 0, void 0, function* () {
+            throw new Error('not implemented');
+        });
+    }
+}
+exports.PersonalAccessTokenCredentialHandler = PersonalAccessTokenCredentialHandler;
+//# sourceMappingURL=auth.js.map
+
+/***/ }),
+
+/***/ 4844:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -297,7 +2234,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.HttpClient = exports.isHttps = exports.HttpClientResponse = exports.HttpClientError = exports.getProxyUrl = exports.MediaTypes = exports.Headers = exports.HttpCodes = void 0;
 const http = __importStar(__nccwpck_require__(8611));
 const https = __importStar(__nccwpck_require__(5692));
-const pm = __importStar(__nccwpck_require__(3335));
+const pm = __importStar(__nccwpck_require__(4988));
 const tunnel = __importStar(__nccwpck_require__(770));
 const undici_1 = __nccwpck_require__(6752);
 var HttpCodes;
@@ -914,7 +2851,7 @@ const lowercaseKeys = (obj) => Object.keys(obj).reduce((c, k) => ((c[k.toLowerCa
 
 /***/ }),
 
-/***/ 3335:
+/***/ 4988:
 /***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
@@ -1013,6 +2950,502 @@ class DecodedURL extends URL {
     }
 }
 //# sourceMappingURL=proxy.js.map
+
+/***/ }),
+
+/***/ 5207:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var _a;
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getCmdPath = exports.tryGetExecutablePath = exports.isRooted = exports.isDirectory = exports.exists = exports.READONLY = exports.UV_FS_O_EXLOCK = exports.IS_WINDOWS = exports.unlink = exports.symlink = exports.stat = exports.rmdir = exports.rm = exports.rename = exports.readlink = exports.readdir = exports.open = exports.mkdir = exports.lstat = exports.copyFile = exports.chmod = void 0;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+_a = fs.promises
+// export const {open} = 'fs'
+, exports.chmod = _a.chmod, exports.copyFile = _a.copyFile, exports.lstat = _a.lstat, exports.mkdir = _a.mkdir, exports.open = _a.open, exports.readdir = _a.readdir, exports.readlink = _a.readlink, exports.rename = _a.rename, exports.rm = _a.rm, exports.rmdir = _a.rmdir, exports.stat = _a.stat, exports.symlink = _a.symlink, exports.unlink = _a.unlink;
+// export const {open} = 'fs'
+exports.IS_WINDOWS = process.platform === 'win32';
+// See https://github.com/nodejs/node/blob/d0153aee367422d0858105abec186da4dff0a0c5/deps/uv/include/uv/win.h#L691
+exports.UV_FS_O_EXLOCK = 0x10000000;
+exports.READONLY = fs.constants.O_RDONLY;
+function exists(fsPath) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            yield exports.stat(fsPath);
+        }
+        catch (err) {
+            if (err.code === 'ENOENT') {
+                return false;
+            }
+            throw err;
+        }
+        return true;
+    });
+}
+exports.exists = exists;
+function isDirectory(fsPath, useStat = false) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const stats = useStat ? yield exports.stat(fsPath) : yield exports.lstat(fsPath);
+        return stats.isDirectory();
+    });
+}
+exports.isDirectory = isDirectory;
+/**
+ * On OSX/Linux, true if path starts with '/'. On Windows, true for paths like:
+ * \, \hello, \\hello\share, C:, and C:\hello (and corresponding alternate separator cases).
+ */
+function isRooted(p) {
+    p = normalizeSeparators(p);
+    if (!p) {
+        throw new Error('isRooted() parameter "p" cannot be empty');
+    }
+    if (exports.IS_WINDOWS) {
+        return (p.startsWith('\\') || /^[A-Z]:/i.test(p) // e.g. \ or \hello or \\hello
+        ); // e.g. C: or C:\hello
+    }
+    return p.startsWith('/');
+}
+exports.isRooted = isRooted;
+/**
+ * Best effort attempt to determine whether a file exists and is executable.
+ * @param filePath    file path to check
+ * @param extensions  additional file extensions to try
+ * @return if file exists and is executable, returns the file path. otherwise empty string.
+ */
+function tryGetExecutablePath(filePath, extensions) {
+    return __awaiter(this, void 0, void 0, function* () {
+        let stats = undefined;
+        try {
+            // test file exists
+            stats = yield exports.stat(filePath);
+        }
+        catch (err) {
+            if (err.code !== 'ENOENT') {
+                // eslint-disable-next-line no-console
+                console.log(`Unexpected error attempting to determine if executable file exists '${filePath}': ${err}`);
+            }
+        }
+        if (stats && stats.isFile()) {
+            if (exports.IS_WINDOWS) {
+                // on Windows, test for valid extension
+                const upperExt = path.extname(filePath).toUpperCase();
+                if (extensions.some(validExt => validExt.toUpperCase() === upperExt)) {
+                    return filePath;
+                }
+            }
+            else {
+                if (isUnixExecutable(stats)) {
+                    return filePath;
+                }
+            }
+        }
+        // try each extension
+        const originalFilePath = filePath;
+        for (const extension of extensions) {
+            filePath = originalFilePath + extension;
+            stats = undefined;
+            try {
+                stats = yield exports.stat(filePath);
+            }
+            catch (err) {
+                if (err.code !== 'ENOENT') {
+                    // eslint-disable-next-line no-console
+                    console.log(`Unexpected error attempting to determine if executable file exists '${filePath}': ${err}`);
+                }
+            }
+            if (stats && stats.isFile()) {
+                if (exports.IS_WINDOWS) {
+                    // preserve the case of the actual file (since an extension was appended)
+                    try {
+                        const directory = path.dirname(filePath);
+                        const upperName = path.basename(filePath).toUpperCase();
+                        for (const actualName of yield exports.readdir(directory)) {
+                            if (upperName === actualName.toUpperCase()) {
+                                filePath = path.join(directory, actualName);
+                                break;
+                            }
+                        }
+                    }
+                    catch (err) {
+                        // eslint-disable-next-line no-console
+                        console.log(`Unexpected error attempting to determine the actual case of the file '${filePath}': ${err}`);
+                    }
+                    return filePath;
+                }
+                else {
+                    if (isUnixExecutable(stats)) {
+                        return filePath;
+                    }
+                }
+            }
+        }
+        return '';
+    });
+}
+exports.tryGetExecutablePath = tryGetExecutablePath;
+function normalizeSeparators(p) {
+    p = p || '';
+    if (exports.IS_WINDOWS) {
+        // convert slashes on Windows
+        p = p.replace(/\//g, '\\');
+        // remove redundant slashes
+        return p.replace(/\\\\+/g, '\\');
+    }
+    // remove redundant slashes
+    return p.replace(/\/\/+/g, '/');
+}
+// on Mac/Linux, test the execute bit
+//     R   W  X  R  W X R W X
+//   256 128 64 32 16 8 4 2 1
+function isUnixExecutable(stats) {
+    return ((stats.mode & 1) > 0 ||
+        ((stats.mode & 8) > 0 && stats.gid === process.getgid()) ||
+        ((stats.mode & 64) > 0 && stats.uid === process.getuid()));
+}
+// Get the path of cmd.exe in windows
+function getCmdPath() {
+    var _a;
+    return (_a = process.env['COMSPEC']) !== null && _a !== void 0 ? _a : `cmd.exe`;
+}
+exports.getCmdPath = getCmdPath;
+//# sourceMappingURL=io-util.js.map
+
+/***/ }),
+
+/***/ 4994:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.findInPath = exports.which = exports.mkdirP = exports.rmRF = exports.mv = exports.cp = void 0;
+const assert_1 = __nccwpck_require__(2613);
+const path = __importStar(__nccwpck_require__(6928));
+const ioUtil = __importStar(__nccwpck_require__(5207));
+/**
+ * Copies a file or folder.
+ * Based off of shelljs - https://github.com/shelljs/shelljs/blob/9237f66c52e5daa40458f94f9565e18e8132f5a6/src/cp.js
+ *
+ * @param     source    source path
+ * @param     dest      destination path
+ * @param     options   optional. See CopyOptions.
+ */
+function cp(source, dest, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { force, recursive, copySourceDirectory } = readCopyOptions(options);
+        const destStat = (yield ioUtil.exists(dest)) ? yield ioUtil.stat(dest) : null;
+        // Dest is an existing file, but not forcing
+        if (destStat && destStat.isFile() && !force) {
+            return;
+        }
+        // If dest is an existing directory, should copy inside.
+        const newDest = destStat && destStat.isDirectory() && copySourceDirectory
+            ? path.join(dest, path.basename(source))
+            : dest;
+        if (!(yield ioUtil.exists(source))) {
+            throw new Error(`no such file or directory: ${source}`);
+        }
+        const sourceStat = yield ioUtil.stat(source);
+        if (sourceStat.isDirectory()) {
+            if (!recursive) {
+                throw new Error(`Failed to copy. ${source} is a directory, but tried to copy without recursive flag.`);
+            }
+            else {
+                yield cpDirRecursive(source, newDest, 0, force);
+            }
+        }
+        else {
+            if (path.relative(source, newDest) === '') {
+                // a file cannot be copied to itself
+                throw new Error(`'${newDest}' and '${source}' are the same file`);
+            }
+            yield copyFile(source, newDest, force);
+        }
+    });
+}
+exports.cp = cp;
+/**
+ * Moves a path.
+ *
+ * @param     source    source path
+ * @param     dest      destination path
+ * @param     options   optional. See MoveOptions.
+ */
+function mv(source, dest, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (yield ioUtil.exists(dest)) {
+            let destExists = true;
+            if (yield ioUtil.isDirectory(dest)) {
+                // If dest is directory copy src into dest
+                dest = path.join(dest, path.basename(source));
+                destExists = yield ioUtil.exists(dest);
+            }
+            if (destExists) {
+                if (options.force == null || options.force) {
+                    yield rmRF(dest);
+                }
+                else {
+                    throw new Error('Destination already exists');
+                }
+            }
+        }
+        yield mkdirP(path.dirname(dest));
+        yield ioUtil.rename(source, dest);
+    });
+}
+exports.mv = mv;
+/**
+ * Remove a path recursively with force
+ *
+ * @param inputPath path to remove
+ */
+function rmRF(inputPath) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (ioUtil.IS_WINDOWS) {
+            // Check for invalid characters
+            // https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+            if (/[*"<>|]/.test(inputPath)) {
+                throw new Error('File path must not contain `*`, `"`, `<`, `>` or `|` on Windows');
+            }
+        }
+        try {
+            // note if path does not exist, error is silent
+            yield ioUtil.rm(inputPath, {
+                force: true,
+                maxRetries: 3,
+                recursive: true,
+                retryDelay: 300
+            });
+        }
+        catch (err) {
+            throw new Error(`File was unable to be removed ${err}`);
+        }
+    });
+}
+exports.rmRF = rmRF;
+/**
+ * Make a directory.  Creates the full path with folders in between
+ * Will throw if it fails
+ *
+ * @param   fsPath        path to create
+ * @returns Promise<void>
+ */
+function mkdirP(fsPath) {
+    return __awaiter(this, void 0, void 0, function* () {
+        assert_1.ok(fsPath, 'a path argument must be provided');
+        yield ioUtil.mkdir(fsPath, { recursive: true });
+    });
+}
+exports.mkdirP = mkdirP;
+/**
+ * Returns path of a tool had the tool actually been invoked.  Resolves via paths.
+ * If you check and the tool does not exist, it will throw.
+ *
+ * @param     tool              name of the tool
+ * @param     check             whether to check if tool exists
+ * @returns   Promise<string>   path to tool
+ */
+function which(tool, check) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (!tool) {
+            throw new Error("parameter 'tool' is required");
+        }
+        // recursive when check=true
+        if (check) {
+            const result = yield which(tool, false);
+            if (!result) {
+                if (ioUtil.IS_WINDOWS) {
+                    throw new Error(`Unable to locate executable file: ${tool}. Please verify either the file path exists or the file can be found within a directory specified by the PATH environment variable. Also verify the file has a valid extension for an executable file.`);
+                }
+                else {
+                    throw new Error(`Unable to locate executable file: ${tool}. Please verify either the file path exists or the file can be found within a directory specified by the PATH environment variable. Also check the file mode to verify the file is executable.`);
+                }
+            }
+            return result;
+        }
+        const matches = yield findInPath(tool);
+        if (matches && matches.length > 0) {
+            return matches[0];
+        }
+        return '';
+    });
+}
+exports.which = which;
+/**
+ * Returns a list of all occurrences of the given tool on the system path.
+ *
+ * @returns   Promise<string[]>  the paths of the tool
+ */
+function findInPath(tool) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (!tool) {
+            throw new Error("parameter 'tool' is required");
+        }
+        // build the list of extensions to try
+        const extensions = [];
+        if (ioUtil.IS_WINDOWS && process.env['PATHEXT']) {
+            for (const extension of process.env['PATHEXT'].split(path.delimiter)) {
+                if (extension) {
+                    extensions.push(extension);
+                }
+            }
+        }
+        // if it's rooted, return it if exists. otherwise return empty.
+        if (ioUtil.isRooted(tool)) {
+            const filePath = yield ioUtil.tryGetExecutablePath(tool, extensions);
+            if (filePath) {
+                return [filePath];
+            }
+            return [];
+        }
+        // if any path separators, return empty
+        if (tool.includes(path.sep)) {
+            return [];
+        }
+        // build the list of directories
+        //
+        // Note, technically "where" checks the current directory on Windows. From a toolkit perspective,
+        // it feels like we should not do this. Checking the current directory seems like more of a use
+        // case of a shell, and the which() function exposed by the toolkit should strive for consistency
+        // across platforms.
+        const directories = [];
+        if (process.env.PATH) {
+            for (const p of process.env.PATH.split(path.delimiter)) {
+                if (p) {
+                    directories.push(p);
+                }
+            }
+        }
+        // find all matches
+        const matches = [];
+        for (const directory of directories) {
+            const filePath = yield ioUtil.tryGetExecutablePath(path.join(directory, tool), extensions);
+            if (filePath) {
+                matches.push(filePath);
+            }
+        }
+        return matches;
+    });
+}
+exports.findInPath = findInPath;
+function readCopyOptions(options) {
+    const force = options.force == null ? true : options.force;
+    const recursive = Boolean(options.recursive);
+    const copySourceDirectory = options.copySourceDirectory == null
+        ? true
+        : Boolean(options.copySourceDirectory);
+    return { force, recursive, copySourceDirectory };
+}
+function cpDirRecursive(sourceDir, destDir, currentDepth, force) {
+    return __awaiter(this, void 0, void 0, function* () {
+        // Ensure there is not a run away recursive copy
+        if (currentDepth >= 255)
+            return;
+        currentDepth++;
+        yield mkdirP(destDir);
+        const files = yield ioUtil.readdir(sourceDir);
+        for (const fileName of files) {
+            const srcFile = `${sourceDir}/${fileName}`;
+            const destFile = `${destDir}/${fileName}`;
+            const srcFileStat = yield ioUtil.lstat(srcFile);
+            if (srcFileStat.isDirectory()) {
+                // Recurse
+                yield cpDirRecursive(srcFile, destFile, currentDepth, force);
+            }
+            else {
+                yield copyFile(srcFile, destFile, force);
+            }
+        }
+        // Change the mode for the newly created directory
+        yield ioUtil.chmod(destDir, (yield ioUtil.stat(sourceDir)).mode);
+    });
+}
+// Buffered file copy
+function copyFile(srcFile, destFile, force) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if ((yield ioUtil.lstat(srcFile)).isSymbolicLink()) {
+            // unlink/re-link it
+            try {
+                yield ioUtil.lstat(destFile);
+                yield ioUtil.unlink(destFile);
+            }
+            catch (e) {
+                // Try to override file permission
+                if (e.code === 'EPERM') {
+                    yield ioUtil.chmod(destFile, '0666');
+                    yield ioUtil.unlink(destFile);
+                }
+                // other errors = it doesn't exist, no work to do
+            }
+            // Copy over symlink
+            const symlinkFull = yield ioUtil.readlink(srcFile);
+            yield ioUtil.symlink(symlinkFull, destFile, ioUtil.IS_WINDOWS ? 'junction' : null);
+        }
+        else if (!(yield ioUtil.exists(destFile)) || force) {
+            yield ioUtil.copyFile(srcFile, destFile);
+        }
+    });
+}
+//# sourceMappingURL=io.js.map
 
 /***/ }),
 
@@ -4717,264 +7150,6 @@ var request = withDefaults(import_endpoint.endpoint, {
 
 /***/ }),
 
-/***/ 5183:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.req = exports.json = exports.toBuffer = void 0;
-const http = __importStar(__nccwpck_require__(8611));
-const https = __importStar(__nccwpck_require__(5692));
-async function toBuffer(stream) {
-    let length = 0;
-    const chunks = [];
-    for await (const chunk of stream) {
-        length += chunk.length;
-        chunks.push(chunk);
-    }
-    return Buffer.concat(chunks, length);
-}
-exports.toBuffer = toBuffer;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function json(stream) {
-    const buf = await toBuffer(stream);
-    const str = buf.toString('utf8');
-    try {
-        return JSON.parse(str);
-    }
-    catch (_err) {
-        const err = _err;
-        err.message += ` (input: ${str})`;
-        throw err;
-    }
-}
-exports.json = json;
-function req(url, opts = {}) {
-    const href = typeof url === 'string' ? url : url.href;
-    const req = (href.startsWith('https:') ? https : http).request(url, opts);
-    const promise = new Promise((resolve, reject) => {
-        req
-            .once('response', resolve)
-            .once('error', reject)
-            .end();
-    });
-    req.then = promise.then.bind(promise);
-    return req;
-}
-exports.req = req;
-//# sourceMappingURL=helpers.js.map
-
-/***/ }),
-
-/***/ 8894:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
-var __exportStar = (this && this.__exportStar) || function(m, exports) {
-    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.Agent = void 0;
-const net = __importStar(__nccwpck_require__(9278));
-const http = __importStar(__nccwpck_require__(8611));
-const https_1 = __nccwpck_require__(5692);
-__exportStar(__nccwpck_require__(5183), exports);
-const INTERNAL = Symbol('AgentBaseInternalState');
-class Agent extends http.Agent {
-    constructor(opts) {
-        super(opts);
-        this[INTERNAL] = {};
-    }
-    /**
-     * Determine whether this is an `http` or `https` request.
-     */
-    isSecureEndpoint(options) {
-        if (options) {
-            // First check the `secureEndpoint` property explicitly, since this
-            // means that a parent `Agent` is "passing through" to this instance.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            if (typeof options.secureEndpoint === 'boolean') {
-                return options.secureEndpoint;
-            }
-            // If no explicit `secure` endpoint, check if `protocol` property is
-            // set. This will usually be the case since using a full string URL
-            // or `URL` instance should be the most common usage.
-            if (typeof options.protocol === 'string') {
-                return options.protocol === 'https:';
-            }
-        }
-        // Finally, if no `protocol` property was set, then fall back to
-        // checking the stack trace of the current call stack, and try to
-        // detect the "https" module.
-        const { stack } = new Error();
-        if (typeof stack !== 'string')
-            return false;
-        return stack
-            .split('\n')
-            .some((l) => l.indexOf('(https.js:') !== -1 ||
-            l.indexOf('node:https:') !== -1);
-    }
-    // In order to support async signatures in `connect()` and Node's native
-    // connection pooling in `http.Agent`, the array of sockets for each origin
-    // has to be updated synchronously. This is so the length of the array is
-    // accurate when `addRequest()` is next called. We achieve this by creating a
-    // fake socket and adding it to `sockets[origin]` and incrementing
-    // `totalSocketCount`.
-    incrementSockets(name) {
-        // If `maxSockets` and `maxTotalSockets` are both Infinity then there is no
-        // need to create a fake socket because Node.js native connection pooling
-        // will never be invoked.
-        if (this.maxSockets === Infinity && this.maxTotalSockets === Infinity) {
-            return null;
-        }
-        // All instances of `sockets` are expected TypeScript errors. The
-        // alternative is to add it as a private property of this class but that
-        // will break TypeScript subclassing.
-        if (!this.sockets[name]) {
-            // @ts-expect-error `sockets` is readonly in `@types/node`
-            this.sockets[name] = [];
-        }
-        const fakeSocket = new net.Socket({ writable: false });
-        this.sockets[name].push(fakeSocket);
-        // @ts-expect-error `totalSocketCount` isn't defined in `@types/node`
-        this.totalSocketCount++;
-        return fakeSocket;
-    }
-    decrementSockets(name, socket) {
-        if (!this.sockets[name] || socket === null) {
-            return;
-        }
-        const sockets = this.sockets[name];
-        const index = sockets.indexOf(socket);
-        if (index !== -1) {
-            sockets.splice(index, 1);
-            // @ts-expect-error  `totalSocketCount` isn't defined in `@types/node`
-            this.totalSocketCount--;
-            if (sockets.length === 0) {
-                // @ts-expect-error `sockets` is readonly in `@types/node`
-                delete this.sockets[name];
-            }
-        }
-    }
-    // In order to properly update the socket pool, we need to call `getName()` on
-    // the core `https.Agent` if it is a secureEndpoint.
-    getName(options) {
-        const secureEndpoint = this.isSecureEndpoint(options);
-        if (secureEndpoint) {
-            // @ts-expect-error `getName()` isn't defined in `@types/node`
-            return https_1.Agent.prototype.getName.call(this, options);
-        }
-        // @ts-expect-error `getName()` isn't defined in `@types/node`
-        return super.getName(options);
-    }
-    createSocket(req, options, cb) {
-        const connectOpts = {
-            ...options,
-            secureEndpoint: this.isSecureEndpoint(options),
-        };
-        const name = this.getName(connectOpts);
-        const fakeSocket = this.incrementSockets(name);
-        Promise.resolve()
-            .then(() => this.connect(req, connectOpts))
-            .then((socket) => {
-            this.decrementSockets(name, fakeSocket);
-            if (socket instanceof http.Agent) {
-                try {
-                    // @ts-expect-error `addRequest()` isn't defined in `@types/node`
-                    return socket.addRequest(req, connectOpts);
-                }
-                catch (err) {
-                    return cb(err);
-                }
-            }
-            this[INTERNAL].currentSocket = socket;
-            // @ts-expect-error `createSocket()` isn't defined in `@types/node`
-            super.createSocket(req, options, cb);
-        }, (err) => {
-            this.decrementSockets(name, fakeSocket);
-            cb(err);
-        });
-    }
-    createConnection() {
-        const socket = this[INTERNAL].currentSocket;
-        this[INTERNAL].currentSocket = undefined;
-        if (!socket) {
-            throw new Error('No socket was returned in the `connect()` function');
-        }
-        return socket;
-    }
-    get defaultPort() {
-        return (this[INTERNAL].defaultPort ??
-            (this.protocol === 'https:' ? 443 : 80));
-    }
-    set defaultPort(v) {
-        if (this[INTERNAL]) {
-            this[INTERNAL].defaultPort = v;
-        }
-    }
-    get protocol() {
-        return (this[INTERNAL].protocol ??
-            (this.isSecureEndpoint() ? 'https:' : 'http:'));
-    }
-    set protocol(v) {
-        if (this[INTERNAL]) {
-            this[INTERNAL].protocol = v;
-        }
-    }
-}
-exports.Agent = Agent;
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
 /***/ 2732:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -5156,871 +7331,6 @@ function removeHook(state, name, method) {
 
 /***/ }),
 
-/***/ 6110:
-/***/ ((module, exports, __nccwpck_require__) => {
-
-/* eslint-env browser */
-
-/**
- * This is the web browser implementation of `debug()`.
- */
-
-exports.formatArgs = formatArgs;
-exports.save = save;
-exports.load = load;
-exports.useColors = useColors;
-exports.storage = localstorage();
-exports.destroy = (() => {
-	let warned = false;
-
-	return () => {
-		if (!warned) {
-			warned = true;
-			console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
-		}
-	};
-})();
-
-/**
- * Colors.
- */
-
-exports.colors = [
-	'#0000CC',
-	'#0000FF',
-	'#0033CC',
-	'#0033FF',
-	'#0066CC',
-	'#0066FF',
-	'#0099CC',
-	'#0099FF',
-	'#00CC00',
-	'#00CC33',
-	'#00CC66',
-	'#00CC99',
-	'#00CCCC',
-	'#00CCFF',
-	'#3300CC',
-	'#3300FF',
-	'#3333CC',
-	'#3333FF',
-	'#3366CC',
-	'#3366FF',
-	'#3399CC',
-	'#3399FF',
-	'#33CC00',
-	'#33CC33',
-	'#33CC66',
-	'#33CC99',
-	'#33CCCC',
-	'#33CCFF',
-	'#6600CC',
-	'#6600FF',
-	'#6633CC',
-	'#6633FF',
-	'#66CC00',
-	'#66CC33',
-	'#9900CC',
-	'#9900FF',
-	'#9933CC',
-	'#9933FF',
-	'#99CC00',
-	'#99CC33',
-	'#CC0000',
-	'#CC0033',
-	'#CC0066',
-	'#CC0099',
-	'#CC00CC',
-	'#CC00FF',
-	'#CC3300',
-	'#CC3333',
-	'#CC3366',
-	'#CC3399',
-	'#CC33CC',
-	'#CC33FF',
-	'#CC6600',
-	'#CC6633',
-	'#CC9900',
-	'#CC9933',
-	'#CCCC00',
-	'#CCCC33',
-	'#FF0000',
-	'#FF0033',
-	'#FF0066',
-	'#FF0099',
-	'#FF00CC',
-	'#FF00FF',
-	'#FF3300',
-	'#FF3333',
-	'#FF3366',
-	'#FF3399',
-	'#FF33CC',
-	'#FF33FF',
-	'#FF6600',
-	'#FF6633',
-	'#FF9900',
-	'#FF9933',
-	'#FFCC00',
-	'#FFCC33'
-];
-
-/**
- * Currently only WebKit-based Web Inspectors, Firefox >= v31,
- * and the Firebug extension (any Firefox version) are known
- * to support "%c" CSS customizations.
- *
- * TODO: add a `localStorage` variable to explicitly enable/disable colors
- */
-
-// eslint-disable-next-line complexity
-function useColors() {
-	// NB: In an Electron preload script, document will be defined but not fully
-	// initialized. Since we know we're in Chrome, we'll just detect this case
-	// explicitly
-	if (typeof window !== 'undefined' && window.process && (window.process.type === 'renderer' || window.process.__nwjs)) {
-		return true;
-	}
-
-	// Internet Explorer and Edge do not support colors.
-	if (typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/(edge|trident)\/(\d+)/)) {
-		return false;
-	}
-
-	let m;
-
-	// Is webkit? http://stackoverflow.com/a/16459606/376773
-	// document is undefined in react-native: https://github.com/facebook/react-native/pull/1632
-	// eslint-disable-next-line no-return-assign
-	return (typeof document !== 'undefined' && document.documentElement && document.documentElement.style && document.documentElement.style.WebkitAppearance) ||
-		// Is firebug? http://stackoverflow.com/a/398120/376773
-		(typeof window !== 'undefined' && window.console && (window.console.firebug || (window.console.exception && window.console.table))) ||
-		// Is firefox >= v31?
-		// https://developer.mozilla.org/en-US/docs/Tools/Web_Console#Styling_messages
-		(typeof navigator !== 'undefined' && navigator.userAgent && (m = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m[1], 10) >= 31) ||
-		// Double check webkit in userAgent just in case we are in a worker
-		(typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/));
-}
-
-/**
- * Colorize log arguments if enabled.
- *
- * @api public
- */
-
-function formatArgs(args) {
-	args[0] = (this.useColors ? '%c' : '') +
-		this.namespace +
-		(this.useColors ? ' %c' : ' ') +
-		args[0] +
-		(this.useColors ? '%c ' : ' ') +
-		'+' + module.exports.humanize(this.diff);
-
-	if (!this.useColors) {
-		return;
-	}
-
-	const c = 'color: ' + this.color;
-	args.splice(1, 0, c, 'color: inherit');
-
-	// The final "%c" is somewhat tricky, because there could be other
-	// arguments passed either before or after the %c, so we need to
-	// figure out the correct index to insert the CSS into
-	let index = 0;
-	let lastC = 0;
-	args[0].replace(/%[a-zA-Z%]/g, match => {
-		if (match === '%%') {
-			return;
-		}
-		index++;
-		if (match === '%c') {
-			// We only are interested in the *last* %c
-			// (the user may have provided their own)
-			lastC = index;
-		}
-	});
-
-	args.splice(lastC, 0, c);
-}
-
-/**
- * Invokes `console.debug()` when available.
- * No-op when `console.debug` is not a "function".
- * If `console.debug` is not available, falls back
- * to `console.log`.
- *
- * @api public
- */
-exports.log = console.debug || console.log || (() => {});
-
-/**
- * Save `namespaces`.
- *
- * @param {String} namespaces
- * @api private
- */
-function save(namespaces) {
-	try {
-		if (namespaces) {
-			exports.storage.setItem('debug', namespaces);
-		} else {
-			exports.storage.removeItem('debug');
-		}
-	} catch (error) {
-		// Swallow
-		// XXX (@Qix-) should we be logging these?
-	}
-}
-
-/**
- * Load `namespaces`.
- *
- * @return {String} returns the previously persisted debug modes
- * @api private
- */
-function load() {
-	let r;
-	try {
-		r = exports.storage.getItem('debug') || exports.storage.getItem('DEBUG') ;
-	} catch (error) {
-		// Swallow
-		// XXX (@Qix-) should we be logging these?
-	}
-
-	// If debug isn't set in LS, and we're in Electron, try to load $DEBUG
-	if (!r && typeof process !== 'undefined' && 'env' in process) {
-		r = process.env.DEBUG;
-	}
-
-	return r;
-}
-
-/**
- * Localstorage attempts to return the localstorage.
- *
- * This is necessary because safari throws
- * when a user disables cookies/localstorage
- * and you attempt to access it.
- *
- * @return {LocalStorage}
- * @api private
- */
-
-function localstorage() {
-	try {
-		// TVMLKit (Apple TV JS Runtime) does not have a window object, just localStorage in the global context
-		// The Browser also has localStorage in the global context.
-		return localStorage;
-	} catch (error) {
-		// Swallow
-		// XXX (@Qix-) should we be logging these?
-	}
-}
-
-module.exports = __nccwpck_require__(897)(exports);
-
-const {formatters} = module.exports;
-
-/**
- * Map %j to `JSON.stringify()`, since no Web Inspectors do that by default.
- */
-
-formatters.j = function (v) {
-	try {
-		return JSON.stringify(v);
-	} catch (error) {
-		return '[UnexpectedJSONParseError]: ' + error.message;
-	}
-};
-
-
-/***/ }),
-
-/***/ 897:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-
-/**
- * This is the common logic for both the Node.js and web browser
- * implementations of `debug()`.
- */
-
-function setup(env) {
-	createDebug.debug = createDebug;
-	createDebug.default = createDebug;
-	createDebug.coerce = coerce;
-	createDebug.disable = disable;
-	createDebug.enable = enable;
-	createDebug.enabled = enabled;
-	createDebug.humanize = __nccwpck_require__(744);
-	createDebug.destroy = destroy;
-
-	Object.keys(env).forEach(key => {
-		createDebug[key] = env[key];
-	});
-
-	/**
-	* The currently active debug mode names, and names to skip.
-	*/
-
-	createDebug.names = [];
-	createDebug.skips = [];
-
-	/**
-	* Map of special "%n" handling functions, for the debug "format" argument.
-	*
-	* Valid key names are a single, lower or upper-case letter, i.e. "n" and "N".
-	*/
-	createDebug.formatters = {};
-
-	/**
-	* Selects a color for a debug namespace
-	* @param {String} namespace The namespace string for the debug instance to be colored
-	* @return {Number|String} An ANSI color code for the given namespace
-	* @api private
-	*/
-	function selectColor(namespace) {
-		let hash = 0;
-
-		for (let i = 0; i < namespace.length; i++) {
-			hash = ((hash << 5) - hash) + namespace.charCodeAt(i);
-			hash |= 0; // Convert to 32bit integer
-		}
-
-		return createDebug.colors[Math.abs(hash) % createDebug.colors.length];
-	}
-	createDebug.selectColor = selectColor;
-
-	/**
-	* Create a debugger with the given `namespace`.
-	*
-	* @param {String} namespace
-	* @return {Function}
-	* @api public
-	*/
-	function createDebug(namespace) {
-		let prevTime;
-		let enableOverride = null;
-		let namespacesCache;
-		let enabledCache;
-
-		function debug(...args) {
-			// Disabled?
-			if (!debug.enabled) {
-				return;
-			}
-
-			const self = debug;
-
-			// Set `diff` timestamp
-			const curr = Number(new Date());
-			const ms = curr - (prevTime || curr);
-			self.diff = ms;
-			self.prev = prevTime;
-			self.curr = curr;
-			prevTime = curr;
-
-			args[0] = createDebug.coerce(args[0]);
-
-			if (typeof args[0] !== 'string') {
-				// Anything else let's inspect with %O
-				args.unshift('%O');
-			}
-
-			// Apply any `formatters` transformations
-			let index = 0;
-			args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
-				// If we encounter an escaped % then don't increase the array index
-				if (match === '%%') {
-					return '%';
-				}
-				index++;
-				const formatter = createDebug.formatters[format];
-				if (typeof formatter === 'function') {
-					const val = args[index];
-					match = formatter.call(self, val);
-
-					// Now we need to remove `args[index]` since it's inlined in the `format`
-					args.splice(index, 1);
-					index--;
-				}
-				return match;
-			});
-
-			// Apply env-specific formatting (colors, etc.)
-			createDebug.formatArgs.call(self, args);
-
-			const logFn = self.log || createDebug.log;
-			logFn.apply(self, args);
-		}
-
-		debug.namespace = namespace;
-		debug.useColors = createDebug.useColors();
-		debug.color = createDebug.selectColor(namespace);
-		debug.extend = extend;
-		debug.destroy = createDebug.destroy; // XXX Temporary. Will be removed in the next major release.
-
-		Object.defineProperty(debug, 'enabled', {
-			enumerable: true,
-			configurable: false,
-			get: () => {
-				if (enableOverride !== null) {
-					return enableOverride;
-				}
-				if (namespacesCache !== createDebug.namespaces) {
-					namespacesCache = createDebug.namespaces;
-					enabledCache = createDebug.enabled(namespace);
-				}
-
-				return enabledCache;
-			},
-			set: v => {
-				enableOverride = v;
-			}
-		});
-
-		// Env-specific initialization logic for debug instances
-		if (typeof createDebug.init === 'function') {
-			createDebug.init(debug);
-		}
-
-		return debug;
-	}
-
-	function extend(namespace, delimiter) {
-		const newDebug = createDebug(this.namespace + (typeof delimiter === 'undefined' ? ':' : delimiter) + namespace);
-		newDebug.log = this.log;
-		return newDebug;
-	}
-
-	/**
-	* Enables a debug mode by namespaces. This can include modes
-	* separated by a colon and wildcards.
-	*
-	* @param {String} namespaces
-	* @api public
-	*/
-	function enable(namespaces) {
-		createDebug.save(namespaces);
-		createDebug.namespaces = namespaces;
-
-		createDebug.names = [];
-		createDebug.skips = [];
-
-		const split = (typeof namespaces === 'string' ? namespaces : '')
-			.trim()
-			.replace(/\s+/g, ',')
-			.split(',')
-			.filter(Boolean);
-
-		for (const ns of split) {
-			if (ns[0] === '-') {
-				createDebug.skips.push(ns.slice(1));
-			} else {
-				createDebug.names.push(ns);
-			}
-		}
-	}
-
-	/**
-	 * Checks if the given string matches a namespace template, honoring
-	 * asterisks as wildcards.
-	 *
-	 * @param {String} search
-	 * @param {String} template
-	 * @return {Boolean}
-	 */
-	function matchesTemplate(search, template) {
-		let searchIndex = 0;
-		let templateIndex = 0;
-		let starIndex = -1;
-		let matchIndex = 0;
-
-		while (searchIndex < search.length) {
-			if (templateIndex < template.length && (template[templateIndex] === search[searchIndex] || template[templateIndex] === '*')) {
-				// Match character or proceed with wildcard
-				if (template[templateIndex] === '*') {
-					starIndex = templateIndex;
-					matchIndex = searchIndex;
-					templateIndex++; // Skip the '*'
-				} else {
-					searchIndex++;
-					templateIndex++;
-				}
-			} else if (starIndex !== -1) { // eslint-disable-line no-negated-condition
-				// Backtrack to the last '*' and try to match more characters
-				templateIndex = starIndex + 1;
-				matchIndex++;
-				searchIndex = matchIndex;
-			} else {
-				return false; // No match
-			}
-		}
-
-		// Handle trailing '*' in template
-		while (templateIndex < template.length && template[templateIndex] === '*') {
-			templateIndex++;
-		}
-
-		return templateIndex === template.length;
-	}
-
-	/**
-	* Disable debug output.
-	*
-	* @return {String} namespaces
-	* @api public
-	*/
-	function disable() {
-		const namespaces = [
-			...createDebug.names,
-			...createDebug.skips.map(namespace => '-' + namespace)
-		].join(',');
-		createDebug.enable('');
-		return namespaces;
-	}
-
-	/**
-	* Returns true if the given mode name is enabled, false otherwise.
-	*
-	* @param {String} name
-	* @return {Boolean}
-	* @api public
-	*/
-	function enabled(name) {
-		for (const skip of createDebug.skips) {
-			if (matchesTemplate(name, skip)) {
-				return false;
-			}
-		}
-
-		for (const ns of createDebug.names) {
-			if (matchesTemplate(name, ns)) {
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	/**
-	* Coerce `val`.
-	*
-	* @param {Mixed} val
-	* @return {Mixed}
-	* @api private
-	*/
-	function coerce(val) {
-		if (val instanceof Error) {
-			return val.stack || val.message;
-		}
-		return val;
-	}
-
-	/**
-	* XXX DO NOT USE. This is a temporary stub function.
-	* XXX It WILL be removed in the next major release.
-	*/
-	function destroy() {
-		console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
-	}
-
-	createDebug.enable(createDebug.load());
-
-	return createDebug;
-}
-
-module.exports = setup;
-
-
-/***/ }),
-
-/***/ 2830:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-/**
- * Detect Electron renderer / nwjs process, which is node, but we should
- * treat as a browser.
- */
-
-if (typeof process === 'undefined' || process.type === 'renderer' || process.browser === true || process.__nwjs) {
-	module.exports = __nccwpck_require__(6110);
-} else {
-	module.exports = __nccwpck_require__(5108);
-}
-
-
-/***/ }),
-
-/***/ 5108:
-/***/ ((module, exports, __nccwpck_require__) => {
-
-/**
- * Module dependencies.
- */
-
-const tty = __nccwpck_require__(2018);
-const util = __nccwpck_require__(9023);
-
-/**
- * This is the Node.js implementation of `debug()`.
- */
-
-exports.init = init;
-exports.log = log;
-exports.formatArgs = formatArgs;
-exports.save = save;
-exports.load = load;
-exports.useColors = useColors;
-exports.destroy = util.deprecate(
-	() => {},
-	'Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.'
-);
-
-/**
- * Colors.
- */
-
-exports.colors = [6, 2, 3, 4, 5, 1];
-
-try {
-	// Optional dependency (as in, doesn't need to be installed, NOT like optionalDependencies in package.json)
-	// eslint-disable-next-line import/no-extraneous-dependencies
-	const supportsColor = __nccwpck_require__(1450);
-
-	if (supportsColor && (supportsColor.stderr || supportsColor).level >= 2) {
-		exports.colors = [
-			20,
-			21,
-			26,
-			27,
-			32,
-			33,
-			38,
-			39,
-			40,
-			41,
-			42,
-			43,
-			44,
-			45,
-			56,
-			57,
-			62,
-			63,
-			68,
-			69,
-			74,
-			75,
-			76,
-			77,
-			78,
-			79,
-			80,
-			81,
-			92,
-			93,
-			98,
-			99,
-			112,
-			113,
-			128,
-			129,
-			134,
-			135,
-			148,
-			149,
-			160,
-			161,
-			162,
-			163,
-			164,
-			165,
-			166,
-			167,
-			168,
-			169,
-			170,
-			171,
-			172,
-			173,
-			178,
-			179,
-			184,
-			185,
-			196,
-			197,
-			198,
-			199,
-			200,
-			201,
-			202,
-			203,
-			204,
-			205,
-			206,
-			207,
-			208,
-			209,
-			214,
-			215,
-			220,
-			221
-		];
-	}
-} catch (error) {
-	// Swallow - we only care if `supports-color` is available; it doesn't have to be.
-}
-
-/**
- * Build up the default `inspectOpts` object from the environment variables.
- *
- *   $ DEBUG_COLORS=no DEBUG_DEPTH=10 DEBUG_SHOW_HIDDEN=enabled node script.js
- */
-
-exports.inspectOpts = Object.keys(process.env).filter(key => {
-	return /^debug_/i.test(key);
-}).reduce((obj, key) => {
-	// Camel-case
-	const prop = key
-		.substring(6)
-		.toLowerCase()
-		.replace(/_([a-z])/g, (_, k) => {
-			return k.toUpperCase();
-		});
-
-	// Coerce string value into JS value
-	let val = process.env[key];
-	if (/^(yes|on|true|enabled)$/i.test(val)) {
-		val = true;
-	} else if (/^(no|off|false|disabled)$/i.test(val)) {
-		val = false;
-	} else if (val === 'null') {
-		val = null;
-	} else {
-		val = Number(val);
-	}
-
-	obj[prop] = val;
-	return obj;
-}, {});
-
-/**
- * Is stdout a TTY? Colored output is enabled when `true`.
- */
-
-function useColors() {
-	return 'colors' in exports.inspectOpts ?
-		Boolean(exports.inspectOpts.colors) :
-		tty.isatty(process.stderr.fd);
-}
-
-/**
- * Adds ANSI color escape codes if enabled.
- *
- * @api public
- */
-
-function formatArgs(args) {
-	const {namespace: name, useColors} = this;
-
-	if (useColors) {
-		const c = this.color;
-		const colorCode = '\u001B[3' + (c < 8 ? c : '8;5;' + c);
-		const prefix = `  ${colorCode};1m${name} \u001B[0m`;
-
-		args[0] = prefix + args[0].split('\n').join('\n' + prefix);
-		args.push(colorCode + 'm+' + module.exports.humanize(this.diff) + '\u001B[0m');
-	} else {
-		args[0] = getDate() + name + ' ' + args[0];
-	}
-}
-
-function getDate() {
-	if (exports.inspectOpts.hideDate) {
-		return '';
-	}
-	return new Date().toISOString() + ' ';
-}
-
-/**
- * Invokes `util.formatWithOptions()` with the specified arguments and writes to stderr.
- */
-
-function log(...args) {
-	return process.stderr.write(util.formatWithOptions(exports.inspectOpts, ...args) + '\n');
-}
-
-/**
- * Save `namespaces`.
- *
- * @param {String} namespaces
- * @api private
- */
-function save(namespaces) {
-	if (namespaces) {
-		process.env.DEBUG = namespaces;
-	} else {
-		// If you set a process.env field to null or undefined, it gets cast to the
-		// string 'null' or 'undefined'. Just delete instead.
-		delete process.env.DEBUG;
-	}
-}
-
-/**
- * Load `namespaces`.
- *
- * @return {String} returns the previously persisted debug modes
- * @api private
- */
-
-function load() {
-	return process.env.DEBUG;
-}
-
-/**
- * Init logic for `debug` instances.
- *
- * Create a new `inspectOpts` object in case `useColors` is set
- * differently for a particular `debug` instance.
- */
-
-function init(debug) {
-	debug.inspectOpts = {};
-
-	const keys = Object.keys(exports.inspectOpts);
-	for (let i = 0; i < keys.length; i++) {
-		debug.inspectOpts[keys[i]] = exports.inspectOpts[keys[i]];
-	}
-}
-
-module.exports = __nccwpck_require__(897)(exports);
-
-const {formatters} = module.exports;
-
-/**
- * Map %o to `util.inspect()`, all on a single line.
- */
-
-formatters.o = function (v) {
-	this.inspectOpts.colors = this.useColors;
-	return util.inspect(v, this.inspectOpts)
-		.split('\n')
-		.map(str => str.trim())
-		.join(' ');
-};
-
-/**
- * Map %O to `util.inspect()`, allowing multiple lines if needed.
- */
-
-formatters.O = function (v) {
-	this.inspectOpts.colors = this.useColors;
-	return util.inspect(v, this.inspectOpts);
-};
-
-
-/***/ }),
-
 /***/ 4150:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -6045,486 +7355,6 @@ class Deprecation extends Error {
 }
 
 exports.Deprecation = Deprecation;
-
-
-/***/ }),
-
-/***/ 3813:
-/***/ ((module) => {
-
-"use strict";
-
-
-module.exports = (flag, argv = process.argv) => {
-	const prefix = flag.startsWith('-') ? '' : (flag.length === 1 ? '-' : '--');
-	const position = argv.indexOf(prefix + flag);
-	const terminatorPosition = argv.indexOf('--');
-	return position !== -1 && (terminatorPosition === -1 || position < terminatorPosition);
-};
-
-
-/***/ }),
-
-/***/ 3669:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.HttpsProxyAgent = void 0;
-const net = __importStar(__nccwpck_require__(9278));
-const tls = __importStar(__nccwpck_require__(4756));
-const assert_1 = __importDefault(__nccwpck_require__(2613));
-const debug_1 = __importDefault(__nccwpck_require__(2830));
-const agent_base_1 = __nccwpck_require__(8894);
-const url_1 = __nccwpck_require__(7016);
-const parse_proxy_response_1 = __nccwpck_require__(7943);
-const debug = (0, debug_1.default)('https-proxy-agent');
-const setServernameFromNonIpHost = (options) => {
-    if (options.servername === undefined &&
-        options.host &&
-        !net.isIP(options.host)) {
-        return {
-            ...options,
-            servername: options.host,
-        };
-    }
-    return options;
-};
-/**
- * The `HttpsProxyAgent` implements an HTTP Agent subclass that connects to
- * the specified "HTTP(s) proxy server" in order to proxy HTTPS requests.
- *
- * Outgoing HTTP requests are first tunneled through the proxy server using the
- * `CONNECT` HTTP request method to establish a connection to the proxy server,
- * and then the proxy server connects to the destination target and issues the
- * HTTP request from the proxy server.
- *
- * `https:` requests have their socket connection upgraded to TLS once
- * the connection to the proxy server has been established.
- */
-class HttpsProxyAgent extends agent_base_1.Agent {
-    constructor(proxy, opts) {
-        super(opts);
-        this.options = { path: undefined };
-        this.proxy = typeof proxy === 'string' ? new url_1.URL(proxy) : proxy;
-        this.proxyHeaders = opts?.headers ?? {};
-        debug('Creating new HttpsProxyAgent instance: %o', this.proxy.href);
-        // Trim off the brackets from IPv6 addresses
-        const host = (this.proxy.hostname || this.proxy.host).replace(/^\[|\]$/g, '');
-        const port = this.proxy.port
-            ? parseInt(this.proxy.port, 10)
-            : this.proxy.protocol === 'https:'
-                ? 443
-                : 80;
-        this.connectOpts = {
-            // Attempt to negotiate http/1.1 for proxy servers that support http/2
-            ALPNProtocols: ['http/1.1'],
-            ...(opts ? omit(opts, 'headers') : null),
-            host,
-            port,
-        };
-    }
-    /**
-     * Called when the node-core HTTP client library is creating a
-     * new HTTP request.
-     */
-    async connect(req, opts) {
-        const { proxy } = this;
-        if (!opts.host) {
-            throw new TypeError('No "host" provided');
-        }
-        // Create a socket connection to the proxy server.
-        let socket;
-        if (proxy.protocol === 'https:') {
-            debug('Creating `tls.Socket`: %o', this.connectOpts);
-            socket = tls.connect(setServernameFromNonIpHost(this.connectOpts));
-        }
-        else {
-            debug('Creating `net.Socket`: %o', this.connectOpts);
-            socket = net.connect(this.connectOpts);
-        }
-        const headers = typeof this.proxyHeaders === 'function'
-            ? this.proxyHeaders()
-            : { ...this.proxyHeaders };
-        const host = net.isIPv6(opts.host) ? `[${opts.host}]` : opts.host;
-        let payload = `CONNECT ${host}:${opts.port} HTTP/1.1\r\n`;
-        // Inject the `Proxy-Authorization` header if necessary.
-        if (proxy.username || proxy.password) {
-            const auth = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
-            headers['Proxy-Authorization'] = `Basic ${Buffer.from(auth).toString('base64')}`;
-        }
-        headers.Host = `${host}:${opts.port}`;
-        if (!headers['Proxy-Connection']) {
-            headers['Proxy-Connection'] = this.keepAlive
-                ? 'Keep-Alive'
-                : 'close';
-        }
-        for (const name of Object.keys(headers)) {
-            payload += `${name}: ${headers[name]}\r\n`;
-        }
-        const proxyResponsePromise = (0, parse_proxy_response_1.parseProxyResponse)(socket);
-        socket.write(`${payload}\r\n`);
-        const { connect, buffered } = await proxyResponsePromise;
-        req.emit('proxyConnect', connect);
-        this.emit('proxyConnect', connect, req);
-        if (connect.statusCode === 200) {
-            req.once('socket', resume);
-            if (opts.secureEndpoint) {
-                // The proxy is connecting to a TLS server, so upgrade
-                // this socket connection to a TLS connection.
-                debug('Upgrading socket connection to TLS');
-                return tls.connect({
-                    ...omit(setServernameFromNonIpHost(opts), 'host', 'path', 'port'),
-                    socket,
-                });
-            }
-            return socket;
-        }
-        // Some other status code that's not 200... need to re-play the HTTP
-        // header "data" events onto the socket once the HTTP machinery is
-        // attached so that the node core `http` can parse and handle the
-        // error status code.
-        // Close the original socket, and a new "fake" socket is returned
-        // instead, so that the proxy doesn't get the HTTP request
-        // written to it (which may contain `Authorization` headers or other
-        // sensitive data).
-        //
-        // See: https://hackerone.com/reports/541502
-        socket.destroy();
-        const fakeSocket = new net.Socket({ writable: false });
-        fakeSocket.readable = true;
-        // Need to wait for the "socket" event to re-play the "data" events.
-        req.once('socket', (s) => {
-            debug('Replaying proxy buffer for failed request');
-            (0, assert_1.default)(s.listenerCount('data') > 0);
-            // Replay the "buffered" Buffer onto the fake `socket`, since at
-            // this point the HTTP module machinery has been hooked up for
-            // the user.
-            s.push(buffered);
-            s.push(null);
-        });
-        return fakeSocket;
-    }
-}
-HttpsProxyAgent.protocols = ['http', 'https'];
-exports.HttpsProxyAgent = HttpsProxyAgent;
-function resume(socket) {
-    socket.resume();
-}
-function omit(obj, ...keys) {
-    const ret = {};
-    let key;
-    for (key in obj) {
-        if (!keys.includes(key)) {
-            ret[key] = obj[key];
-        }
-    }
-    return ret;
-}
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
-/***/ 7943:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseProxyResponse = void 0;
-const debug_1 = __importDefault(__nccwpck_require__(2830));
-const debug = (0, debug_1.default)('https-proxy-agent:parse-proxy-response');
-function parseProxyResponse(socket) {
-    return new Promise((resolve, reject) => {
-        // we need to buffer any HTTP traffic that happens with the proxy before we get
-        // the CONNECT response, so that if the response is anything other than an "200"
-        // response code, then we can re-play the "data" events on the socket once the
-        // HTTP parser is hooked up...
-        let buffersLength = 0;
-        const buffers = [];
-        function read() {
-            const b = socket.read();
-            if (b)
-                ondata(b);
-            else
-                socket.once('readable', read);
-        }
-        function cleanup() {
-            socket.removeListener('end', onend);
-            socket.removeListener('error', onerror);
-            socket.removeListener('readable', read);
-        }
-        function onend() {
-            cleanup();
-            debug('onend');
-            reject(new Error('Proxy connection ended before receiving CONNECT response'));
-        }
-        function onerror(err) {
-            cleanup();
-            debug('onerror %o', err);
-            reject(err);
-        }
-        function ondata(b) {
-            buffers.push(b);
-            buffersLength += b.length;
-            const buffered = Buffer.concat(buffers, buffersLength);
-            const endOfHeaders = buffered.indexOf('\r\n\r\n');
-            if (endOfHeaders === -1) {
-                // keep buffering
-                debug('have not received end of HTTP headers yet...');
-                read();
-                return;
-            }
-            const headerParts = buffered
-                .slice(0, endOfHeaders)
-                .toString('ascii')
-                .split('\r\n');
-            const firstLine = headerParts.shift();
-            if (!firstLine) {
-                socket.destroy();
-                return reject(new Error('No header received from proxy CONNECT response'));
-            }
-            const firstLineParts = firstLine.split(' ');
-            const statusCode = +firstLineParts[1];
-            const statusText = firstLineParts.slice(2).join(' ');
-            const headers = {};
-            for (const header of headerParts) {
-                if (!header)
-                    continue;
-                const firstColon = header.indexOf(':');
-                if (firstColon === -1) {
-                    socket.destroy();
-                    return reject(new Error(`Invalid header from proxy CONNECT response: "${header}"`));
-                }
-                const key = header.slice(0, firstColon).toLowerCase();
-                const value = header.slice(firstColon + 1).trimStart();
-                const current = headers[key];
-                if (typeof current === 'string') {
-                    headers[key] = [current, value];
-                }
-                else if (Array.isArray(current)) {
-                    current.push(value);
-                }
-                else {
-                    headers[key] = value;
-                }
-            }
-            debug('got proxy server response: %o %o', firstLine, headers);
-            cleanup();
-            resolve({
-                connect: {
-                    statusCode,
-                    statusText,
-                    headers,
-                },
-                buffered,
-            });
-        }
-        socket.on('error', onerror);
-        socket.on('end', onend);
-        read();
-    });
-}
-exports.parseProxyResponse = parseProxyResponse;
-//# sourceMappingURL=parse-proxy-response.js.map
-
-/***/ }),
-
-/***/ 744:
-/***/ ((module) => {
-
-/**
- * Helpers.
- */
-
-var s = 1000;
-var m = s * 60;
-var h = m * 60;
-var d = h * 24;
-var w = d * 7;
-var y = d * 365.25;
-
-/**
- * Parse or format the given `val`.
- *
- * Options:
- *
- *  - `long` verbose formatting [false]
- *
- * @param {String|Number} val
- * @param {Object} [options]
- * @throws {Error} throw an error if val is not a non-empty string or a number
- * @return {String|Number}
- * @api public
- */
-
-module.exports = function (val, options) {
-  options = options || {};
-  var type = typeof val;
-  if (type === 'string' && val.length > 0) {
-    return parse(val);
-  } else if (type === 'number' && isFinite(val)) {
-    return options.long ? fmtLong(val) : fmtShort(val);
-  }
-  throw new Error(
-    'val is not a non-empty string or a valid number. val=' +
-      JSON.stringify(val)
-  );
-};
-
-/**
- * Parse the given `str` and return milliseconds.
- *
- * @param {String} str
- * @return {Number}
- * @api private
- */
-
-function parse(str) {
-  str = String(str);
-  if (str.length > 100) {
-    return;
-  }
-  var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
-    str
-  );
-  if (!match) {
-    return;
-  }
-  var n = parseFloat(match[1]);
-  var type = (match[2] || 'ms').toLowerCase();
-  switch (type) {
-    case 'years':
-    case 'year':
-    case 'yrs':
-    case 'yr':
-    case 'y':
-      return n * y;
-    case 'weeks':
-    case 'week':
-    case 'w':
-      return n * w;
-    case 'days':
-    case 'day':
-    case 'd':
-      return n * d;
-    case 'hours':
-    case 'hour':
-    case 'hrs':
-    case 'hr':
-    case 'h':
-      return n * h;
-    case 'minutes':
-    case 'minute':
-    case 'mins':
-    case 'min':
-    case 'm':
-      return n * m;
-    case 'seconds':
-    case 'second':
-    case 'secs':
-    case 'sec':
-    case 's':
-      return n * s;
-    case 'milliseconds':
-    case 'millisecond':
-    case 'msecs':
-    case 'msec':
-    case 'ms':
-      return n;
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Short format for `ms`.
- *
- * @param {Number} ms
- * @return {String}
- * @api private
- */
-
-function fmtShort(ms) {
-  var msAbs = Math.abs(ms);
-  if (msAbs >= d) {
-    return Math.round(ms / d) + 'd';
-  }
-  if (msAbs >= h) {
-    return Math.round(ms / h) + 'h';
-  }
-  if (msAbs >= m) {
-    return Math.round(ms / m) + 'm';
-  }
-  if (msAbs >= s) {
-    return Math.round(ms / s) + 's';
-  }
-  return ms + 'ms';
-}
-
-/**
- * Long format for `ms`.
- *
- * @param {Number} ms
- * @return {String}
- * @api private
- */
-
-function fmtLong(ms) {
-  var msAbs = Math.abs(ms);
-  if (msAbs >= d) {
-    return plural(ms, msAbs, d, 'day');
-  }
-  if (msAbs >= h) {
-    return plural(ms, msAbs, h, 'hour');
-  }
-  if (msAbs >= m) {
-    return plural(ms, msAbs, m, 'minute');
-  }
-  if (msAbs >= s) {
-    return plural(ms, msAbs, s, 'second');
-  }
-  return ms + ' ms';
-}
-
-/**
- * Pluralization helper.
- */
-
-function plural(ms, msAbs, n, name) {
-  var isPlural = msAbs >= n * 1.5;
-  return Math.round(ms / n) + ' ' + name + (isPlural ? 's' : '');
-}
 
 
 /***/ }),
@@ -8369,149 +9199,6 @@ function onceStrict (fn) {
   f.called = false
   return f
 }
-
-
-/***/ }),
-
-/***/ 1450:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-const os = __nccwpck_require__(857);
-const tty = __nccwpck_require__(2018);
-const hasFlag = __nccwpck_require__(3813);
-
-const {env} = process;
-
-let forceColor;
-if (hasFlag('no-color') ||
-	hasFlag('no-colors') ||
-	hasFlag('color=false') ||
-	hasFlag('color=never')) {
-	forceColor = 0;
-} else if (hasFlag('color') ||
-	hasFlag('colors') ||
-	hasFlag('color=true') ||
-	hasFlag('color=always')) {
-	forceColor = 1;
-}
-
-if ('FORCE_COLOR' in env) {
-	if (env.FORCE_COLOR === 'true') {
-		forceColor = 1;
-	} else if (env.FORCE_COLOR === 'false') {
-		forceColor = 0;
-	} else {
-		forceColor = env.FORCE_COLOR.length === 0 ? 1 : Math.min(parseInt(env.FORCE_COLOR, 10), 3);
-	}
-}
-
-function translateLevel(level) {
-	if (level === 0) {
-		return false;
-	}
-
-	return {
-		level,
-		hasBasic: true,
-		has256: level >= 2,
-		has16m: level >= 3
-	};
-}
-
-function supportsColor(haveStream, streamIsTTY) {
-	if (forceColor === 0) {
-		return 0;
-	}
-
-	if (hasFlag('color=16m') ||
-		hasFlag('color=full') ||
-		hasFlag('color=truecolor')) {
-		return 3;
-	}
-
-	if (hasFlag('color=256')) {
-		return 2;
-	}
-
-	if (haveStream && !streamIsTTY && forceColor === undefined) {
-		return 0;
-	}
-
-	const min = forceColor || 0;
-
-	if (env.TERM === 'dumb') {
-		return min;
-	}
-
-	if (process.platform === 'win32') {
-		// Windows 10 build 10586 is the first Windows release that supports 256 colors.
-		// Windows 10 build 14931 is the first release that supports 16m/TrueColor.
-		const osRelease = os.release().split('.');
-		if (
-			Number(osRelease[0]) >= 10 &&
-			Number(osRelease[2]) >= 10586
-		) {
-			return Number(osRelease[2]) >= 14931 ? 3 : 2;
-		}
-
-		return 1;
-	}
-
-	if ('CI' in env) {
-		if (['TRAVIS', 'CIRCLECI', 'APPVEYOR', 'GITLAB_CI', 'GITHUB_ACTIONS', 'BUILDKITE'].some(sign => sign in env) || env.CI_NAME === 'codeship') {
-			return 1;
-		}
-
-		return min;
-	}
-
-	if ('TEAMCITY_VERSION' in env) {
-		return /^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/.test(env.TEAMCITY_VERSION) ? 1 : 0;
-	}
-
-	if (env.COLORTERM === 'truecolor') {
-		return 3;
-	}
-
-	if ('TERM_PROGRAM' in env) {
-		const version = parseInt((env.TERM_PROGRAM_VERSION || '').split('.')[0], 10);
-
-		switch (env.TERM_PROGRAM) {
-			case 'iTerm.app':
-				return version >= 3 ? 3 : 2;
-			case 'Apple_Terminal':
-				return 2;
-			// No default
-		}
-	}
-
-	if (/-256(color)?$/i.test(env.TERM)) {
-		return 2;
-	}
-
-	if (/^screen|^xterm|^vt100|^vt220|^rxvt|color|ansi|cygwin|linux/i.test(env.TERM)) {
-		return 1;
-	}
-
-	if ('COLORTERM' in env) {
-		return 1;
-	}
-
-	return min;
-}
-
-function getSupportLevel(stream) {
-	const level = supportsColor(stream, stream && stream.isTTY);
-	return translateLevel(level);
-}
-
-module.exports = {
-	supportsColor: getSupportLevel,
-	stdout: translateLevel(supportsColor(true, tty.isatty(1))),
-	stderr: translateLevel(supportsColor(true, tty.isatty(2)))
-};
 
 
 /***/ }),
@@ -33198,83 +33885,10 @@ function wrappy (fn, cb) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CAMPAIGN_PRESETS = exports.TESTNET_USDC_ISSUER = exports.MAINNET_USDC_ISSUER = void 0;
-exports.getCampaignPreset = getCampaignPreset;
-exports.validateNetworkAssetCompatibility = validateNetworkAssetCompatibility;
 exports.normalizeAssetCode = normalizeAssetCode;
 exports.assertValidAssetCode = assertValidAssetCode;
-exports.assertValidAssetIssuer = assertValidAssetIssuer;
 exports.normalizeAssetConfig = normalizeAssetConfig;
-exports.parseAssetsJson = parseAssetsJson;
-exports.dedupeAssets = dedupeAssets;
-exports.getAssetClawbackStatus = getAssetClawbackStatus;
 const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
-const STELLAR_ISSUER_G_REGEX = /^G[A-Z2-7]{55}$/;
-const STELLAR_ISSUER_C_REGEX = /^C[A-Z2-7]{55}$/;
-exports.MAINNET_USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
-exports.TESTNET_USDC_ISSUER = 'GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2';
-exports.CAMPAIGN_PRESETS = {
-    testnet: {
-        id: 'testnet',
-        network: 'testnet',
-        horizonUrl: 'https://horizon-testnet.stellar.org',
-        assetCode: 'USDC',
-        assetIssuer: exports.TESTNET_USDC_ISSUER,
-        minXlmReserve: '1.5',
-    },
-    'testnet-usdc': {
-        id: 'testnet-usdc',
-        network: 'testnet',
-        horizonUrl: 'https://horizon-testnet.stellar.org',
-        assetCode: 'USDC',
-        assetIssuer: exports.TESTNET_USDC_ISSUER,
-        minXlmReserve: '1.5',
-    },
-    public: {
-        id: 'public',
-        network: 'public',
-        horizonUrl: 'https://horizon.stellar.org',
-        assetCode: 'USDC',
-        assetIssuer: exports.MAINNET_USDC_ISSUER,
-        minXlmReserve: '1.5',
-    },
-    mainnet: {
-        id: 'mainnet',
-        network: 'public',
-        horizonUrl: 'https://horizon.stellar.org',
-        assetCode: 'USDC',
-        assetIssuer: exports.MAINNET_USDC_ISSUER,
-        minXlmReserve: '1.5',
-    },
-};
-function getCampaignPreset(presetOrNetworkName) {
-    if (!presetOrNetworkName)
-        return undefined;
-    const key = presetOrNetworkName.trim().toLowerCase();
-    return exports.CAMPAIGN_PRESETS[key];
-}
-function validateNetworkAssetCompatibility(horizonUrl, assetCode, assetIssuer, presetName) {
-    const isTestnetHorizon = horizonUrl.toLowerCase().includes('testnet');
-    const normalizedIssuer = assetIssuer.trim();
-    const normalizedCode = assetCode.trim().toUpperCase();
-    if (isTestnetHorizon && normalizedIssuer === exports.MAINNET_USDC_ISSUER) {
-        throw new Error(`Incompatible network configuration: Mainnet ${normalizedCode} issuer (${exports.MAINNET_USDC_ISSUER}) cannot be used on Stellar Testnet (${horizonUrl}). Use testnet issuer ${exports.TESTNET_USDC_ISSUER} or switch to public Horizon.`);
-    }
-    if (!isTestnetHorizon && normalizedIssuer === exports.TESTNET_USDC_ISSUER) {
-        throw new Error(`Incompatible network configuration: Testnet ${normalizedCode} issuer (${exports.TESTNET_USDC_ISSUER}) cannot be used on Stellar Mainnet (${horizonUrl}). Use mainnet issuer ${exports.MAINNET_USDC_ISSUER} or switch to testnet Horizon.`);
-    }
-    if (presetName) {
-        const preset = getCampaignPreset(presetName);
-        if (preset) {
-            if (preset.network === 'testnet' && !isTestnetHorizon) {
-                throw new Error(`Preset conflict: Preset "${presetName}" specifies testnet, but horizon_url is set to non-testnet URL "${horizonUrl}".`);
-            }
-            if (preset.network === 'public' && isTestnetHorizon) {
-                throw new Error(`Preset conflict: Preset "${presetName}" specifies public mainnet, but horizon_url is set to testnet URL "${horizonUrl}".`);
-            }
-        }
-    }
-}
 function normalizeAssetCode(assetCode) {
     return assetCode.trim().toUpperCase();
 }
@@ -33284,1015 +33898,77 @@ function assertValidAssetCode(assetCode) {
         throw new Error(`asset_code must be 1-12 uppercase alphanumeric characters. Received: "${assetCode}"`);
     }
 }
-function assertValidAssetIssuer(assetIssuer) {
-    const trimmed = assetIssuer.trim();
-    if (trimmed.startsWith('G') && STELLAR_ISSUER_G_REGEX.test(trimmed)) {
-        return;
-    }
-    if (trimmed.startsWith('C') && STELLAR_ISSUER_C_REGEX.test(trimmed)) {
-        return;
-    }
-    throw new Error(`asset_issuer must be a valid 56-character Stellar public key starting with "G" or a contract ID starting with "C". Received: "${assetIssuer}"`);
-}
 function normalizeAssetConfig(input) {
     const assetCode = normalizeAssetCode(input.assetCode);
     assertValidAssetCode(assetCode);
-    const assetIssuer = input.assetIssuer.trim();
-    assertValidAssetIssuer(assetIssuer);
     return {
         assetCode,
-        assetIssuer,
+        assetIssuer: input.assetIssuer.trim(),
     };
-}
-/**
- * Parse and validate the `assets_json` action input.
- * Accepts a JSON array of `{code, issuer}` objects.
- * Returns normalized `AssetConfigInput[]`.
- * Throws a descriptive error on any parse or validation failure.
- */
-function parseAssetsJson(raw) {
-    let parsed;
-    try {
-        parsed = JSON.parse(raw.trim());
-    }
-    catch {
-        throw new Error(`assets_json must be a valid JSON array. Parse error: ${raw.slice(0, 80)}`);
-    }
-    if (!Array.isArray(parsed)) {
-        throw new Error('assets_json must be a JSON array of {code, issuer} objects.');
-    }
-    return parsed.map((entry, idx) => {
-        if (typeof entry !== 'object' || entry === null) {
-            throw new Error(`assets_json[${idx}]: each entry must be an object with "code" and "issuer" fields.`);
-        }
-        const e = entry;
-        if (typeof e.code !== 'string' || !e.code.trim()) {
-            throw new Error(`assets_json[${idx}]: "code" must be a non-empty string.`);
-        }
-        if (typeof e.issuer !== 'string' || !e.issuer.trim()) {
-            throw new Error(`assets_json[${idx}]: "issuer" must be a non-empty string.`);
-        }
-        return normalizeAssetConfig({ assetCode: e.code, assetIssuer: e.issuer });
-    });
-}
-/**
- * Remove duplicate assets (same code + issuer after normalization).
- * Preserves first-occurrence order.
- */
-function dedupeAssets(assets) {
-    const seen = new Set();
-    return assets.filter((a) => {
-        const key = `${a.assetCode}:${a.assetIssuer}`;
-        if (seen.has(key))
-            return false;
-        seen.add(key);
-        return true;
-    });
-}
-/**
- * Read the per-trustline clawback flag from a Horizon credit balance entry.
- * Absent / undefined is treated as clawback disabled.
- */
-function getAssetClawbackStatus(balance) {
-    return { clawbackEnabled: balance?.is_clawback_enabled === true };
-}
-
-
-/***/ }),
-
-/***/ 3120:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-/**
- * Readiness badge generation for TrustBridge validation results.
- *
- * Generates Markdown and URL-based badge snippets suitable for embedding
- * in READMEs, maintainer dashboards, or other documentation. The badge
- * reflects pass/fail/pending states without exposing PII or sensitive data.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.determineBadgeState = determineBadgeState;
-exports.generateBadgeUrl = generateBadgeUrl;
-exports.generateBadgeMarkdown = generateBadgeMarkdown;
-exports.generateBadgeSnippets = generateBadgeSnippets;
-/**
- * Determine the badge state from a ValidationResult.
- * - 'pass': All checks passed (valid === true)
- * - 'fail': One or more checks failed (valid === false)
- * - 'pending': Result is unknown or in-progress (never set by normal flow, but available for consumer use)
- */
-function determineBadgeState(result) {
-    return result.valid ? 'pass' : 'fail';
-}
-/**
- * Get the color code for a Shields.io badge based on state.
- */
-function getBadgeColor(state) {
-    switch (state) {
-        case 'pass':
-            return 'brightgreen';
-        case 'fail':
-            return 'red';
-        case 'pending':
-            return 'yellow';
-    }
-}
-/**
- * Get the human-readable label for a badge state.
- */
-function getBadgeLabel(state) {
-    switch (state) {
-        case 'pass':
-            return 'Ready';
-        case 'fail':
-            return 'Not Ready';
-        case 'pending':
-            return 'Pending';
-    }
-}
-/**
- * Generate a Shields.io badge URL for the given state.
- *
- * Example output:
- * https://img.shields.io/badge/trustbridge-ready-brightgreen
- *
- * The URL is parameterless and contains no sensitive information (no addresses,
- * balances, or asset details).
- */
-function generateBadgeUrl(state, label = 'trustbridge') {
-    const color = getBadgeColor(state);
-    const message = getBadgeLabel(state);
-    return `https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}`;
-}
-/**
- * Generate a Markdown-formatted badge snippet.
- *
- * Example output:
- * [![TrustBridge](https://img.shields.io/badge/trustbridge-ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)
- *
- * The Markdown includes a link to the TrustBridge repository for context.
- */
-function generateBadgeMarkdown(state, label = 'trustbridge') {
-    const url = generateBadgeUrl(state, label);
-    const altText = `TrustBridge ${getBadgeLabel(state)}`;
-    return `[![${altText}](${url})](https://github.com/Stellar-TrustBridge/trustbridge-action)`;
-}
-/**
- * Generate both Markdown and URL badge snippets from a ValidationResult.
- *
- * Returned object contains:
- * - markdown: A clickable Markdown badge linking to the TrustBridge repository
- * - url: A plain Shields.io badge URL suitable for embedding in static contexts
- */
-function generateBadgeSnippets(result, label = 'trustbridge') {
-    const state = determineBadgeState(result);
-    return {
-        markdown: generateBadgeMarkdown(state, label),
-        url: generateBadgeUrl(state, label),
-    };
-}
-
-
-/***/ }),
-
-/***/ 2983:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-/**
- * Batch multi-address validation (Issue #105).
- *
- * Validates a list of Stellar addresses sequentially, collecting per-address
- * results and aggregate metrics. Sequential execution keeps request pressure
- * on Horizon predictable and avoids triggering rate limits.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseBatchAddresses = parseBatchAddresses;
-exports.runBatchValidation = runBatchValidation;
-exports.buildBatchSummary = buildBatchSummary;
-exports.formatBatchSummaryMarkdown = formatBatchSummaryMarkdown;
-const checks_1 = __nccwpck_require__(2122);
-const horizon_1 = __nccwpck_require__(9164);
-const metrics_1 = __nccwpck_require__(5670);
-const DEFAULT_REQUEST_DELAY_MS = 200;
-async function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-/**
- * Parse the `stellar_addresses` input into a deduplicated list of addresses.
- *
- * Accepts:
- * - Newline-separated list: one address per line (blank lines ignored)
- * - JSON array: `["GABC...", "GDEF..."]`
- *
- * Throws if the resulting list is empty.
- */
-function parseBatchAddresses(raw) {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-        throw new Error('stellar_addresses input is empty. Provide at least one Stellar address.');
-    }
-    let addresses;
-    if (trimmed.startsWith('[')) {
-        // JSON array
-        let parsed;
-        try {
-            parsed = JSON.parse(trimmed);
-        }
-        catch {
-            throw new Error('stellar_addresses looks like a JSON array but could not be parsed. Check the JSON syntax.');
-        }
-        if (!Array.isArray(parsed)) {
-            throw new Error('stellar_addresses JSON must be an array of strings.');
-        }
-        addresses = parsed
-            .map((item, i) => {
-            if (typeof item !== 'string') {
-                throw new Error(`stellar_addresses JSON array item at index ${i} is not a string.`);
-            }
-            return item.trim();
-        })
-            .filter((item) => item.length > 0);
-    }
-    else {
-        // Newline-separated
-        addresses = trimmed
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0);
-    }
-    if (addresses.length === 0) {
-        throw new Error('stellar_addresses input contains no non-empty entries.');
-    }
-    // Deduplicate, preserving order
-    const seen = new Set();
-    const deduped = [];
-    for (const addr of addresses) {
-        if (!seen.has(addr)) {
-            seen.add(addr);
-            deduped.push(addr);
-        }
-    }
-    return deduped;
-}
-/**
- * Run validation checks against each address in `addresses` sequentially.
- * A configurable delay between requests keeps Horizon pressure low.
- */
-async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
-    const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
-    const fetchOptions = options.fetchOptions ?? {};
-    metrics_1.globalMetrics.incrementCounter('batch_run_start');
-    metrics_1.globalMetrics.recordMetric('batch_size', addresses.length, 'count');
-    const results = [];
-    for (let i = 0; i < addresses.length; i++) {
-        const address = addresses[i];
-        // Delay between requests (skip before first)
-        if (i > 0 && requestDelayMs > 0) {
-            await sleep(requestDelayMs);
-        }
-        // Validate address format before hitting Horizon
-        if (!(0, checks_1.isValidStellarAddress)(address)) {
-            results.push({
-                address,
-                valid: false,
-                accountFunded: false,
-                trustlineExists: false,
-                xlmBalance: '0',
-                xlmReserveMet: false,
-                failureReason: `Invalid Stellar address format: "${address}"`,
-            });
-            metrics_1.globalMetrics.incrementCounter('batch_address_invalid');
-            continue;
-        }
-        try {
-            const account = await (0, horizon_1.fetchAccount)(horizonUrl, address, fetchOptions);
-            const result = await (0, checks_1.runAccountChecks)(account, config);
-            let failureReason = null;
-            if (!result.valid) {
-                const reasons = [];
-                if (!result.trustlineExists)
-                    reasons.push('trustline missing');
-                if (!result.xlmReserveMet)
-                    reasons.push('XLM reserve insufficient');
-                failureReason = reasons.join('; ');
-            }
-            results.push({
-                address,
-                valid: result.valid,
-                accountFunded: result.accountFunded,
-                trustlineExists: result.trustlineExists,
-                xlmBalance: result.xlmBalance,
-                xlmReserveMet: result.xlmReserveMet,
-                failureReason,
-            });
-            if (result.valid) {
-                metrics_1.globalMetrics.incrementCounter('batch_address_passed');
-            }
-            else {
-                metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-                if (!result.trustlineExists)
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_trustline_missing');
-                if (!result.xlmReserveMet)
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_reserve_insufficient');
-            }
-        }
-        catch (error) {
-            let failureReason;
-            let isFunded = false;
-            if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-                failureReason = 'account not funded';
-                metrics_1.globalMetrics.incrementCounter('batch_fail_account_not_funded');
-            }
-            else if (error instanceof horizon_1.HorizonError) {
-                failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
-                metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
-                isFunded = false;
-            }
-            else {
-                const msg = error instanceof Error ? error.message : 'unknown error';
-                failureReason = `error: ${msg}`;
-                metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
-            }
-            const syntheticResult = error instanceof horizon_1.HorizonError && error.statusCode === 404
-                ? (0, checks_1.unfundedAccountResult)(address, config)
-                : (0, checks_1.horizonFailureResult)(error instanceof Error ? error.message : 'unknown error', config);
-            results.push({
-                address,
-                valid: false,
-                accountFunded: isFunded || syntheticResult.accountFunded,
-                trustlineExists: false,
-                xlmBalance: syntheticResult.xlmBalance,
-                xlmReserveMet: false,
-                failureReason,
-            });
-        }
-    }
-    metrics_1.globalMetrics.recordMetric('batch_passed', results.filter((r) => r.valid).length, 'count');
-    metrics_1.globalMetrics.recordMetric('batch_failed', results.filter((r) => !r.valid).length, 'count');
-    metrics_1.globalMetrics.incrementCounter('batch_run_complete');
-    return results;
-}
-/**
- * Compute aggregate summary metrics from batch results.
- */
-function buildBatchSummary(results) {
-    const passed = results.filter((r) => r.valid).length;
-    const failed = results.length - passed;
-    const failures = results
-        .filter((r) => !r.valid)
-        .map((r) => ({ address: r.address, reason: r.failureReason ?? 'unknown' }));
-    const taxonomy = {
-        accountNotFunded: 0,
-        trustlineMissing: 0,
-        reserveInsufficient: 0,
-        horizonError: 0,
-        invalidAddress: 0,
-    };
-    for (const r of results) {
-        if (r.valid)
-            continue;
-        const reason = r.failureReason ?? '';
-        if (reason.includes('not funded'))
-            taxonomy.accountNotFunded++;
-        else if (reason.includes('Invalid Stellar address'))
-            taxonomy.invalidAddress++;
-        else if (reason.startsWith('Horizon error') || reason.startsWith('error:'))
-            taxonomy.horizonError++;
-        else {
-            if (reason.includes('trustline'))
-                taxonomy.trustlineMissing++;
-            if (reason.includes('reserve'))
-                taxonomy.reserveInsufficient++;
-        }
-    }
-    return {
-        total: results.length,
-        passed,
-        failed,
-        failures,
-        failureTaxonomy: taxonomy,
-    };
-}
-/**
- * Render a compact Markdown summary table for the batch results.
- * Suitable for posting as a single issue comment in batch mode.
- */
-function formatBatchSummaryMarkdown(summary, assetCode) {
-    const statusLine = summary.failed === 0
-        ? '✅ All addresses passed validation.'
-        : `⚠️ ${summary.failed} of ${summary.total} addresses failed validation.`;
-    const rows = [
-        '| Address | Funded | Trustline | Reserve | Status |',
-        '| ------- | ------ | --------- | ------- | ------ |',
-    ];
-    // We don't have per-row detail here without the full results — callers
-    // should use the JSON artifact for per-address detail and pass results
-    // directly. This summary markdown uses the failures list.
-    // Build rows from failures only (passed rows omitted for brevity)
-    for (const { address, reason } of summary.failures) {
-        const short = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
-        rows.push(`| \`${short}\` | ❌ | — | — | ${reason} |`);
-    }
-    const taxonomy = summary.failureTaxonomy;
-    const taxLines = [
-        taxonomy.accountNotFunded > 0 ? `- Account not funded: **${taxonomy.accountNotFunded}**` : '',
-        taxonomy.trustlineMissing > 0 ? `- ${assetCode} trustline missing: **${taxonomy.trustlineMissing}**` : '',
-        taxonomy.reserveInsufficient > 0 ? `- XLM reserve insufficient: **${taxonomy.reserveInsufficient}**` : '',
-        taxonomy.horizonError > 0 ? `- Horizon errors: **${taxonomy.horizonError}**` : '',
-        taxonomy.invalidAddress > 0 ? `- Invalid address format: **${taxonomy.invalidAddress}**` : '',
-    ].filter(Boolean);
-    const parts = [
-        '## TrustBridge — Batch Validation Summary',
-        '',
-        statusLine,
-        '',
-        `**Total:** ${summary.total} · **Passed:** ${summary.passed} · **Failed:** ${summary.failed}`,
-        '',
-    ];
-    if (summary.failed > 0) {
-        parts.push('### Failed addresses', '', ...rows, '');
-        if (taxLines.length > 0) {
-            parts.push('### Failure taxonomy', '', ...taxLines, '');
-        }
-    }
-    parts.push('_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
-    return parts.join('\n');
 }
 
 
 /***/ }),
 
 /***/ 7377:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
 /**
  * Simple in-memory cache for Horizon API responses.
- *
- * Lifetime: this cache lives only in the Node.js process heap for a single
- * invocation of the action (one workflow step run). It is created fresh
- * every time `dist/index.js` starts and is discarded when that process
- * exits. It is never persisted to disk and never shared across:
- *   - separate steps in the same job (each `uses:` step is its own process),
- *   - separate jobs in the same workflow,
- *   - matrix legs (each matrix combination runs on its own runner/process),
- *   - concurrent or subsequent workflow runs.
- *
- * Cache keys are built in `horizon.ts` (`buildCacheKey`) from the
- * normalized Horizon base URL and the Stellar address being checked, so
- * entries for different Horizon endpoints (e.g. mainnet vs testnet in a
- * matrix build) or different accounts never collide even when a cache
- * instance is reused programmatically (e.g. in tests).
- *
- * When enabled via `useActionsCacheBackend: true`, this cache also persists
- * to GitHub Actions cache backend on save operations, allowing data to be
- * reused across matrix legs and subsequent workflow runs (subject to TTL).
+ * Useful for reducing redundant calls within a single GitHub Actions job.
  */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = void 0;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const actionsCache = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/cache'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const crypto = __importStar(__nccwpck_require__(6982));
-const fs = __importStar(__nccwpck_require__(9896));
-const os = __importStar(__nccwpck_require__(857));
-const path = __importStar(__nccwpck_require__(6928));
-const logger_1 = __nccwpck_require__(6999);
-/** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
-const SUPPORTED_NAMED_BACKENDS = new Set(['memory', 'github-actions']);
-/**
- * GitHub Actions cache backend implementation.
- * Uses the @actions/cache module to store and retrieve check-result data in the
- * GitHub Actions cache backend across matrix jobs and workflow runs.
- */
-class GitHubActionsCacheBackend {
-    constructor(cacheKeyPrefix = 'trustbridge') {
-        this.cacheKeyPrefix = cacheKeyPrefix;
-        this.memCache = new Map();
-        this.cacheDir = path.join(os.tmpdir(), 'trustbridge-actions-cache');
-        try {
-            if (!fs.existsSync(this.cacheDir)) {
-                fs.mkdirSync(this.cacheDir, { recursive: true });
-            }
-        }
-        catch {
-            // Ignore directory creation failure (will use memory cache)
-        }
-    }
-    hashKey(key) {
-        return crypto.createHash('sha256').update(key).digest('hex').slice(0, 24);
-    }
-    getFilePath(key) {
-        return path.join(this.cacheDir, `${this.hashKey(key)}.json`);
-    }
-    getActionsCacheKey(key) {
-        return `${this.cacheKeyPrefix}-check-${this.hashKey(key)}`;
-    }
-    async getCache(key) {
-        const mem = this.memCache.get(key);
-        if (mem) {
-            if (Date.now() > mem.expiresAt) {
-                this.memCache.delete(key);
-                return null;
-            }
-            return mem.data;
-        }
-        const filePath = this.getFilePath(key);
-        if (fs.existsSync(filePath)) {
-            try {
-                const raw = fs.readFileSync(filePath, 'utf8');
-                const parsed = JSON.parse(raw);
-                if (Date.now() <= parsed.expiresAt) {
-                    this.memCache.set(key, parsed);
-                    return parsed.data;
-                }
-                else {
-                    try {
-                        fs.unlinkSync(filePath);
-                    }
-                    catch { }
-                    return null;
-                }
-            }
-            catch {
-                // Fall through to Actions cache restore on corrupted file
-            }
-        }
-        try {
-            if (actionsCache &&
-                typeof actionsCache.isFeatureAvailable === 'function' &&
-                actionsCache.isFeatureAvailable()) {
-                const actionsKey = this.getActionsCacheKey(key);
-                const hitKey = await actionsCache.restoreCache([filePath], actionsKey);
-                if (hitKey && fs.existsSync(filePath)) {
-                    const raw = fs.readFileSync(filePath, 'utf8');
-                    const parsed = JSON.parse(raw);
-                    if (Date.now() <= parsed.expiresAt) {
-                        this.memCache.set(key, parsed);
-                        return parsed.data;
-                    }
-                }
-            }
-        }
-        catch (err) {
-            logger_1.logger.debug('Failed to restore from GitHub Actions cache', {
-                component: 'cache',
-                error: err instanceof Error ? err.message : String(err),
-            });
-        }
-        return null;
-    }
-    async saveCache(key, value, ttlMs) {
-        const expiresAt = Date.now() + ttlMs;
-        this.memCache.set(key, { data: value, expiresAt });
-        const filePath = this.getFilePath(key);
-        try {
-            fs.writeFileSync(filePath, JSON.stringify({ key, data: value, expiresAt }), 'utf8');
-        }
-        catch (err) {
-            logger_1.logger.debug('Failed to write local cache entry file', {
-                component: 'cache',
-                error: err instanceof Error ? err.message : String(err),
-            });
-            return;
-        }
-        try {
-            if (actionsCache &&
-                typeof actionsCache.isFeatureAvailable === 'function' &&
-                actionsCache.isFeatureAvailable()) {
-                const actionsKey = this.getActionsCacheKey(key);
-                await actionsCache.saveCache([filePath], actionsKey);
-            }
-        }
-        catch (err) {
-            logger_1.logger.debug('Failed to save to GitHub Actions cache backend', {
-                component: 'cache',
-                error: err instanceof Error ? err.message : String(err),
-            });
-        }
-    }
-    async restoreCache(key) {
-        const val = await this.getCache(key);
-        return val !== null;
-    }
-    async dispose() {
-        this.memCache.clear();
-        try {
-            if (fs.existsSync(this.cacheDir)) {
-                fs.rmSync(this.cacheDir, { recursive: true, force: true });
-            }
-        }
-        catch { }
-    }
-}
-exports.GitHubActionsCacheBackend = GitHubActionsCacheBackend;
+exports.defaultCache = exports.SimpleCache = void 0;
 class SimpleCache {
-    constructor(options = {}) {
+    constructor() {
         this.store = new Map();
-        this.useBackend = false;
-        // Warn when an unsupported named backend is requested so operators learn
-        // immediately instead of silently getting in-memory-only behaviour.
-        // Issue #462: unsupported backend values must not fail the workflow, but
-        // they must emit a clear warning so the misconfiguration is visible.
-        if (options.selectedBackend !== undefined && options.selectedBackend !== '') {
-            if (!SUPPORTED_NAMED_BACKENDS.has(options.selectedBackend)) {
-                try {
-                    core.warning(`[TrustBridge] cache: unsupported backend "${options.selectedBackend}" ` +
-                        `was requested but is not recognised. ` +
-                        `Supported values: ${[...SUPPORTED_NAMED_BACKENDS].map((b) => `"${b}"`).join(', ')}. ` +
-                        `Falling back to in-memory cache. ` +
-                        `Set selectedBackend to "github-actions" to enable GitHub Actions cache persistence, ` +
-                        `or omit the option to use the default in-memory backend.`);
-                }
-                catch {
-                    // core.warning may throw outside GitHub Actions context (local dev / tests).
-                    // Swallow so the cache is still usable.
-                }
-            }
-            // When selectedBackend is 'github-actions', honour it by treating it as
-            // equivalent to useActionsCacheBackend: true (unless a backend was already
-            // explicitly provided).
-            if (options.selectedBackend === 'github-actions' && !options.backend) {
-                options = { ...options, useActionsCacheBackend: true };
-            }
-        }
-        this.useBackend = options.useActionsCacheBackend ?? false;
-        this.backend = options.backend || (this.useBackend ? new GitHubActionsCacheBackend(options.cacheKeyPrefix) : undefined);
     }
     /**
      * Get a cached value if it exists and hasn't expired.
-     *
-     * Checks the in-memory store first; entries are evicted lazily on access
-     * when their TTL has elapsed.  If a persistent backend is configured, it
-     * must be pre-warmed via {@link restoreAsync} because this method is
-     * synchronous and cannot await a backend call.
-     *
-     * Cache keys are opaque strings.  In practice they are built by
-     * `buildCacheKey` in `horizon.ts` using the format
-     * `horizon:account:<normalizedHorizonUrl>:<stellarAddress>`, which ensures
-     * that entries for different Horizon endpoints (mainnet vs testnet matrix
-     * legs) and different Stellar addresses never collide even when a single
-     * `SimpleCache` instance is shared across calls.
-     *
-     * @param key  The opaque cache key (built by `buildCacheKey` in `horizon.ts`).
-     * @returns    The cached value, or `null` on a miss or after expiry.
      */
     get(key) {
-        // Check in-memory first
         const entry = this.store.get(key);
-        if (entry) {
-            if (Date.now() > entry.expiresAt) {
-                this.store.delete(key);
-            }
-            else {
-                return entry.data;
-            }
-        }
-        // Backend lookup is async; this is a sync method, so we can't await here.
-        // Backend should be populated via restoreAsync() before using get().
-        return null;
-    }
-    /**
-     * Asynchronously restore a single cache entry from the persistent backend.
-     *
-     * Must be called before any {@link get} calls when using a persistent
-     * backend, because {@link get} is synchronous.  If no backend is configured
-     * this is a no-op and returns `null`.  Restored entries are also written to
-     * the in-memory store with the default 60-second in-memory TTL so that
-     * subsequent synchronous reads remain fast.
-     *
-     * @param key  The opaque cache key to look up in the backend.
-     * @returns    The restored value, or `null` if not found, expired, or on error.
-     */
-    async restoreAsync(key) {
-        if (!this.backend) {
+        if (!entry) {
             return null;
         }
-        try {
-            const cached = await this.backend.getCache(key);
-            if (cached) {
-                const data = JSON.parse(cached);
-                // Restore to in-memory cache as well
-                this.store.set(key, {
-                    data,
-                    expiresAt: Date.now() + 60000, // in-memory copy gets default TTL
-                });
-                return data;
-            }
+        if (Date.now() > entry.expiresAt) {
+            this.store.delete(key);
+            return null;
         }
-        catch (error) {
-            // Silently fail on restore errors; continue with fresh fetch
-        }
-        return null;
+        return entry.data;
     }
     /**
-     * Store a value in the cache with an expiration time.
-     *
-     * The entry is written to the in-memory store immediately.  If a
-     * persistent backend is configured the write is also dispatched
-     * asynchronously (fire-and-forget) — backend write failures are silently
-     * swallowed so they never block the caller or break the primary code path.
-     *
-     * **Note on key isolation.** Each `(horizonUrl, stellarAddress)` pair
-     * receives its own distinct key (see `buildCacheKey` in `horizon.ts`), so
-     * there is no risk of a mainnet entry overwriting a testnet entry even when
-     * the same `SimpleCache` instance is reused across matrix legs.
-     *
-     * **Note on 404 responses.** Account-not-found (404) results are *never*
-     * passed to `set` — the caller (`fetchAccount` in `horizon.ts`) skips
-     * caching entirely for not-found responses so a contributor who funds their
-     * account mid-job is picked up on the next request.
-     *
-     * @param key     Opaque cache key (built by `buildCacheKey` in `horizon.ts`).
-     * @param data    The value to store.  Must be JSON-serializable when a
-     *                persistent backend is configured.
-     * @param ttlMs   Time to live in milliseconds.  Defaults to 60 seconds.
+     * Set a value in the cache with an expiration time.
+     * @param key Cache key
+     * @param data Data to cache
+     * @param ttlMs Time to live in milliseconds (default: 60 seconds)
      */
     set(key, data, ttlMs = 60000) {
-        // Always update in-memory store
         this.store.set(key, {
             data,
             expiresAt: Date.now() + ttlMs,
         });
-        // Persist to backend if enabled
-        if (this.backend) {
-            try {
-                const serialized = JSON.stringify(data);
-                // Fire-and-forget; do not await to keep synchronous API
-                this.backend.saveCache(key, serialized, ttlMs).catch(() => {
-                    // Silently ignore backend write failures; in-memory cache remains
-                });
-            }
-            catch (error) {
-                // Serialization or other errors are silently ignored
-            }
-        }
     }
     /**
-     * Remove all cached entries from the in-memory store and, if a persistent
-     * backend is configured, call its `dispose` lifecycle hook.
-     *
-     * This is a full reset — all keys, regardless of their remaining TTL, are
-     * discarded.  Useful in tests to guarantee a clean slate between cases.
+     * Clear all cached entries.
      */
-    async clear() {
+    clear() {
         this.store.clear();
-        if (this.backend?.dispose) {
-            await this.backend.dispose();
-        }
     }
     /**
-     * Return a snapshot of the current in-memory cache state for debugging.
-     *
-     * Keys in the returned `entries` array are **not** redacted here — callers
-     * that log or export the stats should pass them through `redactCacheStats`
-     * in `horizon.ts` before they reach any log output so that embedded
-     * Stellar addresses are masked to first-4/last-4.
-     *
-     * @returns `{ size, entries }` — count of live entries and their raw keys.
-     *          Also includes `backendEnabled: true` when a persistent backend
-     *          is active.
+     * Get cache statistics for debugging.
      */
     getStats() {
-        const stats = {
+        return {
             size: this.store.size,
             entries: Array.from(this.store.keys()),
         };
-        if (this.useBackend) {
-            stats.backendEnabled = true;
-        }
-        return stats;
     }
 }
 exports.SimpleCache = SimpleCache;
 exports.defaultCache = new SimpleCache();
-
-
-/***/ }),
-
-/***/ 1346:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * GitHub Checks API integration for TrustBridge action results.
- *
- * Wave #26: When enabled via `use_check_runs: true`, this module creates a
- * GitHub Check Run with individual validation checks as annotations and a
- * conclusion (pass/fail) reflecting the overall validation result.
- *
- * Permissions required: `checks: write`
- *
- * Fail-open behavior: if Checks API returns a 403 (permission denied) or
- * other error, the action logs a warning and continues — Check Run creation
- * is never allowed to fail the validation itself. See docs/USAGE.md for
- * GitHub App / token configuration guidance.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.determineCheckConclusion = determineCheckConclusion;
-exports.buildCheckAnnotations = buildCheckAnnotations;
-exports.createCheckRun = createCheckRun;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const github = __importStar(__nccwpck_require__(3228));
-const logger_1 = __nccwpck_require__(6999);
-const proxy_1 = __nccwpck_require__(8903);
-/**
- * Determine the Check Run conclusion from a ValidationResult.
- *
- * - `success`: All checks passed (result.valid === true)
- * - `failure`: One or more checks failed (result.valid === false)
- * - `neutral`: Result status is unclear or pending
- */
-function determineCheckConclusion(result) {
-    if (result.valid) {
-        return 'success';
-    }
-    return 'failure';
-}
-/**
- * Build annotation objects from individual checks in a ValidationResult.
- *
- * Each check becomes one annotation in the Check Run, allowing operators to
- * see per-check results directly in the Actions UI without requiring debug logs.
- */
-function buildCheckAnnotations(result, options = { stellarAddress: '' }) {
-    const annotations = [];
-    for (const check of result.checks) {
-        const level = check.passed ? 'notice' : 'failure';
-        annotations.push({
-            path: 'trustbridge-validation',
-            start_line: 1,
-            end_line: 1,
-            annotation_level: level,
-            title: check.label,
-            message: check.detail,
-        });
-    }
-    return annotations;
-}
-/**
- * Create a GitHub Check Run for the validation result.
- *
- * Wraps the Octokit Checks API with:
- *  - Error handling for permission denied (403) and other transient errors
- *  - Structured logging for debugging
- *  - Fail-open behavior so Check Run failures never block the validation
- *
- * @param result        The ValidationResult from running checks.
- * @param token         GitHub API token (requires checks: write permission).
- * @param options       Additional options (e.g. stellar address for annotation context).
- * @returns             CheckRunResult with success flag and details.
- */
-async function createCheckRun(result, token, options = {}) {
-    try {
-        // Fail gracefully if we're not in a GitHub Actions context.
-        if (!github.context.runId || !github.context.repo.owner || !github.context.repo.repo) {
-            return {
-                success: false,
-                message: 'Check Run creation requires a GitHub Actions context (issue comment trigger). Skipping.',
-            };
-        }
-        const octokit = github.getOctokit(token, (0, proxy_1.getOctokitProxyOptions)());
-        const { owner, repo } = github.context.repo;
-        const conclusion = determineCheckConclusion(result);
-        const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
-        // Octokit Checks API supports up to 50 annotations per request.
-        // For simplicity, we truncate to the first 50 checks.
-        const annotationsSlice = annotations.slice(0, 50);
-        core.info(`Creating Check Run with conclusion="${conclusion}", ${annotationsSlice.length} annotations`);
-        const response = await octokit.rest.checks.create({
-            owner,
-            repo,
-            name: 'TrustBridge Validation',
-            head_sha: github.context.sha,
-            status: 'completed',
-            conclusion,
-            output: {
-                title: 'Stellar Account Validation',
-                summary: result.valid
-                    ? 'All TrustBridge validation checks passed.'
-                    : `TrustBridge validation failed. ${result.checks.filter((c) => !c.passed).length} of ${result.checks.length} checks did not pass.`,
-                annotations: annotationsSlice,
-            },
-        });
-        const checkRunId = response.data.id;
-        logger_1.logger.info('Check Run created', {
-            component: 'checks-run',
-            checkRunId,
-            conclusion,
-            annotationCount: annotationsSlice.length,
-        });
-        return {
-            success: true,
-            checkRunId,
-            message: `Check Run #${checkRunId} created with conclusion=${conclusion}`,
-        };
-    }
-    catch (error) {
-        const httpError = error;
-        const status = httpError?.status;
-        const message = error instanceof Error ? error.message : String(error);
-        // Specific handling for permission denied.
-        if (status === 403) {
-            const msg = `Checks API permission denied (403). Ensure the GitHub token has 'checks: write' permission. ` +
-                `For GitHub Apps, verify the 'Checks' permission is set to 'Read & write'. ` +
-                `Skipping Check Run creation (fail-open). Error: ${message}`;
-            logger_1.logger.warn(msg, { component: 'checks-run', status });
-            core.warning(`[TrustBridge Checks] ${msg}`);
-            return {
-                success: false,
-                message: msg,
-                error: message,
-            };
-        }
-        // Generic error handling.
-        const errorMsg = `Failed to create Check Run (${status || 'unknown error'}): ${message}. ` +
-            `Check Run creation is non-critical; validation will continue. ` +
-            `See logs for details.`;
-        logger_1.logger.warn(errorMsg, {
-            component: 'checks-run',
-            status,
-            errorMessage: message,
-        });
-        core.warning(`[TrustBridge Checks] ${errorMsg}`);
-        return {
-            success: false,
-            message: errorMsg,
-            error: message,
-        };
-    }
-}
 
 
 /***/ }),
@@ -34303,442 +33979,39 @@ async function createCheckRun(result, token, options = {}) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.STROOPS_PER_UNIT = exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
-exports.hasClaimableBalances = hasClaimableBalances;
-exports.countClaimableBalances = countClaimableBalances;
-exports.detectNetworkMismatch = detectNetworkMismatch;
-exports.buildNetworkMismatchDetail = buildNetworkMismatchDetail;
-exports.detectPassphraseMismatch = detectPassphraseMismatch;
-exports.evaluateHomeDomain = evaluateHomeDomain;
+exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = exports.STELLAR_BASE_RESERVE_XLM = void 0;
 exports.normalizeStellarAddress = normalizeStellarAddress;
 exports.isValidStellarAddress = isValidStellarAddress;
-exports.isValidMuxedAddress = isValidMuxedAddress;
-exports.decodeMuxedAddress = decodeMuxedAddress;
-exports.convertMuxedToGAddress = convertMuxedToGAddress;
-exports.extractStellarAddressFromText = extractStellarAddressFromText;
 exports.validateStellarAddress = validateStellarAddress;
 exports.parseMinXlmReserve = parseMinXlmReserve;
-exports.parseMinAssetBalance = parseMinAssetBalance;
-exports.parseTrustlineLimit = parseTrustlineLimit;
 exports.estimateTrustlineSetupCost = estimateTrustlineSetupCost;
 exports.formatXlmDeficit = formatXlmDeficit;
-exports.formatAssetDeficit = formatAssetDeficit;
-exports.toStroops = toStroops;
-exports.formatStroops = formatStroops;
 exports.runAccountChecks = runAccountChecks;
 exports.unfundedAccountResult = unfundedAccountResult;
 exports.getFailedCheckLabels = getFailedCheckLabels;
 exports.horizonFailureResult = horizonFailureResult;
-exports.circuitOpenFailureResult = circuitOpenFailureResult;
-exports.tlsFailureResult = tlsFailureResult;
-exports.rateBudgetExhaustedResult = rateBudgetExhaustedResult;
-exports.computeProtocolMinReserve = computeProtocolMinReserve;
 exports.buildReserveRequirement = buildReserveRequirement;
-exports.runMultiAssetChecks = runMultiAssetChecks;
 exports.buildValidationGate = buildValidationGate;
-exports.checkTrustlineExists = checkTrustlineExists;
-exports.checkReserveMet = checkReserveMet;
-exports.validateStrKeyFormat = validateStrKeyFormat;
-exports.checkMultiAssetTrustlines = checkMultiAssetTrustlines;
-exports.calculateRecommendedReserve = calculateRecommendedReserve;
-exports.checkAccountSponsored = checkAccountSponsored;
-exports.generateValidationReport = generateValidationReport;
-exports.buildAssetBalanceRequirement = buildAssetBalanceRequirement;
 const horizon_1 = __nccwpck_require__(9164);
-const assets_1 = __nccwpck_require__(5462);
 const markdown_1 = __nccwpck_require__(3758);
 const links_1 = __nccwpck_require__(3346);
-const metrics_1 = __nccwpck_require__(5670);
-const i18n_1 = __nccwpck_require__(4859);
-const validation_1 = __nccwpck_require__(4344);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
 exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM = 1;
-/**
- * Whether an account snapshot contains any `claimable_balance_id` entries.
- * Note: funded accounts rarely embed claimables in `balances`; this helper
- * is for completeness and for the optional `count` policy which may also
- * inspect a separate claimable_balances Horizon response.
- */
-function hasClaimableBalances(account) {
-    return account.balances.some((b) => b.asset_type === "claimable_balance_id");
-}
-function countClaimableBalances(account) {
-    return account.balances.filter((b) => b.asset_type === "claimable_balance_id")
-        .length;
-}
-/**
- * Detect whether a Stellar address that returned 404 on the primary Horizon
- * URL is actually active on the opposite network.
- *
- * Returns a `NetworkMismatchHint` when a mismatch is confirmed, or
- * `undefined` when there is no evidence of a mismatch (either no cross-check
- * was performed or the address is genuinely unfunded everywhere).
- *
- * Deterministic heuristics (Issue #266):
- * - 404 primary + 200 alt (public→testnet OR testnet→public) => hint, clear
- *   comment with both canonical URLs and horizon_url guidance.
- * - 404 primary + 404 alt => no hint (genuinely unfunded everywhere).
- * - alt returns non-200/404 (503, 429, etc.) or network error/timeout => no hint.
- * - Alt URL is SSRF-validated via `validateHorizonUrl`; blocked URLs => no hint.
- * - Canonical opposite URLs (https://horizon.stellar.org ↔ https://horizon-testnet.stellar.org)
- *   are allowlisted and safe to probe even when `allow_cross_network_fallback` is false.
- *   Arbitrary fallback URLs are NEVER probed here — that is gated in `horizon.ts` via
- *   `allowCrossNetworkFallback`. This keeps probing deterministic and bounded.
- *
- * @param configuredHorizonUrl  The `horizon_url` input value.
- * @param stellarAddress        The 56-char G-address that returned 404.
- * @param fetchFn               Optional injected fetch (for testing).
- */
-async function detectNetworkMismatch(configuredHorizonUrl, stellarAddress, fetchFn) {
-    const configuredNetwork = (0, links_1.inferStellarNetwork)(configuredHorizonUrl);
-    const altNetwork = (0, links_1.oppositeNetwork)(configuredNetwork);
-    const altHorizonUrl = (0, links_1.canonicalHorizonUrl)(altNetwork);
-    // SSRF guard: canonical URLs are known-good, but validate anyway so a
-    // future change that returns a private/loopback URL cannot be probed.
-    const ssrfCheck = (0, validation_1.validateHorizonUrl)(altHorizonUrl, "alt_horizon_url", {
-        allowHttp: true,
-    });
-    if (!ssrfCheck.valid) {
-        return undefined;
-    }
-    const checkUrl = `${altHorizonUrl}/accounts/${stellarAddress}`;
-    try {
-        const fetcher = fetchFn ?? ((...args) => fetch(...args));
-        const response = await fetcher(checkUrl, {
-            method: "GET",
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(5000),
-        });
-        // Deterministic: only 200 is a positive mismatch signal. 404 => genuinely unfunded.
-        // Any other status (503, 429, 500, etc.) is treated as "no evidence" to avoid
-        // false positives when the opposite Horizon is temporarily unavailable.
-        if (response.status === 200) {
-            return { configuredNetwork, activeOnNetwork: altNetwork };
-        }
-        return undefined;
-    }
-    catch {
-        // Network error or timeout — can't determine, so no hint
-        return undefined;
-    }
-}
-/**
- * Build the deterministic cross-network mismatch detail string used in the
- * `Account funded` check. Centralized so both directions (public↔testnet) use
- * the identical format and are tested deterministically.
- */
-function buildNetworkMismatchDetail(stellarAddress, hint) {
-    const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
-    const configuredUrl = (0, links_1.canonicalHorizonUrl)(hint.configuredNetwork);
-    const altUrl = (0, links_1.canonicalHorizonUrl)(hint.activeOnNetwork);
-    const strings = (0, i18n_1.getStrings)('en');
-    return (`Account ${safeAddress} was **not found** on the **${hint.configuredNetwork}** network` +
-        ` (${configuredUrl}) but **is active on ${hint.activeOnNetwork}** (${altUrl}).` +
-        ` ${strings.networkMismatchDetected} ${strings.networkMismatchConfiguredNetwork}` +
-        ` **${hint.configuredNetwork}** (${configuredUrl}). ${strings.networkMismatchActiveNetwork}` +
-        ` **${hint.activeOnNetwork}** (${altUrl}). ${strings.networkMismatchFix}` +
-        ` ${strings.networkMismatchUpdateUrl}`);
-}
-async function detectPassphraseMismatch(horizonUrl, configuredPassphrase, fetchPassphrase) {
-    const expected = configuredPassphrase.trim() ||
-        ((0, links_1.inferStellarNetwork)(horizonUrl) === 'testnet'
-            ? 'Test SDF Network ; September 2015'
-            : 'Public Global Stellar Network ; September 2015');
-    try {
-        const actual = (await fetchPassphrase()).trim();
-        if (actual === expected)
-            return undefined;
-        const expectedNetwork = expected.toLowerCase().includes('test') ? 'testnet' : 'public';
-        const actualNetwork = actual.toLowerCase().includes('test') ? 'testnet' : 'public';
-        const display = (value) => value.length > 160 ? `${value.slice(0, 157)}...` : value;
-        return {
-            expectedPassphrase: configuredPassphrase.trim() || expected,
-            actualPassphrase: actual,
-            message: `Network passphrase mismatch: configured ${expectedNetwork} (${display(expected)}) but Horizon reports ${actualNetwork} (${display(actual)}). This can cause account lookups to return 404 errors; make sure horizon_url and network_passphrase match.`,
-        };
-    }
-    catch {
-        return undefined;
-    }
-}
-/**
- * Evaluate the issuer's SEP-0001 home domain alignment against the
- * fetched Horizon account data.
- *
- * This is a **pure, synchronous** function — it only inspects the
- * `home_domain` field already present on the `HorizonAccount` object.
- * Full SEP-0001 HTTP stellar.toml fetching and signature verification
- * are explicitly out of scope (see docs/SEP0001_HOME_DOMAIN.md). If that
- * fetch is added later, it must use a redirect-limited, HTTPS-only, SSRF-safe
- * wrapper that re-validates every redirect hop before following it.
- *
- * @param issuerAccount  The Horizon account for the asset issuer (not the
- *                       recipient wallet). May be `null` when Horizon did
- *                       not return the issuer account.
- * @param config         The current `CheckConfig` (reads
- *                       `expectedHomeDomain` and `homeDomainCheckMode`).
- * @returns              A `HomeDomainCheckResult` describing the outcome.
- */
-function evaluateHomeDomain(issuerAccount, config) {
-    const mode = config.homeDomainCheckMode ?? "warn";
-    const expected = config.expectedHomeDomain?.trim().toLowerCase();
-    // No issuer account available — treat the same as missing.
-    if (!issuerAccount) {
-        return {
-            outcome: "missing",
-            expectedHomeDomain: config.expectedHomeDomain,
-            detail: 'Issuer account data was not available from Horizon — home domain could not be verified.',
-            blocksValid: mode === 'strict',
-        };
-    }
-    const rawDomain = issuerAccount.home_domain?.trim() ?? "";
-    if (!rawDomain) {
-        const detail = expected
-            ? `Issuer account has no \`home_domain\` set on-chain (expected \`${(0, markdown_1.escapeMarkdownInline)(config.expectedHomeDomain)}\`).`
-            : "Issuer account has no `home_domain` set on-chain.";
-        return {
-            outcome: "missing",
-            actualHomeDomain: undefined,
-            expectedHomeDomain: config.expectedHomeDomain,
-            detail,
-            blocksValid: mode === "strict",
-        };
-    }
-    if (expected && rawDomain.toLowerCase() !== expected) {
-        return {
-            outcome: "mismatch",
-            actualHomeDomain: rawDomain,
-            expectedHomeDomain: config.expectedHomeDomain,
-            detail: `Issuer \`home_domain\` is \`${(0, markdown_1.escapeMarkdownInline)(rawDomain)}\` but \`${(0, markdown_1.escapeMarkdownInline)(config.expectedHomeDomain)}\` was expected.`,
-            blocksValid: mode === "strict",
-        };
-    }
-    return {
-        outcome: "valid",
-        actualHomeDomain: rawDomain,
-        expectedHomeDomain: config.expectedHomeDomain,
-        detail: `Issuer \`home_domain\` is \`${(0, markdown_1.escapeMarkdownInline)(rawDomain)}\` ✓`,
-        blocksValid: false,
-    };
-}
 const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
-/** Matches bare G-addresses embedded in free-form text (issue bodies, comments). */
-const STELLAR_ADDRESS_IN_TEXT_REGEX = /\bG[A-Z2-7]{55}\b/g;
-/** RFC4648 base32 alphabet used by Stellar's StrKey encoding (no padding). */
-const STRKEY_BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-/** StrKey version byte for an ed25519 public key ("G..." address): 6 << 3. */
-const STRKEY_VERSION_BYTE_ED25519_PUBLIC_KEY = 0x30;
-/**
- * Decodes an RFC4648 base32 string (no padding) into raw bytes, as used by
- * Stellar's StrKey encoding. Returns `null` if the input contains
- * characters outside the StrKey alphabet.
- */
-function base32Decode(input) {
-    let bits = 0;
-    let value = 0;
-    const bytes = [];
-    for (const char of input) {
-        const index = STRKEY_BASE32_ALPHABET.indexOf(char);
-        if (index === -1) {
-            return null;
-        }
-        value = (value << 5) | index;
-        bits += 5;
-        if (bits >= 8) {
-            bits -= 8;
-            bytes.push((value >> bits) & 0xff);
-        }
-    }
-    return Uint8Array.from(bytes);
-}
-/**
- * CRC-16/XMODEM (poly 0x1021, init 0x0000, no reflect, no xorout) — the
- * checksum algorithm StrKey appends (little-endian) after the version byte
- * and payload.
- */
-function crc16xmodem(bytes) {
-    let crc = 0x0000;
-    for (const byte of bytes) {
-        crc ^= byte << 8;
-        for (let i = 0; i < 8; i++) {
-            crc =
-                (crc & 0x8000) !== 0
-                    ? ((crc << 1) ^ 0x1021) & 0xffff
-                    : (crc << 1) & 0xffff;
-        }
-    }
-    return crc;
-}
 function normalizeStellarAddress(address) {
     return address.trim();
 }
-/**
- * Validates a Stellar "G..." address against the full StrKey policy: 56
- * characters from the StrKey base32 alphabet, the ed25519 public key
- * version byte, and a matching CRC-16/XMODEM checksum. A regex match alone
- * only confirms shape — many regex-valid strings are not real StrKeys
- * because their checksum bytes don't match the payload.
- */
 function isValidStellarAddress(address) {
-    const trimmed = normalizeStellarAddress(address);
-    if (trimmed.startsWith('C')) {
-        return (0, validation_1.validateContractAddress)(trimmed).valid;
-    }
-    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
-        return false;
-    }
-    const decoded = base32Decode(trimmed);
-    // 1 version byte + 32-byte ed25519 payload + 2-byte checksum.
-    if (!decoded || decoded.length !== 35) {
-        return false;
-    }
-    if (decoded[0] !== STRKEY_VERSION_BYTE_ED25519_PUBLIC_KEY) {
-        return false;
-    }
-    const versionAndPayload = decoded.subarray(0, 33);
-    const expectedChecksum = crc16xmodem(versionAndPayload);
-    const actualChecksum = decoded[33] | (decoded[34] << 8);
-    return expectedChecksum === actualChecksum;
-}
-// ---------------------------------------------------------------------------
-// Issue #250 — Muxed (M-) address support
-// ---------------------------------------------------------------------------
-/** StrKey version byte for a muxed account ("M..." address): 12 << 3. */
-const STRKEY_VERSION_BYTE_MUXED = 0x60;
-/** Matches M-addresses (69 chars: M + 68 base32). */
-const MUXED_ADDRESS_REGEX = /^M[A-Z2-7]{68}$/;
-/** Matches bare M-addresses embedded in free-form text. */
-const MUXED_ADDRESS_IN_TEXT_REGEX = /\bM[A-Z2-7]{68}\b/g;
-/**
- * Validates a Stellar muxed ("M...") address against the full StrKey policy:
- * 69 characters (M + 68 base32), version byte 0x60, and a matching CRC-16/XMODEM checksum.
- *
- * M-addresses encode: 1 version byte + 32-byte ed25519 key + 8-byte muxed ID + 2-byte checksum = 43 bytes → 69 base32 chars.
- */
-function isValidMuxedAddress(address) {
-    const trimmed = normalizeStellarAddress(address);
-    if (!MUXED_ADDRESS_REGEX.test(trimmed)) {
-        return false;
-    }
-    const decoded = base32Decode(trimmed);
-    // 1 version + 32 key + 8 id + 2 checksum = 43 bytes.
-    if (!decoded || decoded.length !== 43) {
-        return false;
-    }
-    if (decoded[0] !== STRKEY_VERSION_BYTE_MUXED) {
-        return false;
-    }
-    const versionAndPayload = decoded.subarray(0, 41);
-    const expectedChecksum = crc16xmodem(versionAndPayload);
-    const actualChecksum = decoded[41] | (decoded[42] << 8);
-    return expectedChecksum === actualChecksum;
-}
-/**
- * Decodes a Stellar muxed ("M...") address into the underlying G-address and muxed ID.
- *
- * Returns `null` if the input is not a valid M-address.
- */
-function decodeMuxedAddress(mAddress) {
-    const trimmed = normalizeStellarAddress(mAddress);
-    if (!isValidMuxedAddress(trimmed)) {
-        return null;
-    }
-    const decoded = base32Decode(trimmed);
-    if (!decoded || decoded.length !== 43) {
-        return null;
-    }
-    // Extract 32-byte ed25519 key (bytes 1-32) and encode as G-address
-    const ed25519Key = decoded.slice(1, 33);
-    const gVersionAndPayload = Uint8Array.from([STRKEY_VERSION_BYTE_ED25519_PUBLIC_KEY, ...ed25519Key]);
-    const gChecksum = crc16xmodem(gVersionAndPayload);
-    const gBytes = Uint8Array.from([...gVersionAndPayload, gChecksum & 0xff, (gChecksum >> 8) & 0xff]);
-    // Encode as base32
-    let bits = 0;
-    let value = 0;
-    let gAddress = '';
-    for (const byte of gBytes) {
-        value = (value << 8) | byte;
-        bits += 8;
-        while (bits >= 5) {
-            bits -= 5;
-            gAddress += STRKEY_BASE32_ALPHABET[(value >> bits) & 0x1f];
-        }
-    }
-    // Extract 8-byte muxed ID (bytes 33-40, big-endian per SEP-0023)
-    let muxedId = 0n;
-    for (let i = 33; i <= 40; i++) {
-        muxedId = (muxedId << 8n) | BigInt(decoded[i]);
-    }
-    return { gAddress, muxedId };
-}
-/**
- * Converts a Stellar muxed ("M...") address to the underlying G-address.
- * Throws if the input is not a valid M-address.
- */
-function convertMuxedToGAddress(address) {
-    const result = decodeMuxedAddress(address);
-    if (!result) {
-        throw new Error(`Invalid Stellar muxed address "${address}". Expected a 69-character M-address with valid StrKey checksum.`);
-    }
-    return result.gAddress;
-}
-/**
- * Extract Stellar addresses (G-addresses and M-addresses) from free-form text such as an issue body.
- *
- * Scans the text for all 56-character G-address sequences and 69-character
- * M-address sequences, validates each one, and returns the first valid hit
- * together with a deduplicated list of every valid address found.
- *
- * Safe to call with arbitrary untrusted input — performs no network requests
- * and never throws.
- *
- * @param text - Issue body, comment text, or any free-form string.
- * @returns `address` (first found) and `allAddresses` (all found, deduped).
- */
-function extractStellarAddressFromText(text) {
-    if (!text) {
-        return { address: undefined, allAddresses: [] };
-    }
-    STELLAR_ADDRESS_IN_TEXT_REGEX.lastIndex = 0;
-    MUXED_ADDRESS_IN_TEXT_REGEX.lastIndex = 0;
-    const seen = new Set();
-    const allAddresses = [];
-    let match;
-    while ((match = STELLAR_ADDRESS_IN_TEXT_REGEX.exec(text)) !== null) {
-        const candidate = match[0];
-        if (isValidStellarAddress(candidate) && !seen.has(candidate)) {
-            seen.add(candidate);
-            allAddresses.push(candidate);
-        }
-    }
-    // Also scan for M-addresses (Issue #250)
-    while ((match = MUXED_ADDRESS_IN_TEXT_REGEX.exec(text)) !== null) {
-        const candidate = match[0];
-        if (isValidMuxedAddress(candidate) && !seen.has(candidate)) {
-            seen.add(candidate);
-            allAddresses.push(candidate);
-        }
-    }
-    return {
-        address: allAddresses[0],
-        allAddresses,
-    };
+    return STELLAR_ADDRESS_REGEX.test(normalizeStellarAddress(address));
 }
 function validateStellarAddress(address) {
     if (!address || !address.trim()) {
-        throw new Error("stellar_address_input is required.");
+        throw new Error('stellar_address_input is required.');
     }
-    if (address.trim().startsWith('C')) {
-        if (!isValidStellarAddress(address)) {
-            throw new Error(`Invalid Stellar address "${address}". Expected a valid Soroban contract C-address "C" + 55 base32 chars.`);
-        }
-        return;
-    }
-    if (!isValidStellarAddress(address) && !isValidMuxedAddress(address)) {
-        throw new Error(`Invalid Stellar address "${address}". Expected a 56-character G-address or 69-character M-address ` +
-            'with a valid StrKey checksum.');
+    if (!isValidStellarAddress(address)) {
+        throw new Error(`Invalid Stellar address "${address}". Expected a 56-character public key starting with "G".`);
     }
 }
 function parseMinXlmReserve(value) {
@@ -34746,25 +34019,6 @@ function parseMinXlmReserve(value) {
     const parsed = Number(normalized);
     if (!normalized || !Number.isFinite(parsed) || parsed < 0) {
         throw new Error(`min_xlm_reserve must be a non-negative number. Received: "${value}"`);
-    }
-    return normalized;
-}
-function parseMinAssetBalance(value) {
-    const normalized = value.trim();
-    if (!normalized) {
-        return undefined;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`min_asset_balance must be a non-negative number. Received: "${value}"`);
-    }
-    return normalized;
-}
-function parseTrustlineLimit(value) {
-    const normalized = value.trim();
-    const parsed = Number(normalized);
-    if (!normalized || !Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`min_trustline_limit must be a non-negative number. Received: "${value}"`);
     }
     return parsed;
 }
@@ -34774,752 +34028,139 @@ function estimateTrustlineSetupCost() {
 function formatXlmDeficit(required, actual) {
     return Math.max(0, required - actual).toFixed(7);
 }
-function formatAssetDeficit(required, actual) {
-    return Math.max(0, required - actual).toFixed(7);
-}
-/** Stellar amounts have 7 decimal places: 1 unit = 10,000,000 stroops. */
-exports.STROOPS_PER_UNIT = 10000000n;
-/**
- * Convert a non-negative decimal amount (Horizon balance string or
- * `min_asset_balance` value) to integer stroops without floating-point math.
- *
- * Digits beyond the 7th decimal are dropped (`'floor'`) or rounded up to the
- * next stroop (`'ceil'`). Because balances are whole stroops,
- * `balance >= threshold` is equivalent to `balance >= ceil(threshold)`.
- * Unparseable values yield `0n`, matching `parseHorizonBalance`.
- */
-function toStroops(value, rounding = 'floor') {
-    let text = String(value).trim();
-    if (/e/i.test(text)) {
-        // Exponent notation (e.g. `1e-8`) — expand to a plain decimal string.
-        const parsed = Number(text);
-        text = Number.isFinite(parsed) ? parsed.toFixed(20) : '';
-    }
-    const match = /^(\d*)(?:\.(\d*))?$/.exec(text);
-    if (!match || (match[1] === '' && !match[2]))
-        return 0n;
-    const fraction = match[2] ?? '';
-    let stroops = BigInt(match[1] || '0') * exports.STROOPS_PER_UNIT + BigInt(fraction.slice(0, 7).padEnd(7, '0'));
-    if (rounding === 'ceil' && /[1-9]/.test(fraction.slice(7)))
-        stroops += 1n;
-    return stroops;
-}
-/** Format integer stroops as a 7-decimal amount string, e.g. `15000000n` → `'1.5000000'`. */
-function formatStroops(stroops) {
-    const whole = stroops / exports.STROOPS_PER_UNIT;
-    const fraction = (stroops % exports.STROOPS_PER_UNIT).toString().padStart(7, '0');
-    return `${whole}.${fraction}`;
-}
-/**
- * Renders the sponsor-aware reserve math behind a `ReserveRequirement` as a
- * short human-readable clause, e.g.
- * "protocol minimum **1.5 XLM** = (2 + 1 subentry) × 0.5 XLM, floor **1.5 XLM**".
- */
-function explainReserveRequirement(reserve) {
-    const sponsorClause = reserve.numSponsoring !== 0 || reserve.numSponsored !== 0
-        ? ` + ${reserve.numSponsoring} sponsoring − ${reserve.numSponsored} sponsored`
-        : '';
-    const subentryWord = reserve.subentryCount === 1 ? 'subentry' : 'subentries';
-    const formula = `(2 + ${reserve.subentryCount} ${subentryWord}${sponsorClause}) × ${exports.STELLAR_BASE_RESERVE_XLM} XLM`;
-    return `protocol minimum **${reserve.protocolMinimum} XLM** = ${formula}, floor **${reserve.configuredFloor} XLM**`;
-}
 function runAccountChecks(account, config) {
     const xlmBalance = (0, horizon_1.getNativeBalance)(account);
     const xlmNumeric = (0, horizon_1.parseHorizonBalance)(xlmBalance);
-    const trustlineBalance = (0, horizon_1.findTrustlineBalance)(account, config.assetCode, config.assetIssuer);
-    const trustlineExistsRaw = trustlineBalance !== undefined;
-    const trustlineAuthorized = trustlineBalance
-        ? (0, horizon_1.isTrustlineAuthorized)(trustlineBalance)
-        : undefined;
-    const { clawbackEnabled } = (0, assets_1.getAssetClawbackStatus)(trustlineBalance);
-    const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
-    const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
-    const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
-    // Detect issuer flags for enhanced messaging (Issue #248)
-    const issuerAuthRevocable = account.flags?.auth_revocable ?? false;
-    const issuerAuthClawback = account.flags?.auth_clawback_enabled ?? false;
-    const clawbackStrictMode = config.clawbackStrictMode ?? false;
-    const clawbackBlocks = trustlineExistsRaw && clawbackEnabled && clawbackStrictMode;
-    const trustlineExists = trustlineExistsRaw && !authorizationBlocks;
-    const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric, account);
+    const trustlineExists = (0, horizon_1.hasTrustline)(account, config.assetCode, config.assetIssuer);
+    const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric);
     const xlmReserveMet = reserveRequirement.met;
-    const hasAnyTrustlines = account.balances.some((b) => (0, horizon_1.isCreditBalance)(b));
-    // Issue #249: LP shares (liquidity_pool_shares) are explicitly excluded via
-    // isCreditBalance() — only credit_alphanum4/credit_alphanum12 count as trustlines.
-    // LP shares must never be treated as asset trustlines for readiness checks.
-    const assetBalanceRaw = (0, horizon_1.getAssetBalance)(account, config.assetCode, config.assetIssuer);
-    const minAssetBalanceRequired = Number(config.minAssetBalance ?? 0);
-    // Issue #476: compare in integer stroops so large balances and thresholds
-    // with more than 7 decimals never round across the boundary.
-    const assetBalanceRequirement = buildAssetBalanceRequirement(toStroops(config.minAssetBalance ?? 0, 'ceil'), toStroops(assetBalanceRaw));
-    const assetBalanceCheckEnabled = assetBalanceRequirement.required > 0n;
-    const assetBalanceMet = !assetBalanceCheckEnabled || assetBalanceRequirement.met;
+    const hasAnyTrustlines = account.balances.some((b) => b.asset_type !== 'native');
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
-    const reserveExplanation = explainReserveRequirement(reserveRequirement);
-    const trustlineLimit = (0, horizon_1.getTrustlineLimit)(account, config.assetCode, config.assetIssuer);
-    const trustlineLimitNumeric = (0, horizon_1.parseHorizonBalance)(trustlineLimit);
-    const trustlineLimitMet = !config.minTrustlineLimit ||
-        trustlineLimitNumeric >= config.minTrustlineLimit;
-    let trustlineDetail;
-    if (trustlineExistsRaw && isUnauthorized) {
-        trustlineDetail = authorizationBlocks
-            ? `Trustline for **${safeAssetCode}** exists but is **not authorized** by the issuer (${(0, markdown_1.inlineCode)(config.assetIssuer)}) — blocked by \`unauthorized_trustline_policy: fail\`.`
-            : `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured, but **not yet authorized** by the issuer — transfers will fail until authorized.`;
-        // Issue #248: Add auth_revocable context when relevant
-        if (issuerAuthRevocable) {
-            trustlineDetail +=
-                ' The issuer has **AUTH_REVOCABLE** enabled, meaning authorized trustlines can be **revoked** at any time.';
-        }
-    }
-    else if (trustlineExistsRaw) {
-        trustlineDetail = `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured.`;
-        // Issue #248: Add clawback context when relevant (non-strict mode)
-        if (clawbackEnabled && !clawbackStrictMode) {
-            trustlineDetail += ' **Clawback is enabled** — the issuer can reclaim assets at any time.';
-        }
-    }
-    else if (hasAnyTrustlines) {
-        trustlineDetail = `Account has trustlines, but not for **${safeAssetCode}** issued by ${(0, markdown_1.inlineCode)(config.assetIssuer)}.`;
-    }
-    else {
-        trustlineDetail = 'Account has **zero trustlines** — add a trustline before receiving this asset.';
-    }
     const checks = [
         {
             passed: true,
-            label: "Account funded",
+            label: 'Account funded',
             detail: `Account ${(0, markdown_1.inlineCode)(account.account_id)} is active on the Stellar network.`,
         },
         {
             passed: trustlineExists,
             label: `${safeAssetCode} trustline`,
-            detail: trustlineDetail,
+            detail: trustlineExists
+                ? `Trustline for **${safeAssetCode}** (${(0, markdown_1.inlineCode)(config.assetIssuer)}) is configured.`
+                : hasAnyTrustlines
+                    ? `Account has trustlines, but not for **${safeAssetCode}** issued by ${(0, markdown_1.inlineCode)(config.assetIssuer)}.`
+                    : 'Account has **zero trustlines** — add a trustline before receiving this asset.',
         },
         {
             passed: xlmReserveMet,
-            label: "XLM reserve",
+            label: 'XLM reserve',
             detail: xlmReserveMet
-                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`
-                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${reserveRequirement.required} XLM** — ${reserveExplanation}.`,
+                ? `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the minimum of **${config.minXlmReserve} XLM**.`
+                : `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${config.minXlmReserve} XLM**.`,
         },
     ];
-    if (config.minTrustlineLimit !== undefined) {
-        checks.push({
-            passed: trustlineExists && trustlineLimitMet,
-            label: "Trustline limit",
-            detail: trustlineExists
-                ? trustlineLimitMet
-                    ? `Trustline limit is **${(0, markdown_1.inlineCode)(trustlineLimit)} ${safeAssetCode}** (minimum required: **${config.minTrustlineLimit} ${safeAssetCode}**).`
-                    : `Trustline limit is **${(0, markdown_1.inlineCode)(trustlineLimit)} ${safeAssetCode}** but **${config.minTrustlineLimit} ${safeAssetCode}** is required.`
-                : `Cannot verify trustline limit (${safeAssetCode} trustline does not exist).`,
-        });
-    }
-    if (assetBalanceCheckEnabled) {
-        const assetBalanceCheckDetail = trustlineExists
-            ? assetBalanceMet
-                ? `Balance **${(0, markdown_1.inlineCode)(assetBalanceRaw)} ${safeAssetCode}** meets the minimum of **${minAssetBalanceRequired} ${safeAssetCode}**.`
-                : `Balance **${(0, markdown_1.inlineCode)(assetBalanceRaw)} ${safeAssetCode}** is below the required **${minAssetBalanceRequired} ${safeAssetCode}**. Deficit: **${assetBalanceRequirement.missing} ${safeAssetCode}**.`
-            : `Cannot verify ${safeAssetCode} balance — trustline is not configured yet.`;
-        checks.push({
-            passed: assetBalanceMet || !trustlineExists,
-            label: `${safeAssetCode} minimum balance`,
-            detail: assetBalanceCheckDetail,
-        });
-    }
-    if (trustlineExistsRaw && clawbackEnabled && clawbackStrictMode) {
-        checks.push({
-            passed: false,
-            label: `${safeAssetCode} clawback safety`,
-            detail: `**${safeAssetCode}** has **clawback enabled** for this trustline (${(0, markdown_1.inlineCode)(config.assetIssuer)}) — blocked by \`clawback_strict_mode: true\`.`,
-        });
-    }
-    let homeDomainCheck;
-    if (config.homeDomainCheckEnabled) {
-        homeDomainCheck = evaluateHomeDomain(account, config);
-    }
-    const buildResult = () => {
-        if (config.homeDomainCheckEnabled &&
-            homeDomainCheck &&
-            !config.stellarTomlFetchEnabled) {
-            metrics_1.globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
-            metrics_1.globalMetrics.recordMetric("home_domain_check", 1, "count", {
-                outcome: homeDomainCheck.outcome,
-                mode: config.homeDomainCheckMode ?? "warn",
-            });
-            const homeDomainPassed = !homeDomainCheck.blocksValid || homeDomainCheck.outcome === "valid";
-            checks.push({
-                passed: homeDomainPassed,
-                label: "SEP-0001 home domain",
-                detail: homeDomainCheck.detail,
-            });
+    const valid = checks.every((c) => c.passed);
+    let remediation;
+    if (!valid) {
+        const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
+        const steps = [];
+        if (!trustlineExists) {
+            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Change Trust operation) or a wallet such as [LOBSTR](${(0, links_1.buildLobstrLink)()}).`);
         }
-        const valid = checks.every((c) => c.passed);
-        let remediation;
-        if (!valid) {
-            const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? "");
-            const steps = [];
-            if (authorizationBlocks) {
-                steps.push(`Ask the asset issuer (${(0, markdown_1.inlineCode)(config.assetIssuer)}) to authorize this trustline for ${(0, markdown_1.inlineCode)(account.account_id)}. The issuer has AUTHORIZATION_REQUIRED enabled, so a Change Trust operation alone is not enough — the issuer must submit a SetTrustLineFlags (or legacy AllowTrust) operation.`);
-            }
-            else if (!trustlineExists) {
-                steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Change Trust operation) or a wallet such as [LOBSTR](${(0, links_1.buildLobstrLink)()}).`);
-            }
-            if (!xlmReserveMet) {
-                steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
-            }
-            if (trustlineExists && !trustlineLimitMet && config.minTrustlineLimit) {
-                steps.push(`Increase the ${safeAssetCode} trustline limit to at least **${config.minTrustlineLimit} ${safeAssetCode}** using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Manage Trust operation) or a wallet. Current limit is **${(0, markdown_1.inlineCode)(trustlineLimit)} ${safeAssetCode}**.`);
-            }
-            if (assetBalanceCheckEnabled && !assetBalanceMet && trustlineExists) {
-                steps.push(`Acquire at least **${assetBalanceRequirement.missing} ${safeAssetCode}** to meet the minimum asset balance requirement of **${minAssetBalanceRequired} ${safeAssetCode}**.`);
-            }
-            if (clawbackBlocks) {
-                steps.push(`This asset has clawback enabled, which is blocked by \`clawback_strict_mode: true\`. Choose a different asset, or set \`clawback_strict_mode: false\` to proceed with a warning instead.`);
-            }
-            remediation = steps.join("\n\n");
+        if (!xlmReserveMet) {
+            steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
         }
-        const sponsorshipInfo = {
-            numSponsoring: account.num_sponsoring ?? 0,
-            numSponsored: account.num_sponsored ?? 0,
-        };
-        const claimableBalancePolicy = config.claimableBalancePolicy ?? "ignore";
-        const claimableBalanceCount = countClaimableBalances(account);
-        const hasClaimables = claimableBalanceCount > 0;
-        if (claimableBalancePolicy === "count" && hasClaimables) {
-            checks.push({
-                passed: true,
-                label: "Claimable balances",
-                detail: `Account has **${claimableBalanceCount} claimable balance(s)** — these are not counted toward \`account_funded\` but can be claimed via Horizon claimable_balances endpoint.`,
-            });
-            metrics_1.globalMetrics.incrementCounter("claimable_balances_found");
-            metrics_1.globalMetrics.recordMetric("claimable_balances_count", claimableBalanceCount, "count", {
-                policy: "count",
-            });
-        }
-        return {
-            valid,
-            accountFunded: true,
-            trustlineExists,
-            trustlineAuthorized,
-            clawbackEnabled: trustlineExistsRaw ? clawbackEnabled : undefined,
-            xlmBalance,
-            xlmReserveMet,
-            assetBalance: assetBalanceRaw,
-            assetBalanceMet,
-            trustlineLimit,
-            checks,
-            remediation,
-            claimableBalanceCount,
-            hasClaimableBalances: hasClaimables,
-            reasonCode: (() => {
-                if (valid)
-                    return "SUCCESS";
-                if (!trustlineExists)
-                    return "TRUSTLINE_MISSING";
-                if (!xlmReserveMet)
-                    return "RESERVE_TOO_LOW";
-                if (config.minTrustlineLimit && !trustlineLimitMet)
-                    return "TRUSTLINE_LIMIT_TOO_LOW";
-                return "FAILED";
-            })(),
-            failedCheckLabels: toFailedCheckCodes(checks),
-            reserveRequirement,
-            homeDomainCheck,
-            sponsorshipInfo,
-        };
+        remediation = steps.join('\n\n');
+    }
+    return {
+        valid,
+        accountFunded: true,
+        trustlineExists,
+        xlmBalance,
+        xlmReserveMet,
+        checks,
+        remediation,
     };
-    return buildResult();
 }
-function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCount) {
+function unfundedAccountResult(stellarAddress, config) {
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
-    const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? "");
-    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
-    // Build the "not found" detail, extended with mismatch context when available
-    // Uses centralized deterministic builder so public↔testnet produce identical format.
-    let notFoundDetail = `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`;
-    if (mismatchHint) {
-        notFoundDetail = buildNetworkMismatchDetail(stellarAddress, mismatchHint);
-    }
-    // Claimable-balance-aware funded definition (Issue #260): when policy is 'count' and
-    // claimableCount >0, surface an informational note. This does NOT set accountFunded true;
-    // the account is still unfunded, but the contributor is told claimables exist.
-    const claimablePolicy = config.claimableBalancePolicy ?? 'ignore';
-    const hasClaimables = typeof claimableCount === 'number' && claimableCount > 0;
-    if (claimablePolicy === 'count' && hasClaimables) {
-        notFoundDetail += ` It has **${claimableCount} claimable balance(s)** on Horizon — these must be claimed after funding.`;
-    }
-    else if (claimablePolicy === 'ignore' && hasClaimables) {
-        // When ignoring, we do not mention claimables in the funded check to keep today's behavior.
-        // Metrics still tracked for observability if caller fetched count.
-    }
+    const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
     const checks = [
         {
             passed: false,
-            label: "Account funded",
-            detail: notFoundDetail,
+            label: 'Account funded',
+            detail: `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`,
         },
         {
             passed: false,
             label: `${safeAssetCode} trustline`,
-            detail: "Cannot verify trustline until the account exists.",
+            detail: 'Cannot verify trustline until the account exists.',
         },
         {
             passed: false,
-            label: "XLM reserve",
+            label: 'XLM reserve',
             detail: `Cannot verify XLM balance. Fund the account with at least **${config.minXlmReserve} XLM**.`,
         },
     ];
-    if (assetBalanceCheckEnabled) {
-        checks.push({
-            passed: false,
-            label: `${safeAssetCode} minimum balance`,
-            detail: `Cannot verify ${safeAssetCode} balance — Fund the account and establish a trustline first.`,
-        });
-    }
-    // Claimable balances informational check (Issue #260) — only when policy is count
-    const claimablePolicyForCheck = config.claimableBalancePolicy ?? 'ignore';
-    if (claimablePolicyForCheck === 'count' && typeof claimableCount === 'number' && claimableCount > 0) {
-        checks.push({
-            passed: true,
-            label: "Claimable balances",
-            detail: `Account has **${claimableCount} claimable balance(s)** pending claim. Fund the account first, then claim via Horizon or wallet.`,
-        });
-    }
-    // Base remediation steps
-    const remediationSteps = [
-        `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-        `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
-        `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
-    ];
-    // Claimable remediation when policy is count
-    if ((config.claimableBalancePolicy ?? "ignore") === "count" &&
-        typeof claimableCount === "number" &&
-        claimableCount > 0) {
-        remediationSteps.push(`This address has **${claimableCount} claimable balance(s)** awaiting claim. After funding, claim them via [Horizon claimable_balances endpoint](${config.horizonUrl ?? "https://horizon.stellar.org"}/claimable_balances?claimant=${stellarAddress}) or a wallet that supports claimable balances.`);
-    }
-    // Prepend network-mismatch guidance when detected so it's the first thing a
-    // contributor reads.
-    if (mismatchHint) {
-        const strings = (0, i18n_1.getStrings)('en');
-        const correctUrl = (0, links_1.canonicalHorizonUrl)(mismatchHint.configuredNetwork);
-        const altUrl = (0, links_1.canonicalHorizonUrl)(mismatchHint.activeOnNetwork);
-        remediationSteps.unshift(`${strings.networkMismatchDetected} ${strings.networkMismatchConfiguredNetwork}` +
-            ` **${mismatchHint.configuredNetwork}** (${correctUrl}) and ${strings.networkMismatchActiveNetwork}` +
-            ` **${mismatchHint.activeOnNetwork}** (${altUrl}).`, `${strings.networkMismatchFix} ${strings.networkMismatchUpdateUrl}`);
-    }
-    // SEP-0001 home domain: account is unfunded so issuer data is unavailable.
-    let homeDomainCheck;
-    if (config.homeDomainCheckEnabled) {
-        homeDomainCheck = evaluateHomeDomain(null, config);
-        metrics_1.globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
-        metrics_1.globalMetrics.recordMetric("home_domain_check", 1, "count", {
-            outcome: homeDomainCheck.outcome,
-            mode: config.homeDomainCheckMode ?? "warn",
-        });
-        checks.push({
-            // Unfunded path: home domain cannot be verified, treat as non-blocking regardless of mode
-            passed: true,
-            label: 'SEP-0001 home domain',
-            detail: 'Cannot verify issuer home domain — account is not yet funded.',
-        });
-    }
     return {
         valid: false,
-        reasonCode: "ACCOUNT_NOT_FUNDED",
         accountFunded: false,
         trustlineExists: false,
-        xlmBalance: "0",
+        xlmBalance: '0',
         xlmReserveMet: false,
-        assetBalance: "0",
-        assetBalanceMet: false,
         checks,
-        remediation: remediationSteps.join("\n\n"),
-        failedCheckLabels: toFailedCheckCodes(checks),
-        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
-        homeDomainCheck,
-        claimableBalanceCount: typeof claimableCount === "number" ? claimableCount : 0,
-        hasClaimableBalances: typeof claimableCount === "number" && claimableCount > 0,
+        remediation: [
+            `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
+            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
+            `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
+        ].join('\n\n'),
     };
 }
 function getFailedCheckLabels(result) {
-    return result.checks
-        .filter((check) => !check.passed)
-        .map((check) => check.label);
-}
-/**
- * Map human-readable check labels to stable snake_case codes used by
- * gating / metrics / fail_on_missing benchmarks.
- */
-function toFailedCheckCodes(checks) {
-    const codes = [];
-    for (const check of checks) {
-        if (check.passed)
-            continue;
-        const label = check.label.toLowerCase();
-        if (label.includes("horizon")) {
-            codes.push("horizon_available");
-        }
-        else if (label.includes("account funded")) {
-            codes.push("account_funded");
-        }
-        else if (label.includes("trustline") &&
-            !label.includes("limit") &&
-            !label.includes("clawback")) {
-            codes.push("trustline");
-        }
-        else if (label.includes("xlm reserve")) {
-            codes.push("xlm_reserve");
-        }
-        else if (label.includes("minimum balance")) {
-            codes.push("asset_balance");
-        }
-        else if (label.includes("trustline limit")) {
-            codes.push("trustline_limit");
-        }
-        else if (label.includes("home domain")) {
-            codes.push("home_domain");
-        }
-        else {
-            codes.push(label.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""));
-        }
-    }
-    return codes;
-}
-/**
- * Reduces an error message to something safe to post in a public GitHub
- * comment: only the first line (never a multi-line stack trace) and capped
- * to a sane length. The underlying Error's full `.stack` is never passed
- * into this pipeline in the first place — callers only ever pass
- * `error.message` — but this is a defense-in-depth guard against a
- * message that itself happens to be multi-line or unexpectedly long.
- */
-function sanitizeErrorMessageForComment(message) {
-    const firstLine = message.split(/\r?\n/)[0] ?? "";
-    const MAX_LENGTH = 500;
-    return firstLine.length > MAX_LENGTH ? `${firstLine.slice(0, MAX_LENGTH)}…` : firstLine;
+    return result.checks.filter((check) => !check.passed).map((check) => check.label);
 }
 function horizonFailureResult(message, config) {
     // `message` may originate from the configured Horizon endpoint's HTTP
     // response body (e.g. the `detail`/`title` fields of an error payload),
-    // which is not trusted content — sanitize and escape it before it lands
-    // in the Markdown comment so it can't dump a stack trace, inject
-    // formatting/links, or break out of the comment structure.
-    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
-    const waitBudgetExhausted = /retry wait budget exhausted|total wait .* cap/i.test(message);
-    const failureDetail = waitBudgetExhausted
-        ? `Horizon retry wait budget exhausted: ${safeMessage}`
-        : safeMessage;
-    const failureRemediation = waitBudgetExhausted
-        ? "Horizon retry wait budget exhausted before a successful response. Retry the workflow later or increase the configured retry wait budget."
-        : "Horizon could not be reached. Retry later or verify your `horizon_url` input and network connectivity.";
-    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
-    const checks = [
-        {
-            passed: false,
-            label: "Horizon availability",
-            detail: failureDetail,
-        },
-        {
-            passed: false,
-            label: `${safeAssetCode} trustline`,
-            detail: waitBudgetExhausted
-                ? "Check could not be completed because the Horizon retry wait budget was exhausted."
-                : "Check could not be completed.",
-        },
-        {
-            passed: false,
-            label: "XLM reserve",
-            detail: waitBudgetExhausted
-                ? "Check could not be completed because the Horizon retry wait budget was exhausted."
-                : "Check could not be completed.",
-        },
-    ];
-    if (assetBalanceCheckEnabled) {
-        checks.push({
-            passed: false,
-            label: `${safeAssetCode} minimum balance`,
-            detail: waitBudgetExhausted
-                ? "Check could not be completed because the Horizon retry wait budget was exhausted."
-                : "Check could not be completed.",
-        });
-    }
-    if (config.homeDomainCheckEnabled) {
-        metrics_1.globalMetrics.incrementCounter("home_domain_skipped");
-        metrics_1.globalMetrics.recordMetric("home_domain_check", 1, "count", {
-            outcome: "skipped",
-            mode: config.homeDomainCheckMode ?? "warn",
-        });
-        checks.push({
-            passed: true,
-            label: 'SEP-0001 home domain',
-            detail: 'Cannot verify issuer home domain — Horizon was unreachable.',
-        });
-    }
-    return {
-        valid: false,
-        reasonCode: waitBudgetExhausted
-            ? "HORIZON_WAIT_BUDGET_EXHAUSTED"
-            : message.toLowerCase().includes("timed out") || message.toLowerCase().includes("timeout")
-                ? "HORIZON_TIMEOUT"
-                : "HORIZON_ERROR",
-        accountFunded: false,
-        trustlineExists: false,
-        xlmBalance: "unknown",
-        xlmReserveMet: false,
-        assetBalance: "unknown",
-        assetBalanceMet: false,
-        checks,
-        remediation: failureRemediation,
-        failedCheckLabels: toFailedCheckCodes(checks),
-        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
-        homeDomainCheck: config.homeDomainCheckEnabled
-            ? { outcome: 'skipped', detail: 'Cannot verify — Horizon unreachable.', blocksValid: false }
-            : undefined,
-    };
-}
-/**
- * Builds a result for a circuit-breaker fast-fail (Issue #209 / #434).
- *
- * Kept distinct from `horizonFailureResult` because the semantics differ in
- * an important way: when the circuit is open the request **never left the
- * process**, so nothing whatsoever is known about the account. A
- * `HORIZON_ERROR` result implies Horizon answered and the answer was bad.
- * Reporting a tripped circuit as a Horizon error sends triagers hunting for
- * an account problem (or a broken endpoint) that may not exist.
- *
- * PII-safe by construction: the comment, metrics, and debug fields carry only
- * the boolean fact that the breaker tripped — no address, balance, issuer, or
- * endpoint URL is added to the comment by this path.
- */
-function circuitOpenFailureResult(message, config) {
-    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
-    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
-    const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
-    const checks = [
-        {
-            passed: false,
-            label: "Horizon availability",
-            // The breaker message is generated locally from configured thresholds and
-            // contains no account data, so it is safe to surface verbatim.
-            detail: safeMessage || skipped,
-        },
-        {
-            passed: false,
-            label: `${safeAssetCode} trustline`,
-            detail: skipped,
-        },
-        {
-            passed: false,
-            label: "XLM reserve",
-            detail: skipped,
-        },
-    ];
-    if (assetBalanceCheckEnabled) {
-        checks.push({
-            passed: false,
-            label: `${safeAssetCode} minimum balance`,
-            detail: skipped,
-        });
-    }
-    if (config.homeDomainCheckEnabled) {
-        metrics_1.globalMetrics.incrementCounter("home_domain_skipped");
-        metrics_1.globalMetrics.recordMetric("home_domain_check", 1, "count", {
-            outcome: "skipped",
-            mode: config.homeDomainCheckMode ?? "warn",
-        });
-        checks.push({
-            passed: true,
-            label: "SEP-0001 home domain",
-            detail: "Cannot verify issuer home domain — the Horizon circuit breaker was open.",
-        });
-    }
-    return {
-        valid: false,
-        reasonCode: "CIRCUIT_OPEN",
-        accountFunded: false,
-        trustlineExists: false,
-        xlmBalance: "unknown",
-        xlmReserveMet: false,
-        assetBalance: "unknown",
-        assetBalanceMet: false,
-        circuitOpen: true,
-        checks,
-        remediation: "The Horizon circuit breaker is open after repeated Horizon failures, so this run " +
-            "was short-circuited without contacting Horizon. This is a resilience safeguard, not a " +
-            "problem with the account. Wait for the recovery window to elapse and re-run the " +
-            "workflow; if it keeps happening, check the health of the configured Horizon endpoint.",
-        failedCheckLabels: toFailedCheckCodes(checks),
-        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
-        homeDomainCheck: config.homeDomainCheckEnabled
-            ? {
-                outcome: "skipped",
-                detail: "Cannot verify — the Horizon circuit breaker was open.",
-                blocksValid: false,
-            }
-            : undefined,
-    };
-}
-/**
- * Builds a result for a TLS/certificate verification failure connecting to
- * the configured Horizon endpoint (see `HorizonTlsError`). Kept distinct
- * from `horizonFailureResult` so the comment clearly attributes the
- * failure to the endpoint's transport/certificate configuration rather
- * than to the account or trustline being checked — this matters most for
- * private/enterprise Horizon mirrors, where a bad or expired certificate
- * is easy to misdiagnose as "the account isn't set up right."
- */
-function tlsFailureResult(message, config) {
-    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
+    // which is not trusted content — escape it before it lands in the
+    // Markdown comment so it can't inject formatting, links, or break out of
+    // the comment structure.
+    const safeMessage = (0, markdown_1.escapeMarkdownInline)(message);
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const checks = [
         {
             passed: false,
-            label: "Horizon TLS / certificate verification",
+            label: 'Horizon availability',
             detail: safeMessage,
         },
         {
             passed: false,
             label: `${safeAssetCode} trustline`,
-            detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
+            detail: 'Check could not be completed.',
         },
         {
             passed: false,
             label: 'XLM reserve',
-            detail: 'Check could not be completed — the Horizon TLS handshake failed before this account could be queried.',
+            detail: 'Check could not be completed.',
         },
     ];
     return {
         valid: false,
-        reasonCode: "TLS_ERROR",
-        accountFunded: false,
-        trustlineExists: false,
-        xlmBalance: "unknown",
-        xlmReserveMet: false,
-        assetBalance: "unknown",
-        assetBalanceMet: false,
-        checks,
-        remediation: "TLS/certificate verification failed for the configured Horizon endpoint. " +
-            "Check the endpoint certificate chain (especially for private mirrors) and retry.",
-        failedCheckLabels: toFailedCheckCodes(checks),
-        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
-    };
-}
-/**
- * Builds a result for a rate-budget exhaustion failure (horizon_max_requests
- * exceeded). This is intentionally distinct from both:
- * - `horizonFailureResult` (Horizon API error or outage) — reason_code: HORIZON_ERROR
- * - `unfundedAccountResult` (Horizon 404) — reason_code: ACCOUNT_NOT_FUNDED
- *
- * A RATE_BUDGET_EXHAUSTED result always means the run was stopped by the
- * local request cap, *not* by any signal from Horizon about the account.
- * The account state is therefore genuinely unknown — fail closed.
- */
-function rateBudgetExhaustedResult(message, config) {
-    const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
-    const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
-    const checks = [
-        {
-            passed: false,
-            label: 'Horizon availability',
-            detail: `Rate budget exhausted: ${safeMessage}`,
-        },
-        {
-            passed: false,
-            label: `${safeAssetCode} trustline`,
-            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
-        },
-        {
-            passed: false,
-            label: 'XLM reserve',
-            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
-        },
-    ];
-    if (assetBalanceCheckEnabled) {
-        checks.push({
-            passed: false,
-            label: `${safeAssetCode} minimum balance`,
-            detail: 'Check could not be completed — the rate budget was exhausted before account data could be retrieved.',
-        });
-    }
-    if (config.homeDomainCheckEnabled) {
-        metrics_1.globalMetrics.incrementCounter('home_domain_skipped');
-        metrics_1.globalMetrics.recordMetric('home_domain_check', 1, 'count', {
-            outcome: 'skipped',
-            mode: config.homeDomainCheckMode ?? 'warn',
-        });
-        checks.push({
-            passed: true,
-            label: 'SEP-0001 home domain',
-            detail: 'Cannot verify issuer home domain — the rate budget was exhausted.',
-        });
-    }
-    return {
-        valid: false,
-        reasonCode: 'RATE_BUDGET_EXHAUSTED',
         accountFunded: false,
         trustlineExists: false,
         xlmBalance: 'unknown',
         xlmReserveMet: false,
-        assetBalance: 'unknown',
-        assetBalanceMet: false,
         checks,
-        remediation: 'The configured `horizon_max_requests` budget was exhausted before the account check could complete. ' +
-            'Increase `horizon_max_requests`, reduce polling frequency, or enable caching to avoid hitting the cap.',
-        failedCheckLabels: toFailedCheckCodes(checks),
-        sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+        remediation: 'Horizon could not be reached. Retry later or verify your `horizon_url` input and network connectivity.',
     };
 }
-/**
- * Computes the real Stellar protocol minimum balance for an account:
- * `(2 base reserves + subentries + num_sponsoring − num_sponsored) * base_reserve`.
- * Sponsored subentries don't count against the sponsoree's own reserve, and
- * subentries the account sponsors *for others* do — see CAP-0033. Clamped
- * to zero so a stale/inconsistent sponsorship snapshot can never go negative.
- */
-function computeProtocolMinReserve(account) {
-    const numSponsoring = account.num_sponsoring ?? 0;
-    const numSponsored = account.num_sponsored ?? 0;
-    const reserveEntries = 2 + account.subentry_count + numSponsoring - numSponsored;
-    return Math.max(0, reserveEntries) * exports.STELLAR_BASE_RESERVE_XLM;
-}
-/**
- * Builds the effective reserve requirement for an account: the Stellar
- * protocol minimum (sponsor-aware) with `configuredFloor` (`min_xlm_reserve`)
- * applied as a floor override, so maintainers can still require more than
- * the bare protocol minimum.
- */
-function buildReserveRequirement(configuredFloor, actual, account) {
-    const protocolMinimum = account ? computeProtocolMinReserve(account) : 0;
-    const required = Math.max(protocolMinimum, configuredFloor);
+function buildReserveRequirement(required, actual) {
     return {
         required,
         actual,
         missing: formatXlmDeficit(required, actual),
         met: actual >= required,
-        protocolMinimum,
-        configuredFloor,
-        subentryCount: account?.subentry_count ?? 0,
-        numSponsoring: account?.num_sponsoring ?? 0,
-        numSponsored: account?.num_sponsored ?? 0,
-    };
-}
-/**
- * Run trustline checks for multiple assets against an already-fetched account.
- * Returns per-asset results and an aggregate `allTrustlinesExist` flag.
- */
-function runMultiAssetChecks(account, assets) {
-    const results = assets.map((a) => ({
-        assetCode: a.assetCode,
-        assetIssuer: a.assetIssuer,
-        trustlineExists: (0, horizon_1.hasTrustline)(account, a.assetCode, a.assetIssuer),
-    }));
-    return {
-        results,
-        allTrustlinesExist: results.every((r) => r.trustlineExists),
     };
 }
 /**
@@ -35538,370 +34179,6 @@ function buildValidationGate(result) {
         failedChecks,
         failedLabels,
     };
-}
-// ---------------------------------------------------------------------------
-// Wave #32: Reusable workflow examples for trustline, reserve, StrKey,
-// multi-asset validation checks (Issue #32)
-// ---------------------------------------------------------------------------
-/**
- * Reusable workflow: verify trustline existence for a specific asset.
- * Returns true if the account has an active trustline for the given asset code
- * and issuer, false otherwise.
- *
- * Usage in workflows:
- * ```yaml
- * - name: Verify USDC trustline
- *   run: |
- *     if check-trustline USDC ${ISSUER}; then
- *       echo "Trustline configured"
- *     fi
- * ```
- */
-function checkTrustlineExists(account, assetCode, assetIssuer) {
-    return (0, horizon_1.hasTrustline)(account, assetCode, assetIssuer);
-}
-/**
- * Reusable workflow: verify XLM reserve meets minimum threshold.
- * Returns true if native balance >= minReserve, false otherwise.
- *
- * Usage in workflows:
- * ```yaml
- * - name: Verify XLM reserve
- *   run: |
- *     if check-reserve ${ADDRESS} 1.5; then
- *       echo "Reserve met"
- *     fi
- * ```
- */
-function checkReserveMet(account, minReserve) {
-    const xlmBalance = (0, horizon_1.getNativeBalance)(account);
-    const parsed = (0, horizon_1.parseHorizonBalance)(xlmBalance);
-    return parsed >= minReserve;
-}
-/**
- * Reusable workflow: validate StrKey format for Stellar addresses.
- * Supports both G-addresses (accounts) and C-addresses (contracts).
- * Returns true if the address matches StrKey shape, false otherwise.
- *
- * Usage in workflows:
- * ```yaml
- * - name: Validate address format
- *   run: |
- *     if validate-strkey ${ADDRESS}; then
- *       echo "Valid StrKey"
- *     fi
- * ```
- */
-function validateStrKeyFormat(address) {
-    const trimmed = address.trim();
-    if (trimmed.length !== 56)
-        return false;
-    const prefix = trimmed.charAt(0);
-    if (prefix !== 'G' && prefix !== 'C')
-        return false;
-    // StrKey uses base32 alphabet: A-Z, 2-7
-    const strKeyRegex = /^[GC][A-Z2-7]{55}$/;
-    return strKeyRegex.test(trimmed);
-}
-/**
- * Reusable workflow: verify multiple asset trustlines in a single check.
- * Returns an array of results — one per asset — with pass/fail status.
- *
- * Usage in workflows:
- * ```yaml
- * - name: Verify multi-asset trustlines
- *   run: |
- *     check-multi-asset USDC,EURC ${USDC_ISSUER},${EURC_ISSUER}
- * ```
- */
-function checkMultiAssetTrustlines(account, assets) {
-    return assets.map((cfg) => ({
-        asset: cfg.assetCode,
-        issuer: cfg.assetIssuer,
-        exists: (0, horizon_1.hasTrustline)(account, cfg.assetCode, cfg.assetIssuer),
-        required: cfg.required,
-    }));
-}
-/**
- * Reusable workflow: calculate recommended XLM reserve for an account.
- * Formula: base account reserve (1 XLM) + (trustline count × 0.5 XLM per entry).
- *
- * Usage in workflows:
- * ```yaml
- * - name: Calculate reserve requirement
- *   run: |
- *     RESERVE=$(calculate-reserve ${TRUSTLINE_COUNT})
- *     echo "Recommended reserve: ${RESERVE} XLM"
- * ```
- */
-function calculateRecommendedReserve(trustlineCount) {
-    return (exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM + trustlineCount * exports.STELLAR_BASE_RESERVE_XLM);
-}
-/**
- * Reusable workflow: check if account sponsor is configured.
- * Returns true if the account has a sponsor (num_sponsored > 0), false otherwise.
- *
- * Useful for DAO/treasury workflows where accounts may be sponsored to reduce
- * reserve requirements for contributors.
- *
- * Usage in workflows:
- * ```yaml
- * - name: Verify sponsorship
- *   run: |
- *     if check-sponsored ${ADDRESS}; then
- *       echo "Account is sponsored"
- *     fi
- * ```
- */
-function checkAccountSponsored(account) {
-    return (account.num_sponsored ?? 0) > 0;
-}
-function generateValidationReport(account, config, additionalAssets = []) {
-    const xlmBalance = (0, horizon_1.getNativeBalance)(account);
-    const xlmParsed = (0, horizon_1.parseHorizonBalance)(xlmBalance);
-    const trustlineCount = account.balances.filter((b) => b.asset_type !== "native").length;
-    const recommendedReserve = calculateRecommendedReserve(trustlineCount);
-    const primaryTrustline = {
-        asset: config.assetCode,
-        issuer: config.assetIssuer,
-        exists: (0, horizon_1.hasTrustline)(account, config.assetCode, config.assetIssuer),
-    };
-    const additionalTrustlineResults = checkMultiAssetTrustlines(account, additionalAssets).map((r) => ({ asset: r.asset, issuer: r.issuer, exists: r.exists }));
-    return {
-        address: account.account_id,
-        strKeyValid: validateStrKeyFormat(account.account_id),
-        accountFunded: true,
-        xlmBalance,
-        reserveStatus: {
-            current: xlmParsed,
-            required: Math.max(config.minXlmReserve, recommendedReserve),
-            met: xlmParsed >= Math.max(config.minXlmReserve, recommendedReserve),
-            deficit: formatXlmDeficit(Math.max(config.minXlmReserve, recommendedReserve), xlmParsed),
-        },
-        trustlines: [primaryTrustline, ...additionalTrustlineResults],
-        sponsored: checkAccountSponsored(account),
-        timestamp: new Date().toISOString(),
-    };
-}
-function buildAssetBalanceRequirement(required, actual) {
-    const met = actual >= required;
-    return {
-        required,
-        actual,
-        missing: formatStroops(met ? 0n : required - actual),
-        met,
-    };
-}
-
-
-/***/ }),
-
-/***/ 3586:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CODEOWNERS_STANDARD_PATHS = void 0;
-exports.parseCodeowners = parseCodeowners;
-exports.normalizeOwnerHandle = normalizeOwnerHandle;
-exports.loadCodeowners = loadCodeowners;
-exports.isMaintainerActor = isMaintainerActor;
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
-const github = __importStar(__nccwpck_require__(3228));
-const logger_1 = __nccwpck_require__(6999);
-/** Standard locations where CODEOWNERS can reside in a repository. */
-exports.CODEOWNERS_STANDARD_PATHS = [
-    '.github/CODEOWNERS',
-    'CODEOWNERS',
-    'docs/CODEOWNERS',
-];
-/**
- * Parse the contents of a CODEOWNERS file into a normalized Set of owner handles.
- * Handles `@username`, `@org/team`, emails, and raw usernames.
- * Comments (`#`) and empty lines are ignored.
- */
-function parseCodeowners(content) {
-    const owners = new Set();
-    const lines = content.split(/\r?\n/);
-    for (const rawLine of lines) {
-        const trimmed = rawLine.trim();
-        if (!trimmed || trimmed.startsWith('#')) {
-            continue;
-        }
-        // A line format is: <pattern> <owner1> <owner2> ...
-        // E.g. * @octocat @org/team
-        const tokens = trimmed.split(/\s+/);
-        // The first token is the file/directory pattern, the rest are owners
-        const ownerTokens = tokens.slice(1);
-        for (const token of ownerTokens) {
-            if (token.startsWith('#')) {
-                // Trailing inline comment starts here
-                break;
-            }
-            const normalized = normalizeOwnerHandle(token);
-            if (normalized) {
-                owners.add(normalized);
-            }
-        }
-    }
-    return owners;
-}
-/**
- * Normalize an owner handle from CODEOWNERS or allowlist (lowercase, strip leading @).
- */
-function normalizeOwnerHandle(handle) {
-    const trimmed = handle.trim().toLowerCase();
-    return trimmed.replace(/^@/, '');
-}
-/**
- * Load CODEOWNERS content with strict Branch Safety guarantees:
- * - On pull requests from forks (or untrusted PR heads), NEVER reads from the local PR workspace.
- * - Instead, fetches the trusted CODEOWNERS file from the base branch / default branch via GitHub API.
- * - When running in a trusted context (push, default branch, or workflow_dispatch), reads from local workspace.
- */
-async function loadCodeowners(options = {}) {
-    const workspaceRoot = options.workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
-    const customPath = options.customPath?.trim();
-    // Branch safety check: detect if running in a fork PR
-    const payload = github.context.payload;
-    const isPullRequest = github.context.eventName === 'pull_request' || payload.pull_request !== undefined;
-    const isFork = options.isForkPr ??
-        (isPullRequest && payload.pull_request?.head?.repo?.full_name !== payload.repository?.full_name);
-    if (isFork) {
-        logger_1.logger.info('Branch safety: Fork PR detected. Fetching CODEOWNERS from base/default branch via API instead of PR workspace.', {
-            component: 'codeowners',
-        });
-        const token = options.githubToken || process.env.GITHUB_TOKEN;
-        if (token) {
-            try {
-                const octokit = options.octokit || github.getOctokit(token);
-                const owner = options.owner || github.context.repo.owner;
-                const repo = options.repo || github.context.repo.repo;
-                const ref = options.baseRef || payload.pull_request?.base?.ref || payload.repository?.default_branch || 'main';
-                const pathsToTry = customPath ? [customPath] : exports.CODEOWNERS_STANDARD_PATHS;
-                for (const filePath of pathsToTry) {
-                    try {
-                        const response = await octokit.rest.repos.getContent({
-                            owner,
-                            repo,
-                            path: filePath,
-                            ref,
-                        });
-                        if ('content' in response.data && typeof response.data.content === 'string') {
-                            const content = Buffer.from(response.data.content, 'base64').toString('utf8');
-                            logger_1.logger.info(`Loaded trusted CODEOWNERS from ${filePath} @ ref ${ref}`, { component: 'codeowners' });
-                            return parseCodeowners(content);
-                        }
-                    }
-                    catch (err) {
-                        // Path not found on remote; continue to next standard location
-                        const status = err?.status;
-                        if (status !== 404) {
-                            logger_1.logger.warn(`Failed to fetch CODEOWNERS from ${filePath}: ${err instanceof Error ? err.message : String(err)}`, {
-                                component: 'codeowners',
-                            });
-                        }
-                    }
-                }
-            }
-            catch (apiError) {
-                logger_1.logger.warn(`API error while fetching trusted CODEOWNERS: ${apiError instanceof Error ? apiError.message : String(apiError)}`, {
-                    component: 'codeowners',
-                });
-            }
-        }
-        else {
-            logger_1.logger.warn('Branch safety: Fork PR detected but no GitHub token available to fetch trusted CODEOWNERS. Failing safe (no maintainer skip).', {
-                component: 'codeowners',
-            });
-            return new Set();
-        }
-    }
-    // Trusted local workspace read (push, default branch, workflow_dispatch)
-    const candidatePaths = customPath ? [customPath] : exports.CODEOWNERS_STANDARD_PATHS;
-    for (const relativePath of candidatePaths) {
-        const fullPath = path.isAbsolute(relativePath)
-            ? relativePath
-            : path.join(workspaceRoot, relativePath);
-        if (fs.existsSync(fullPath)) {
-            try {
-                const content = fs.readFileSync(fullPath, 'utf8');
-                logger_1.logger.info(`Loaded CODEOWNERS from local path: ${relativePath}`, { component: 'codeowners' });
-                return parseCodeowners(content);
-            }
-            catch (err) {
-                logger_1.logger.warn(`Failed to read CODEOWNERS from ${relativePath}: ${err instanceof Error ? err.message : String(err)}`, {
-                    component: 'codeowners',
-                });
-            }
-        }
-    }
-    return new Set();
-}
-/**
- * Check if the given actor is a maintainer according to CODEOWNERS or an explicit maintainers list.
- */
-function isMaintainerActor(actor, codeowners, maintainersAllowlist = []) {
-    if (!actor || !actor.trim()) {
-        return false;
-    }
-    const normalizedActor = normalizeOwnerHandle(actor);
-    // Check CODEOWNERS entries (direct username match or team match)
-    if (codeowners.has(normalizedActor)) {
-        return true;
-    }
-    // Check team format entries in CODEOWNERS (e.g. org/team)
-    for (const owner of codeowners) {
-        if (owner.includes('/')) {
-            const parts = owner.split('/');
-            if (parts[1] && parts[1] === normalizedActor) {
-                return true;
-            }
-        }
-    }
-    // Check explicit maintainers allowlist
-    for (const item of maintainersAllowlist) {
-        const normalizedItem = normalizeOwnerHandle(item);
-        if (normalizedItem && normalizedItem === normalizedActor) {
-            return true;
-        }
-    }
-    return false;
 }
 
 
@@ -35946,51 +34223,31 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_METRICS_JSON_BYTES = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
-exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
-exports.writeFullReport = writeFullReport;
-exports.resolveCommentMode = resolveCommentMode;
-exports.resolveIssueOrPullRequestNumber = resolveIssueOrPullRequestNumber;
 exports.isTrustBridgeComment = isTrustBridgeComment;
-exports.isTrustBridgeSlashCommand = isTrustBridgeSlashCommand;
-exports.isBotCommentAuthor = isBotCommentAuthor;
 exports.findStickyComment = findStickyComment;
-exports.findFirstTrustBridgeComment = findFirstTrustBridgeComment;
 exports.postIssueComment = postIssueComment;
-exports.resolveDiscussionNodeId = resolveDiscussionNodeId;
-exports.resolveDiscussionCommentTarget = resolveDiscussionCommentTarget;
-exports.findStickyDiscussionComment = findStickyDiscussionComment;
-exports.postDiscussionComment = postDiscussionComment;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
+const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const checks_1 = __nccwpck_require__(2122);
 const links_1 = __nccwpck_require__(3346);
 const markdown_1 = __nccwpck_require__(3758);
-const template_1 = __nccwpck_require__(5237);
-const proxy_1 = __nccwpck_require__(8903);
-const snooze_1 = __nccwpck_require__(3286);
-const diagnostics_1 = __nccwpck_require__(4851);
-const i18n_1 = __nccwpck_require__(4859);
-const delta_1 = __nccwpck_require__(1493);
-const tracing_1 = __nccwpck_require__(7145);
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
  * Bump when the comment body structure (sections, markers, remediation
  * shape, etc.) changes in a way that downstream consumers or future
  * versions of this action need to detect.
  */
-exports.COMMENT_SCHEMA_VERSION = "1.1.0";
-exports.TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
+exports.COMMENT_SCHEMA_VERSION = '1.0.0';
+exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 /**
  * Legacy hidden marker (pre-schema-version). Kept for backward
  * compatibility in `findStickyComment` so comments posted by older
  * releases of the action are still eligible for upsert.
  */
-exports.STICKY_COMMENT_MARKER_LEGACY = "<!-- trustbridge-action:sticky-comment -->";
+exports.STICKY_COMMENT_MARKER_LEGACY = '<!-- trustbridge-action:sticky-comment -->';
 /**
  * Hidden marker embedded in every TrustBridge comment body. Includes the
  * comment schema version so future releases can detect the format of a
@@ -35999,254 +34256,57 @@ exports.STICKY_COMMENT_MARKER_LEGACY = "<!-- trustbridge-action:sticky-comment -
  */
 exports.STICKY_COMMENT_MARKER = `<!-- trustbridge-action:sticky-comment:schema-v${exports.COMMENT_SCHEMA_VERSION} -->`;
 function statusIcon(passed) {
-    return passed ? "✅" : "❌";
+    return passed ? '✅' : '❌';
 }
-exports.MAX_COMMENT_LENGTH = 64000;
-const TRUNCATION_NOTICE = "\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_";
 function formatCommentBody(result, config) {
     const stellarLabNetwork = (0, links_1.inferStellarNetwork)(config.horizonUrl);
     const gate = (0, checks_1.buildValidationGate)(result);
-    const strings = (0, i18n_1.getStrings)(config.locale ?? "en");
-    const assetBalanceCheckEnabled = !!config.minAssetBalance;
-    // Generate snooze marker with current check status (Issue #155)
-    const snoozeMarker = (0, snooze_1.formatSnoozeMarker)(result.valid ? "pass" : "fail");
-    const buildWithRemediation = (remediation) => {
-        // Per-asset trustline table for `assets_json` (Issue #552). Rendered
-        // right after the Balances section so the per-asset state sits next to
-        // the primary asset balance line. When no additional assets are
-        // configured (or all entries were deduplicated) the table is empty and
-        // the comment stays byte-identical to single-asset runs.
-        const assetTable = (0, markdown_1.buildAssetTrustlineTable)(config.assets ?? []);
-        const lines = [
-            exports.STICKY_COMMENT_MARKER,
-            `<!-- trustbridge-action:schema-version:${exports.COMMENT_SCHEMA_VERSION} -->`,
-            snoozeMarker,
-            "## TrustBridge — Stellar Account Check",
-            "",
-            `${strings.checkedAccount} ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
-            `${strings.horizon} ${(0, markdown_1.inlineCode)(config.horizonUrl)}`,
-            `${strings.asset} **${config.assetCode}** · Issuer: ${(0, markdown_1.inlineCode)(config.assetIssuer)}`,
-        ];
-        lines.push("", `### ${strings.resultsHeading}`, "");
-        for (const check of result.checks) {
-            // Append a FAQ deep link for failing checks so contributors land on the
-            // exact fix (Issue #104). Passing checks do not include the link to keep
-            // the happy path clean.
-            let faqSuffix = "";
-            if (!check.passed) {
-                const faqUrl = (0, links_1.buildFaqLinkForCheck)(check.label, config.docsBaseUrl);
-                if (faqUrl) {
-                    faqSuffix = ` [→ FAQ](${faqUrl})`;
-                }
-            }
-            lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}${faqSuffix}`);
-        }
-        // Circuit breaker banner (Issue #434) — a run that fast-failed because the
-        // Horizon circuit was open must say so, otherwise the Results list looks
-        // like a plain account failure and triage chases the wrong root cause.
-        // Rendered immediately after Results so it is the first thing a maintainer
-        // reads. Contains no account data, addresses, or balances.
-        if (result.circuitOpen) {
-            lines.push("", `> ⚡ **${strings.circuitBreakerHeading}**`, `> - ${strings.circuitBreakerOpen}`, `> - ${strings.circuitBreakerRecoveryHint}`, `> - ${strings.circuitBreakerReasonCode}`);
-        }
-        // Onboarding checklist (Issue #154) — default on unless explicitly disabled.
-        if (config.onboardingChecklist !== false) {
-            // Preserve any manually-checked boxes from the previous sticky comment
-            // (Issue #311).  extractChecklistState parses only the known allowlisted
-            // labels (across every supported locale) so a crafted comment body
-            // cannot inject arbitrary state and a locale switch does not lose state.
-            const previousChecks = config.existingCommentBody
-                ? (0, markdown_1.extractChecklistState)(config.existingCommentBody)
-                : undefined;
-            lines.push("", (0, markdown_1.buildOnboardingChecklist)(result, {
-                assetCode: config.assetCode,
-                minXlmReserve: config.minXlmReserve,
-                locale: config.locale,
-                previousChecks,
-            }));
-        }
-        // Ledger freshness / lag alert (Issue #107) — surfaced as a distinct banner
-        // so contributors clearly understand it is about Horizon data quality, not
-        // their wallet state.
-        if (result.ledgerFreshnessResult) {
-            const fr = result.ledgerFreshnessResult;
-            const icon = fr.status === "ok" ? "✅" : fr.status === "stale" ? "⚠️" : "ℹ️";
-            const lagDisplay = fr.lagSeconds !== null ? `${fr.lagSeconds.toFixed(1)}s` : "_unknown_";
-            const ledgerDisplay = fr.latestLedger !== null ? `#${fr.latestLedger}` : "_unknown_";
-            lines.push("", `> ${icon} **Ledger freshness** — ${fr.message}`, `> - Measured lag: \`${lagDisplay}\` · Latest ledger: \`${ledgerDisplay}\``, fr.blocksValid
-                ? "> - ❌ This is treated as a **hard failure** (`ledger_freshness_fail_on_stale: true`)."
-                : fr.status === "stale"
-                    ? "> - ⚠️ This is an **informational warning** (`ledger_freshness_fail_on_stale: false`). Results may not reflect the current network state."
-                    : "");
-        }
-        if (result.networkPassphraseMismatch) {
-            const mismatch = result.networkPassphraseMismatch;
-            lines.push('', '🚨 **Network passphrase mismatch detected**', `- **Expected:** ${(0, markdown_1.inlineCode)(mismatch.expectedPassphrase)}`, `- **Horizon reports:** ${(0, markdown_1.inlineCode)(mismatch.actualPassphrase)}`, `- ${mismatch.message}`, '- This is a configuration error and can cause account lookups to return 404 errors.');
-        }
-        const deltaSection = (0, delta_1.formatDeltaMarkdown)(config.delta);
-        if (deltaSection) {
-            lines.push("", deltaSection);
-        }
-        // Validation gate (Issue #450) — the machine-readable verdict that the
-        // `ready` / `reason_code` action outputs expose. Surfacing it here means a
-        // dashboard triager can read the reason code straight from the comment
-        // instead of digging through the Actions log.
-        const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
-        lines.push("", `### ${strings.validationGateHeading}`, "", gate.ready
-            ? `- ${strings.readyToProceed}`
-            : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, `- ${strings.readyFlag} \`${String(gate.ready)}\``, `- ${strings.reasonCode} ${(0, markdown_1.inlineCode)(reasonCode)}`, "", `### ${strings.balancesHeading}`, "", `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
-            ? `- **Minimum required (XLM reserve):** \`${result.reserveRequirement.required} XLM\` (protocol minimum \`${result.reserveRequirement.protocolMinimum} XLM\` from ${result.reserveRequirement.subentryCount} subentries/sponsorship, configured floor \`${result.reserveRequirement.configuredFloor} XLM\`)`
-            : `- **Minimum required (XLM reserve):** \`${config.minXlmReserve} XLM\``, 
-        // Split display: trustline vs native (Issue #246) — deterministic, 7-decimal, handles missing/0 balance
-        (() => {
-            const asset = config.assetCode;
-            const bal = result.assetBalance ?? "0";
-            const trustline = result.trustlineExists;
-            if (bal === "unknown") {
-                return `- **${asset} trustline balance:** _unknown_ (trustline ${trustline ? "exists" : "missing"})`;
-            }
-            if (!trustline) {
-                return `- **${asset} trustline balance:** \`0 ${asset}\` — no trustline configured`;
-            }
-            // Trustline exists — show 7-decimal balance (Horizon always 7dp) and optional limit
-            const limitNote = result.trustlineLimit
-                ? ` (limit \`${result.trustlineLimit} ${asset}\`)`
-                : "";
-            return `- **${asset} trustline balance:** \`${bal} ${asset}\`${limitNote}`;
-        })(), 
-        // Spread keeps the happy path byte-identical: when there is no table
-        // we emit exactly the one blank line that preceded this section.
-        ...(assetTable ? ["", assetTable, ""] : [""]), `### ${strings.setupCostHeading}`, "", `- ${strings.minimumAccountBalance} **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- ${strings.baseReservePerTrustline} **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- ${strings.typicalMinimumToFund} **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, "", `### ${strings.addTrustlineHeading}`, "", `- [${strings.viewAccountOnLab}](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [${strings.openTransactionBuilder}](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [${strings.lobstrWallet}](${(0, links_1.buildLobstrLink)()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
-        // SEP-0007 wallet deep links (Issue #44) — independent of the checklist flag.
-        if (config.sep0007DeepLinks) {
-            const payLink = (0, links_1.buildSep0007PayLink)({
-                destination: config.stellarAddress,
-                amount: String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM),
-                msg: `Activate Stellar account for ${config.assetCode} trustline`,
-                network: stellarLabNetwork,
-                originDomain: config.sep0007OriginDomain || undefined,
-            });
-            lines.push("", `### ${strings.sepWalletActionsHeading}`, "", `_${strings.sepWalletActionsDescription}_`, "", `- [${strings.sendXlmToActivate.replace("{amount}", String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM))}](${payLink})`);
-        }
-        // SEP-0010 challenge snippet (Issue #252) — optional, does not block ready.
-        // Prefer the dashboard proof link over a raw XDR to avoid leaking nonces in
-        // public issues.
-        const sep0010Snippet = (0, links_1.buildSep0010ChallengeSnippet)({
-            challengeXdr: config.sep0010ChallengeXdr,
-            dashboardUrl: config.sep0010DashboardUrl,
-            network: stellarLabNetwork,
-            stellarAddress: config.stellarAddress,
-        });
-        if (sep0010Snippet) {
-            lines.push("", "### Proof of wallet control (SEP-0010)", "", sep0010Snippet, "", "_This section is informational and does not affect `ready` unless your workflow explicitly gates on it. Prefer a dashboard Freighter proof link over a raw challenge XDR to avoid reusing nonces._");
-        }
-        // Sponsorship info explainer (Issue #141)
-        if (result.sponsorshipInfo &&
-            (result.sponsorshipInfo.numSponsoring > 0 ||
-                result.sponsorshipInfo.numSponsored > 0)) {
-            const { numSponsoring, numSponsored } = result.sponsorshipInfo;
-            const netSponsorship = numSponsoring - numSponsored;
-            lines.push("", "### Sponsorship status", "", numSponsored > 0
-                ? `**This account is sponsored.** Another account is covering some or all of its reserve requirements.`
-                : "**This account sponsors other accounts** and may have reduced available balance.", "", `- Accounts this account sponsors: **${numSponsoring}**`, `- Accounts sponsoring this account: **${numSponsored}**`, `- Net sponsorship effect: **${netSponsorship > 0 ? "+" : ""}${netSponsorship}** ${netSponsorship > 0
-                ? "reserve entries (increases requirement)"
-                : netSponsorship < 0
-                    ? "reserve entries (reduces requirement)"
-                    : "entries (balanced)"}`, "");
-            if (result.reserveRequirement) {
-                const baseReserve = 2 * 0.5;
-                const subentryReserve = result.reserveRequirement.subentryCount * 0.5;
-                const sponsorshipAdjustment = netSponsorship * 0.5;
-                lines.push("**Reserve calculation breakdown:**", "", "```", `Base reserves (2):           ${baseReserve.toFixed(1)} XLM`, `Subentries (${result.reserveRequirement.subentryCount}):            ${subentryReserve > 0 ? "+" : " "}${subentryReserve.toFixed(1)} XLM`, numSponsoring > 0 || numSponsored > 0
-                    ? `Sponsorship (${numSponsoring} - ${numSponsored}):    ${sponsorshipAdjustment >= 0 ? "+" : ""}${sponsorshipAdjustment.toFixed(1)} XLM`
-                    : "", "---------------------------------", `Protocol minimum:            ${result.reserveRequirement.protocolMinimum.toFixed(1)} XLM`, result.reserveRequirement.configuredFloor > result.reserveRequirement.protocolMinimum
-                    ? `Configured floor:            ${result.reserveRequirement.configuredFloor.toFixed(1)} XLM`
-                    : "", `Required (final):            ${result.reserveRequirement.required.toFixed(1)} XLM`, "```", "");
-            }
-            lines.push("**Reserve implications:** Sponsored accounts may have different reserve requirements than their balance suggests. The sponsoring account bears the reserve cost.", "", numSponsored > 0 && numSponsoring === 0
-                ? `> \u2139\ufe0f **For contributors:** Since this account is fully sponsored, you may need less XLM than the displayed requirement. However, the sponsor must maintain sufficient reserves.`
-                : numSponsoring > 0
-                    ? `> \u26a0\ufe0f **Sponsoring ${numSponsoring} account${numSponsoring > 1 ? "s" : ""} adds ${(numSponsoring * 0.5).toFixed(1)} XLM to your reserve requirement.** Deep sponsorship chains (sponsor-of-sponsor patterns) can cause unexpected reserve exhaustion if intermediate sponsors become underfunded.`
-                    : "", "", "[Learn more about sponsorship](https://developers.stellar.org/learn/fundamentals/stellar-data-structures/ledger-entries#sponsorships) | [CAP-0033 spec](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0033.md)");
-        }
-        if (remediation) {
-            lines.push("", `### ${strings.remediationHeading}`, "", remediation);
-        }
-        lines.push("", `### ${strings.configurationSummaryHeading}`, "", `| ${strings.inputColumn} | ${strings.valueColumn} |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? "_default (true)_" : config.failOnMissing ? strings.failOnMissingTrue : strings.failOnMissingFalse} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? "_default (true)_" : config.stickyComment ? strings.stickyCommentTrue : strings.stickyCommentFalse} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? strings.waitUntilFundedTrue : strings.waitUntilFundedFalse} |`, `| \`onboarding_checklist\` | \`${config.onboardingChecklist === false ? "false" : "true"}\` |`);
-        // Ledger freshness config row
-        if (config.checkLedgerFreshness) {
-            lines.push(`| \`check_ledger_freshness\` | \`true\` |`, `| \`max_ledger_lag_seconds\` | \`${config.maxLedgerLagSeconds ?? 60}s\` |`, `| \`ledger_freshness_fail_on_stale\` | \`${config.ledgerFreshnessFailOnStale ? "true (hard fail)" : "false (warn only)"}\` |`);
-        }
-        if (assetBalanceCheckEnabled) {
-            lines.push(`| \`min_asset_balance\` | \`${config.minAssetBalance} ${config.assetCode}\` |`);
-        }
-        if (config.waitUntilFunded) {
-            const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
-            const interval = config.waitUntilFundedIntervalMs ?? 5000;
-            lines.push(`| \`wait_until_funded_timeout_ms\` | ${strings.waitUntilFundedTimeoutMs.replace("{ms}", String(timeout))} |`, `| \`wait_until_funded_interval_ms\` | ${strings.waitUntilFundedIntervalMs.replace("{ms}", String(interval))} |`);
-        }
-        lines.push("", `### ${strings.outputsHeading}`, "", `_${strings.outputsDescription}_`, "", `| ${strings.outputColumn} | ${strings.valueRunColumn} | ${strings.descriptionColumn} |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | ${strings.accountFundedOutput} |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | ${strings.trustlineExistsOutput.replace("{assetCode}", config.assetCode)} |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | ${strings.xlmBalanceOutput} |`, `| \`native_balance\` | \`${result.xlmBalance}\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |`, `| \`asset_balance\` | \`${result.assetBalance ?? "0"}\` | ${config.assetCode} trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |`, `| \`comment_url\` | _set after posting_ | ${strings.commentUrlOutput} |`);
-        // Hardened metrics JSON export (Issue #33)
-        if (config.metricsSnapshot) {
-            const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
-            lines.push("", `### ${strings.metricsHeading}`, "", `_${strings.metricsDescription}_`, "", "```json", metricsJson, "```");
-        }
-        // Expert diagnostics block (Issue #102) — only appended in debug/expert mode
-        if (config.debugMode && config.diagnosticsConfig) {
-            const diagnosticsBlock = (0, diagnostics_1.buildDiagnosticsBlock)(config.diagnosticsConfig);
-            if (diagnosticsBlock) {
-                lines.push(diagnosticsBlock);
-            }
-        }
-        // Custom comment template partial (#312) — injected just before the footer.
-        // Path validation, size check, content security, and interpolation escaping
-        // are all handled in loadCommentTemplate / validateTemplateContent.
-        if (config.customCommentTemplatePath) {
-            try {
-                const templateCtx = (0, template_1.buildTemplateContext)({
-                    stellarAddress: config.stellarAddress,
-                    assetCode: config.assetCode,
-                    assetIssuer: config.assetIssuer,
-                    horizonUrl: config.horizonUrl,
-                    network: (0, links_1.inferStellarNetwork)(config.horizonUrl),
-                    valid: result.valid,
-                    locale: config.locale ?? 'en',
-                });
-                const partial = (0, template_1.loadCommentTemplate)(config.customCommentTemplatePath, templateCtx);
-                if (partial !== undefined) {
-                    lines.push('', partial);
-                }
-                else {
-                    // File not found — warn without blocking the comment.
-                    core.warning(`custom_comment_template_path "${config.customCommentTemplatePath}" was not found in the workspace. ` +
-                        'The template partial will be omitted from this comment.');
-                }
-            }
-            catch (templateErr) {
-                const message = templateErr instanceof Error ? templateErr.message : String(templateErr);
-                core.warning(`Failed to load custom comment template ("${config.customCommentTemplatePath}"): ${message}. ` +
-                    'The template partial will be omitted from this comment.');
-            }
-        }
-        lines.push("", "---", exports.TRUSTBRIDGE_FOOTER);
-        return lines.join("\n");
-    };
-    let fullBody = buildWithRemediation(result.remediation);
-    if (fullBody.length > exports.MAX_COMMENT_LENGTH && result.remediation) {
-        const excess = fullBody.length - exports.MAX_COMMENT_LENGTH;
-        const availableForRemediation = result.remediation.length - excess - TRUNCATION_NOTICE.length;
-        let truncatedRemediation;
-        if (availableForRemediation > 0) {
-            truncatedRemediation =
-                result.remediation.slice(0, availableForRemediation) +
-                    TRUNCATION_NOTICE;
-        }
-        else {
-            truncatedRemediation = TRUNCATION_NOTICE.trimStart();
-        }
-        fullBody = buildWithRemediation(truncatedRemediation);
+    const lines = [
+        exports.STICKY_COMMENT_MARKER,
+        `<!-- trustbridge-action:schema-version:${exports.COMMENT_SCHEMA_VERSION} -->`,
+        '## TrustBridge — Stellar Account Check',
+        '',
+        `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
+        `Horizon: ${(0, markdown_1.inlineCode)(config.horizonUrl)}`,
+        `Asset: **${config.assetCode}** · Issuer: ${(0, markdown_1.inlineCode)(config.assetIssuer)}`,
+        '',
+        '### Results',
+        '',
+    ];
+    for (const check of result.checks) {
+        lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
     }
-    return fullBody;
+    lines.push('', '### Validation gate', '', gate.ready
+        ? '- Ready to proceed: all checks passed.'
+        : `- Blocked by: ${gate.failedLabels.join(', ')}`, `- Passed checks: ${gate.passedChecks}/${gate.totalChecks}`, `- Failed checks: ${gate.failedChecks}`, '', '### Balances', '', `- **XLM balance:** ${result.xlmBalance === 'unknown' ? '_unknown_' : `\`${result.xlmBalance} XLM\``}`, `- **Minimum required:** \`${config.minXlmReserve} XLM\``, '', '### Setup cost estimate', '', `- Stellar minimum account balance: **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM**`, `- Base reserve per trustline (ledger entry): **${checks_1.STELLAR_BASE_RESERVE_XLM} XLM**`, `- Typical minimum to fund account + one trustline: **~${(0, checks_1.estimateTrustlineSetupCost)()} XLM**`, '', '### Add a trustline', '', `- [View account on Stellar Laboratory](${(0, links_1.buildAccountViewerLink)(config.stellarAddress, stellarLabNetwork)})`, `- [Open Transaction Builder (Change Trust)](${(0, links_1.buildChangeTrustLink)(stellarLabNetwork)})`, `- [LOBSTR wallet](${(0, links_1.buildLobstrLink)()}) — add asset **${config.assetCode}** from issuer \`${config.assetIssuer}\``);
+    // SEP-0007 wallet deep links (Issue #44)
+    if (config.sep0007DeepLinks) {
+        const payLink = (0, links_1.buildSep0007PayLink)({
+            destination: config.stellarAddress,
+            amount: String(checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM),
+            msg: `Activate Stellar account for ${config.assetCode} trustline`,
+            network: stellarLabNetwork,
+            originDomain: config.sep0007OriginDomain || undefined,
+        });
+        lines.push('', '### Quick wallet actions (SEP-0007)', '', '_Open these links in a SEP-0007-compatible wallet (LOBSTR, Solar, Albedo) to complete setup._', '', `- [Send ${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM to activate account](${payLink})`);
+    }
+    if (result.remediation) {
+        lines.push('', '### Remediation', '', result.remediation);
+    }
+    lines.push('', '### Configuration summary', '', `| Input | Value |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? '_default (true)_' : config.failOnMissing ? '`true` — step fails on missing checks' : '`false` — only warns'} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? '_default (true)_' : config.stickyComment ? '`true` — upserts prior comment' : '`false` — always posts new'} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? '`true`' : '`false` (default)'} |`);
+    if (config.waitUntilFunded) {
+        const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
+        const interval = config.waitUntilFundedIntervalMs ?? 5000;
+        lines.push(`| \`wait_until_funded_timeout_ms\` | \`${timeout}\` |`, `| \`wait_until_funded_interval_ms\` | \`${interval}\` |`);
+    }
+    lines.push('', '### Action outputs reference', '', '_Use these output names in downstream workflow steps via `steps.<id>.outputs.<name>`._', '', `| Output | Value in this run | Description |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | Whether the account exists on the Stellar network (from \`action.yml\`) |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | Whether the **${config.assetCode}** trustline is configured (from \`action.yml\`) |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | Native XLM balance reported by Horizon (from \`action.yml\`) |`, `| \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |`);
+    // Hardened metrics JSON export (Issue #33)
+    if (config.metricsSnapshot) {
+        const metricsJson = buildHardenedMetricsJson(config.metricsSnapshot);
+        lines.push('', '### Metrics', '', '_Machine-readable run metrics. Values are structural counts only — no account addresses or balances._', '', '```json', metricsJson, '```');
+    }
+    lines.push('', '---', exports.TRUSTBRIDGE_FOOTER);
+    return lines.join('\n');
 }
 /**
  * Build a hardened metrics JSON string safe for embedding in a GitHub issue
@@ -36285,11 +34345,9 @@ function buildHardenedMetricsJson(metrics) {
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return JSON.stringify({
-            error: `metrics serialisation failed: ${message}`,
-        });
+        return JSON.stringify({ error: `metrics serialisation failed: ${message}` });
     }
-    if (Buffer.byteLength(json, "utf8") > exports.MAX_METRICS_JSON_BYTES) {
+    if (Buffer.byteLength(json, 'utf8') > exports.MAX_METRICS_JSON_BYTES) {
         const truncated = {
             totalMetrics: safeSummary.totalMetrics,
             counters: safeSummary.counters,
@@ -36299,146 +34357,6 @@ function buildHardenedMetricsJson(metrics) {
         return JSON.stringify(truncated, null, 2);
     }
     return json;
-}
-/**
- * GitHub's documented maximum body size for issue comments is 65,536
- * characters. We keep a small safety margin so the truncation notice and
- * surrounding HTML markers always fit within the limit.
- */
-exports.COMMENT_SIZE_LIMIT_BYTES = 65536;
-/**
- * Number of bytes reserved for the truncation notice appended to the
- * shortened comment. Sized to comfortably hold the notice text plus the
- * footer.
- */
-exports.COMMENT_TRUNCATION_NOTICE_BYTES = 512;
-/**
- * Build a truncated comment body that fits within the given size limit.
- *
- * The full body is cut at a safe byte offset, a truncation notice is
- * appended, and the TrustBridge footer is preserved so the sticky-comment
- * marker remains present.  The cut always happens on a line boundary so the
- * resulting markdown is clean.
- *
- * @param fullBody  The full comment body produced by `formatCommentBody`.
- * @param reportPath  Workspace-relative path where the full report was written.
- * @param sizeLimit  Maximum comment body size in bytes (defaults to `COMMENT_SIZE_LIMIT_BYTES`).
- *                   Pass a smaller value for GHES instances with custom limits.
- * @returns A comment body that fits within the given size limit.
- *
- * @internal Exported for testing.
- */
-function buildTruncatedCommentBody(fullBody, reportPath, sizeLimit = exports.COMMENT_SIZE_LIMIT_BYTES) {
-    const budget = sizeLimit - exports.COMMENT_TRUNCATION_NOTICE_BYTES;
-    // Walk backwards from the budget boundary to find a clean line break.
-    const bodyBytes = Buffer.from(fullBody, "utf8");
-    let cutByte = budget;
-    while (cutByte > 0 && bodyBytes[cutByte] !== 0x0a /* '\n' */) {
-        cutByte--;
-    }
-    const truncated = bodyBytes.subarray(0, cutByte).toString("utf8");
-    const notice = [
-        "",
-        "---",
-        "> **⚠️ Report truncated** — this comment exceeded GitHub's size limit.",
-        `> The full validation report has been written to \`${reportPath}\` in the workflow workspace.`,
-        "> Upload it as a workflow artifact using `actions/upload-artifact` to make it available for download.",
-        "> See [USAGE.md](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/USAGE.md#handling-oversized-reports) for the recommended workflow pattern.",
-        "",
-        "---",
-        exports.TRUSTBRIDGE_FOOTER,
-    ].join("\n");
-    return truncated + notice;
-}
-/**
- * Write the full comment body to a workspace file so it can be uploaded as
- * a GitHub Actions artifact by a subsequent `actions/upload-artifact` step.
- *
- * Directories are created recursively if they don't exist.  Any write
- * failure is surfaced as a warning (not an error) so the action can still
- * post the truncated comment.
- *
- * @param fullBody  Full comment body to persist.
- * @param outputPath  Absolute or workspace-relative path for the output file.
- * @returns The resolved absolute path on success, `undefined` on failure.
- *
- * @internal Exported for testing.
- */
-function writeFullReport(fullBody, outputPath) {
-    try {
-        const resolved = path.isAbsolute(outputPath)
-            ? outputPath
-            : path.resolve(process.env["GITHUB_WORKSPACE"] ?? process.cwd(), outputPath);
-        const dir = path.dirname(resolved);
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(resolved, fullBody, "utf8");
-        core.info(`Full validation report written to ${resolved}`);
-        return resolved;
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        core.warning(`Failed to write full validation report: ${message}`);
-        return undefined;
-    }
-}
-/**
- * Valid `CommentMode` values — used for input validation.
- */
-exports.VALID_COMMENT_MODES = ['sticky', 'new', 'reply'];
-/**
- * Resolve the effective `CommentMode` from action inputs.
- *
- * Priority: `commentMode` input > derive from `sticky` boolean > default `'sticky'`.
- * Invalid values fall back to `'sticky'` with a warning so the action
- * never hard-fails due to a misconfigured `comment_mode`.
- */
-function resolveCommentMode(commentMode, sticky) {
-    if (commentMode) {
-        const normalised = commentMode.trim().toLowerCase();
-        if (exports.VALID_COMMENT_MODES.includes(normalised)) {
-            return normalised;
-        }
-        // Invalid value — warn and fall through to default.
-        core.warning(`Invalid comment_mode value "${commentMode}". Expected one of: ${exports.VALID_COMMENT_MODES.join(', ')}. Falling back to "sticky".`);
-    }
-    // Derive from legacy sticky boolean.
-    if (sticky === false)
-        return 'new';
-    return 'sticky';
-}
-/**
- * Resolve the issue or pull-request number a comment should be posted to.
- *
- * `pull_request` (and `pull_request_target`) events carry the number under
- * `payload.pull_request.number`, not `payload.issue.number` — `payload.issue`
- * is only populated for `issues`/`issue_comment` events. GitHub treats every
- * PR as an issue under the hood, so the REST issues API (`createComment`,
- * `updateComment`, `listComments`) works identically for both once the
- * correct number is resolved (Issue #220).
- *
- * Only the numeric identifier is read from the payload here — never the PR
- * title/body — so this cannot leak untrusted fork-PR content into anything
- * built from the result (e.g. Horizon request URLs).
- *
- * Checks `issue` first so that `issue_comment` events on a PR (which set
- * *both* `payload.issue` and `payload.issue.pull_request`) keep resolving
- * the same way they always have.
- *
- * @internal Exported for testing.
- */
-function resolveIssueOrPullRequestNumber(payload) {
-    if (payload && typeof payload === "object") {
-        const typedPayload = payload;
-        const issueNumber = typedPayload.issue?.number;
-        if (typeof issueNumber === "number") {
-            return issueNumber;
-        }
-        const prNumber = typedPayload.pull_request?.number;
-        if (typeof prNumber === "number") {
-            return prNumber;
-        }
-    }
-    return undefined;
 }
 /**
  * Returns true when a comment body matches any of the TrustBridge
@@ -36455,581 +34373,64 @@ function isTrustBridgeComment(body) {
         body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
- * Detect a revalidation slash command on an issue comment.
- *
- * Only exact `/trustbridge` prefixes are treated as commands so that unrelated
- * comments and other slash commands are ignored. The match is intentionally
- * narrow and only triggers when the command begins the comment body (allowing
- * leading whitespace, then the exact token followed by whitespace or end-of-text).
- */
-function isTrustBridgeSlashCommand(body) {
-    const text = (body ?? "").trimStart();
-    return /^\/trustbridge(?:\s|$)/.test(text);
-}
-/**
- * Returns true when the issue comment came from a bot account and therefore
- * should never trigger a revalidation loop or a follow-up command.
- */
-function isBotCommentAuthor(payload) {
-    if (!payload || typeof payload !== "object")
-        return false;
-    const typed = payload;
-    const user = typed.comment?.user;
-    if (!user)
-        return false;
-    return (user.type === "Bot" || Boolean(user.login && /\[bot\]$/i.test(user.login)));
-}
-/**
- * Maximum number of comment pages (100 comments per page) to search for sticky
- * comments on high-traffic issues or discussions before capping.
- * Capping at 10 pages (1,000 comments) prevents rate limit exhaustion and
- * infinite pagination on busy threads. (Issue #226)
- */
-exports.MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
-/**
  * Find TrustBridge's previous sticky comment on the issue, if any.
- *
- * Uses GraphQL pagination (100 comments per page, up to MAX_STICKY_COMMENT_SEARCH_PAGES = 10 pages)
- * to locate the marker efficiently even on busy Wave issues with hundreds of comments.
- * Falls back to REST pagination if GraphQL is unavailable or fails.
+ * Paginates through every comment so the marker is found even on
+ * high-traffic issues with 100+ comments.
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
  * for upsert.
  */
-async function findStickyComment(octokit, owner, repo, issueNumber, options = {}) {
-    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
-    // Primary: GraphQL pagination (efficiently retrieves only databaseId + body)
-    if (typeof octokit.graphql === "function") {
-        try {
-            const query = `
-        query FindTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
-          repository(owner: $owner, name: $repo) {
-            issue(number: $issueNumber) {
-              comments(first: 100, after: $cursor) {
-                nodes {
-                  id
-                  databaseId
-                  body
-                }
-                pageInfo {
-                  hasNextPage
-                  endCursor
-                }
-              }
-            }
-          }
-        }
-      `;
-            let cursor = null;
-            let lastMatchId;
-            let pageCount = 0;
-            let graphqlHandled = false;
-            while (pageCount < maxPages) {
-                pageCount++;
-                const data = (await octokit.graphql(query, {
-                    owner,
-                    repo,
-                    issueNumber,
-                    cursor,
-                }));
-                const comments = data?.repository?.issue?.comments;
-                if (!comments || !Array.isArray(comments.nodes)) {
-                    break;
-                }
-                graphqlHandled = true;
-                for (const comment of comments.nodes) {
-                    if (isTrustBridgeComment(comment.body)) {
-                        // databaseId is the numeric REST issue comment id
-                        lastMatchId = comment.databaseId;
-                    }
-                }
-                if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
-                    break;
-                }
-                cursor = comments.pageInfo.endCursor;
-            }
-            if (lastMatchId !== undefined) {
-                return lastMatchId;
-            }
-            if (graphqlHandled) {
-                return undefined;
-            }
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.debug(`GraphQL sticky comment search failed, falling back to REST: ${message}`);
-        }
-    }
-    // Fallback: REST pagination with page cap
-    if (typeof octokit.paginate === "function" &&
-        octokit.rest?.issues?.listComments) {
-        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-            owner,
-            repo,
-            issue_number: issueNumber,
-            per_page: 100,
-        });
-        const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
-        return matches.length > 0 ? matches[matches.length - 1].id : undefined;
-    }
-    return undefined;
-}
-/**
- * Find TrustBridge's first (oldest) comment on the issue, if any.
- *
- * Scans comments in chronological order to find the initial TrustBridge comment
- * to thread replies under when `comment_mode: 'reply'` is used (#419).
- */
-async function findFirstTrustBridgeComment(octokit, owner, repo, issueNumber, options = {}) {
-    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
-    // Primary: GraphQL pagination
-    if (typeof octokit.graphql === "function") {
-        try {
-            const query = `
-        query FindFirstTrustBridgeIssueComment($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
-          repository(owner: $owner, name: $repo) {
-            issue(number: $issueNumber) {
-              comments(first: 100, after: $cursor) {
-                nodes {
-                  id
-                  databaseId
-                  body
-                }
-                pageInfo {
-                  hasNextPage
-                  endCursor
-                }
-              }
-            }
-          }
-        }
-      `;
-            let cursor = null;
-            let pageCount = 0;
-            let graphqlHandled = false;
-            while (pageCount < maxPages) {
-                pageCount++;
-                const data = (await octokit.graphql(query, {
-                    owner,
-                    repo,
-                    issueNumber,
-                    cursor,
-                }));
-                const comments = data?.repository?.issue?.comments;
-                if (!comments || !Array.isArray(comments.nodes)) {
-                    break;
-                }
-                graphqlHandled = true;
-                for (const comment of comments.nodes) {
-                    if (isTrustBridgeComment(comment.body)) {
-                        return comment.databaseId;
-                    }
-                }
-                if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
-                    break;
-                }
-                cursor = comments.pageInfo.endCursor;
-            }
-            if (graphqlHandled) {
-                return undefined;
-            }
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.debug(`GraphQL first comment search failed, falling back to REST: ${message}`);
-        }
-    }
-    // Fallback: REST pagination
-    if (typeof octokit.paginate === "function" &&
-        octokit.rest?.issues?.listComments) {
-        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-            owner,
-            repo,
-            issue_number: issueNumber,
-            per_page: 100,
-        });
-        const match = comments.find((comment) => isTrustBridgeComment(comment.body));
-        return match?.id;
-    }
-    return undefined;
+async function findStickyComment(octokit, owner, repo, issueNumber) {
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: issueNumber,
+        per_page: 100,
+    });
+    const existing = comments.find((comment) => isTrustBridgeComment(comment.body));
+    return existing?.id;
 }
 async function postIssueComment(token, body, options = {}) {
-    // Resolve effective comment mode (#322): commentMode input takes precedence
-    // over legacy sticky boolean.
-    const effectiveMode = resolveCommentMode(options.commentMode, options.sticky);
-    // Map back to sticky boolean for the existing snooze/lookup machinery.
-    const sticky = effectiveMode === 'sticky';
-    const forceComment = options.forceComment ?? false;
-    const snoozeWindowMs = options.snoozeWindowMs ?? 0;
-    const context = github.context;
-    // Prefer an explicitly-supplied issue number (e.g. from workflow_dispatch
-    // input) over the event context payload so manual benchmark runs can
-    // target a specific issue. Otherwise resolve from either an `issues` event
-    // (`payload.issue.number`) or a `pull_request`/`pull_request_target` event
-    // (`payload.pull_request.number`) — see resolveIssueOrPullRequestNumber (Issue #220).
-    const issueNumber = options.issueNumber ?? resolveIssueOrPullRequestNumber(context.payload);
-    if (!issueNumber) {
-        core.warning('No issue or pull request context found — skipping comment. Pass `issue_number` as a workflow_dispatch input or run this action on an `issues`, `pull_request`, or `pull_request_target` event.');
-        return undefined;
-    }
-    return (0, tracing_1.traceCommentPost)(issueNumber, 'create', async () => {
-        // `github.getOctokit` defaults to `https://api.github.com` unless a
-        // `baseUrl` is supplied — on GitHub Enterprise Server the runner sets
-        // `GITHUB_API_URL` to the enterprise API base (e.g.
-        // `https://ghes.example.com/api/v3`), which `context.apiUrl` reads.
-        // Passing it explicitly here is what makes comment posting work on GHES
-        // instead of silently calling the wrong (public) API host.
-        const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
-        const { owner, repo } = context.repo;
-        let existingCommentId;
-        let existingCommentBody;
-        let existingCommentReactions = [];
-        if (sticky) {
-            try {
-                existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
-                // Fetch comment body and reactions to check snooze status (Issue #155, Issue #227)
-                if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-                    try {
-                        const commentResponse = await octokit.rest.issues.getComment({
-                            owner,
-                            repo,
-                            comment_id: existingCommentId,
-                        });
-                        existingCommentBody = commentResponse.data.body;
-                    }
-                    catch (error) {
-                        core.debug(`Could not fetch existing comment body for snooze check: ${error}`);
-                    }
-                    try {
-                        if (octokit.rest?.reactions?.listForIssueComment) {
-                            const reactionsResponse = await octokit.rest.reactions.listForIssueComment({
-                                owner,
-                                repo,
-                                comment_id: existingCommentId,
-                                per_page: 100,
-                            });
-                            if (Array.isArray(reactionsResponse?.data)) {
-                                existingCommentReactions = reactionsResponse.data;
-                            }
-                        }
-                    }
-                    catch (error) {
-                        core.debug(`Could not fetch comment reactions for snooze check: ${error}`);
-                    }
-                }
-            }
-            catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
-            }
-        }
-        // Check snooze state (Issue #155, Issue #227)
-        if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
-            const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
-            // Determine if current check is passing by looking at body content
-            // The snooze marker we just added to body indicates 'pass' or 'fail'
-            const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
-            const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
-            if (snoozeState.isSnoozed) {
-                core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
-                return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
-            }
-        }
-        if (existingCommentId) {
-            try {
-                const response = await octokit.rest.issues.updateComment({
-                    owner,
-                    repo,
-                    comment_id: existingCommentId,
-                    body,
-                });
-                core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-                return response.data.html_url;
-            }
-            catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                core.warning(`Could not update existing TrustBridge comment (id=${existingCommentId}), falling back to a new comment: ${message}`);
-            }
-        }
-        // Reply mode (Issue #419): locate the first TrustBridge comment in the thread
-        // and post a threaded reply referencing it. GitHub's issue comments REST API
-        // does not support a native `in_reply_to` parameter (unlike review comments),
-        // so chronological threading is achieved by linking back to the root comment.
-        // If no prior TrustBridge comment exists, it falls back to creating the initial comment.
-        if (effectiveMode === 'reply') {
-            let parentCommentId;
-            try {
-                parentCommentId = await findFirstTrustBridgeComment(octokit, owner, repo, issueNumber);
-            }
-            catch (error) {
-                core.debug(`reply mode: could not find parent comment: ${error}`);
-            }
-            const replyBody = parentCommentId
-                ? `> _Reply to [TrustBridge check #${parentCommentId}](https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${parentCommentId})_\n\n${body}`
-                : body;
-            const response = await octokit.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                body: replyBody,
-            });
-            core.info(`Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`);
-            return response.data.html_url;
-        }
-        const response = await octokit.rest.issues.createComment({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            body,
-        });
-        core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-        return response.data.html_url;
-    });
-}
-// ---------------------------------------------------------------------------
-// GitHub Discussions comment path (Issue #221)
-//
-// Discussion events carry a GraphQL node id (e.g. "DIC_...") instead of an
-// issue number. The REST issues API 404s on a discussion node id — or, worse,
-// comments on the wrong issue when the id happens to be numeric. TrustBridge
-// therefore posts discussion comments exclusively through the GraphQL
-// `addDiscussionComment` / `updateDiscussionComment` mutations and never falls
-// back to the REST issues API for discussion events.
-// ---------------------------------------------------------------------------
-/**
- * Extract the GitHub Discussion node id from an event payload, if present.
- *
- * Discussion webhook events (`discussion`, `discussion_comment`) embed the
- * discussion under `payload.discussion.node_id`. Returns `undefined` for
- * non-discussion events so callers can route between the issue (REST) and
- * discussion (GraphQL) comment paths.
- *
- * @internal Exported for testing.
- */
-function resolveDiscussionNodeId(payload) {
-    if (payload && typeof payload === "object") {
-        const discussion = payload
-            .discussion;
-        const nodeId = discussion?.node_id;
-        if (typeof nodeId === "string" && nodeId.trim()) {
-            return nodeId.trim();
-        }
-    }
-    return undefined;
-}
-/**
- * The discussion comment that triggered a `discussion_comment` event, as
- * needed to thread TrustBridge's reply (Issue #472).
- *
- * - `nodeId`: GraphQL node id of the triggering comment.
- * - `isReply`: true when the triggering comment is itself a reply
- *   (`comment.parent_id` is set). GitHub Discussions allow only one level of
- *   replies, so the reply must then target the triggering comment's parent.
- *
- * Returns `undefined` for events without a comment (e.g. `discussion`),
- * where TrustBridge posts a top-level comment.
- *
- * @internal Exported for testing.
- */
-function resolveDiscussionCommentTarget(payload) {
-    if (payload && typeof payload === "object") {
-        const comment = payload.comment;
-        const nodeId = comment?.node_id;
-        if (typeof nodeId === "string" && nodeId.trim()) {
-            return {
-                nodeId: nodeId.trim(),
-                isReply: comment?.parent_id !== undefined && comment?.parent_id !== null,
-            };
-        }
-    }
-    return undefined;
-}
-/**
- * Find TrustBridge's previous sticky comment on a discussion, if any.
- *
- * Paginates through every discussion comment (100 per page) so the marker is
- * found even on high-traffic threads — same semantics as `findStickyComment`
- * for issues. Matches on the current versioned marker, the legacy marker, and
- * the action footer so comments posted by older releases are still eligible
- * for upsert.
- */
-async function findStickyDiscussionComment(octokit, discussionId, options = {}) {
-    const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
-    // When threading (Issue #472), search the replies of the thread's top-level
-    // comment so each thread keeps its own sticky comment.
-    const selection = options.replyToId
-        ? '... on DiscussionComment {\n          comments: replies(first: 100, after: $cursor) {'
-        : '... on Discussion {\n          comments(first: 100, after: $cursor) {';
-    const query = `
-    query FindTrustBridgeDiscussionComment($discussionId: ID!, $cursor: String) {
-      node(id: $discussionId) {
-        ${selection}
-            nodes {
-              id
-              body
-              reactions(first: 100) {
-                nodes {
-                  content
-                  createdAt
-                  user {
-                    login
-                  }
-                }
-              }
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
-        }
-      }
-    }
-  `;
-    let cursor = null;
-    let lastMatch;
-    let pageCount = 0;
-    while (pageCount < maxPages) {
-        pageCount++;
-        const data = (await octokit.graphql(query, {
-            discussionId: options.replyToId ?? discussionId,
-            cursor,
-        }));
-        const comments = data?.node?.comments;
-        if (!comments) {
-            // Discussion was deleted or the token cannot read it — stop paginating.
-            break;
-        }
-        for (const comment of comments.nodes) {
-            if (isTrustBridgeComment(comment.body)) {
-                // Use the last matching comment so that if multiple TrustBridge
-                // comments exist (e.g. sticky was toggled off then on), we upsert
-                // the most recent one.
-                lastMatch = comment;
-            }
-        }
-        if (!comments.pageInfo.hasNextPage || !comments.pageInfo.endCursor) {
-            break;
-        }
-        cursor = comments.pageInfo.endCursor;
-    }
-    return lastMatch;
-}
-/**
- * Resolve the top-level comment a reply should thread under for a
- * `discussion_comment` event (Issue #472).
- *
- * A top-level triggering comment is used directly. When the triggering
- * comment is itself a reply, its parent is looked up via GraphQL (`replyTo`),
- * because GitHub rejects replies to replies. If that lookup fails, the reply
- * falls back to a top-level comment rather than failing the run.
- */
-async function resolveDiscussionReplyToId(octokit, payload) {
-    const target = resolveDiscussionCommentTarget(payload);
-    if (!target)
-        return undefined;
-    if (!target.isReply)
-        return target.nodeId;
-    try {
-        const data = (await octokit.graphql(`query TrustBridgeDiscussionReplyParent($commentId: ID!) {
-        node(id: $commentId) {
-          ... on DiscussionComment { replyTo { id } }
-        }
-      }`, { commentId: target.nodeId }));
-        const parentId = data?.node?.replyTo?.id;
-        if (parentId)
-            return parentId;
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        core.warning(`Could not resolve the parent thread of discussion comment ${target.nodeId}, posting a top-level comment instead: ${message}`);
-        return undefined;
-    }
-    core.warning(`Discussion comment ${target.nodeId} has no resolvable parent thread; posting a top-level comment instead.`);
-    return undefined;
-}
-/**
- * Post (or sticky-upsert) a TrustBridge comment on a GitHub Discussion via
- * the GraphQL API.
- *
- * Discussion events have a node id, not an issue number, so this path never
- * touches the REST issues API. When `sticky` is enabled the previous
- * TrustBridge comment on the discussion is updated in place via
- * `updateDiscussionComment`; otherwise a new comment is created via
- * `addDiscussionComment`.
- *
- * On `discussion_comment` events the comment is threaded under the triggering
- * comment's top-level thread (`replyToId`), and the sticky lookup is scoped to
- * that thread's replies (Issue #472).
- *
- * Requires `discussions: write` permission on the workflow token (documented
- * in docs/USAGE.md). A missing permission surfaces as a GraphQL mutation
- * error, which the caller is expected to catch and downgrade to a warning —
- * comment posting must never fail the run.
- *
- * @returns The URL of the created/updated discussion comment, or `undefined`
- *          when there is no discussion context in the event payload.
- */
-async function postDiscussionComment(token, body, options = {}) {
     const sticky = options.sticky ?? true;
-    const forceComment = options.forceComment ?? false;
-    const snoozeWindowMs = options.snoozeWindowMs ?? 0;
     const context = github.context;
-    const discussionId = options.discussionId ?? resolveDiscussionNodeId(context.payload);
-    if (!discussionId) {
-        core.warning("No discussion context found — skipping comment. Run this action on a `discussion` event (the payload must include discussion.node_id).");
+    const issueNumber = context.payload.issue?.number;
+    if (!issueNumber) {
+        core.warning('No issue context found — skipping comment. This action posts comments on `issues` events.');
         return undefined;
     }
-    const proxyOpts2 = (0, proxy_1.getOctokitProxyOptions)(context.apiUrl);
-    const octokit = github.getOctokit(token, { baseUrl: context.apiUrl, ...proxyOpts2 });
-    const replyToId = options.replyToId ??
-        (await resolveDiscussionReplyToId(octokit, context.payload));
-    let existingComment;
+    const octokit = github.getOctokit(token);
+    const { owner, repo } = context.repo;
+    let existingCommentId;
     if (sticky) {
         try {
-            existingComment = await findStickyDiscussionComment(octokit, discussionId, { replyToId });
+            existingCommentId = await findStickyComment(octokit, owner, repo, issueNumber);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            core.warning(`Could not look up existing TrustBridge discussion comment, falling back to a new comment: ${message}`);
+            core.warning(`Could not look up existing TrustBridge comment, falling back to a new comment: ${message}`);
         }
     }
-    // Check snooze state (Issue #155, Issue #227) — mirrors the issue-comment path.
-    if (existingComment && snoozeWindowMs > 0 && !forceComment) {
-        const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingComment.body);
-        const currentPassed = body.includes("<!-- trustbridge-action:snooze:status=pass");
-        const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingComment.reactions?.nodes, snoozeWindowMs);
-        if (snoozeState.isSnoozed) {
-            core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`);
-            return undefined;
-        }
+    if (existingCommentId) {
+        const response = await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: existingCommentId,
+            body,
+        });
+        const commentUrl = response.data.html_url;
+        core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
+        return commentUrl;
     }
-    if (existingComment) {
-        try {
-            const data = (await octokit.graphql(`mutation UpdateTrustBridgeDiscussionComment($commentId: ID!, $body: String!) {
-          updateDiscussionComment(input: { commentId: $commentId, body: $body }) {
-            comment { id url }
-          }
-        }`, { commentId: existingComment.id, body }));
-            const url = data.updateDiscussionComment?.comment.url;
-            core.info(`Updated existing TrustBridge comment on discussion ${discussionId}.`);
-            return url;
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            core.warning(`Could not update existing TrustBridge discussion comment (id=${existingComment.id}), falling back to a new comment: ${message}`);
-        }
-    }
-    const data = (await octokit.graphql(`mutation AddTrustBridgeDiscussionComment($discussionId: ID!, $body: String!, $replyToId: ID) {
-      addDiscussionComment(input: { discussionId: $discussionId, body: $body, replyToId: $replyToId }) {
-        comment { id url }
-      }
-    }`, { discussionId, body, replyToId: replyToId ?? null }));
-    core.info(replyToId
-        ? `Posted TrustBridge reply in thread ${replyToId} on discussion ${discussionId}.`
-        : `Posted TrustBridge comment on discussion ${discussionId}.`);
-    return data.addDiscussionComment?.comment.url;
+    const response = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body,
+    });
+    const commentUrl = response.data.html_url;
+    core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
+    return commentUrl;
 }
 
 
@@ -37095,7 +34496,6 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseSimpleYaml = parseSimpleYaml;
-exports.readTrustbridgeConfigs = readTrustbridgeConfigs;
 exports.readTrustbridgeConfig = readTrustbridgeConfig;
 exports.mergeConsumerConfig = mergeConsumerConfig;
 const fs = __importStar(__nccwpck_require__(9896));
@@ -37160,44 +34560,6 @@ function parseYamlValue(raw) {
         return num;
     // Plain string
     return raw;
-}
-/**
- * Reads and merges organization-level and repository-level configuration files.
- * Organization config (.github/trustbridge.yml) is loaded first.
- * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
- */
-function readTrustbridgeConfigs(repoConfigPath, workspaceRoot) {
-    const root = workspaceRoot ?? process.cwd();
-    const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
-    // Use the explicit repo path, or fallback to default repo path
-    const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
-    const repoResult = readTrustbridgeConfig(targetRepoPath, root);
-    const valid = orgResult.validation.valid && repoResult.validation.valid;
-    const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
-    const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
-    // Merge configs (repo overrides org)
-    let config = null;
-    if (orgResult.config || repoResult.config) {
-        config = { ...orgResult.config };
-        if (repoResult.config) {
-            for (const [key, value] of Object.entries(repoResult.config)) {
-                if (value !== undefined) {
-                    config[key] = value;
-                }
-            }
-        }
-    }
-    let redactedSnapshot = null;
-    if (orgResult.redactedSnapshot || repoResult.redactedSnapshot) {
-        redactedSnapshot = { ...orgResult.redactedSnapshot, ...repoResult.redactedSnapshot };
-    }
-    return {
-        config,
-        validation: { valid, errors, warnings },
-        redactedSnapshot,
-        resolvedPath: repoResult.resolvedPath,
-        found: orgResult.found || repoResult.found,
-    };
 }
 /**
  * Read and validate a consumer trustbridge.yml config file.
@@ -37298,9 +34660,6 @@ function readTrustbridgeConfig(configPath, workspaceRoot) {
     if (typeof raw.min_xlm_reserve === 'string' && raw.min_xlm_reserve.trim()) {
         config.min_xlm_reserve = raw.min_xlm_reserve.trim();
     }
-    if (typeof raw.min_asset_balance === 'string' && raw.min_asset_balance.trim()) {
-        config.min_asset_balance = raw.min_asset_balance.trim();
-    }
     if (typeof raw.fail_on_missing === 'boolean') {
         config.fail_on_missing = raw.fail_on_missing;
     }
@@ -37334,7 +34693,6 @@ function mergeConsumerConfig(actionInputs, consumerConfig, explicitInputs) {
         assetCode: consumerConfig.asset_code,
         assetIssuer: consumerConfig.asset_issuer,
         minXlmReserveRaw: consumerConfig.min_xlm_reserve,
-        minAssetBalanceRaw: consumerConfig.min_asset_balance,
         failOnMissing: consumerConfig.fail_on_missing,
     };
     for (const [key, value] of Object.entries(overrides)) {
@@ -37343,1256 +34701,6 @@ function mergeConsumerConfig(actionInputs, consumerConfig, explicitInputs) {
         }
     }
     return merged;
-}
-
-
-/***/ }),
-
-/***/ 4098:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-/**
- * @file corePlugins.ts
- * The three built-in TrustBridge checks expressed as CheckPlugins.
- *
- * These serve two purposes:
- *   1. Reference implementations that plugin authors can study to
- *      understand the expected shape of a plugin.
- *   2. Drop-in replacements for the equivalent logic inside
- *      `runAccountChecks` when projects want a fully plugin-driven
- *      pipeline.
- *
- * The existing `runAccountChecks` monolith in `checks.ts` is **not**
- * changed in this PR — these plugins coexist alongside it. A future
- * major release may elect to replace `runAccountChecks` entirely with
- * `runPlugins([...corePlugins])`.
- *
- * SECURITY: All detail strings that embed data from `ctx` use the same
- * `escapeMarkdownInline` / `inlineCode` helpers as `runAccountChecks`
- * so no untrusted value can inject Markdown formatting.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.corePlugins = exports.homeDomainPlugin = exports.xlmReservePlugin = exports.trustlinePlugin = exports.accountFundedPlugin = void 0;
-exports.registerCorePlugins = registerCorePlugins;
-const plugin_1 = __nccwpck_require__(2375);
-const checks_1 = __nccwpck_require__(2122);
-const horizon_1 = __nccwpck_require__(9164);
-const markdown_1 = __nccwpck_require__(3758);
-const links_1 = __nccwpck_require__(3346);
-const metrics_1 = __nccwpck_require__(5670);
-// ---------------------------------------------------------------------------
-// 1. Account funded
-// ---------------------------------------------------------------------------
-/**
- * Checks that the Stellar account exists and is activated on the network.
- *
- * Passes  — `ctx.account` is not null (Horizon returned a 200).
- * Fails   — `ctx.account` is null (Horizon returned 404 / account unfunded).
- *
- * Plugin id: `'trustbridge/account-funded'`
- */
-exports.accountFundedPlugin = {
-    id: 'trustbridge/account-funded',
-    label: 'Account funded',
-    run(ctx) {
-        if (ctx.account !== null) {
-            return {
-                passed: true,
-                detail: `Account ${(0, markdown_1.inlineCode)(ctx.stellarAddress)} is active on the Stellar network.`,
-            };
-        }
-        const safeAddress = (0, markdown_1.inlineCode)(ctx.stellarAddress);
-        return {
-            passed: false,
-            detail: `Account ${safeAddress} was **not found** on Horizon — it may not be funded or activated yet.`,
-            remediation: [
-                `Activate ${safeAddress} by sending at least **${checks_1.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-                `Estimated setup cost: ~**${(0, checks_1.estimateTrustlineSetupCost)()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
-            ].join('\n\n'),
-        };
-    },
-};
-// ---------------------------------------------------------------------------
-// 2. Trustline
-// ---------------------------------------------------------------------------
-/**
- * Checks that the account holds a trustline for the configured asset.
- *
- * Passes  — account has a trustline for `config.assetCode` / `config.assetIssuer`.
- * Fails   — trustline is absent or account is not funded.
- *
- * Plugin id: `'trustbridge/trustline'`
- */
-exports.trustlinePlugin = {
-    id: 'trustbridge/trustline',
-    label: 'Trustline',
-    run(ctx) {
-        const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(ctx.config.assetCode);
-        const safeIssuer = (0, markdown_1.inlineCode)(ctx.config.assetIssuer);
-        const network = (0, links_1.inferStellarNetwork)(ctx.config.horizonUrl ?? '');
-        if (ctx.account === null) {
-            return {
-                passed: false,
-                detail: 'Cannot verify trustline until the account exists.',
-            };
-        }
-        const exists = (0, horizon_1.hasTrustline)(ctx.account, ctx.config.assetCode, ctx.config.assetIssuer);
-        const hasAnyTrustlines = ctx.account.balances.some((b) => b.asset_type !== 'native');
-        if (exists) {
-            return {
-                passed: true,
-                detail: `Trustline for **${safeAssetCode}** (${safeIssuer}) is configured.`,
-            };
-        }
-        const detail = hasAnyTrustlines
-            ? `Account has trustlines, but not for **${safeAssetCode}** issued by ${safeIssuer}.`
-            : 'Account has **zero trustlines** — add a trustline before receiving this asset.';
-        return {
-            passed: false,
-            detail,
-            remediation: `Add a **${safeAssetCode}** trustline using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Change Trust operation) or a wallet such as [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
-        };
-    },
-};
-// ---------------------------------------------------------------------------
-// 3. XLM reserve
-// ---------------------------------------------------------------------------
-/**
- * Checks that the account's native XLM balance meets the configured minimum.
- *
- * Passes  — balance ≥ `config.minXlmReserve`.
- * Fails   — balance is below the minimum, or account is not funded.
- *
- * Plugin id: `'trustbridge/xlm-reserve'`
- */
-exports.xlmReservePlugin = {
-    id: 'trustbridge/xlm-reserve',
-    label: 'XLM reserve',
-    run(ctx) {
-        if (ctx.account === null) {
-            return {
-                passed: false,
-                detail: `Cannot verify XLM balance. Fund the account with at least **${ctx.config.minXlmReserve} XLM**.`,
-            };
-        }
-        const xlmBalance = (0, horizon_1.getNativeBalance)(ctx.account);
-        const xlmNumeric = (0, horizon_1.parseHorizonBalance)(xlmBalance);
-        const reserve = (0, checks_1.buildReserveRequirement)(ctx.config.minXlmReserve, xlmNumeric);
-        if (reserve.met) {
-            return {
-                passed: true,
-                detail: `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** meets the minimum of **${ctx.config.minXlmReserve} XLM**.`,
-            };
-        }
-        return {
-            passed: false,
-            detail: `Balance **${(0, markdown_1.inlineCode)(xlmBalance)} XLM** is below the required **${ctx.config.minXlmReserve} XLM**.`,
-            remediation: `Send at least **${reserve.missing} XLM** to ${(0, markdown_1.inlineCode)(ctx.account.account_id)} to meet the reserve requirement.`,
-        };
-    },
-};
-// ---------------------------------------------------------------------------
-// 4. SEP-0001 home domain (optional — skips when not configured)
-// ---------------------------------------------------------------------------
-/**
- * Checks that the issuer account's on-chain `home_domain` field aligns with
- * the configured expectation (SEP-0001).
- *
- * The check is **opt-in**: when `config.homeDomainCheckEnabled` is false
- * (or absent) the plugin returns a passing no-op result and emits a
- * `home_domain_skipped` counter so dashboards can distinguish "not
- * configured" from a real outcome.
- *
- * Modes
- * -----
- * - `warn`   (default) — the check row is informational; a missing or
- *   mismatched domain does NOT block `valid`.
- * - `strict` — a non-`valid` outcome sets `passed = false`, which causes
- *   `runPlugins` to set `valid = false` for the overall result.
- *
- * Metric tags emitted (via `globalMetrics`):
- * - `home_domain_valid`    — domain present and matches expectation.
- * - `home_domain_missing`  — issuer has no `home_domain` on-chain.
- * - `home_domain_mismatch` — domain present but does not match expected.
- * - `home_domain_skipped`  — check not enabled.
- *
- * Plugin id: `'trustbridge/home-domain'`
- */
-exports.homeDomainPlugin = {
-    id: 'trustbridge/home-domain',
-    label: 'SEP-0001 home domain',
-    run(ctx) {
-        if (!ctx.config.homeDomainCheckEnabled) {
-            metrics_1.globalMetrics.incrementCounter('home_domain_skipped');
-            return {
-                passed: true,
-                detail: 'SEP-0001 home domain check is disabled (set `home_domain_check_enabled: true` to enable).',
-            };
-        }
-        const checkResult = (0, checks_1.evaluateHomeDomain)(ctx.account, ctx.config);
-        // Emit metrics regardless of mode so dashboards always get a data point.
-        metrics_1.globalMetrics.incrementCounter(`home_domain_${checkResult.outcome}`);
-        metrics_1.globalMetrics.recordMetric('home_domain_check', 1, 'count', {
-            outcome: checkResult.outcome,
-            mode: ctx.config.homeDomainCheckMode ?? 'warn',
-        });
-        const passed = !checkResult.blocksValid || checkResult.outcome === 'valid';
-        if (passed) {
-            return { passed: true, detail: checkResult.detail };
-        }
-        // Build remediation guidance for strict-mode failures.
-        const mode = ctx.config.homeDomainCheckMode ?? 'warn';
-        const remediation = checkResult.outcome === 'missing'
-            ? `The asset issuer (${(0, markdown_1.inlineCode)(ctx.config.assetIssuer)}) has not set a \`home_domain\` on their Stellar account. ` +
-                'Contact the issuer to publish SEP-0001 metadata, or disable this check if the issuer is exempt.'
-            : `The issuer \`home_domain\` does not match the expected value. ` +
-                `Expected: \`${(0, markdown_1.escapeMarkdownInline)(ctx.config.expectedHomeDomain ?? '')}\`. ` +
-                `Actual: \`${(0, markdown_1.escapeMarkdownInline)(checkResult.actualHomeDomain ?? '(none)')}\`. ` +
-                'Update `expected_home_domain` or contact the asset issuer.';
-        return {
-            passed: false,
-            detail: checkResult.detail,
-            remediation: mode === 'strict' ? remediation : undefined,
-        };
-    },
-};
-// ---------------------------------------------------------------------------
-// Convenience export — all four core plugins in canonical order
-// ---------------------------------------------------------------------------
-/**
- * The four built-in checks in the order they appear in the comment table.
- * Pass this array to `runPlugins()` to get a fully plugin-driven result
- * equivalent to `runAccountChecks()`.
- *
- * Note: `homeDomainPlugin` is included but is a no-op when
- * `config.homeDomainCheckEnabled` is false (the default), so existing
- * workflows are unaffected.
- *
- * ```ts
- * import { runPlugins } from './pluginRunner';
- * import { corePlugins } from './corePlugins';
- * import { PluginRegistry } from './plugin';
- *
- * const registry = new PluginRegistry();
- * corePlugins.forEach(p => registry.register(p));
- * const result = runPlugins(ctx, registry);
- * ```
- */
-exports.corePlugins = [
-    exports.accountFundedPlugin,
-    exports.trustlinePlugin,
-    exports.xlmReservePlugin,
-    exports.homeDomainPlugin,
-];
-/**
- * Register all core plugins with the default registry.
- * Called once at action startup before any user plugins are loaded.
- */
-function registerCorePlugins() {
-    exports.corePlugins.forEach((p) => plugin_1.defaultRegistry.register(p));
-}
-
-
-/***/ }),
-
-/***/ 1493:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Delta vs previous workflow-run validation artifact (Security / Issue #148).
- *
- * Consumers retain `validation.json` across runs (upload-artifact + download
- * on the next cron/dispatch). This module compares the prior snapshot to the
- * current check results and produces a structured delta for comments and JSON.
- *
- * Strategy tradeoffs (documented also in docs/USAGE.md):
- * - **Local artifact path (recommended):** workflow downloads the previous
- *   run's artifact to `previous_validation_path`. No extra API scopes; explicit
- *   matching; fails soft when the file is absent (first run).
- * - **GitHub Actions API auto-discovery (Issue #212):** when no local path is
- *   provided and `GITHUB_TOKEN` + `GITHUB_REPOSITORY` + `GITHUB_RUN_ID` are
- *   available, the action queries the Actions API for the most recent completed
- *   run that uploaded a `validation.json` artifact and downloads it in-memory.
- *   Fails open on 403 / API errors so delta is never required.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.VALIDATION_ARTIFACT_SCHEMA_VERSION = void 0;
-exports.hashAddressForPrivacy = hashAddressForPrivacy;
-exports.privacyMaskAddress = privacyMaskAddress;
-exports.stripSensitiveFields = stripSensitiveFields;
-exports.computeValidationDelta = computeValidationDelta;
-exports.loadPreviousValidationArtifact = loadPreviousValidationArtifact;
-exports.buildValidationArtifact = buildValidationArtifact;
-exports.formatDeltaMarkdown = formatDeltaMarkdown;
-exports.discoverPreviousValidationArtifact = discoverPreviousValidationArtifact;
-exports.extractFromZip = extractFromZip;
-exports.detectAddressChange = detectAddressChange;
-exports.formatAddressChangeWarning = formatAddressChangeWarning;
-const crypto = __importStar(__nccwpck_require__(6982));
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
-const checks_1 = __nccwpck_require__(2122);
-const logger_1 = __nccwpck_require__(6999);
-exports.VALIDATION_ARTIFACT_SCHEMA_VERSION = '1.0.0';
-/** Keys that must never appear in a validation / delta payload. */
-const FORBIDDEN_SENSITIVE_KEYS = new Set([
-    'github_token',
-    'githubToken',
-    'token',
-    'authorization',
-    'Authorization',
-    'api_key',
-    'apiKey',
-    'password',
-    'secret',
-    'private_key',
-    'privateKey',
-    'passphrase',
-]);
-/**
- * Hash a Stellar address for privacy-mode JSON artifacts.
- * Returns `sha256:<16 hex chars>` so payloads stay correlatable without
- * exposing the raw G-/C-address in retained artifacts or Actions logs.
- */
-function hashAddressForPrivacy(address) {
-    const digest = crypto.createHash('sha256').update(address.trim()).digest('hex');
-    return `sha256:${digest.slice(0, 16)}`;
-}
-/**
- * Apply privacy policy to a string that may contain addresses.
- * When privacyMode is on, addresses are hashed; otherwise first4…last4 redaction.
- */
-function privacyMaskAddress(address, privacyMode) {
-    if (!address)
-        return address;
-    if (privacyMode)
-        return hashAddressForPrivacy(address);
-    return (0, logger_1.redactStellarAddress)(address);
-}
-/**
- * Strip forbidden sensitive keys from an arbitrary object tree (defense in depth
- * when loading a previous artifact that might have been hand-edited).
- */
-function stripSensitiveFields(value) {
-    if (value === null || value === undefined)
-        return value;
-    if (Array.isArray(value)) {
-        return value.map((item) => stripSensitiveFields(item));
-    }
-    if (typeof value === 'object') {
-        const out = {};
-        for (const [key, child] of Object.entries(value)) {
-            if (FORBIDDEN_SENSITIVE_KEYS.has(key))
-                continue;
-            out[key] = stripSensitiveFields(child);
-        }
-        return out;
-    }
-    return value;
-}
-/**
- * Compare previous vs current checks by label.
- * Returns `null` when there is no previous snapshot (first run) — callers
- * should omit the delta section entirely rather than erroring.
- */
-function computeValidationDelta(previous, current) {
-    if (!previous || !Array.isArray(previous.checks) || previous.checks.length === 0) {
-        return null;
-    }
-    const previousByLabel = new Map();
-    for (const check of previous.checks) {
-        if (check && typeof check.label === 'string') {
-            previousByLabel.set(check.label, Boolean(check.passed));
-        }
-    }
-    const newlyPassed = [];
-    const newlyFailed = [];
-    const unchanged = [];
-    for (const check of current.checks) {
-        const prior = previousByLabel.get(check.label);
-        if (prior === undefined) {
-            // New check label not present previously — treat as newly passed/failed.
-            if (check.passed)
-                newlyPassed.push(check.label);
-            else
-                newlyFailed.push(check.label);
-            continue;
-        }
-        if (prior === check.passed) {
-            unchanged.push(check.label);
-        }
-        else if (check.passed && !prior) {
-            newlyPassed.push(check.label);
-        }
-        else if (!check.passed && prior) {
-            newlyFailed.push(check.label);
-        }
-    }
-    return {
-        previousTimestamp: previous.timestamp,
-        newlyPassed,
-        newlyFailed,
-        unchanged,
-        improved: newlyPassed.length > 0,
-        regressed: newlyFailed.length > 0,
-    };
-}
-/**
- * Load a previous `validation.json` from disk. Returns `null` (no throw) when
- * the path is empty, the file is missing, or JSON is unreadable/invalid —
- * first-run and artifact-miss cases must never fail the action.
- */
-function loadPreviousValidationArtifact(previousPath, workspaceRoot) {
-    const trimmed = (previousPath || '').trim();
-    if (!trimmed)
-        return null;
-    const root = workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
-    const absolutePath = path.isAbsolute(trimmed) ? trimmed : path.resolve(root, trimmed);
-    try {
-        if (!fs.existsSync(absolutePath)) {
-            return null;
-        }
-        const raw = fs.readFileSync(absolutePath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object')
-            return null;
-        const cleaned = stripSensitiveFields(parsed);
-        if (!Array.isArray(cleaned.checks))
-            return null;
-        return {
-            schemaVersion: cleaned.schemaVersion || exports.VALIDATION_ARTIFACT_SCHEMA_VERSION,
-            timestamp: typeof cleaned.timestamp === 'string' ? cleaned.timestamp : '',
-            address: typeof cleaned.address === 'string' ? cleaned.address : '',
-            asset: {
-                code: cleaned.asset?.code ?? '',
-                issuer: cleaned.asset?.issuer ?? '',
-            },
-            horizonUrl: cleaned.horizonUrl,
-            readiness: cleaned.readiness ?? {
-                ready: false,
-                totalChecks: cleaned.checks.length,
-                passedChecks: cleaned.checks.filter((c) => c.passed).length,
-                failedChecks: cleaned.checks.filter((c) => !c.passed).length,
-                failedLabels: cleaned.checks.filter((c) => !c.passed).map((c) => c.label),
-            },
-            checks: cleaned.checks.map((c) => ({
-                label: c.label,
-                passed: Boolean(c.passed),
-                detail: typeof c.detail === 'string' ? (0, logger_1.redactString)(c.detail) : '',
-            })),
-            balances: {
-                xlm: cleaned.balances?.xlm ?? 'unknown',
-            },
-            delta: cleaned.delta,
-            privacyMode: cleaned.privacyMode,
-        };
-    }
-    catch {
-        return null;
-    }
-}
-/**
- * Build the validation.json payload. Applies privacy masking to addresses
- * and strips any accidental sensitive fields. Never embeds tokens.
- */
-function buildValidationArtifact(options) {
-    const privacyMode = Boolean(options.privacyMode);
-    // Full addresses by default (auditing). Privacy mode hashes them for retained artifacts.
-    const address = privacyMode
-        ? privacyMaskAddress(options.stellarAddress, true)
-        : options.stellarAddress;
-    const issuer = privacyMode
-        ? privacyMaskAddress(options.assetIssuer, true)
-        : options.assetIssuer;
-    const checks = options.result.checks.map((c) => ({
-        label: c.label,
-        passed: c.passed,
-        detail: privacyMode
-            ? (0, logger_1.redactString)(c.detail).replace(/\b([GC][A-Z2-7]{55})\b/g, (m) => hashAddressForPrivacy(m))
-            : c.detail,
-    }));
-    const artifact = {
-        schemaVersion: exports.VALIDATION_ARTIFACT_SCHEMA_VERSION,
-        timestamp: options.timestamp ?? new Date().toISOString(),
-        address,
-        asset: {
-            code: options.assetCode,
-            issuer,
-        },
-        horizonUrl: options.horizonUrl
-            ? privacyMode
-                ? (0, logger_1.redactString)(options.horizonUrl).replace(/\b([GC][A-Z2-7]{55})\b/g, (m) => hashAddressForPrivacy(m))
-                : options.horizonUrl
-            : undefined,
-        readiness: (0, checks_1.buildValidationGate)(options.result),
-        checks,
-        balances: {
-            xlm: options.result.xlmBalance,
-        },
-        privacyMode: privacyMode || undefined,
-    };
-    if (options.delta) {
-        artifact.delta = options.delta;
-    }
-    return stripSensitiveFields(artifact);
-}
-/**
- * Render a Markdown delta section for the issue comment.
- * Returns an empty string when there is no delta (first run).
- */
-function formatDeltaMarkdown(delta) {
-    if (!delta)
-        return '';
-    const lines = [
-        '### Delta vs previous run',
-        '',
-    ];
-    if (delta.previousTimestamp) {
-        lines.push(`_Compared to previous artifact from \`${delta.previousTimestamp}\`._`, '');
-    }
-    if (delta.newlyPassed.length === 0 && delta.newlyFailed.length === 0) {
-        lines.push('- No check status changes since the previous run.');
-    }
-    else {
-        if (delta.newlyPassed.length > 0) {
-            lines.push(`- ✅ **Newly passed:** ${delta.newlyPassed.join(', ')}`);
-        }
-        if (delta.newlyFailed.length > 0) {
-            lines.push(`- ❌ **Newly failed:** ${delta.newlyFailed.join(', ')}`);
-        }
-    }
-    if (delta.unchanged.length > 0) {
-        lines.push(`- Unchanged: ${delta.unchanged.length} check(s)`);
-    }
-    if (delta.regressed) {
-        lines.push('', '_Regression detected — one or more checks that previously passed now fail._');
-    }
-    else if (delta.improved && !delta.regressed) {
-        lines.push('', '_Improvement — checks newly passing with no new failures._');
-    }
-    return lines.join('\n');
-}
-// ---------------------------------------------------------------------------
-// Issue #212 — Auto-discover previous validation.json artifact via Actions API
-// ---------------------------------------------------------------------------
-/**
- * Attempt to auto-discover and download the most recent `validation.json`
- * artifact from prior workflow runs via the GitHub Actions REST API.
- *
- * This is a best-effort, fail-open operation:
- * - Returns `null` when required context is missing (non-Actions env).
- * - Returns `null` on API errors (403, rate limit, network).
- * - Returns `null` when no prior artifact is found (first run).
- *
- * Requires `GITHUB_TOKEN` with `actions: read` permission. When the token
- * lacks this scope, the function returns `null` gracefully so delta is
- * never a hard requirement.
- */
-async function discoverPreviousValidationArtifact(githubToken, artifactName = 'validation-json') {
-    const repoFullName = process.env.GITHUB_REPOSITORY;
-    const currentRunId = process.env.GITHUB_RUN_ID;
-    const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
-    if (!repoFullName || !currentRunId || !githubToken) {
-        return null;
-    }
-    const [owner, repo] = repoFullName.split('/');
-    if (!owner || !repo)
-        return null;
-    const headers = {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${githubToken}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-    };
-    try {
-        // List recent workflow runs (newest first), excluding the current run.
-        const runsUrl = `${apiBase}/repos/${owner}/${repo}/actions/runs?status=completed&per_page=10&exclude_pull_requests=true`;
-        const runsResp = await fetch(runsUrl, { headers });
-        if (!runsResp.ok)
-            return null;
-        const runsData = (await runsResp.json());
-        const runs = runsData.workflow_runs ?? [];
-        const priorRuns = runs.filter((r) => r.id !== Number(currentRunId));
-        for (const run of priorRuns) {
-            // List artifacts for this run.
-            const artifactsUrl = `${apiBase}/repos/${owner}/${repo}/actions/runs/${run.id}/artifacts?per_page=10`;
-            const artifactsResp = await fetch(artifactsUrl, { headers });
-            if (!artifactsResp.ok)
-                continue;
-            const artifactsData = (await artifactsResp.json());
-            const artifacts = artifactsData.artifacts ?? [];
-            const target = artifacts.find((a) => a.name === artifactName && !a.expired);
-            if (!target)
-                continue;
-            // Download the artifact zip.
-            const downloadUrl = `${apiBase}/repos/${owner}/${repo}/actions/artifacts/${target.id}/zip`;
-            const downloadResp = await fetch(downloadUrl, { headers });
-            if (!downloadResp.ok)
-                continue;
-            // The artifact zip contains the file(s). Parse the zip to extract validation.json.
-            const zipBuffer = Buffer.from(await downloadResp.arrayBuffer());
-            const validationJson = extractFromZip(zipBuffer, 'validation.json');
-            if (!validationJson)
-                continue;
-            const parsed = JSON.parse(validationJson);
-            if (!parsed || typeof parsed !== 'object')
-                continue;
-            const cleaned = stripSensitiveFields(parsed);
-            if (!Array.isArray(cleaned.checks))
-                continue;
-            return {
-                schemaVersion: cleaned.schemaVersion || exports.VALIDATION_ARTIFACT_SCHEMA_VERSION,
-                timestamp: typeof cleaned.timestamp === 'string' ? cleaned.timestamp : '',
-                address: typeof cleaned.address === 'string' ? cleaned.address : '',
-                asset: {
-                    code: cleaned.asset?.code ?? '',
-                    issuer: cleaned.asset?.issuer ?? '',
-                },
-                horizonUrl: cleaned.horizonUrl,
-                readiness: cleaned.readiness ?? {
-                    ready: false,
-                    totalChecks: cleaned.checks.length,
-                    passedChecks: cleaned.checks.filter((c) => c.passed).length,
-                    failedChecks: cleaned.checks.filter((c) => !c.passed).length,
-                    failedLabels: cleaned.checks.filter((c) => !c.passed).map((c) => c.label),
-                },
-                checks: cleaned.checks.map((c) => ({
-                    label: c.label,
-                    passed: Boolean(c.passed),
-                    detail: typeof c.detail === 'string' ? (0, logger_1.redactString)(c.detail) : '',
-                })),
-                balances: {
-                    xlm: cleaned.balances?.xlm ?? 'unknown',
-                },
-                delta: cleaned.delta,
-                privacyMode: cleaned.privacyMode,
-            };
-        }
-        return null;
-    }
-    catch {
-        // Fail open: auto-discovery errors must never block the action.
-        return null;
-    }
-}
-/**
- * Minimal ZIP extraction for a single named file.
- * Parses the ZIP local file headers to find and decompress the target file.
- * Returns the file content as a UTF-8 string, or null if not found.
- *
- * @internal Exported for testing.
- */
-function extractFromZip(zipBuffer, targetFileName) {
-    // ZIP magic number: PK\x03\x04
-    const LOCAL_FILE_HEADERSignature = 0x04034b50;
-    let offset = 0;
-    while (offset + 30 <= zipBuffer.length) {
-        const sig = zipBuffer.readUInt32LE(offset);
-        if (sig !== LOCAL_FILE_HEADERSignature)
-            break;
-        const compressionMethod = zipBuffer.readUInt16LE(offset + 8);
-        const compressedSize = zipBuffer.readUInt32LE(offset + 18);
-        const uncompressedSize = zipBuffer.readUInt32LE(offset + 22);
-        const fileNameLength = zipBuffer.readUInt16LE(offset + 26);
-        const extraFieldLength = zipBuffer.readUInt16LE(offset + 28);
-        const fileName = zipBuffer.toString('utf8', offset + 30, offset + 30 + fileNameLength);
-        const dataStart = offset + 30 + fileNameLength + extraFieldLength;
-        if (fileName === targetFileName || fileName.endsWith('/' + targetFileName)) {
-            const compressedData = zipBuffer.subarray(dataStart, dataStart + compressedSize);
-            if (compressionMethod === 0) {
-                // Stored (no compression)
-                return compressedData.toString('utf8');
-            }
-            else if (compressionMethod === 8) {
-                // Deflate
-                try {
-                    const { inflateSync } = __nccwpck_require__(3106);
-                    const decompressed = inflateSync(compressedData);
-                    return decompressed.toString('utf8');
-                }
-                catch {
-                    return null;
-                }
-            }
-            // Unsupported compression method
-            return null;
-        }
-        offset = dataStart + compressedSize;
-    }
-    return null;
-}
-/**
- * Detect whether the Stellar address has changed since the last successful
- * validation run.
- *
- * Strategy:
- * - When `privacyMode` is **off** (default), addresses are compared and
- *   stored in plain form (`G…`) in the result for display in the comment.
- * - When `privacyMode` is **on**, both the current and previous addresses are
- *   hashed with SHA-256 and only the hashes are compared/stored. This means
- *   the raw prior address is never placed into a public issue comment.
- *
- * Muxed accounts (M…): muxed addresses encode an underlying G-address and a
- * memo id. Two different muxed addresses over the *same* G-address are treated
- * as the *same* address for comparison purposes — only the base G-address
- * (`[GC][A-Z2-7]{55}`) is extracted for comparison.
- *
- * First-run handling: when `previousArtifact` is null/undefined (no previous
- * run), the function returns `changed: false` so the action never emits a
- * spurious "address changed" warning on first run.
- *
- * @param currentAddress     The Stellar address being validated this run.
- * @param previousArtifact   The loaded previous `validation.json` artifact, or null.
- * @param privacyMode        When true, hash addresses before comparing/storing.
- */
-function detectAddressChange(currentAddress, previousArtifact, privacyMode = false) {
-    // Normalise: extract base G/C address (strip muxed M-prefix memo id).
-    const normalise = (addr) => {
-        const match = /([GC][A-Z2-7]{55})/.exec(addr);
-        return match ? match[1] : addr;
-    };
-    const normCurrent = normalise(currentAddress);
-    if (!previousArtifact || !previousArtifact.address) {
-        // First run — no previous address to compare.
-        return {
-            changed: false,
-            previousAddress: null,
-            currentAddress: privacyMode ? hashAddressForPrivacy(normCurrent) : normCurrent,
-            privacyMode,
-        };
-    }
-    // The stored address in the artifact may already be hashed (if a prior run
-    // used privacy mode). Detect this by checking for the sha256: prefix.
-    const previousRaw = previousArtifact.address;
-    const previousIsHashed = previousRaw.startsWith('sha256:');
-    let addressesMatch;
-    let displayPrevious;
-    let displayCurrent;
-    if (privacyMode) {
-        // Compare hashes — always safe to log.
-        const currentHash = hashAddressForPrivacy(normCurrent);
-        const previousHash = previousIsHashed
-            ? previousRaw
-            : hashAddressForPrivacy(normalise(previousRaw));
-        addressesMatch = currentHash === previousHash;
-        displayPrevious = previousHash;
-        displayCurrent = currentHash;
-    }
-    else {
-        // Compare plain addresses (normalised). If the previous was hashed we
-        // cannot reverse it — treat as different to be conservative.
-        if (previousIsHashed) {
-            // Previous was hashed, current is not — we can't compare directly.
-            // Treat as possibly changed; surface a note in the comment.
-            addressesMatch = false;
-            displayPrevious = previousRaw; // keep hash for display
-            displayCurrent = normCurrent;
-        }
-        else {
-            const normPrevious = normalise(previousRaw);
-            addressesMatch = normCurrent === normPrevious;
-            displayPrevious = normPrevious;
-            displayCurrent = normCurrent;
-        }
-    }
-    return {
-        changed: !addressesMatch,
-        previousAddress: displayPrevious,
-        currentAddress: displayCurrent,
-        privacyMode,
-    };
-}
-/**
- * Render a Markdown warning section for the issue comment when an address
- * change is detected.
- *
- * Returns an empty string when `changeResult.changed` is false so callers
- * can unconditionally append the result.
- */
-function formatAddressChangeWarning(changeResult) {
-    if (!changeResult.changed)
-        return '';
-    const prevDisplay = changeResult.previousAddress ?? '_unknown_';
-    const currDisplay = changeResult.currentAddress;
-    const privacyNote = changeResult.privacyMode
-        ? ' _(addresses shown as privacy hashes — raw values not stored)_'
-        : '';
-    return [
-        '### ⚠️ Stellar address changed',
-        '',
-        '> **The Stellar address being validated has changed since the last run.**',
-        `> Previous: \`${prevDisplay}\`${privacyNote}`,
-        `> Current:  \`${currDisplay}\``,
-        '>',
-        '> If this change was intentional (e.g. you rotated your wallet), no action',
-        '> is required — the new address will be validated normally.',
-        '> If unexpected, verify that the correct address is submitted in the issue.',
-    ].join('\n');
-}
-
-
-/***/ }),
-
-/***/ 4851:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-/**
- * Expert-mode diagnostics block for TrustBridge issue comments (Issue #102).
- *
- * When `debug_mode: true` (or the forthcoming `expert_mode: true`) is set,
- * a clearly-separated diagnostics section is appended to the issue comment
- * after the normal contributor-facing content. The contributor-facing section
- * is never modified or cluttered by this addition.
- *
- * ## What the diagnostics block contains
- * - Horizon status code and round-trip latency
- * - Normalized resolved inputs (redacted — no raw secrets)
- * - Check-level detail rows showing each assertion, its pass/fail state, and
- *   the underlying data value that drove the decision
- * - Error messages from failed Horizon calls (redacted)
- *
- * ## Security guarantees
- * - `github_token`, `webhook_secret`, and any other secret-classified fields
- *   are **never** included. The secret-field block-list mirrors the one in
- *   `src/configReader.ts`.
- * - Stellar addresses are redacted via `redactStellarAddress` (first-4/last-4).
- * - Horizon URLs are redacted via `redactHorizonUrl`.
- * - Free-form error messages are scanned with `redactString` before inclusion.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DIAGNOSTICS_CLOSE_MARKER = exports.DIAGNOSTICS_OPEN_MARKER = void 0;
-exports.buildSafeInputsSnapshot = buildSafeInputsSnapshot;
-exports.buildDiagnosticsBlock = buildDiagnosticsBlock;
-exports.buildSponsorshipDiagnostics = buildSponsorshipDiagnostics;
-const logger_1 = __nccwpck_require__(6999);
-const markdown_1 = __nccwpck_require__(3758);
-// ---------------------------------------------------------------------------
-// Secret field block-list (mirrors configReader.ts)
-// ---------------------------------------------------------------------------
-const SECRET_FIELD_NAMES = new Set([
-    'github_token',
-    'githubToken',
-    'api_key',
-    'apiKey',
-    'secret',
-    'webhook_secret',
-    'webhookSecret',
-    'password',
-    'token',
-    'private_key',
-    'privateKey',
-    'passphrase',
-]);
-function isSecretField(key) {
-    return SECRET_FIELD_NAMES.has(key) || key.toLowerCase().includes('secret') ||
-        key.toLowerCase().includes('token') || key.toLowerCase().includes('password');
-}
-// ---------------------------------------------------------------------------
-// Safe snapshot builder
-// ---------------------------------------------------------------------------
-/**
- * Build a redacted, safe-to-log copy of the inputs snapshot.
- * Secret-classified fields are replaced with `***`.
- * Address and URL fields are redacted using the standard policy.
- */
-function buildSafeInputsSnapshot(inputs) {
-    const safe = {};
-    for (const [key, value] of Object.entries(inputs)) {
-        if (isSecretField(key)) {
-            safe[key] = '***';
-            continue;
-        }
-        if (key === 'horizonUrl' || key === 'horizonUrlFallback') {
-            safe[key] = typeof value === 'string' ? (0, logger_1.redactHorizonUrl)(value) : value;
-            continue;
-        }
-        if (key === 'assetIssuer' && typeof value === 'string') {
-            safe[key] = (0, logger_1.redactStellarAddress)(value) || (0, logger_1.redactString)(value);
-            continue;
-        }
-        if (typeof value === 'string') {
-            safe[key] = (0, logger_1.redactString)(value);
-            continue;
-        }
-        safe[key] = value;
-    }
-    return safe;
-}
-// ---------------------------------------------------------------------------
-// Markdown block builder
-// ---------------------------------------------------------------------------
-const DIAGNOSTICS_OPEN_MARKER = '<!-- trustbridge-action:diagnostics-start -->';
-exports.DIAGNOSTICS_OPEN_MARKER = DIAGNOSTICS_OPEN_MARKER;
-const DIAGNOSTICS_CLOSE_MARKER = '<!-- trustbridge-action:diagnostics-end -->';
-exports.DIAGNOSTICS_CLOSE_MARKER = DIAGNOSTICS_CLOSE_MARKER;
-/**
- * Build the expert diagnostics collapsible Markdown block.
- *
- * Returns an empty string when neither `inputs` nor `runInfo` has meaningful
- * content, so callers can append unconditionally.
- */
-function buildDiagnosticsBlock(config) {
-    const showInputs = config.showInputs !== false;
-    const { inputs, runInfo, sponsorshipInfo, reserveRequirement } = config;
-    const lines = [
-        '',
-        DIAGNOSTICS_OPEN_MARKER,
-        '',
-        '<details>',
-        '<summary>🔬 <strong>Expert diagnostics</strong> — expand for Horizon details and normalized inputs</summary>',
-        '',
-        '> ℹ️ This section is only visible when `debug_mode: true` is set.',
-        '> It is intended for maintainers and contributors debugging validation failures.',
-        '> **No secrets are included.** All addresses are redacted to first-4/last-4.',
-        '',
-    ];
-    // --- Horizon run info ---
-    if (runInfo) {
-        lines.push('#### Horizon request details', '');
-        lines.push('| Field | Value |');
-        lines.push('| --- | --- |');
-        if (runInfo.horizonStatusCode !== undefined) {
-            const statusLabel = runInfo.horizonStatusCode >= 200 && runInfo.horizonStatusCode < 300
-                ? `✅ ${runInfo.horizonStatusCode}`
-                : `❌ ${runInfo.horizonStatusCode}`;
-            lines.push(`| HTTP status | \`${statusLabel}\` |`);
-        }
-        if (runInfo.horizonLatencyMs !== undefined) {
-            lines.push(`| Round-trip latency | \`${runInfo.horizonLatencyMs} ms\` |`);
-        }
-        if (runInfo.fromCache !== undefined) {
-            lines.push(`| Served from cache | \`${runInfo.fromCache}\` |`);
-        }
-        if (runInfo.usedFallback !== undefined) {
-            lines.push(`| Used fallback URL | \`${runInfo.usedFallback}\` |`);
-        }
-        if (runInfo.retryCount !== undefined) {
-            lines.push(`| Retry attempts | \`${runInfo.retryCount}\` |`);
-        }
-        if (runInfo.horizonError) {
-            const safeError = (0, markdown_1.escapeMarkdownInline)((0, logger_1.redactString)(runInfo.horizonError));
-            lines.push(`| Horizon error | ${safeError} |`);
-        }
-        lines.push('');
-    }
-    // --- Sponsorship chain analysis (Issue #1) ---
-    const sponsorshipSection = buildSponsorshipDiagnostics(sponsorshipInfo, reserveRequirement);
-    if (sponsorshipSection) {
-        lines.push(sponsorshipSection);
-    }
-    // --- Normalized inputs ---
-    if (showInputs) {
-        const safe = buildSafeInputsSnapshot(inputs);
-        lines.push('#### Normalized inputs', '');
-        lines.push('| Input | Resolved value |');
-        lines.push('| --- | --- |');
-        for (const [key, value] of Object.entries(safe)) {
-            const displayValue = value === '***'
-                ? '`***` _(redacted)_'
-                : `\`${(0, markdown_1.escapeMarkdownInline)(String(value))}\``;
-            lines.push(`| \`${(0, markdown_1.escapeMarkdownInline)(key)}\` | ${displayValue} |`);
-        }
-        lines.push('');
-    }
-    lines.push('</details>', '', DIAGNOSTICS_CLOSE_MARKER, '');
-    return lines.join('\n');
-}
-/**
- * Build a sponsorship-specific diagnostics section for accounts with
- * non-zero sponsorship counts. This provides visibility into how nested
- * sponsorship chains affect reserve requirements without modifying the
- * contributor-facing sections.
- */
-function buildSponsorshipDiagnostics(sponsorshipInfo, reserveRequirement) {
-    if (!sponsorshipInfo || (sponsorshipInfo.numSponsoring === 0 && sponsorshipInfo.numSponsored === 0)) {
-        return '';
-    }
-    if (!reserveRequirement) {
-        return '';
-    }
-    const { numSponsoring, numSponsored } = sponsorshipInfo;
-    const netEffect = numSponsoring - numSponsored;
-    const lines = [
-        '',
-        '#### Sponsorship chain analysis',
-        '',
-        '> ℹ️ **Chain depth context:** This account has active sponsorship relationships that affect its reserve requirement.',
-        '',
-        '| Metric | Value | Impact |',
-        '| --- | --- | --- |',
-        `| Accounts sponsored (outbound) | \`${numSponsoring}\` | ${numSponsoring > 0 ? `+${(numSponsoring * 0.5).toFixed(1)} XLM to requirement` : 'None'} |`,
-        `| Sponsorships received (inbound) | \`${numSponsored}\` | ${numSponsored > 0 ? `-${(numSponsored * 0.5).toFixed(1)} XLM from requirement` : 'None'} |`,
-        `| Net sponsorship effect | \`${netEffect > 0 ? '+' : ''}${netEffect}\` entries | ${netEffect > 0 ? `**Increases** requirement by ${(netEffect * 0.5).toFixed(1)} XLM` : netEffect < 0 ? `**Reduces** requirement by ${(Math.abs(netEffect) * 0.5).toFixed(1)} XLM` : 'Neutral (balanced)'} |`,
-        `| Subentries (trustlines/offers/data) | \`${reserveRequirement.subentryCount}\` | +${(reserveRequirement.subentryCount * 0.5).toFixed(1)} XLM base |`,
-        '',
-        '**Reserve breakdown:**',
-        '',
-        '```',
-        'Protocol formula: (2 + subentries + sponsoring - sponsored) × 0.5 XLM',
-        `                  (2 + ${reserveRequirement.subentryCount} + ${numSponsoring} - ${numSponsored}) × 0.5`,
-        `                = ${reserveRequirement.protocolMinimum.toFixed(1)} XLM`,
-        '',
-        `Configured floor: ${reserveRequirement.configuredFloor.toFixed(1)} XLM`,
-        `Final required:   ${reserveRequirement.required.toFixed(1)} XLM (max of protocol and floor)`,
-        `Actual balance:   ${reserveRequirement.actual.toFixed(1)} XLM`,
-        `Status:           ${reserveRequirement.met ? '✅ Met' : '❌ Deficit'}`,
-        '```',
-        '',
-    ];
-    // Warning for deep sponsorship chains
-    if (numSponsoring > 3) {
-        lines.push('> ⚠️ **Deep sponsorship chain detected:** This account sponsors more than 3 accounts.', '> Nested sponsor-of-sponsor patterns can cause cascading reserve failures if any', '> intermediate sponsor becomes underfunded. Monitor the full chain, not just', '> immediate sponsees.', '');
-    }
-    // Guidance for overfunding scenario
-    if (numSponsored > 0 && numSponsoring === 0 && reserveRequirement.actual > reserveRequirement.required + 1.0) {
-        lines.push('> ℹ️ **Overfunding detected:** This sponsored account has significantly more XLM than', `> required (${(reserveRequirement.actual - reserveRequirement.required).toFixed(1)} XLM surplus). Since sponsorship covers reserve`, '> costs, this balance may be unnecessary. Consider keeping only operational funds', '> (for transaction fees) on sponsored accounts.', '');
-    }
-    return lines.join('\n');
-}
-
-
-/***/ }),
-
-/***/ 8628:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Ledger freshness guard (Issue #107).
- *
- * Detects when a Horizon node is serving stale data by comparing the
- * latest ingested ledger sequence reported by the Horizon root endpoint
- * against the current wall-clock time and a configurable max-lag threshold.
- *
- * Chosen approach: Horizon root endpoint (`GET /`)
- * ─────────────────────────────────────────────────
- * Horizon exposes `core_latest_ledger`, `history_latest_ledger`, and
- * `history_latest_ledger_closed_at` on its root endpoint. We compare
- * `history_latest_ledger_closed_at` (an ISO-8601 timestamp) to the
- * current wall-clock time. If the gap exceeds `max_ledger_lag_seconds`
- * the guard fires.
- *
- * Why NOT account `last_modified_ledger`:
- * - That field only reflects when the specific account last changed, not
- *   whether Horizon is generally up to date. An inactive account could
- *   have a very old last_modified_ledger even on a perfectly fresh Horizon.
- * - The root endpoint gives a single authoritative freshness signal for
- *   the whole node, regardless of which account is being checked.
- *
- * Default behaviour: warn (not fail) when stale. Set
- * `ledger_freshness_fail_on_stale: true` to hard-fail.
- * The guard is opt-in: disabled by default to preserve backward
- * compatibility. Set `check_ledger_freshness: true` to enable.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.fetchHorizonRoot = fetchHorizonRoot;
-exports.checkLedgerFreshness = checkLedgerFreshness;
-const logger_1 = __nccwpck_require__(6999);
-const metrics_1 = __nccwpck_require__(5670);
-const DEFAULT_MAX_LAG_SECONDS = 60;
-const DEFAULT_TIMEOUT_MS = 10000;
-/**
- * Fetch the Horizon root endpoint and return the raw response object.
- * Throws a typed error on network failure or non-2xx status.
- */
-async function fetchHorizonRoot(horizonUrl, options = {}) {
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const fetch = options.fetchFn ?? (globalThis.fetch
-        ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default);
-    const url = horizonUrl.trim().replace(/\/+$/, '') + '/';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
-            signal: controller.signal,
-        });
-        if (!response.ok) {
-            throw new Error(`Horizon root endpoint returned HTTP ${response.status}`);
-        }
-        return (await response.json());
-    }
-    catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
-            throw new Error(`Horizon root endpoint timed out after ${timeoutMs}ms`);
-        }
-        throw error;
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-/**
- * Check whether a Horizon node is serving sufficiently fresh data.
- *
- * Returns a FreshnessCheckResult describing the outcome without throwing —
- * callers decide how to surface the result (warn vs. fail).
- */
-async function checkLedgerFreshness(horizonUrl, options = {}) {
-    const maxLagSeconds = options.maxLagSeconds ?? DEFAULT_MAX_LAG_SECONDS;
-    let root;
-    try {
-        root = await fetchHorizonRoot(horizonUrl, {
-            timeoutMs: options.timeoutMs,
-            fetchFn: options.fetchFn,
-        });
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : 'unknown error';
-        logger_1.logger.debug('Ledger freshness check: failed to fetch Horizon root', {
-            component: 'freshness',
-            horizonUrl,
-            error: message,
-        });
-        metrics_1.globalMetrics.recordMetric('freshness_check_failed', 1, 'count');
-        metrics_1.globalMetrics.incrementCounter('freshness_check_failed');
-        return {
-            fresh: true, // fail-open: unknown is not treated as stale
-            lagSeconds: null,
-            latestLedger: null,
-            message: `Could not fetch Horizon root for freshness check: ${message}. Proceeding (fail-open).`,
-            status: 'unknown',
-        };
-    }
-    const latestLedger = root.history_latest_ledger ?? null;
-    const closedAtRaw = root.history_latest_ledger_closed_at;
-    if (!closedAtRaw) {
-        logger_1.logger.debug('Ledger freshness check: history_latest_ledger_closed_at missing from root', {
-            component: 'freshness',
-            horizonUrl,
-            latestLedger,
-        });
-        metrics_1.globalMetrics.recordMetric('freshness_check_unknown', 1, 'count');
-        return {
-            fresh: true,
-            lagSeconds: null,
-            latestLedger,
-            message: 'Horizon root did not include history_latest_ledger_closed_at; freshness unknown. Proceeding (fail-open).',
-            status: 'unknown',
-        };
-    }
-    const closedAtMs = Date.parse(closedAtRaw);
-    if (Number.isNaN(closedAtMs)) {
-        logger_1.logger.debug('Ledger freshness check: could not parse history_latest_ledger_closed_at', {
-            component: 'freshness',
-            horizonUrl,
-            latestLedger,
-        });
-        metrics_1.globalMetrics.recordMetric('freshness_check_unknown', 1, 'count');
-        return {
-            fresh: true,
-            lagSeconds: null,
-            latestLedger,
-            message: `Horizon root history_latest_ledger_closed_at ("${closedAtRaw}") could not be parsed; freshness unknown. Proceeding (fail-open).`,
-            status: 'unknown',
-        };
-    }
-    const lagSeconds = Math.max(0, (Date.now() - closedAtMs) / 1000);
-    metrics_1.globalMetrics.recordMetric('freshness_lag_seconds', lagSeconds, 'seconds');
-    if (latestLedger !== null) {
-        metrics_1.globalMetrics.recordMetric('freshness_latest_ledger', latestLedger, 'ledger');
-    }
-    logger_1.logger.debug('Ledger freshness check result', {
-        component: 'freshness',
-        horizonUrl,
-        latestLedger,
-        lagSeconds,
-        maxLagSeconds,
-        stale: lagSeconds > maxLagSeconds,
-    });
-    if (lagSeconds > maxLagSeconds) {
-        metrics_1.globalMetrics.incrementCounter('freshness_stale_count');
-        return {
-            fresh: false,
-            lagSeconds,
-            latestLedger,
-            message: `Horizon appears stale: latest ledger was closed ${lagSeconds.toFixed(1)}s ago (threshold: ${maxLagSeconds}s). ` +
-                `Latest ledger sequence: ${latestLedger ?? 'unknown'}. ` +
-                `This may indicate a lagging Horizon node. Results may not reflect the current network state.`,
-            status: 'stale',
-        };
-    }
-    metrics_1.globalMetrics.incrementCounter('freshness_ok_count');
-    return {
-        fresh: true,
-        lagSeconds,
-        latestLedger,
-        message: `Horizon is fresh: latest ledger closed ${lagSeconds.toFixed(1)}s ago (threshold: ${maxLagSeconds}s, ledger #${latestLedger ?? 'unknown'}).`,
-        status: 'ok',
-    };
 }
 
 
@@ -38637,255 +34745,35 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
-exports.isCircuitOpenError = isCircuitOpenError;
+exports.HorizonError = void 0;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
-exports.displayHorizonUrl = displayHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
-exports.checkCertificatePin = checkCertificatePin;
 exports.parseRetryAfterMs = parseRetryAfterMs;
 exports.fetchAccount = fetchAccount;
 exports.waitForFundedAccount = waitForFundedAccount;
-exports.isFriendbotAllowed = isFriendbotAllowed;
-exports.isTestnetHorizon = isTestnetHorizon;
-exports.callFriendbot = callFriendbot;
 exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
-exports.findTrustlineBalance = findTrustlineBalance;
-exports.isTrustlineAuthorized = isTrustlineAuthorized;
-exports.getAssetBalance = getAssetBalance;
-exports.getTrustlineLimit = getTrustlineLimit;
 exports.parseHorizonBalance = parseHorizonBalance;
-exports.formatStroops = formatStroops;
-exports.fetchClaimableBalanceCount = fetchClaimableBalanceCount;
-exports.deriveWalletLabel = deriveWalletLabel;
-exports.applyWalletLabels = applyWalletLabels;
-exports.applyReadyLabels = applyReadyLabels;
-exports.fetchNetworkPassphrase = fetchNetworkPassphrase;
-const tls = __importStar(__nccwpck_require__(4756));
-const crypto = __importStar(__nccwpck_require__(6982));
 const cache_1 = __nccwpck_require__(7377);
 const logger_1 = __nccwpck_require__(6999);
-const links_1 = __nccwpck_require__(3346);
-const metrics_1 = __nccwpck_require__(5670);
-const resilience_1 = __nccwpck_require__(2334);
-const validation_1 = __nccwpck_require__(4344);
-const tracing_1 = __nccwpck_require__(7145);
-const proxy_1 = __nccwpck_require__(8903);
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
         super(message);
         this.statusCode = statusCode;
         this.retryable = retryable;
-        this.name = "HorizonError";
+        this.name = 'HorizonError';
     }
 }
 exports.HorizonError = HorizonError;
-class HorizonRateLimitError extends HorizonError {
-    constructor(message, retryAfterMs) {
-        super(message, 429, true);
-        this.retryAfterMs = retryAfterMs;
-        this.name = "HorizonRateLimitError";
-    }
-}
-exports.HorizonRateLimitError = HorizonRateLimitError;
-class HorizonTlsError extends HorizonError {
-    constructor(message, originalCode) {
-        super(message, 0, false);
-        this.originalCode = originalCode;
-        this.name = "HorizonTlsError";
-    }
-}
-exports.HorizonTlsError = HorizonTlsError;
-/**
- * Thrown when the Horizon TLS certificate fingerprint does not match the
- * configured `horizon_pin_fingerprint` value (Issue #303).
- */
-class HorizonPinMismatchError extends HorizonError {
-    constructor(message, expectedFingerprint, actualFingerprint) {
-        super(message, 0, false);
-        this.expectedFingerprint = expectedFingerprint;
-        this.actualFingerprint = actualFingerprint;
-        this.name = 'HorizonPinMismatchError';
-    }
-}
-exports.HorizonPinMismatchError = HorizonPinMismatchError;
-/**
- * Thrown when a Horizon request was short-circuited by the circuit breaker
- * (Issue #209) and surfaced for comment rendering (Issue #434).
- *
- * Distinct from a plain `HorizonError` because the failure says nothing about
- * the account: no request reached the network, so the account was never
- * checked. The sticky comment renders a dedicated "circuit breaker open"
- * banner for this case so a resilience safeguard is not mistaken for an
- * account-level failure.
- *
- * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
- * working unchanged.
- */
-class HorizonCircuitOpenError extends HorizonError {
-    constructor(message) {
-        super(message, 0, false);
-        this.name = "HorizonCircuitOpenError";
-    }
-}
-exports.HorizonCircuitOpenError = HorizonCircuitOpenError;
-/** Is this error a circuit-breaker fast-fail (Issue #434)? */
-function isCircuitOpenError(error) {
-    return (error instanceof HorizonCircuitOpenError ||
-        error instanceof resilience_1.CircuitOpenError ||
-        (error instanceof Error && error.name === "HorizonCircuitOpenError"));
-}
-/**
- * Node/OpenSSL error codes that indicate a TLS handshake or certificate
- * verification failure, as opposed to a generic connection/network error.
- */
-const TLS_ERROR_CODES = new Set([
-    "CERT_HAS_EXPIRED",
-    "CERT_NOT_YET_VALID",
-    "CERT_REVOKED",
-    "CERT_UNTRUSTED",
-    "CERT_CHAIN_TOO_LONG",
-    "DEPTH_ZERO_SELF_SIGNED_CERT",
-    "SELF_SIGNED_CERT_IN_CHAIN",
-    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-    "UNABLE_TO_GET_ISSUER_CERT",
-    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-    "UNABLE_TO_GET_CRL",
-    "HOSTNAME_MISMATCH",
-    "ERR_TLS_CERT_ALTNAME_INVALID",
-    "ERR_SSL_WRONG_VERSION_NUMBER",
-    "ERR_TLS_HANDSHAKE_TIMEOUT",
-]);
-function tlsErrorCode(error) {
-    if (!(error instanceof Error))
-        return undefined;
-    const code = error.code;
-    if (code && TLS_ERROR_CODES.has(code))
-        return code;
-    const cause = error.cause;
-    if (cause instanceof Error) {
-        const causeCode = cause.code;
-        if (causeCode && TLS_ERROR_CODES.has(causeCode))
-            return causeCode;
-    }
-    return undefined;
-}
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
-const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
 const DEFAULT_CACHE_TTL_MS = 60000;
-const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
-const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
 function normalizeHorizonUrl(baseUrl) {
-    const trimmed = baseUrl.trim();
-    if (!trimmed) {
-        return "";
-    }
-    // Horizon endpoints may use http on private/testnet mirrors; still enforce
-    // credential + traversal guards via validateHorizonUrl.
-    const validation = (0, validation_1.validateHorizonUrl)(trimmed, "horizon_url", {
-        allowHttp: true,
-        allowLocalhost: process.env.HORIZON_MOCK_URL === trimmed,
-    });
-    if (!validation.valid) {
-        throw new HorizonError(`Invalid horizon_url: ${validation.errors.join("; ")}`, 400, false);
-    }
-    // Re-check raw traversal after allowing http, since URL() would otherwise normalize it.
-    if (/(?:^|\/)(?:\.\.|%2e%2e)(?:\/|$)/i.test(trimmed) ||
-        /\/\.\//.test(trimmed)) {
-        throw new HorizonError("Invalid horizon_url: path traversal segments are not allowed", 400, false);
-    }
-    const parsed = new URL(trimmed);
-    const cleanPath = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
-    return `${parsed.origin}${cleanPath}`;
-}
-/**
- * Produce a representation of a configured Horizon URL that is safe to
- * post in a public-facing GitHub issue comment. A private Horizon mirror's
- * hostname can itself be sensitive internal infrastructure information, so
- * by default only the URL scheme is shown. Pass `revealHost: true` (wired
- * to the `debug_mode` input) to show the full host — still routed through
- * `redactHorizonUrl` so any embedded account address stays masked.
- */
-function displayHorizonUrl(url, revealHost) {
-    if (!url)
-        return url;
-    if (revealHost) {
-        return (0, logger_1.redactHorizonUrl)(url);
-    }
-    try {
-        const parsed = new URL(url);
-        return `${parsed.protocol}//••• (set debug_mode: true to reveal)`;
-    }
-    catch {
-        return "••• (set debug_mode: true to reveal)";
-    }
+    return baseUrl.trim().replace(/\/+$/, '');
 }
 function isRetryableStatus(status) {
     return status === 429 || status === 503 || status === 502 || status === 504;
-}
-/**
- * Performs a TLS pre-flight check to verify the server certificate fingerprint.
- * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
- *
- * @param horizonUrl - The Horizon URL to check (must be https:)
- * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...')
- * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
- * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
- * (Issue #303)
- */
-async function checkCertificatePin(horizonUrl, expectedFingerprint) {
-    const parsed = new URL(horizonUrl);
-    if (parsed.protocol !== 'https:') {
-        // Only HTTPS connections have TLS certificates to pin
-        return;
-    }
-    const host = parsed.hostname;
-    const port = parseInt(parsed.port || '443', 10);
-    const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
-    return new Promise((resolve, reject) => {
-        const socket = tls.connect({ host, port, servername: host }, () => {
-            try {
-                const cert = socket.getPeerCertificate();
-                socket.destroy();
-                if (!cert || !cert.raw) {
-                    reject(new HorizonTlsError('Could not retrieve server certificate for fingerprint check.'));
-                    return;
-                }
-                // Compute SHA-256 fingerprint over the raw DER-encoded certificate
-                const fingerprint = crypto
-                    .createHash('sha256')
-                    .update(cert.raw)
-                    .digest('hex')
-                    .toUpperCase()
-                    .match(/.{2}/g)
-                    .join(':');
-                const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
-                if (normalizedActual !== normalizedExpected) {
-                    reject(new HorizonPinMismatchError(`TLS certificate fingerprint mismatch for Horizon endpoint. ` +
-                        `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +
-                        `The Horizon host certificate may have changed — update horizon_pin_fingerprint or investigate MITM.`, normalizedExpected, normalizedActual));
-                    return;
-                }
-                resolve();
-            }
-            catch (err) {
-                socket.destroy();
-                reject(err instanceof Error ? err : new HorizonTlsError('Certificate pin check failed.'));
-            }
-        });
-        socket.on('error', (err) => {
-            const tlsCode = err.code;
-            reject(new HorizonTlsError('TLS connection failed during certificate pin check.', tlsCode));
-        });
-        // 10 second timeout for the TLS probe
-        socket.setTimeout(10000, () => {
-            socket.destroy();
-            reject(new HorizonTlsError('TLS certificate pin check timed out.'));
-        });
-    });
 }
 function parseRetryAfterMs(response) {
     const header = response.headers.get('retry-after');
@@ -38905,30 +34793,6 @@ function parseRetryAfterMs(response) {
 async function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-/**
- * Sleep for `ms` milliseconds, but resolve immediately (without throwing) if
- * `signal` is aborted before the timer fires.  The caller is responsible for
- * checking `signal.aborted` after the await if it needs to stop on cancellation.
- */
-function cancellableSleep(ms, signal) {
-    if (!signal) {
-        return sleep(ms);
-    }
-    if (signal.aborted) {
-        return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-            signal.removeEventListener("abort", onAbort);
-            resolve();
-        }, ms);
-        const onAbort = () => {
-            clearTimeout(timer);
-            resolve();
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-    });
-}
 function buildCacheKey(normalizedHorizonUrl, stellarAddress) {
     return `horizon:account:${normalizedHorizonUrl}:${stellarAddress}`;
 }
@@ -38940,21 +34804,6 @@ function redactCacheStats(stats) {
         size: stats.size,
         entries: stats.entries.map(redactCacheKey),
     };
-}
-/**
- * Record a cache hit/miss metric point. The `horizonUrl` and
- * `stellarAddress` tags carry the same key dimensions as the cache entry
- * itself (see `buildCacheKey`), so metrics can be sliced per matrix leg
- * (e.g. per Horizon endpoint) — but the address is redacted first-4/last-4
- * so the metric export never leaks a full contributor address, matching
- * the redaction policy used everywhere else in this module.
- */
-function recordCacheMetric(outcome, normalizedHorizonUrl, stellarAddress) {
-    metrics_1.globalMetrics.recordMetric(`horizon_cache_${outcome}`, 1, "count", {
-        horizonUrl: (0, logger_1.redactHorizonUrl)(normalizedHorizonUrl),
-        stellarAddress: (0, logger_1.redactStellarAddress)(stellarAddress),
-    });
-    metrics_1.globalMetrics.incrementCounter(`horizon_cache_${outcome}`);
 }
 function safeHorizonContext(base) {
     const ctx = { ...base };
@@ -38975,35 +34824,23 @@ function safeHorizonContext(base) {
 function safeAccountSummary(account) {
     return {
         balancesCount: account.balances.length,
-        hasNativeBalance: account.balances.some((b) => b.asset_type === "native"),
-        creditTrustlineCount: account.balances.filter((b) => isCreditBalance(b))
-            .length,
+        hasNativeBalance: account.balances.some((b) => b.asset_type === 'native'),
+        creditTrustlineCount: account.balances.filter((b) => b.asset_type !== 'native').length,
         subentryCount: account.subentry_count,
     };
 }
-async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind, retryMaxDelayMs, retryMaxTotalWaitMs, parentSignal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS) {
+async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind) {
     const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
     const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
     const safeUrlForLog = (0, logger_1.redactHorizonUrl)(url);
     let attempt = 0;
-    let totalWaitMs = 0;
     let lastError;
     while (attempt <= maxRetries) {
-        // Bail out immediately if the job was cancelled before this attempt.
-        if (parentSignal?.aborted) {
-            throw new HorizonError("Horizon request aborted (job cancelled).", 0, false);
-        }
         const requestStartedAt = Date.now();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        // Propagate the parent cancellation signal to the per-request controller.
-        let parentAbortHandler;
-        if (parentSignal) {
-            parentAbortHandler = () => controller.abort();
-            parentSignal.addEventListener("abort", parentAbortHandler);
-        }
-        logger_1.logger.debug("Horizon fetch start", safeHorizonContext({
-            component: "horizon",
+        logger_1.logger.debug('Horizon fetch start', safeHorizonContext({
+            component: 'horizon',
             stellarAddress,
             horizonUrl: targetHorizonUrl,
             endpointKind,
@@ -39013,27 +34850,15 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
             url: safeUrlForLog,
         }));
         try {
-            if (rateBudgetTracker) {
-                rateBudgetTracker.recordRequest();
-            }
-            // Issue #209: Wrap Horizon fetches with the circuit breaker.
-            // When the circuit is open, this throws CircuitOpenError immediately
-            // without reaching the network. Cache hits bypass the circuit breaker.
-            const response = circuitBreaker
-                ? await circuitBreaker.execute(() => fetch(url, {
-                    method: "GET",
-                    headers: { Accept: "application/json" },
-                    signal: controller.signal,
-                }))
-                : await fetch(url, {
-                    method: "GET",
-                    headers: { Accept: "application/json" },
-                    signal: controller.signal,
-                });
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+                signal: controller.signal,
+            });
             const latencyMs = Date.now() - requestStartedAt;
             if (response.status === 404) {
-                logger_1.logger.debug("Horizon account not found (404)", safeHorizonContext({
-                    component: "horizon",
+                logger_1.logger.debug('Horizon account not found (404)', safeHorizonContext({
+                    component: 'horizon',
                     stellarAddress,
                     horizonUrl: targetHorizonUrl,
                     endpointKind,
@@ -39054,8 +34879,8 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     else if (body.title) {
                         detail = body.title;
                     }
-                    logger_1.logger.debug("Horizon error response parsed", safeHorizonContext({
-                        component: "horizon",
+                    logger_1.logger.debug('Horizon error response parsed', safeHorizonContext({
+                        component: 'horizon',
                         stellarAddress,
                         horizonUrl: targetHorizonUrl,
                         endpointKind,
@@ -39069,8 +34894,8 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     }));
                 }
                 catch {
-                    logger_1.logger.debug("Horizon error response missing JSON body", safeHorizonContext({
-                        component: "horizon",
+                    logger_1.logger.debug('Horizon error response missing JSON body', safeHorizonContext({
+                        component: 'horizon',
                         stellarAddress,
                         horizonUrl: targetHorizonUrl,
                         endpointKind,
@@ -39083,22 +34908,9 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                 }
                 if (retryable && attempt < maxRetries) {
                     const retryAfterHeader = parseRetryAfterMs(response);
-                    // Issue #218: Honor Retry-After on 429s, capped at retryMaxDelayMs.
-                    // When the header is missing or the value exceeds the cap, fall back
-                    // to exponential backoff so the action never waits unbounded.
-                    let retryAfter;
-                    if (retryAfterHeader !== null) {
-                        retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
-                    }
-                    else {
-                        retryAfter = Math.min(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
-                    }
-                    if (totalWaitMs + retryAfter > retryMaxTotalWaitMs) {
-                        throw new HorizonRateLimitError(`Horizon retry wait budget exhausted (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`, retryAfter);
-                    }
-                    totalWaitMs += retryAfter;
-                    logger_1.logger.debug("Horizon retry scheduled", safeHorizonContext({
-                        component: "horizon",
+                    const retryAfter = retryAfterHeader ?? 1000 * 2 ** attempt;
+                    logger_1.logger.debug('Horizon retry scheduled', safeHorizonContext({
+                        component: 'horizon',
                         stellarAddress,
                         horizonUrl: targetHorizonUrl,
                         endpointKind,
@@ -39108,17 +34920,14 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                         attempt,
                         retryAfterMs: retryAfter,
                         retryAfterFromHeader: retryAfterHeader !== null,
-                        retryAfterCapped: retryAfterHeader !== null && retryAfterHeader > retryMaxDelayMs,
                         nextAttempt: attempt + 1,
                     }));
-                    await cancellableSleep(retryAfter, parentSignal);
-                    // If the job was cancelled during the sleep, bail out on the next
-                    // iteration's pre-flight check rather than issuing another request.
+                    await sleep(retryAfter);
                     attempt += 1;
                     continue;
                 }
-                logger_1.logger.debug("Horizon non-retryable HTTP error (exhausted retries)", safeHorizonContext({
-                    component: "horizon",
+                logger_1.logger.debug('Horizon non-retryable HTTP error (exhausted retries)', safeHorizonContext({
+                    component: 'horizon',
                     stellarAddress,
                     horizonUrl: targetHorizonUrl,
                     endpointKind,
@@ -39131,8 +34940,8 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                 throw new HorizonError(`Horizon request failed (${response.status}): ${detail}`, response.status, retryable);
             }
             const parsed = (await response.json());
-            logger_1.logger.debug("Horizon fetch success", safeHorizonContext({
-                component: "horizon",
+            logger_1.logger.debug('Horizon fetch success', safeHorizonContext({
+                component: 'horizon',
                 stellarAddress,
                 horizonUrl: targetHorizonUrl,
                 endpointKind,
@@ -39149,98 +34958,51 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
             };
         }
         catch (error) {
-            if (error instanceof HorizonError ||
-                (error instanceof Error && error.name === "RateBudgetExhaustedError")) {
+            if (error instanceof HorizonError) {
                 throw error;
             }
-            // Issue #209: CircuitOpenError means the circuit breaker is open.
-            // Treat as non-retryable — the breaker will transition to half-open
-            // after its recovery timeout.
-            if (error instanceof resilience_1.CircuitOpenError) {
-                logger_1.logger.debug("Horizon request blocked by circuit breaker", safeHorizonContext({
-                    component: "horizon",
-                    stellarAddress,
-                    horizonUrl: targetHorizonUrl,
-                    endpointKind,
-                    attempt,
-                    final: true,
-                }));
-                throw new HorizonCircuitOpenError(`Horizon request blocked by circuit breaker: ${error.message}`);
-            }
-            const tlsCode = tlsErrorCode(error);
-            if (tlsCode) {
-                const tlsLatencyMs = Date.now() - requestStartedAt;
-                logger_1.logger.debug("Horizon TLS/certificate verification failed", safeHorizonContext({
-                    component: "horizon",
-                    stellarAddress,
-                    horizonUrl: targetHorizonUrl,
-                    endpointKind,
-                    tlsErrorCode: tlsCode,
-                    latencyMs: tlsLatencyMs,
-                    attempt,
-                    final: true,
-                }));
-                // Not retryable: retrying against the same endpoint cannot fix a
-                // bad certificate, so fail fast instead of burning the retry budget.
-                throw new HorizonTlsError("TLS/certificate verification failed while connecting to the configured Horizon endpoint. " +
-                    "This is a transport-layer problem with the endpoint itself, not with the Stellar account being checked.", tlsCode);
-            }
-            const isAbort = error instanceof Error && error.name === "AbortError";
-            // If the parent job signal fired, propagate as a non-retryable cancellation.
-            const isJobCancelled = isAbort && parentSignal?.aborted;
-            const message = isJobCancelled
-                ? "Horizon request aborted (job cancelled)."
-                : isAbort
-                    ? `Horizon request timed out after ${timeoutMs}ms`
-                    : error instanceof Error
-                        ? error.message
-                        : "Unknown Horizon error";
+            const isAbort = error instanceof Error && error.name === 'AbortError';
+            const message = isAbort
+                ? `Horizon request timed out after ${timeoutMs}ms`
+                : error instanceof Error
+                    ? error.message
+                    : 'Unknown Horizon error';
             const latencyMs = Date.now() - requestStartedAt;
-            logger_1.logger.debug("Horizon transport error", safeHorizonContext({
-                component: "horizon",
+            logger_1.logger.debug('Horizon transport error', safeHorizonContext({
+                component: 'horizon',
                 stellarAddress,
                 horizonUrl: targetHorizonUrl,
                 endpointKind,
-                kind: isJobCancelled ? "cancelled" : isAbort ? "timeout" : "network",
+                kind: isAbort ? 'timeout' : 'network',
                 latencyMs,
                 attempt,
                 timeoutMs,
                 errorMessage: (0, logger_1.redactString)(message),
             }));
-            // Job cancellation is non-retryable — throw immediately.
-            if (isJobCancelled) {
-                throw new HorizonError(message, 0, false);
-            }
             lastError = new HorizonError(message, isAbort ? 408 : 0, true);
             if (attempt < maxRetries) {
-                const backoffMs = Math.min(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
-                if (totalWaitMs + backoffMs > retryMaxTotalWaitMs) {
-                    throw lastError;
-                }
-                totalWaitMs += backoffMs;
-                logger_1.logger.debug("Horizon transport retry scheduled", safeHorizonContext({
-                    component: "horizon",
+                const backoffMs = 1000 * 2 ** attempt;
+                logger_1.logger.debug('Horizon transport retry scheduled', safeHorizonContext({
+                    component: 'horizon',
                     stellarAddress,
                     horizonUrl: targetHorizonUrl,
                     endpointKind,
-                    kind: isAbort ? "timeout" : "network",
+                    kind: isAbort ? 'timeout' : 'network',
                     latencyMs,
                     attempt,
                     retryAfterMs: backoffMs,
                     nextAttempt: attempt + 1,
                 }));
-                await cancellableSleep(backoffMs, parentSignal);
-                // If the job was cancelled during the backoff sleep, bail out on the
-                // next iteration's pre-flight check rather than issuing another request.
+                await sleep(backoffMs);
                 attempt += 1;
                 continue;
             }
-            logger_1.logger.debug("Horizon transport error (exhausted retries)", safeHorizonContext({
-                component: "horizon",
+            logger_1.logger.debug('Horizon transport error (exhausted retries)', safeHorizonContext({
+                component: 'horizon',
                 stellarAddress,
                 horizonUrl: targetHorizonUrl,
                 endpointKind,
-                kind: isAbort ? "timeout" : "network",
+                kind: isAbort ? 'timeout' : 'network',
                 latencyMs,
                 attempt,
                 final: true,
@@ -39249,217 +35011,166 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
         }
         finally {
             clearTimeout(timer);
-            if (parentSignal && parentAbortHandler) {
-                parentSignal.removeEventListener("abort", parentAbortHandler);
-            }
         }
     }
-    logger_1.logger.debug("Horizon retry loop exited without result (fallback throw)", safeHorizonContext({
-        component: "horizon",
+    logger_1.logger.debug('Horizon retry loop exited without result (fallback throw)', safeHorizonContext({
+        component: 'horizon',
         stellarAddress,
         horizonUrl: targetHorizonUrl,
         endpointKind,
         maxAttempts: maxRetries + 1,
     }));
-    throw (lastError ??
-        new HorizonError("Horizon request failed after retries", 0, true));
+    throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
 async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
-    return (0, tracing_1.traceHorizonFetch)(horizonUrl, stellarAddress, async () => {
-        const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-        const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-        const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-        const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
-        const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
-        const cache = options.cache ?? cache_1.defaultCache;
-        const horizonMaxRequests = options.horizonMaxRequests ?? 0;
-        const rateBudgetTracker = options.rateBudgetTracker ?? new resilience_1.RateBudgetTracker(horizonMaxRequests);
-        const signal = options.signal;
-        const allowCrossNetwork = options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
-        const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-        const candidateFallbacks = [
-            options.secondaryHorizonUrl,
-            options.horizonUrlFallback,
-            ...(options.fallbackUrls ?? []),
-        ].filter((u) => Boolean(u && u.trim()));
-        const fallbackCandidate = candidateFallbacks[0];
-        const normalizedFallbackUrl = fallbackCandidate
-            ? normalizeHorizonUrl(fallbackCandidate)
-            : '';
-        if (!normalizedHorizonUrl) {
-            throw new HorizonError('horizon_url is required.', 0, false);
-        }
-        const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-        // Bail out immediately if the job was already cancelled before we start.
-        if (signal?.aborted) {
-            throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
-        }
-        const cachingEnabled = cacheTtlMs > 0;
-        const cacheKey = cachingEnabled
-            ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
-            : '';
-        if (cachingEnabled) {
-            const cacheStatsBefore = redactCacheStats(cache.getStats());
-            logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
-                cacheKey,
-                cacheTtlMs,
-                cacheSizeBefore: cacheStatsBefore.size,
-                cacheEntryCountBefore: cacheStatsBefore.entries.length,
-            }));
-            const cached = (await cache.restoreAsync(cacheKey)) ?? cache.get(cacheKey);
-            if (cached) {
-                logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
-                    component: 'horizon',
-                    stellarAddress,
-                    horizonUrl,
-                    horizonUrlFallback: normalizedFallbackUrl,
-                    cacheKey,
-                    cacheTtlMs,
-                    ...safeAccountSummary(cached),
-                }));
-                recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
-                return cached;
-            }
-            logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
-                cacheKey,
-                cacheTtlMs,
-            }));
-            recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
-        }
-        else {
-            logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
-                cacheTtlMs: 0,
-            }));
-        }
-        let primaryError;
-        const circuitBreaker = options.circuitBreaker;
-        try {
-            const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
-            result.account._servedByUrl = normalizedHorizonUrl;
-            if (cachingEnabled) {
-                cache.set(cacheKey, result.account, cacheTtlMs);
-                const cacheStatsAfter = redactCacheStats(cache.getStats());
-                logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
-                    component: 'horizon',
-                    stellarAddress,
-                    horizonUrl,
-                    horizonUrlFallback: normalizedFallbackUrl,
-                    cacheKey,
-                    cacheTtlMs,
-                    cacheSizeAfter: cacheStatsAfter.size,
-                    cacheEntryCountAfter: cacheStatsAfter.entries.length,
-                    source: 'primary',
-                    ...safeAccountSummary(result.account),
-                }));
-            }
-            return result.account;
-        }
-        catch (error) {
-            if (error instanceof HorizonError) {
-                primaryError = error;
-                if (error.statusCode === 404) {
-                    throw error;
-                }
-            }
-            else {
-                throw error;
-            }
-        }
-        if (!normalizedFallbackUrl) {
-            throw primaryError;
-        }
-        // Network binding rule: a G-address is valid on every Stellar network, so
-        // a fallback URL that resolves to a different network than the primary
-        // could silently return funded/trustline/reserve data for the *wrong*
-        // ledger instead of failing loudly. Compare the inferred networks and
-        // refuse the fallback unless the caller explicitly opted in.
-        const primaryNetwork = (0, links_1.inferStellarNetwork)(normalizedHorizonUrl);
-        const fallbackNetwork = (0, links_1.inferStellarNetwork)(normalizedFallbackUrl);
-        const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
-        if (crossNetworkFallback && !allowCrossNetwork) {
-            logger_1.logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
-                component: 'horizon',
-                stellarAddress,
-                horizonUrl,
-                horizonUrlFallback: normalizedFallbackUrl,
-                primaryNetwork,
-                fallbackNetwork,
-                primaryStatusCode: primaryError?.statusCode,
-                primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
-            }));
-            throw primaryError;
-        }
-        logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+    const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const cache = options.cache ?? cache_1.defaultCache;
+    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+    const fallbackCandidate = options.horizonUrlFallback || (options.fallbackUrls && options.fallbackUrls[0]);
+    const normalizedFallbackUrl = fallbackCandidate
+        ? normalizeHorizonUrl(fallbackCandidate)
+        : '';
+    if (!normalizedHorizonUrl) {
+        throw new HorizonError('horizon_url is required.', 0, false);
+    }
+    const cachingEnabled = cacheTtlMs > 0;
+    const cacheKey = cachingEnabled
+        ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+        : '';
+    if (cachingEnabled) {
+        const cacheStatsBefore = redactCacheStats(cache.getStats());
+        logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
             component: 'horizon',
             stellarAddress,
             horizonUrl,
             horizonUrlFallback: normalizedFallbackUrl,
-            cacheKey: cachingEnabled ? cacheKey : undefined,
-            primaryNetwork,
-            fallbackNetwork,
-            crossNetworkFallback,
-            primaryStatusCode: primaryError?.statusCode,
-            primaryRetryable: primaryError?.retryable,
-            primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+            cacheKey,
+            cacheTtlMs,
+            cacheSizeBefore: cacheStatsBefore.size,
+            cacheEntryCountBefore: cacheStatsBefore.entries.length,
         }));
-        try {
-            const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
-            fallbackResult.account._servedByUrl = normalizedFallbackUrl;
-            if (cachingEnabled) {
-                cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
-                const cacheStatsAfter = redactCacheStats(cache.getStats());
-                logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
-                    component: 'horizon',
-                    stellarAddress,
-                    horizonUrl,
-                    horizonUrlFallback: normalizedFallbackUrl,
-                    cacheKey,
-                    cacheTtlMs,
-                    cacheSizeAfter: cacheStatsAfter.size,
-                    cacheEntryCountAfter: cacheStatsAfter.entries.length,
-                    source: 'fallback',
-                    ...safeAccountSummary(fallbackResult.account),
-                }));
-            }
-            logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+        const cached = cache.get(cacheKey);
+        if (cached) {
+            logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
                 component: 'horizon',
                 stellarAddress,
                 horizonUrl,
                 horizonUrlFallback: normalizedFallbackUrl,
-                fallbackAttempts: fallbackResult.attempts,
-                fallbackLatencyMs: fallbackResult.latencyMs,
+                cacheKey,
+                cacheTtlMs,
+                ...safeAccountSummary(cached),
             }));
-            return fallbackResult.account;
+            return cached;
         }
-        catch (fallbackError) {
-            if (fallbackError instanceof HorizonError) {
-                logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
-                    component: 'horizon',
-                    stellarAddress,
-                    horizonUrl,
-                    horizonUrlFallback: normalizedFallbackUrl,
-                    primaryStatusCode: primaryError?.statusCode,
-                    primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
-                    fallbackStatusCode: fallbackError.statusCode,
-                    fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
-                }));
+        logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey,
+            cacheTtlMs,
+        }));
+    }
+    else {
+        logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheTtlMs: 0,
+        }));
+    }
+    let primaryError;
+    try {
+        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary');
+        if (cachingEnabled) {
+            cache.set(cacheKey, result.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'primary',
+                ...safeAccountSummary(result.account),
+            }));
+        }
+        return result.account;
+    }
+    catch (error) {
+        if (error instanceof HorizonError) {
+            primaryError = error;
+            if (error.statusCode === 404) {
+                throw error;
             }
-            throw fallbackError;
         }
-    });
+        else {
+            throw error;
+        }
+    }
+    if (!normalizedFallbackUrl) {
+        throw primaryError;
+    }
+    logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheKey: cachingEnabled ? cacheKey : undefined,
+        primaryStatusCode: primaryError?.statusCode,
+        primaryRetryable: primaryError?.retryable,
+        primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+    }));
+    try {
+        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback');
+        if (cachingEnabled) {
+            cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'fallback',
+                ...safeAccountSummary(fallbackResult.account),
+            }));
+        }
+        logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            fallbackAttempts: fallbackResult.attempts,
+            fallbackLatencyMs: fallbackResult.latencyMs,
+        }));
+        return fallbackResult.account;
+    }
+    catch (fallbackError) {
+        if (fallbackError instanceof HorizonError) {
+            logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                primaryStatusCode: primaryError?.statusCode,
+                primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+                fallbackStatusCode: fallbackError.statusCode,
+                fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
+            }));
+        }
+        throw fallbackError;
+    }
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 120000;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -39473,20 +35184,14 @@ const DEFAULT_POLL_INTERVAL_MS = 5000;
 async function waitForFundedAccount(horizonUrl, stellarAddress, options = {}, fetchAccountFn = fetchAccount) {
     const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
     const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    const signal = options.signal;
     const start = Date.now();
     let attempt = 0;
     for (;;) {
-        // Bail out cleanly if the job was cancelled — no misleading error message.
-        if (signal?.aborted) {
-            throw new HorizonError("Polling aborted (job cancelled).", 0, false);
-        }
         attempt += 1;
         try {
             return await fetchAccountFn(horizonUrl, stellarAddress, {
                 timeoutMs: options.requestTimeoutMs,
                 maxRetries: options.maxRetries,
-                signal,
             });
         }
         catch (error) {
@@ -39498,1077 +35203,25 @@ async function waitForFundedAccount(horizonUrl, stellarAddress, options = {}, fe
                 throw new HorizonError(`Account ${stellarAddress} was still not funded after waiting ${timeoutMs}ms (wait_until_funded timeout).`, 404, false);
             }
             options.onPoll?.(attempt, elapsedMs);
-            await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, timeoutMs - elapsedMs)));
+            await sleep(Math.min(pollIntervalMs, timeoutMs - elapsedMs));
         }
     }
 }
-const DEFAULT_FRIENDBOT_TIMEOUT_MS = 15000;
-const ALLOWED_FRIENDBOT_HOSTS = new Set([
-    'friendbot.stellar.org',
-    'friendbot-testnet.stellar.org',
-    'horizon-testnet.stellar.org',
-    'friendbot-futurenet.stellar.org',
-    'horizon-futurenet.stellar.org',
-]);
-/**
- * Check if a friendbot URL is on the allowlist and safe to use.
- * Prevents SSRF attacks by only allowing known testnet friendbot endpoints.
- */
-function isFriendbotAllowed(friendbotUrl) {
-    if (!friendbotUrl || !friendbotUrl.trim()) {
-        return false;
-    }
-    const raw = friendbotUrl.trim();
-    if (raw.includes('..')) {
-        return false;
-    }
-    try {
-        const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
-        const url = new URL(hasScheme ? raw : `https://${raw}`);
-        if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-            return false;
-        }
-        // Disallow non-HTTPS when explicit scheme provided, except allow normalization
-        if (hasScheme && url.protocol !== 'https:') {
-            return false;
-        }
-        const hostname = url.hostname.toLowerCase();
-        if (!ALLOWED_FRIENDBOT_HOSTS.has(hostname)) {
-            return false;
-        }
-        const pathname = url.pathname.replace(/\/+$/, '');
-        if (pathname !== '' && pathname !== '/friendbot') {
-            return false;
-        }
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
-/**
- * Detect whether a Horizon URL points to testnet or mainnet.
- * Used to enforce friendbot safety rules (never call friendbot on mainnet).
- */
-function isTestnetHorizon(horizonUrl) {
-    const normalized = horizonUrl.toLowerCase().trim();
-    if (normalized.includes('public.stellar.org') || normalized.includes('mainnet')) {
-        return false;
-    }
-    try {
-        const url = new URL(normalized.startsWith('http') ? normalized : `https://${normalized}`);
-        if (url.hostname === 'horizon.stellar.org') {
-            return false;
-        }
-    }
-    catch { }
-    return normalized.includes('testnet') || normalized.includes('test') || normalized.includes('futurenet');
-}
-/**
- * Call Stellar Friendbot to fund a testnet account.
- *
- * Safety rules:
- * - Only works with allowlisted friendbot URLs (SSRF protection)
- * - Only callable when Horizon URL indicates testnet
- * - Fails fast with clear error on mainnet or unknown networks
- *
- * @param stellarAddress The G-address to fund
- * @param options Friendbot configuration
- * @param horizonUrl The Horizon URL (used for network safety check)
- * @returns FriendbotResult with success status and transaction details
- */
-async function callFriendbot(stellarAddress, options, horizonUrl) {
-    const { friendbotUrl, timeoutMs = DEFAULT_FRIENDBOT_TIMEOUT_MS, fetchFn } = options;
-    // Safety check 1: Only allow testnet
-    if (!isTestnetHorizon(horizonUrl)) {
-        return {
-            success: false,
-            message: 'Friendbot is only available for testnet. Cannot fund accounts on public/mainnet.',
-        };
-    }
-    // Safety check 2: SSRF allowlist
-    if (!isFriendbotAllowed(friendbotUrl)) {
-        return {
-            success: false,
-            message: `Friendbot URL "${friendbotUrl}" is not on the allowlist. Only official Stellar friendbot endpoints are supported.`,
-        };
-    }
-    // Normalize URL
-    let fullUrl = friendbotUrl.trim();
-    if (!fullUrl.startsWith('http')) {
-        fullUrl = `https://${fullUrl}`;
-    }
-    // Ensure /friendbot path if missing
-    if (!fullUrl.includes('/friendbot')) {
-        fullUrl = fullUrl.replace(/\/$/, '') + '/friendbot';
-    }
-    // Add address parameter
-    const urlWithParam = `${fullUrl}?addr=${encodeURIComponent(stellarAddress)}`;
-    const fetch = fetchFn ?? (globalThis.fetch
-        ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetch(urlWithParam, {
-            method: 'GET',
-            signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => 'Unknown error');
-            return {
-                success: false,
-                message: `Friendbot returned HTTP ${response.status}: ${errorText}`,
-            };
-        }
-        const data = await response.json();
-        const txHash = data.hash || data.id;
-        return {
-            success: true,
-            message: 'Account funded successfully via Friendbot',
-            transactionHash: txHash,
-        };
-    }
-    catch (error) {
-        clearTimeout(timer);
-        if ((error instanceof Error && (error.name === 'AbortError' || error.message.includes('AbortError') || error.name === 'TimeoutError')) ||
-            error?.name === 'AbortError') {
-            return {
-                success: false,
-                message: `Friendbot request timed out after ${timeoutMs}ms`,
-            };
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-            success: false,
-            message: `Friendbot request failed: ${message}`,
-        };
-    }
-}
-/**
- * Narrows to a credit trustline balance (`credit_alphanum4` /
- * `credit_alphanum12`) only. Checks the asset_type allowlist explicitly
- * rather than `!== 'native'` — liquidity-pool-share balances
- * (`asset_type: "liquidity_pool_shares"`) carry no `asset_code`/
- * `asset_issuer` and must never be misclassified as a credit trustline,
- * since that would let a same-shaped LP entry slip through a naive
- * trustline match.
- */
 function isCreditBalance(balance) {
-    return (balance.asset_type === "credit_alphanum4" ||
-        balance.asset_type === "credit_alphanum12");
+    return balance.asset_type !== 'native';
 }
 function getNativeBalance(account) {
-    const native = account.balances.find((b) => b.asset_type === "native");
-    return native?.balance ?? "0";
+    const native = account.balances.find((b) => b.asset_type === 'native');
+    return native?.balance ?? '0';
 }
 function hasTrustline(account, assetCode, assetIssuer) {
     return account.balances.some((balance) => isCreditBalance(balance) &&
         balance.asset_code === assetCode &&
         balance.asset_issuer === assetIssuer);
 }
-/**
- * Locate the credit trustline balance entry for a specific asset so callers
- * can inspect per-trustline flags such as `is_authorized` and
- * `is_clawback_enabled`.
- */
-function findTrustlineBalance(account, assetCode, assetIssuer) {
-    return account.balances.find((balance) => isCreditBalance(balance) &&
-        balance.asset_code === assetCode &&
-        balance.asset_issuer === assetIssuer);
-}
-/**
- * A trustline is considered authorized unless the issuer has explicitly
- * marked it unauthorized (`is_authorized === false`). Horizon omits this
- * field entirely when the issuer's AUTHORIZATION_REQUIRED flag is not set,
- * so "field absent" must be treated as authorized, not as unknown.
- */
-function isTrustlineAuthorized(balance) {
-    return balance.is_authorized !== false;
-}
-/**
- * Get the balance string for a specific credit asset trustline, or `'0'`
- * when the trustline is absent.
- */
-function getAssetBalance(account, assetCode, assetIssuer) {
-    return findTrustlineBalance(account, assetCode, assetIssuer)?.balance ?? "0";
-}
-/**
- * Get the trustline limit for a specific asset, if it exists.
- * Returns the limit as a string (as provided by Horizon) or '0' if not found.
- */
-function getTrustlineLimit(account, assetCode, assetIssuer) {
-    const balance = findTrustlineBalance(account, assetCode, assetIssuer);
-    return balance?.limit ? balance.limit : "0";
-}
 function parseHorizonBalance(balance) {
     const parsed = Number(balance);
     return Number.isFinite(parsed) ? parsed : 0;
-}
-/**
- * Format a stroop amount (1 XLM = 10^7 stroops) as a fixed 7-decimal XLM string.
- */
-function formatStroops(stroops) {
-    const isNegative = stroops < 0n;
-    const absStroops = isNegative ? -stroops : stroops;
-    const str = absStroops.toString().padStart(8, "0");
-    const intPart = str.slice(0, -7);
-    const fracPart = str.slice(-7);
-    const cleanFrac = fracPart.replace(/0+$/, "");
-    return `${isNegative ? "-" : ""}${intPart}.${cleanFrac.padEnd(7, "0")}`;
-}
-// ---------------------------------------------------------------------------
-// Claimable balances helper (Issue #260)
-// ---------------------------------------------------------------------------
-/**
- * Fetch the number of claimable balances for a claimant address.
- *
- * Used only when `claimableBalancePolicy === 'count'` and the account is 404.
- * Returns 0 on any error (404, network, timeout) so callers can treat the
- * absence as "no evidence" without failing the run. The request is bounded to
- * 5s and validated for SSRF so private Horizon mirrors are never probed
- * with an attacker-controlled claimant.
- *
- * Horizon endpoint: `GET /claimable_balances?claimant=<G-address>&limit=5`
- * The limit is intentionally small — we only need to know if >0 exist and
- * at most a count up to 5 for the informational comment.
- */
-async function fetchClaimableBalanceCount(horizonUrl, stellarAddress, fetchFn, timeoutMs = 5000) {
-    const validation = (0, validation_1.validateHorizonUrl)(horizonUrl, "horizon_url", {
-        allowHttp: true,
-    });
-    if (!validation.valid) {
-        return 0;
-    }
-    let normalized;
-    try {
-        normalized = normalizeHorizonUrl(horizonUrl);
-    }
-    catch {
-        return 0;
-    }
-    const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
-    const fetcher = fetchFn ?? (0, proxy_1.createProxiedFetch)() ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-    try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const response = await fetcher(url, {
-                method: "GET",
-                headers: { Accept: "application/json" },
-                signal: controller.signal,
-            });
-            if (!response.ok) {
-                return 0;
-            }
-            const data = (await response.json());
-            const records = data._embedded?.records ?? data.records ?? [];
-            if (Array.isArray(records)) {
-                return records.length;
-            }
-            return 0;
-        }
-        finally {
-            clearTimeout(timer);
-        }
-    }
-    catch {
-        return 0;
-    }
-}
-/**
- * All wallet label strings — useful for bulk removal before re-applying
- * the current state so stale labels never linger on an issue.
- */
-exports.ALL_WALLET_LABELS = [
-    "wallet: funded",
-    "wallet: unfunded",
-    "wallet: trustline-missing",
-    "wallet: reserve-low",
-    "wallet: horizon-error",
-];
-/**
- * Derive the single wallet label that best describes the current account
- * state. Priority order:
- *
- * 1. `wallet: horizon-error`    — any Horizon error takes precedence.
- * 2. `wallet: unfunded`         — account not found (404).
- * 3. `wallet: trustline-missing`— funded but trustline absent.
- * 4. `wallet: reserve-low`      — funded + trustline but XLM below reserve.
- * 5. `wallet: funded`           — all checks passed.
- */
-function deriveWalletLabel(input) {
-    if (input.horizonError)
-        return "wallet: horizon-error";
-    if (!input.accountFunded)
-        return "wallet: unfunded";
-    if (!input.trustlineExists)
-        return "wallet: trustline-missing";
-    if (!input.xlmReserveMet)
-        return "wallet: reserve-low";
-    return "wallet: funded";
-}
-/**
- * Apply the appropriate wallet label to a GitHub issue via Octokit,
- * optionally removing stale wallet labels first.
- *
- * Errors are non-fatal: label failures are caught and returned as a
- * descriptive string so the main check result is never blocked by a
- * labelling permission issue.
- *
- * @param octokit       Authenticated Octokit instance.
- * @param owner         Repository owner.
- * @param repo          Repository name.
- * @param issueNumber   Issue to label.
- * @param input         Wallet state derived from the Horizon check.
- * @param options       Labelling behaviour options.
- * @returns             The label that was applied, or an error string.
- */
-async function applyWalletLabels(octokit, owner, repo, issueNumber, input, options = {}) {
-    const removeStale = options.removeStale ?? true;
-    const targetLabel = deriveWalletLabel(input);
-    const removed = [];
-    try {
-        if (removeStale) {
-            // Fetch current labels to avoid 404s on removeLabel for non-present labels.
-            const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                per_page: 100,
-            });
-            const currentNames = currentLabelsResponse.data.map((l) => l.name);
-            const stale = exports.ALL_WALLET_LABELS.filter((l) => l !== targetLabel && currentNames.includes(l));
-            for (const label of stale) {
-                try {
-                    await octokit.rest.issues.removeLabel({
-                        owner,
-                        repo,
-                        issue_number: issueNumber,
-                        name: label,
-                    });
-                    removed.push(label);
-                }
-                catch {
-                    // Ignore individual remove failures — the add still proceeds.
-                }
-            }
-        }
-        await octokit.rest.issues.addLabels({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            labels: [targetLabel],
-        });
-        return { applied: targetLabel, removed };
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { applied: targetLabel, removed, error: message };
-    }
-}
-async function applyReadyLabels(octokit, owner, repo, issueNumber, input) {
-    const passLabel = (input.passLabel ?? "").trim();
-    const failLabel = (input.failLabel ?? "").trim();
-    const targetLabel = input.ready ? passLabel : failLabel;
-    const staleLabel = input.ready ? failLabel : passLabel;
-    const removed = [];
-    if (!targetLabel && !staleLabel) {
-        return { removed: [] };
-    }
-    try {
-        const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            per_page: 100,
-        });
-        const currentNames = new Set(currentLabelsResponse.data.map((l) => l.name));
-        if (staleLabel &&
-            staleLabel !== targetLabel &&
-            currentNames.has(staleLabel)) {
-            try {
-                await octokit.rest.issues.removeLabel({
-                    owner,
-                    repo,
-                    issue_number: issueNumber,
-                    name: staleLabel,
-                });
-                removed.push(staleLabel);
-            }
-            catch {
-                // Ignore individual removal errors — label state is best-effort.
-            }
-        }
-        if (!targetLabel) {
-            return { applied: undefined, removed };
-        }
-        if (!currentNames.has(targetLabel)) {
-            await octokit.rest.issues.addLabels({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                labels: [targetLabel],
-            });
-        }
-        return { applied: targetLabel, removed };
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { applied: targetLabel || undefined, removed, error: message };
-    }
-}
-/**
- * Fetch the Stellar network passphrase from a Horizon root endpoint.
- */
-async function fetchNetworkPassphrase(horizonUrl, options = {}) {
-    const fetchImpl = options.fetchFn ?? (0, proxy_1.createProxiedFetch)() ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-    const timeoutMs = options.timeoutMs || 15000;
-    const maxRetries = options.maxRetries ?? 3;
-    let attempt = 0;
-    const normalizedUrl = horizonUrl.replace(/\/$/, "");
-    while (attempt <= maxRetries) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const response = await fetchImpl(normalizedUrl, {
-                method: "GET",
-                headers: { Accept: "application/json" },
-                signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
-            if (response.ok) {
-                const data = (await response.json());
-                if (data.network_passphrase) {
-                    return data.network_passphrase;
-                }
-                throw new Error("network_passphrase not found in Horizon root response");
-            }
-            if (response.status !== 429 && response.status < 500) {
-                throw new Error(`Horizon returned ${response.status} ${response.statusText}`);
-            }
-        }
-        catch (error) {
-            clearTimeout(timeoutId);
-            if (attempt >= maxRetries) {
-                throw error;
-            }
-        }
-        attempt += 1;
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-    }
-    throw new Error(`Unable to fetch network passphrase from ${normalizedUrl}`);
-}
-
-
-/***/ }),
-
-/***/ 4859:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-/**
- * Internationalization (i18n) template layer for TrustBridge issue comments.
- *
- * Provides locale-aware comment templates with fallback to English.
- * Strings that appear in Markdown issue comments are externalized here,
- * making it easy for consumers to add new locales or adjust copy.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SUPPORTED_LOCALES = void 0;
-exports.getStrings = getStrings;
-exports.isValidLocale = isValidLocale;
-exports.parseLocaleInput = parseLocaleInput;
-/**
- * Every supported locale, in canonical order.
- *
- * Consumers that must recognise text produced by *any* locale (for example
- * `extractChecklistState` in `markdown.ts`, which must keep working after a
- * workflow switches `locale`) iterate this list.
- */
-exports.SUPPORTED_LOCALES = ['en', 'es', 'pt', 'ja', 'fr', 'de'];
-/**
- * English (en) locale strings.
- */
-const EN = {
-    heading: 'TrustBridge — Stellar Account Check',
-    checkedAccount: 'Checked account:',
-    horizon: 'Horizon:',
-    asset: 'Asset:',
-    resultsHeading: 'Results',
-    validationGateHeading: 'Validation gate',
-    readyToProceed: 'Ready to proceed: all checks passed.',
-    blockedBy: 'Blocked by:',
-    passedChecks: 'Passed checks:',
-    failedChecks: 'Failed checks:',
-    reasonCode: 'Reason code:',
-    readyFlag: 'Ready:',
-    circuitBreakerHeading: 'Circuit breaker open',
-    circuitBreakerOpen: 'This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.',
-    circuitBreakerRecoveryHint: 'This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow. If it keeps happening, check the Horizon endpoint health and your `horizon_url` / `max_retries` settings.',
-    circuitBreakerReasonCode: 'Reason code: `CIRCUIT_OPEN`',
-    checklistHeading: 'Onboarding checklist',
-    checklistIntro: '_Complete these steps in order. Boxes update automatically from live Horizon checks._',
-    checklistFundAccountLabel: 'Fund account',
-    checklistFundAccountDetail: 'Activate the account with XLM.',
-    checklistTrustlineLabel: (assetCode) => `Add ${assetCode} trustline`,
-    checklistTrustlineDetail: 'Configure the asset trustline.',
-    checklistReserveLabel: 'Verify XLM balance',
-    checklistReserveDetail: (minXlmReserve) => `Meet the **${minXlmReserve} XLM** reserve.`,
-    balancesHeading: 'Balances',
-    xlmBalance: 'XLM balance:',
-    minimumRequired: 'Minimum required:',
-    setupCostHeading: 'Setup cost estimate',
-    minimumAccountBalance: 'Stellar minimum account balance:',
-    baseReservePerTrustline: 'Base reserve per trustline (ledger entry):',
-    typicalMinimumToFund: 'Typical minimum to fund account + one trustline:',
-    addTrustlineHeading: 'Add a trustline',
-    viewAccountOnLab: 'View account on Stellar Laboratory',
-    openTransactionBuilder: 'Open Transaction Builder (Change Trust)',
-    lobstrWallet: 'LOBSTR wallet',
-    lobstrDescription: 'add asset',
-    sepWalletActionsHeading: 'Quick wallet actions (SEP-0007)',
-    sepWalletActionsDescription: 'Open these links in a SEP-0007-compatible wallet (LOBSTR, Solar, Albedo) to complete setup.',
-    sendXlmToActivate: 'Send {amount} XLM to activate account',
-    remediationHeading: 'Remediation',
-    configurationSummaryHeading: 'Configuration summary',
-    inputColumn: 'Input',
-    valueColumn: 'Value',
-    failOnMissingTrue: '`true` — step fails on missing checks',
-    failOnMissingFalse: '`false` — only warns',
-    stickyCommentTrue: '`true` — upserts prior comment',
-    stickyCommentFalse: '`false` — always posts new',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (default)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Action outputs reference',
-    outputsDescription: 'Use these output names in downstream workflow steps via `steps.<id>.outputs.<name>`.',
-    outputColumn: 'Output',
-    valueRunColumn: 'Value in this run',
-    descriptionColumn: 'Description',
-    accountFundedOutput: 'Whether the account exists on the Stellar network (from `action.yml`)',
-    trustlineExistsOutput: 'Whether the **{assetCode}** trustline is configured (from `action.yml`)',
-    xlmBalanceOutput: 'Native XLM balance reported by Horizon (from `action.yml`)',
-    commentUrlOutput: 'URL of this issue comment (from `action.yml`)',
-    metricsHeading: 'Metrics',
-    metricsDescription: 'Machine-readable run metrics. Values are structural counts only — no account addresses or balances.',
-    accountFundedLabel: 'Account funded',
-    accountFundedPassDetail: (address) => `Account ${address} is active on the Stellar network.`,
-    accountFundedFailDetail: (address) => `Account ${address} was **not found** on Horizon — it may not be funded or activated yet.`,
-    trustlineLabel: (assetCode) => `${assetCode} trustline`,
-    trustlinePassDetail: (assetCode, issuer) => `Trustline for **${assetCode}** (${issuer}) is configured.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `Account has trustlines, but not for **${assetCode}** issued by ${issuer}.`,
-    trustlineFailNoTrustlines: 'Account has **zero trustlines** — add a trustline before receiving this asset.',
-    xlmReserveLabel: 'XLM reserve',
-    xlmReservePassDetail: (balance, required) => `Balance **${balance} XLM** meets the minimum of **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `Balance **${balance} XLM** is below the required **${required} XLM**.`,
-    horizonAvailabilityLabel: 'Horizon availability',
-    remediationAddTrustline: (assetCode) => `Add a **${assetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`,
-    remediationSendXlm: (amount, address) => `Send at least **${amount} XLM** to ${address} to meet the reserve requirement.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Activate ${address} by sending at least **${minBalance} XLM** (Stellar minimum account balance).\n\nThen add a **${assetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/) or [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Estimated setup cost: ~**1.5 XLM** (1 XLM base + 0.5 XLM per ${assetCode} trustline reserve).`,
-    remediationEstimatedSetupCost: (cost) => `Estimated setup cost: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon could not be reached. Retry later or verify your `horizon_url` input and network connectivity.',
-    networkMismatchDetected: 'Network mismatch detected.',
-    networkMismatchConfiguredNetwork: 'Configured network:',
-    networkMismatchActiveNetwork: 'Active network:',
-    networkMismatchFix: 'Fund this address on the configured network.',
-    networkMismatchUpdateUrl: 'Update `horizon_url` to the active network URL if you intended to check that network.',
-};
-/**
- * Spanish (es) locale strings.
- */
-const ES = {
-    heading: 'TrustBridge — Verificación de Cuenta Stellar',
-    checkedAccount: 'Cuenta verificada:',
-    horizon: 'Horizon:',
-    asset: 'Activo:',
-    resultsHeading: 'Resultados',
-    validationGateHeading: 'Puerta de validación',
-    readyToProceed: 'Listo para proceder: todas las comprobaciones pasaron.',
-    blockedBy: 'Bloqueado por:',
-    passedChecks: 'Comprobaciones pasadas:',
-    failedChecks: 'Comprobaciones fallidas:',
-    reasonCode: 'Código de razón:',
-    readyFlag: 'Listo:',
-    circuitBreakerHeading: 'Disyuntor abierto',
-    circuitBreakerOpen: 'Esta ejecución falló rápidamente porque el disyuntor de Horizon estaba abierto: la cuenta **no** se comprobó.',
-    circuitBreakerRecoveryHint: 'Es una protección de resiliencia, no un problema de la cuenta. Espera a que termine la ventana de recuperación y vuelve a ejecutar el workflow. Si se repite, comprueba la salud del endpoint de Horizon y los ajustes `horizon_url` / `max_retries`.',
-    circuitBreakerReasonCode: 'Código de razón: `CIRCUIT_OPEN`',
-    checklistHeading: 'Lista de incorporación',
-    checklistIntro: '_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._',
-    checklistFundAccountLabel: 'Financiar la cuenta',
-    checklistFundAccountDetail: 'Activa la cuenta con XLM.',
-    checklistTrustlineLabel: (assetCode) => `Añadir línea de confianza ${assetCode}`,
-    checklistTrustlineDetail: 'Configura la línea de confianza del activo.',
-    checklistReserveLabel: 'Verificar saldo XLM',
-    checklistReserveDetail: (minXlmReserve) => `Alcanza la reserva de **${minXlmReserve} XLM**.`,
-    balancesHeading: 'Saldos',
-    xlmBalance: 'Saldo de XLM:',
-    minimumRequired: 'Mínimo requerido:',
-    setupCostHeading: 'Estimación del costo de configuración',
-    minimumAccountBalance: 'Saldo mínimo de cuenta Stellar:',
-    baseReservePerTrustline: 'Reserva base por línea de confianza (entrada del libro mayor):',
-    typicalMinimumToFund: 'Mínimo típico para financiar cuenta + una línea de confianza:',
-    addTrustlineHeading: 'Agregar una línea de confianza',
-    viewAccountOnLab: 'Ver cuenta en Stellar Laboratory',
-    openTransactionBuilder: 'Abrir Transaction Builder (Change Trust)',
-    lobstrWallet: 'Billetera LOBSTR',
-    lobstrDescription: 'agregar activo',
-    sepWalletActionsHeading: 'Acciones rápidas de billetera (SEP-0007)',
-    sepWalletActionsDescription: 'Abre estos enlaces en una billetera compatible con SEP-0007 (LOBSTR, Solar, Albedo) para completar la configuración.',
-    sendXlmToActivate: 'Envía {amount} XLM para activar la cuenta',
-    remediationHeading: 'Remediación',
-    configurationSummaryHeading: 'Resumen de configuración',
-    inputColumn: 'Entrada',
-    valueColumn: 'Valor',
-    failOnMissingTrue: '`true` — el paso falla en comprobaciones faltantes',
-    failOnMissingFalse: '`false` — solo advierte',
-    stickyCommentTrue: '`true` — actualiza comentario anterior',
-    stickyCommentFalse: '`false` — siempre publica uno nuevo',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (predeterminado)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Referencia de salidas de acción',
-    outputsDescription: 'Use estos nombres de salida en pasos de flujo de trabajo posteriores a través de `steps.<id>.outputs.<name>`.',
-    outputColumn: 'Salida',
-    valueRunColumn: 'Valor en esta ejecución',
-    descriptionColumn: 'Descripción',
-    accountFundedOutput: 'Si la cuenta existe en la red Stellar (de `action.yml`)',
-    trustlineExistsOutput: 'Si la línea de confianza **{assetCode}** está configurada (de `action.yml`)',
-    xlmBalanceOutput: 'Saldo de XLM nativo reportado por Horizon (de `action.yml`)',
-    commentUrlOutput: 'URL del comentario de problema (de `action.yml`)',
-    metricsHeading: 'Métricas',
-    metricsDescription: 'Métricas de ejecución legibles por máquina. Los valores son solo recuentos estructurales — sin direcciones de cuenta ni saldos.',
-    accountFundedLabel: 'Cuenta financiada',
-    accountFundedPassDetail: (address) => `La cuenta ${address} está activa en la red Stellar.`,
-    accountFundedFailDetail: (address) => `La cuenta ${address} **no se encontró** en Horizon — puede que no esté financiada o activada aún.`,
-    trustlineLabel: (assetCode) => `Línea de confianza ${assetCode}`,
-    trustlinePassDetail: (assetCode, issuer) => `Línea de confianza para **${assetCode}** (${issuer}) está configurada.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `La cuenta tiene líneas de confianza, pero no para **${assetCode}** emitido por ${issuer}.`,
-    trustlineFailNoTrustlines: 'La cuenta tiene **cero líneas de confianza** — agrega una antes de recibir este activo.',
-    xlmReserveLabel: 'Reserva de XLM',
-    xlmReservePassDetail: (balance, required) => `El saldo **${balance} XLM** cumple con el mínimo de **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `El saldo **${balance} XLM** está por debajo del requerido **${required} XLM**.`,
-    horizonAvailabilityLabel: 'Disponibilidad de Horizon',
-    remediationAddTrustline: (assetCode) => `Agrega una línea de confianza **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operación Change Trust) o una billetera como [LOBSTR](https://lobstr.co/).`,
-    remediationSendXlm: (amount, address) => `Envía al menos **${amount} XLM** a ${address} para cumplir con el requisito de reserva.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Activa ${address} enviando al menos **${minBalance} XLM** (saldo mínimo de cuenta Stellar).\n\nLuego agrega una línea de confianza **${assetCode}** a través de [Stellar Laboratory](https://laboratory.stellar.org/) o [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Costo estimado de configuración: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de línea de confianza ${assetCode}).`,
-    remediationEstimatedSetupCost: (cost) => `Costo estimado de configuración: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon no se pudo alcanzar. Reinténtalo más tarde o verifica tu entrada `horizon_url` y la conectividad de red.',
-    networkMismatchDetected: 'Se detectó una discrepancia de red.',
-    networkMismatchConfiguredNetwork: 'Red configurada:',
-    networkMismatchActiveNetwork: 'Red activa:',
-    networkMismatchFix: 'Financia esta cuenta en la red configurada.',
-    networkMismatchUpdateUrl: 'Actualiza `horizon_url` a la URL de la red activa si querías comprobar esa red.',
-};
-/**
- * Portuguese (pt) locale strings.
- */
-const PT = {
-    heading: 'TrustBridge — Verificação de Conta Stellar',
-    checkedAccount: 'Conta verificada:',
-    horizon: 'Horizon:',
-    asset: 'Ativo:',
-    resultsHeading: 'Resultados',
-    validationGateHeading: 'Portão de validação',
-    readyToProceed: 'Pronto para prosseguir: todas as verificações passaram.',
-    blockedBy: 'Bloqueado por:',
-    passedChecks: 'Verificações aprovadas:',
-    failedChecks: 'Verificações falhadas:',
-    reasonCode: 'Código de motivo:',
-    readyFlag: 'Pronto:',
-    circuitBreakerHeading: 'Disjuntor aberto',
-    circuitBreakerOpen: 'Esta execução falhou rapidamente porque o disjuntor do Horizon estava aberto — a conta **não** foi verificada.',
-    circuitBreakerRecoveryHint: 'Isto é uma proteção de resiliência, não um problema com a conta. Aguarde a janela de recuperação e execute o workflow novamente. Se persistir, verifique a saúde do endpoint do Horizon e as definições `horizon_url` / `max_retries`.',
-    circuitBreakerReasonCode: 'Código de motivo: `CIRCUIT_OPEN`',
-    checklistHeading: 'Lista de integração',
-    checklistIntro: '_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._',
-    checklistFundAccountLabel: 'Financiar a conta',
-    checklistFundAccountDetail: 'Ative a conta com XLM.',
-    checklistTrustlineLabel: (assetCode) => `Adicionar linha de confiança ${assetCode}`,
-    checklistTrustlineDetail: 'Configure a linha de confiança do ativo.',
-    checklistReserveLabel: 'Verificar saldo XLM',
-    checklistReserveDetail: (minXlmReserve) => `Atinja a reserva de **${minXlmReserve} XLM**.`,
-    balancesHeading: 'Saldos',
-    xlmBalance: 'Saldo de XLM:',
-    minimumRequired: 'Mínimo necessário:',
-    setupCostHeading: 'Estimativa de custo de configuração',
-    minimumAccountBalance: 'Saldo mínimo de conta Stellar:',
-    baseReservePerTrustline: 'Reserva base por linha de confiança (entrada de ledger):',
-    typicalMinimumToFund: 'Mínimo típico para financiar conta + uma linha de confiança:',
-    addTrustlineHeading: 'Adicionar uma linha de confiança',
-    viewAccountOnLab: 'Ver conta no Stellar Laboratory',
-    openTransactionBuilder: 'Abrir Transaction Builder (Change Trust)',
-    lobstrWallet: 'Carteira LOBSTR',
-    lobstrDescription: 'adicionar ativo',
-    sepWalletActionsHeading: 'Ações rápidas da carteira (SEP-0007)',
-    sepWalletActionsDescription: 'Abra esses links em uma carteira compatível com SEP-0007 (LOBSTR, Solar, Albedo) para concluir a configuração.',
-    sendXlmToActivate: 'Envie {amount} XLM para ativar a conta',
-    remediationHeading: 'Remediação',
-    configurationSummaryHeading: 'Resumo da configuração',
-    inputColumn: 'Entrada',
-    valueColumn: 'Valor',
-    failOnMissingTrue: '`true` — etapa falha em verificações ausentes',
-    failOnMissingFalse: '`false` — apenas avisa',
-    stickyCommentTrue: '`true` — atualiza comentário anterior',
-    stickyCommentFalse: '`false` — sempre publica um novo',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (padrão)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Referência de saídas de ação',
-    outputsDescription: 'Use esses nomes de saída em etapas de fluxo de trabalho posteriores via `steps.<id>.outputs.<name>`.',
-    outputColumn: 'Saída',
-    valueRunColumn: 'Valor nesta execução',
-    descriptionColumn: 'Descrição',
-    accountFundedOutput: 'Se a conta existe na rede Stellar (de `action.yml`)',
-    trustlineExistsOutput: 'Se a linha de confiança **{assetCode}** está configurada (de `action.yml`)',
-    xlmBalanceOutput: 'Saldo de XLM nativo relatado pelo Horizon (de `action.yml`)',
-    commentUrlOutput: 'URL do comentário de problema (de `action.yml`)',
-    metricsHeading: 'Métricas',
-    metricsDescription: 'Métricas de execução legíveis por máquina. Os valores são apenas contagens estruturais — nenhum endereço de conta ou saldo.',
-    accountFundedLabel: 'Conta financiada',
-    accountFundedPassDetail: (address) => `A conta ${address} está ativa na rede Stellar.`,
-    accountFundedFailDetail: (address) => `A conta ${address} **não foi encontrada** no Horizon — pode não estar financiada ou ativada ainda.`,
-    trustlineLabel: (assetCode) => `Linha de confiança ${assetCode}`,
-    trustlinePassDetail: (assetCode, issuer) => `Linha de confiança para **${assetCode}** (${issuer}) está configurada.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `A conta tem linhas de confiança, mas não para **${assetCode}** emitido por ${issuer}.`,
-    trustlineFailNoTrustlines: 'A conta tem **zero linhas de confiança** — adicione uma antes de receber esse ativo.',
-    xlmReserveLabel: 'Reserva de XLM',
-    xlmReservePassDetail: (balance, required) => `Saldo **${balance} XLM** atende ao mínimo de **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `Saldo **${balance} XLM** está abaixo do exigido **${required} XLM**.`,
-    horizonAvailabilityLabel: 'Disponibilidade do Horizon',
-    remediationAddTrustline: (assetCode) => `Adicione uma linha de confiança **${assetCode}** usando [Stellar Laboratory](https://laboratory.stellar.org/) (operação Change Trust) ou uma carteira como [LOBSTR](https://lobstr.co/).`,
-    remediationSendXlm: (amount, address) => `Envie pelo menos **${amount} XLM** para ${address} para atender ao requisito de reserva.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Ative ${address} enviando pelo menos **${minBalance} XLM** (saldo mínimo de conta Stellar).\n\nEm seguida, adicione uma linha de confiança **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) ou [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Custo estimado de configuração: ~**1.5 XLM** (1 XLM base + 0.5 XLM por reserva de linha de confiança ${assetCode}).`,
-    remediationEstimatedSetupCost: (cost) => `Custo estimado de configuração: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon não pôde ser alcançado. Tente novamente mais tarde ou verifique sua entrada `horizon_url` e a conectividade de rede.',
-    networkMismatchDetected: 'Discrepância de rede detectada.',
-    networkMismatchConfiguredNetwork: 'Rede configurada:',
-    networkMismatchActiveNetwork: 'Rede ativa:',
-    networkMismatchFix: 'Financie esta conta na rede configurada.',
-    networkMismatchUpdateUrl: 'Atualize `horizon_url` para a URL da rede ativa se você pretendia verificar essa rede.',
-};
-/**
- * Japanese (ja) locale strings.
- *
- * CJK note: Japanese characters are full-width (2 columns each in terminal
- * renderers), but GitHub Markdown tables render in proportional HTML — no
- * manual padding is required. Strings are kept concise to avoid table
- * overflow in narrow viewports.
- */
-const JA = {
-    heading: 'TrustBridge — Stellarアカウントチェック',
-    checkedAccount: '確認済みアカウント:',
-    horizon: 'Horizon:',
-    asset: 'アセット:',
-    resultsHeading: '結果',
-    validationGateHeading: 'バリデーションゲート',
-    readyToProceed: '続行可能: すべてのチェックに合格しました。',
-    blockedBy: 'ブロック理由:',
-    passedChecks: '合格したチェック:',
-    failedChecks: '不合格のチェック:',
-    reasonCode: '理由コード:',
-    readyFlag: '判定:',
-    circuitBreakerHeading: 'サーキットブレーカーが開いています',
-    circuitBreakerOpen: 'Horizon のサーキットブレーカーが開いていたため、この実行は即座に失敗しました。アカウントは**チェックされていません**。',
-    circuitBreakerRecoveryHint: 'これはアカウントの問題ではなく、レジリエンス保護です。復旧ウィンドウの経過を待ってからワークフローを再実行してください。繰り返し発生する場合は、Horizon エンドポイントの健全性と `horizon_url` / `max_retries` の設定を確認してください。',
-    circuitBreakerReasonCode: '理由コード: `CIRCUIT_OPEN`',
-    checklistHeading: 'オンボーディングチェックリスト',
-    checklistIntro: '_以下の手順を順番に完了してください。チェックボックスは Horizon のライブチェックから自動更新されます。_',
-    checklistFundAccountLabel: 'アカウント入金',
-    checklistFundAccountDetail: 'XLM を送信してアカウントを有効化します。',
-    checklistTrustlineLabel: (assetCode) => `${assetCode} のトラストラインを追加`,
-    checklistTrustlineDetail: 'アセットのトラストラインを設定します。',
-    checklistReserveLabel: 'XLM 残高の確認',
-    checklistReserveDetail: (minXlmReserve) => `**${minXlmReserve} XLM** の準備金要件を満たしてください。`,
-    balancesHeading: '残高',
-    xlmBalance: 'XLM残高:',
-    minimumRequired: '最低必要額:',
-    setupCostHeading: '初期費用の見積もり',
-    minimumAccountBalance: 'Stellarアカウントの最低残高:',
-    baseReservePerTrustline: 'トラストライン1件あたりの基本準備金 (台帳エントリ):',
-    typicalMinimumToFund: 'アカウント開設+トラストライン1件に必要な最低限度:',
-    addTrustlineHeading: 'トラストラインの追加',
-    viewAccountOnLab: 'Stellar Laboratoryでアカウントを表示',
-    openTransactionBuilder: 'Transaction Builderを開く (Change Trust)',
-    lobstrWallet: 'LOBSTRウォレット',
-    lobstrDescription: 'アセットを追加',
-    sepWalletActionsHeading: 'クイックウォレット操作 (SEP-0007)',
-    sepWalletActionsDescription: 'SEP-0007対応ウォレット (LOBSTR、Solar、Albedo) でこれらのリンクを開いてセットアップを完了してください。',
-    sendXlmToActivate: '{amount} XLMを送信してアカウントを有効化',
-    remediationHeading: '対処方法',
-    configurationSummaryHeading: '設定サマリー',
-    inputColumn: '入力',
-    valueColumn: '値',
-    failOnMissingTrue: '`true` — チェック未通過時にステップが失敗',
-    failOnMissingFalse: '`false` — 警告のみ',
-    stickyCommentTrue: '`true` — 以前のコメントを更新',
-    stickyCommentFalse: '`false` — 常に新規投稿',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (デフォルト)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'アクション出力リファレンス',
-    outputsDescription: '`steps.<id>.outputs.<name>` を使って後続のワークフローステップでこれらの出力名を参照してください。',
-    outputColumn: '出力',
-    valueRunColumn: '今回の実行値',
-    descriptionColumn: '説明',
-    accountFundedOutput: 'アカウントがStellarネットワーク上に存在するか (`action.yml` より)',
-    trustlineExistsOutput: '**{assetCode}** トラストラインが設定されているか (`action.yml` より)',
-    xlmBalanceOutput: 'Horizonが報告するネイティブXLM残高 (`action.yml` より)',
-    commentUrlOutput: 'このIssueコメントのURL (`action.yml` より)',
-    metricsHeading: 'メトリクス',
-    metricsDescription: 'マシンリーダブルな実行メトリクス。値は構造的なカウントのみです — アカウントアドレスや残高は含まれません。',
-    accountFundedLabel: 'アカウント資金化',
-    accountFundedPassDetail: (address) => `アカウント ${address} はStellarネットワーク上でアクティブです。`,
-    accountFundedFailDetail: (address) => `アカウント ${address} はHorizonで**見つかりませんでした** — まだ資金化または有効化されていない可能性があります。`,
-    trustlineLabel: (assetCode) => `${assetCode} トラストライン`,
-    trustlinePassDetail: (assetCode, issuer) => `**${assetCode}** (${issuer}) のトラストラインが設定されています。`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `アカウントにはトラストラインがありますが、${issuer} が発行した **${assetCode}** のものではありません。`,
-    trustlineFailNoTrustlines: 'アカウントには**トラストラインがゼロ件**です — このアセットを受け取る前にトラストラインを追加してください。',
-    xlmReserveLabel: 'XLM準備金',
-    xlmReservePassDetail: (balance, required) => `残高 **${balance} XLM** は最低 **${required} XLM** の要件を満たしています。`,
-    xlmReserveFailDetail: (balance, required) => `残高 **${balance} XLM** は必要な **${required} XLM** を下回っています。`,
-    horizonAvailabilityLabel: 'Horizon可用性',
-    remediationAddTrustline: (assetCode) => `[Stellar Laboratory](https://laboratory.stellar.org/) (Change Trust操作) または [LOBSTR](https://lobstr.co/) などのウォレットを使用して **${assetCode}** トラストラインを追加してください。`,
-    remediationSendXlm: (amount, address) => `準備金要件を満たすために、${address} に少なくとも **${amount} XLM** を送信してください。`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `${address} を有効化するには、少なくとも **${minBalance} XLM** (Stellarアカウント最低残高) を送信してください。\n\n次に [Stellar Laboratory](https://laboratory.stellar.org/) または [LOBSTR](https://lobstr.co/) で **${assetCode}** トラストラインを追加してください。`,
-    remediationAccountNotFound: (assetCode) => `初期費用の見積もり: 約**1.5 XLM** (1 XLM基本 + ${assetCode}トラストライン準備金0.5 XLM)。`,
-    remediationEstimatedSetupCost: (cost) => `初期費用の見積もり: 約**${cost} XLM**。`,
-    remediationHorizonError: 'Horizonに接続できませんでした。後でもう一度お試しいただくか、`horizon_url` の入力とネットワーク接続を確認してください。',
-    networkMismatchDetected: 'ネットワークの不一致が検出されました。',
-    networkMismatchConfiguredNetwork: '設定されたネットワーク:',
-    networkMismatchActiveNetwork: 'アクティブなネットワーク:',
-    networkMismatchFix: '設定されたネットワークでこのアカウントに資金を供給してください。',
-    networkMismatchUpdateUrl: '`horizon_url` を更新してください。',
-};
-/**
- * French (fr) locale strings.
- */
-const FR = {
-    heading: 'TrustBridge — Vérification du Compte Stellar',
-    checkedAccount: 'Compte vérifié :',
-    horizon: 'Horizon :',
-    asset: 'Actif :',
-    resultsHeading: 'Résultats',
-    validationGateHeading: 'Portail de validation',
-    readyToProceed: 'Prêt à continuer : toutes les vérifications ont réussi.',
-    blockedBy: 'Bloqué par :',
-    passedChecks: 'Vérifications réussies :',
-    failedChecks: 'Vérifications échouées :',
-    reasonCode: 'Code de motif :',
-    readyFlag: 'Prêt :',
-    circuitBreakerHeading: 'Coupe-circuit ouvert',
-    circuitBreakerOpen: 'Cette exécution a échoué immédiatement car le coupe-circuit Horizon était ouvert — le compte **n’a pas** été vérifié.',
-    circuitBreakerRecoveryHint: 'Il s’agit d’une protection de résilience, pas d’un problème de compte. Attendez la fin de la fenêtre de récupération, puis relancez le workflow. Si cela persiste, vérifiez la santé du point de terminaison Horizon et les réglages `horizon_url` / `max_retries`.',
-    circuitBreakerReasonCode: 'Code de motif : `CIRCUIT_OPEN`',
-    checklistHeading: 'Liste d’intégration',
-    checklistIntro: '_Effectuez ces étapes dans l’ordre. Les cases se mettent à jour automatiquement à partir des vérifications Horizon._',
-    checklistFundAccountLabel: 'Financer le compte',
-    checklistFundAccountDetail: 'Activez le compte avec des XLM.',
-    checklistTrustlineLabel: (assetCode) => `Ajouter la ligne de confiance ${assetCode}`,
-    checklistTrustlineDetail: 'Configurez la ligne de confiance de l’actif.',
-    checklistReserveLabel: 'Vérifier le solde XLM',
-    checklistReserveDetail: (minXlmReserve) => `Atteignez la réserve de **${minXlmReserve} XLM**.`,
-    balancesHeading: 'Soldes',
-    xlmBalance: 'Solde XLM :',
-    minimumRequired: 'Minimum requis :',
-    setupCostHeading: 'Estimation du coût de configuration',
-    minimumAccountBalance: 'Solde minimum de compte Stellar :',
-    baseReservePerTrustline: 'Réserve de base par ligne de confiance (entrée de registre) :',
-    typicalMinimumToFund: 'Minimum typique pour financer un compte + une ligne de confiance :',
-    addTrustlineHeading: 'Ajouter une ligne de confiance',
-    viewAccountOnLab: 'Voir le compte sur Stellar Laboratory',
-    openTransactionBuilder: 'Ouvrir Transaction Builder (Change Trust)',
-    lobstrWallet: 'Portefeuille LOBSTR',
-    lobstrDescription: 'ajouter un actif',
-    sepWalletActionsHeading: 'Actions rapides du portefeuille (SEP-0007)',
-    sepWalletActionsDescription: 'Ouvrez ces liens dans un portefeuille compatible SEP-0007 (LOBSTR, Solar, Albedo) pour finaliser la configuration.',
-    sendXlmToActivate: 'Envoyer {amount} XLM pour activer le compte',
-    remediationHeading: 'Remédiation',
-    configurationSummaryHeading: 'Résumé de la configuration',
-    inputColumn: 'Entrée',
-    valueColumn: 'Valeur',
-    failOnMissingTrue: '`true` — l\'étape échoue en cas de vérifications manquantes',
-    failOnMissingFalse: '`false` — avertissement seulement',
-    stickyCommentTrue: '`true` — met à jour le commentaire précédent',
-    stickyCommentFalse: '`false` — publie toujours un nouveau',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (défaut)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Référence des sorties de l\'action',
-    outputsDescription: 'Utilisez ces noms de sortie dans les étapes de workflow suivantes via `steps.<id>.outputs.<name>`.',
-    outputColumn: 'Sortie',
-    valueRunColumn: 'Valeur dans cette exécution',
-    descriptionColumn: 'Description',
-    accountFundedOutput: 'Si le compte existe sur le réseau Stellar (depuis `action.yml`)',
-    trustlineExistsOutput: 'Si la ligne de confiance **{assetCode}** est configurée (depuis `action.yml`)',
-    xlmBalanceOutput: 'Solde XLM natif rapporté par Horizon (depuis `action.yml`)',
-    commentUrlOutput: 'URL du commentaire d\'issue (depuis `action.yml`)',
-    metricsHeading: 'Métriques',
-    metricsDescription: 'Métriques d\'exécution lisibles par machine. Les valeurs sont uniquement des comptages structurels — aucune adresse de compte ni solde.',
-    accountFundedLabel: 'Compte financé',
-    accountFundedPassDetail: (address) => `Le compte ${address} est actif sur le réseau Stellar.`,
-    accountFundedFailDetail: (address) => `Le compte ${address} n'a **pas été trouvé** sur Horizon — il n'est peut-être pas encore financé ou activé.`,
-    trustlineLabel: (assetCode) => `Ligne de confiance ${assetCode}`,
-    trustlinePassDetail: (assetCode, issuer) => `La ligne de confiance pour **${assetCode}** (${issuer}) est configurée.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `Le compte a des lignes de confiance, mais pas pour **${assetCode}** émis par ${issuer}.`,
-    trustlineFailNoTrustlines: 'Le compte a **zéro ligne de confiance** — ajoutez-en une avant de recevoir cet actif.',
-    xlmReserveLabel: 'Réserve XLM',
-    xlmReservePassDetail: (balance, required) => `Le solde **${balance} XLM** satisfait le minimum de **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `Le solde **${balance} XLM** est en dessous du requis **${required} XLM**.`,
-    horizonAvailabilityLabel: 'Disponibilité Horizon',
-    remediationAddTrustline: (assetCode) => `Ajoutez une ligne de confiance **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) (opération Change Trust) ou un portefeuille tel que [LOBSTR](https://lobstr.co/).`,
-    remediationSendXlm: (amount, address) => `Envoyez au moins **${amount} XLM** à ${address} pour satisfaire l'exigence de réserve.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Activez ${address} en envoyant au moins **${minBalance} XLM** (solde minimum de compte Stellar).\n\nEnsuite, ajoutez une ligne de confiance **${assetCode}** via [Stellar Laboratory](https://laboratory.stellar.org/) ou [LOBSTR](https://lobstr.co/).`,
-    remediationAccountNotFound: (assetCode) => `Coût de configuration estimé : ~**1.5 XLM** (1 XLM de base + 0.5 XLM de réserve pour la ligne de confiance ${assetCode}).`,
-    remediationEstimatedSetupCost: (cost) => `Coût de configuration estimé : ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon n\'a pas pu être atteint. Réessayez plus tard ou vérifiez votre entrée `horizon_url` et la connectivité réseau.',
-    networkMismatchDetected: 'Incompatibilité de réseau détectée.',
-    networkMismatchConfiguredNetwork: 'Réseau configuré :',
-    networkMismatchActiveNetwork: 'Réseau actif :',
-    networkMismatchFix: 'Financez ce compte sur le réseau configuré.',
-    networkMismatchUpdateUrl: 'Mettez à jour `horizon_url`.',
-};
-/**
- * German (de) locale strings.
- */
-const DE = {
-    heading: 'TrustBridge — Stellar-Kontoprüfung',
-    checkedAccount: 'Geprüftes Konto:',
-    horizon: 'Horizon:',
-    asset: 'Asset:',
-    resultsHeading: 'Ergebnisse',
-    validationGateHeading: 'Validierungsschranke',
-    readyToProceed: 'Bereit fortzufahren: alle Prüfungen bestanden.',
-    blockedBy: 'Blockiert durch:',
-    passedChecks: 'Bestandene Prüfungen:',
-    failedChecks: 'Fehlgeschlagene Prüfungen:',
-    reasonCode: 'Grundcode:',
-    readyFlag: 'Bereit:',
-    circuitBreakerHeading: 'Sicherungsschalter offen',
-    circuitBreakerOpen: 'Dieser Lauf wurde sofort abgebrochen, da der Horizon-Sicherungsschalter offen war — das Konto wurde **nicht** geprüft.',
-    circuitBreakerRecoveryHint: 'Dies ist ein Resilienzschutz und kein Problem mit dem Konto. Warten Sie das Ende des Wiederherstellungsfensters ab und starten Sie den Workflow erneut. Sollte dies wiederholt auftreten, prüfen Sie die Erreichbarkeit des Horizon-Endpunkts sowie die Einstellungen `horizon_url` / `max_retries`.',
-    circuitBreakerReasonCode: 'Grundcode: `CIRCUIT_OPEN`',
-    checklistHeading: 'Onboarding-Checkliste',
-    checklistIntro: '_Führen Sie diese Schritte der Reihe nach aus. Die Kästchen werden automatisch aus den Horizon-Prüfungen aktualisiert._',
-    checklistFundAccountLabel: 'Konto finanzieren',
-    checklistFundAccountDetail: 'Aktivieren Sie das Konto mit XLM.',
-    checklistTrustlineLabel: (assetCode) => `${assetCode}-Trustline hinzufügen`,
-    checklistTrustlineDetail: 'Richten Sie die Trustline des Assets ein.',
-    checklistReserveLabel: 'XLM-Guthaben prüfen',
-    checklistReserveDetail: (minXlmReserve) => `Erreichen Sie die Reserve von **${minXlmReserve} XLM**.`,
-    balancesHeading: 'Guthaben',
-    xlmBalance: 'XLM-Guthaben:',
-    minimumRequired: 'Mindestbetrag:',
-    setupCostHeading: 'Schätzung der Einrichtungskosten',
-    minimumAccountBalance: 'Stellar-Mindestkontoguthaben:',
-    baseReservePerTrustline: 'Basisreserve pro Trustline (Ledger-Eintrag):',
-    typicalMinimumToFund: 'Typisches Minimum für Konto + eine Trustline:',
-    addTrustlineHeading: 'Trustline hinzufügen',
-    viewAccountOnLab: 'Konto im Stellar Laboratory anzeigen',
-    openTransactionBuilder: 'Transaction Builder öffnen (Change Trust)',
-    lobstrWallet: 'LOBSTR-Wallet',
-    lobstrDescription: 'Asset hinzufügen',
-    sepWalletActionsHeading: 'Schnelle Wallet-Aktionen (SEP-0007)',
-    sepWalletActionsDescription: 'Öffnen Sie diese Links in einem SEP-0007-kompatiblen Wallet (LOBSTR, Solar, Albedo), um die Einrichtung abzuschließen.',
-    sendXlmToActivate: '{amount} XLM senden, um das Konto zu aktivieren',
-    remediationHeading: 'Behebung',
-    configurationSummaryHeading: 'Konfigurationszusammenfassung',
-    inputColumn: 'Eingabe',
-    valueColumn: 'Wert',
-    failOnMissingTrue: '`true` — Schritt schlägt bei fehlenden Prüfungen fehl',
-    failOnMissingFalse: '`false` — nur Warnung',
-    stickyCommentTrue: '`true` — aktualisiert vorherigen Kommentar',
-    stickyCommentFalse: '`false` — veröffentlicht immer neu',
-    waitUntilFundedTrue: '`true`',
-    waitUntilFundedFalse: '`false` (Standard)',
-    waitUntilFundedTimeoutMs: '`{ms}`',
-    waitUntilFundedIntervalMs: '`{ms}`',
-    outputsHeading: 'Referenz der Action-Ausgaben',
-    outputsDescription: 'Verwenden Sie diese Ausgabenamen in nachgelagerten Workflow-Schritten über `steps.<id>.outputs.<name>`.',
-    outputColumn: 'Ausgabe',
-    valueRunColumn: 'Wert in diesem Lauf',
-    descriptionColumn: 'Beschreibung',
-    accountFundedOutput: 'Ob das Konto im Stellar-Netzwerk existiert (aus `action.yml`)',
-    trustlineExistsOutput: 'Ob die **{assetCode}**-Trustline konfiguriert ist (aus `action.yml`)',
-    xlmBalanceOutput: 'Natives XLM-Guthaben laut Horizon (aus `action.yml`)',
-    commentUrlOutput: 'URL des Issue-Kommentars (aus `action.yml`)',
-    metricsHeading: 'Metriken',
-    metricsDescription: 'Maschinenlesbare Laufmetriken. Werte sind nur strukturelle Zählungen — keine Kontoadressen oder Guthaben.',
-    accountFundedLabel: 'Konto finanziert',
-    accountFundedPassDetail: (address) => `Konto ${address} ist im Stellar-Netzwerk aktiv.`,
-    accountFundedFailDetail: (address) => `Konto ${address} wurde bei Horizon **nicht gefunden** — es ist möglicherweise noch nicht finanziert oder aktiviert.`,
-    trustlineLabel: (assetCode) => `${assetCode}-Trustline`,
-    trustlinePassDetail: (assetCode, issuer) => `Trustline für **${assetCode}** (${issuer}) ist konfiguriert.`,
-    trustlineFailHasTrustlines: (assetCode, issuer) => `Das Konto hat Trustlines, jedoch nicht für **${assetCode}** von ${issuer}.`,
-    trustlineFailNoTrustlines: 'Das Konto hat **null Trustlines** — fügen Sie eine hinzu, bevor Sie dieses Asset empfangen.',
-    xlmReserveLabel: 'XLM-Reserve',
-    xlmReservePassDetail: (balance, required) => `Guthaben **${balance} XLM** erfüllt das Minimum von **${required} XLM**.`,
-    xlmReserveFailDetail: (balance, required) => `Guthaben **${balance} XLM** liegt unter dem erforderlichen **${required} XLM**.`,
-    horizonAvailabilityLabel: 'Horizon-Verfügbarkeit',
-    remediationAddTrustline: (assetCode) => `Fügen Sie eine **${assetCode}**-Trustline über [Stellar Laboratory](https://laboratory.stellar.org/) (Change-Trust-Operation) oder ein Wallet wie [LOBSTR](https://lobstr.co/) hinzu.`,
-    remediationSendXlm: (amount, address) => `Senden Sie mindestens **${amount} XLM** an ${address}, um die Reserveanforderung zu erfüllen.`,
-    remediationActivateAccount: (address, minBalance, assetCode) => `Aktivieren Sie ${address}, indem Sie mindestens **${minBalance} XLM** (Stellar-Mindestkontoguthaben) senden.\n\nFügen Sie dann eine **${assetCode}**-Trustline über [Stellar Laboratory](https://laboratory.stellar.org/) oder [LOBSTR](https://lobstr.co/) hinzu.`,
-    remediationAccountNotFound: (assetCode) => `Geschätzte Einrichtungskosten: ~**1,5 XLM** (1 XLM Basis + 0,5 XLM ${assetCode}-Trustline-Reserve).`,
-    remediationEstimatedSetupCost: (cost) => `Geschätzte Einrichtungskosten: ~**${cost} XLM**.`,
-    remediationHorizonError: 'Horizon konnte nicht erreicht werden. Versuchen Sie es später erneut oder überprüfen Sie Ihre `horizon_url`-Eingabe und die Netzwerkkonnektivität.',
-    networkMismatchDetected: 'Netzwerkabweichung erkannt.',
-    networkMismatchConfiguredNetwork: 'Konfiguriertes Netzwerk:',
-    networkMismatchActiveNetwork: 'Aktives Netzwerk:',
-    networkMismatchFix: 'Finanzieren Sie dieses Konto im konfigurierten Netzwerk.',
-    networkMismatchUpdateUrl: 'Aktualisieren Sie `horizon_url`.',
-};
-const LOCALES = {
-    en: EN,
-    es: ES,
-    pt: PT,
-    ja: JA,
-    fr: FR,
-    de: DE,
-};
-// Fail fast at import time if a new locale is added without a matching pack.
-for (const locale of exports.SUPPORTED_LOCALES) {
-    if (!LOCALES[locale]) {
-        throw new Error(`Missing i18n string pack for locale "${locale}"`);
-    }
-}
-/**
- * Get comment strings for a given locale, with automatic fallback to English
- * if the locale is not available.
- */
-function getStrings(locale) {
-    const normalizedLocale = (locale || 'en').toLowerCase();
-    return LOCALES[normalizedLocale] || EN;
-}
-/**
- * Validate that a locale string is supported.
- */
-function isValidLocale(locale) {
-    if (!locale)
-        return false;
-    return Object.keys(LOCALES).includes(locale.toLowerCase());
-}
-/**
- * Parse and validate a locale input from action configuration.
- * Falls back to 'en' if the input is invalid or unset.
- */
-function parseLocaleInput(input) {
-    if (!input)
-        return 'en';
-    const normalized = input.trim().toLowerCase();
-    if (isValidLocale(normalized)) {
-        return normalized;
-    }
-    return 'en';
 }
 
 
@@ -40613,1746 +35266,228 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.VALID_POSTING_MODES = void 0;
-exports.resolveCommentModes = resolveCommentModes;
-exports.handleAutoUnassign = handleAutoUnassign;
-exports.run = run;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const github = __importStar(__nccwpck_require__(3228));
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
+const core = __importStar(__nccwpck_require__(7484));
 const checks_1 = __nccwpck_require__(2122);
 const horizon_1 = __nccwpck_require__(9164);
-const cache_1 = __nccwpck_require__(7377);
-const freshness_1 = __nccwpck_require__(8628);
-const checks_run_1 = __nccwpck_require__(1346);
 const comment_1 = __nccwpck_require__(2246);
 const assets_1 = __nccwpck_require__(5462);
 const inputs_1 = __nccwpck_require__(8422);
 const summary_1 = __nccwpck_require__(8855);
 const outputs_1 = __nccwpck_require__(7729);
-const projects_1 = __nccwpck_require__(7233);
-const delta_1 = __nccwpck_require__(1493);
 const logger_1 = __nccwpck_require__(6999);
 const metrics_1 = __nccwpck_require__(5670);
-const resilience_1 = __nccwpck_require__(2334);
 const validation_1 = __nccwpck_require__(4344);
-const i18n_1 = __nccwpck_require__(4859);
-const webhook_1 = __nccwpck_require__(8378);
-const preflight_1 = __nccwpck_require__(4504);
-const codeowners_1 = __nccwpck_require__(3586);
-const roster_1 = __nccwpck_require__(6260);
-const proxy_1 = __nccwpck_require__(8903);
-const soroban_1 = __nccwpck_require__(3597);
-const corePlugins_1 = __nccwpck_require__(4098);
-const plugin_1 = __nccwpck_require__(2375);
-const pluginRunner_1 = __nccwpck_require__(9050);
-const pluginLoader_1 = __nccwpck_require__(2259);
 const configReader_1 = __nccwpck_require__(6094);
-const batch_1 = __nccwpck_require__(2983);
-const sarif_1 = __nccwpck_require__(866);
-const tracing_1 = __nccwpck_require__(7145);
-exports.VALID_POSTING_MODES = ['post', 'dry-run', 'off'];
-const VALID_COMMENT_THREADING_MODES = ['sticky', 'new', 'reply'];
-function resolveCommentModes(postingModeInput, commentModeInput) {
-    const normalizedPostingMode = postingModeInput.trim().toLowerCase();
-    const normalizedCommentMode = commentModeInput.trim().toLowerCase();
-    const legacyPostingMode = exports.VALID_POSTING_MODES.includes(normalizedCommentMode)
-        ? normalizedCommentMode
-        : undefined;
-    const postingModeRaw = normalizedPostingMode || legacyPostingMode || 'post';
-    if (!exports.VALID_POSTING_MODES.includes(postingModeRaw)) {
-        throw new Error(`Invalid posting_mode "${postingModeRaw}". Expected one of: ${exports.VALID_POSTING_MODES.join(', ')}.`);
-    }
-    const commentThreadingMode = VALID_COMMENT_THREADING_MODES.includes(normalizedCommentMode)
-        ? normalizedCommentMode
-        : undefined;
-    return {
-        postingMode: postingModeRaw,
-        commentThreadingMode,
-    };
-}
-/**
- * Resolve the GitHub assignee login from the current Actions event payload.
- * Prefers `payload.assignee` (issues.assigned), then the first issue assignee.
- */
-function resolveAssigneeLoginFromContext() {
-    const payload = github.context.payload;
-    const fromEvent = payload.assignee?.login?.trim();
-    if (fromEvent) {
-        return fromEvent;
-    }
-    const assignees = payload.issue?.assignees;
-    if (Array.isArray(assignees)) {
-        for (const entry of assignees) {
-            const login = entry?.login?.trim();
-            if (login) {
-                return login;
-            }
-        }
-    }
-    return undefined;
-}
-/**
- * Resolve the Stellar G-address to validate.
- *
- * Issue #219 — Precedence order (winner documented + logged):
- * 1. Soroban contract registry lookup (when soroban_rpc_url + contract_id are set)
- * 2. Assignee address map (when assignee_address_map is set)
- * 3. Direct stellar_address_input
- *
- * Each source is tried in order; the first non-empty result wins.
- * Conflicts are logged as warnings so maintainers know which source won.
- */
-function resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractAddress, dashboardAddress) {
-    const resolvedFrom = [];
-    // Source 1: Contract registry lookup
-    if (contractAddress) {
-        resolvedFrom.push("contract");
-        logger_1.logger.info("Address resolved from contract registry", {
-            component: "index",
-            source: "contract",
-        });
-        return contractAddress;
-    }
-    // Source 2: Dashboard roster API
-    if (dashboardAddress) {
-        resolvedFrom.push('dashboard_roster');
-        logger_1.logger.info('Address resolved from dashboard roster', {
-            component: 'index',
-            source: 'dashboard_roster',
-        });
-        return dashboardAddress;
-    }
-    // Source 2: Assignee address map
-    const mapRaw = assigneeAddressMapRaw.trim();
-    if (mapRaw) {
-        const map = (0, inputs_1.parseAssigneeAddressMap)(mapRaw, {
-            workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-        });
-        const assigneeLogin = resolveAssigneeLoginFromContext();
-        const address = (0, inputs_1.resolveAddressFromAssigneeMap)(map, assigneeLogin);
-        resolvedFrom.push("assignee_map");
-        logger_1.logger.info("Address resolved from assignee address map", {
-            component: "index",
-            source: "assignee_map",
-            assigneeLogin,
-        });
-        return address;
-    }
-    // Source 3: Direct input
-    const direct = stellarAddressInput.trim();
-    if (direct) {
-        resolvedFrom.push("direct_input");
-        logger_1.logger.debug("Address resolved from direct input", {
-            component: "index",
-            source: "direct_input",
-        });
-        return direct;
-    }
-    throw new Error("Provide stellar_address_input (a Stellar G-address), assignee_address_map " +
-        "(JSON / file path mapping GitHub usernames to G-addresses), or configure " +
-        "soroban_rpc_url + contract_id for on-chain registry lookup.");
-}
-/**
- * Automatically unassigns the assignee(s) from the GitHub issue when
- * readiness checks fail (ready is false) and the policy input is enabled.
- *
- * Safe guards:
- * - Default off (requires opt-in via unassign_on_not_ready: true).
- * - Only runs when ready is false (result.valid === false).
- * - Never unassigns on transient Horizon infrastructure/connectivity errors
- *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
- * - Filters out bot assignees (e.g. app/bot accounts).
- * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
- * - Safely skips when there is no issue context (e.g. workflow_dispatch).
- */
-async function handleAutoUnassign(options) {
-    if (!options.unassignOnNotReady) {
-        return undefined;
-    }
-    if (options.result.valid) {
-        logger_1.logger.debug("Skipping auto-unassign: readiness checks passed (valid is true)", {
-            component: "index",
-        });
-        return undefined;
-    }
-    // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
-    if (options.result.reasonCode === 'HORIZON_ERROR' ||
-        options.result.reasonCode === 'HORIZON_TIMEOUT' ||
-        options.result.reasonCode === 'TLS_ERROR' ||
-        options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED') {
-        core.info("Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.");
-        return undefined;
-    }
-    const payload = options.payload;
-    const issueNumber = options.issueNumber ?? payload?.issue?.number;
-    if (!issueNumber) {
-        logger_1.logger.debug("Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)", {
-            component: "index",
-        });
-        return undefined;
-    }
-    const isBot = (login, type) => {
-        if (!login)
-            return false;
-        return type === "Bot" || login.endsWith("[bot]");
-    };
-    const targetAssignees = [];
-    // Case 1: Specific assignee from issues.assigned event
-    const eventAssignee = payload?.assignee;
-    if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
-        targetAssignees.push(eventAssignee.login);
-    }
-    else if (Array.isArray(payload?.issue?.assignees)) {
-        // Case 2: All non-bot assignees on the issue
-        for (const assignee of payload.issue.assignees) {
-            if (assignee?.login && !isBot(assignee.login, assignee.type)) {
-                if (!targetAssignees.includes(assignee.login)) {
-                    targetAssignees.push(assignee.login);
-                }
-            }
-        }
-    }
-    if (targetAssignees.length === 0) {
-        logger_1.logger.debug("Skipping auto-unassign: no eligible human assignees found on issue", {
-            component: "index",
-        });
-        return undefined;
-    }
-    try {
-        await options.octokit.rest.issues.removeAssignees({
-            owner: options.owner,
-            repo: options.repo,
-            issue_number: issueNumber,
-            assignees: targetAssignees,
-        });
-        core.info(`Auto-unassigned ${targetAssignees.join(", ")} from issue #${issueNumber} because readiness checks failed.`);
-        return targetAssignees;
-    }
-    catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        core.warning(`Failed to unassign ${targetAssignees.join(", ")} from issue #${issueNumber} (non-fatal): ${msg}`);
-        return undefined;
-    }
-}
-function resolveConfiguredReadyLabels() {
-    const passLabel = (core.getInput("pass_label") ||
-        "").trim();
-    const failLabel = (core.getInput("fail_label") ||
-        "").trim();
-    return { passLabel, failLabel };
-}
 async function run() {
-    // Clear any trace spans from previous runs (safety)
-    (0, tracing_1.clearTraceSpans)();
-    return (0, tracing_1.traceActionRun)('trustbridge-action', async () => {
-        // Milestone gating (Issue #230)
-        const milestoneAllowlistRaw = core.getInput("milestone_allowlist") || "";
-        const milestoneFailOnSkip = (0, inputs_1.parseBooleanInput)(core.getInput("milestone_fail_on_skip"), false);
-        if (milestoneAllowlistRaw.trim()) {
-            const allowedMilestones = milestoneAllowlistRaw
-                .split(",")
-                .map((m) => m.trim().toLowerCase())
-                .filter(Boolean);
-            const payload = github.context.payload;
-            const isIssueContext = payload.issue !== undefined;
-            const isPullRequest = payload.pull_request !== undefined;
-            let currentMilestone = "";
-            let currentMilestoneRaw = "";
-            if (isIssueContext && payload.issue?.milestone) {
-                currentMilestoneRaw = payload.issue.milestone.title || "";
-            }
-            else if (isPullRequest && payload.pull_request?.milestone) {
-                currentMilestoneRaw = payload.pull_request.milestone.title || "";
-            }
-            currentMilestone = currentMilestoneRaw.trim().toLowerCase();
-            if (allowedMilestones.length > 0) {
-                let skipReason = "";
-                if (!currentMilestone) {
-                    skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
-                }
-                else if (!allowedMilestones.includes(currentMilestone)) {
-                    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
-                }
-                if (skipReason) {
-                    const fullMessage = `${skipReason} Skipping validation.`;
-                    if (milestoneFailOnSkip) {
-                        core.setFailed(fullMessage);
-                    }
-                    else {
-                        core.info(fullMessage);
-                    }
-                    core.setOutput("ready", "false");
-                    core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
-                    core.setOutput("checks_json", "[]");
-                    core.summary.addHeading("Milestone Gate Skipped", 3);
-                    core.summary.addRaw(fullMessage);
-                    await core.summary.write();
-                    return;
-                }
-            }
-        }
-        // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
-        // Issue #448: `skip_for_maintainers` is canonical; `skip_if_maintainer` is a
-        // deprecated alias that is only consulted when the canonical input is unset.
-        const maintainerSkip = (0, inputs_1.resolveMaintainerSkipInput)(core.getInput('skip_for_maintainers'), core.getInput('skip_if_maintainer'));
-        if (maintainerSkip.usedDeprecatedAlias) {
-            core.warning("`skip_if_maintainer` is deprecated and will be removed in a future major " +
-                "release. Use `skip_for_maintainers` instead — it is the canonical name " +
-                "and takes precedence whenever it is set explicitly.");
-        }
-        if (maintainerSkip.conflict) {
-            core.warning("Both `skip_for_maintainers` and the deprecated `skip_if_maintainer` were " +
-                "supplied with conflicting values. Using `skip_for_maintainers`; the " +
-                "deprecated alias is ignored.");
-        }
-        const skipForMaintainers = maintainerSkip.enabled;
-        if (skipForMaintainers) {
-            const actor = github.context.actor ||
-                github.context.payload.sender?.login ||
-                '';
-            const maintainersAllowlistRaw = core.getInput('maintainers_allowlist') || '';
-            const maintainersAllowlist = maintainersAllowlistRaw
-                .split(',')
-                .map((m) => m.trim())
-                .filter(Boolean);
-            const customCodeownersPath = '';
-            const rawGithubToken = core.getInput('github_token');
-            const githubAppToken = (0, inputs_1.resolveInput)('github_app_token', core.getInput('github_app_token'));
-            const token = (0, inputs_1.resolveGitHubAuthToken)({
-                githubToken: rawGithubToken,
-                githubAppToken,
-            });
-            const codeowners = await (0, codeowners_1.loadCodeowners)({
-                customPath: customCodeownersPath || undefined,
-                githubToken: token || undefined,
-            });
-            const isMaintainer = (0, codeowners_1.isMaintainerActor)(actor, codeowners, maintainersAllowlist);
-            if (isMaintainer) {
-                const skipMessage = `Actor @${actor} is a maintainer (matched in CODEOWNERS / maintainers_allowlist). Skipping TrustBridge validation checks (skip_for_maintainers=true).`;
-                core.info(skipMessage);
-                core.setOutput('ready', 'true');
-                core.setOutput('reason_code', 'MAINTAINER_SKIPPED');
-                core.setOutput('checks_json', '[]');
-                core.setOutput('account_funded', 'true');
-                core.setOutput('trustline_exists', 'true');
-                core.setOutput('xlm_balance', '0');
-                core.summary.addHeading('Maintainer Validation Skipped', 3);
-                core.summary.addRaw(skipMessage);
-                await core.summary.write();
-                return;
-            }
-        }
-        // Campaign presets (Issue #207) — resolved first so they can provide defaults.
-        const networkInput = core.getInput("network") || "";
-        const presetInput = core.getInput("preset") || "";
-        const presetName = (0, inputs_1.parsePresetInput)(networkInput, presetInput);
-        const campaignPreset = presetName ? (0, assets_1.getCampaignPreset)(presetName) : undefined;
-        if (presetName && !campaignPreset) {
-            throw new Error(`Unknown campaign preset "${presetName}". Valid presets: testnet, testnet-usdc, public, mainnet.`);
-        }
-        const horizonUrl = core.getInput("horizon_url") ||
-            campaignPreset?.horizonUrl ||
-            "https://horizon.stellar.org";
-        const assetCode = core.getInput("asset_code") || campaignPreset?.assetCode || "USDC";
-        const assetIssuer = core.getInput("asset_issuer") ||
-            campaignPreset?.assetIssuer ||
-            "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-        const minXlmReserveRaw = core.getInput("min_xlm_reserve") || campaignPreset?.minXlmReserve || "1.5";
-        const stellarAddressInput = core.getInput("stellar_address_input");
-        const assigneeAddressMapRaw = core.getInput("assignee_address_map");
-        // Issue #317: Dashboard roster API inputs
-        const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
-        const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
-        const dashboardRosterTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
-        const dashboardRosterAllowHttp = (0, inputs_1.parseBooleanInput)(core.getInput('dashboard_roster_allow_http'), false);
-        // Issue #318: Soroban full roster inputs
-        const sorobanFullRoster = (0, inputs_1.parseBooleanInput)(core.getInput('soroban_full_roster'), false);
-        const sorobanRosterPageLimit = (0, inputs_1.parseNumberInput)(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
-        // Issue #549: github_username is used as a fallback lookup key for Soroban get_address
-        // when the workflow event context (issues.assigned / pull_request) does not provide an
-        // assignee login.  Typical case: workflow_dispatch or cron runs where the caller knows
-        // the contributor's username but no GitHub event assignee is present.
-        const githubUsername = (core.getInput('github_username') || '').trim();
-        // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
-        const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
-        const contractId = core.getInput('contract_id') || '';
-        let contractResolvedAddress;
-        if (sorobanRpcUrl && contractId) {
-            // Precedence: event-derived assignee login → github_username input → skip lookup
-            const assigneeLogin = resolveAssigneeLoginFromContext() ?? (githubUsername || undefined);
-            if (assigneeLogin) {
-                try {
-                    if (sorobanFullRoster) {
-                        const map = await (0, soroban_1.fetchFullContractRoster)(assigneeLogin, {
-                            sorobanRpcUrl,
-                            contractId,
-                            pageLimit: sorobanRosterPageLimit,
-                        });
-                        const found = map[assigneeLogin.toLowerCase()];
-                        if (found)
-                            contractResolvedAddress = found;
-                    }
-                    else {
-                        const lookup = await (0, soroban_1.lookupAddressFromContract)(assigneeLogin, {
-                            sorobanRpcUrl,
-                            contractId,
-                        });
-                        if (lookup.address) {
-                            contractResolvedAddress = lookup.address;
-                        }
-                    }
-                }
-                catch (err) {
-                    const isRetryable = err instanceof soroban_1.ContractLookupError && err.retryable;
-                    logger_1.logger.warn("Contract registry lookup failed, falling back", {
-                        component: "index",
-                        error: err instanceof Error ? err.message : String(err),
-                        retryable: isRetryable,
-                    });
-                }
-            }
-        }
-        // Issue #317: Dashboard roster lookup (source 2 of address resolution).
-        let dashboardResolvedAddress;
-        if (dashboardRosterUrl) {
-            const assigneeLogin = resolveAssigneeLoginFromContext();
-            if (assigneeLogin) {
-                try {
-                    const map = await (0, roster_1.fetchDashboardRoster)(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs, dashboardRosterAllowHttp);
-                    const found = map[assigneeLogin.toLowerCase()];
-                    if (found)
-                        dashboardResolvedAddress = found;
-                }
-                catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    logger_1.logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
-                }
-            }
-        }
-        const stellarAddress = resolveStellarAddressInput(stellarAddressInput, assigneeAddressMapRaw, contractResolvedAddress, dashboardResolvedAddress);
-        // Wire buildConflictReport into multi-source address resolution (#525):
-        // collect every non-empty source in resolution-precedence order
-        // (contract > dashboard_roster > assignee_map > workflow_input) so the
-        // first entry is the winner. A conflict exists when ≥2 sources disagree.
-        const privacyMode = (0, inputs_1.parseBooleanInput)(core.getInput('privacy_mode'), false);
-        const addressSources = [];
-        if (contractResolvedAddress) {
-            addressSources.push({ source: 'contract', value: contractResolvedAddress });
-        }
-        if (dashboardResolvedAddress) {
-            addressSources.push({ source: 'dashboard_roster', value: dashboardResolvedAddress });
-        }
-        if (assigneeAddressMapRaw.trim()) {
-            try {
-                const map = (0, inputs_1.parseAssigneeAddressMap)(assigneeAddressMapRaw, {
-                    workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-                });
-                const assigneeLogin = resolveAssigneeLoginFromContext();
-                const mapAddress = (0, inputs_1.resolveAddressFromAssigneeMap)(map, assigneeLogin);
-                if (mapAddress) {
-                    addressSources.push({ source: 'assignee_map', value: mapAddress });
-                }
-            }
-            catch {
-                // Map parse failures are handled downstream; omit from conflict report.
-            }
-        }
-        if (stellarAddressInput.trim()) {
-            addressSources.push({ source: 'workflow_input', value: stellarAddressInput.trim() });
-        }
-        const conflictReport = (0, outputs_1.buildConflictReport)({ stellar_address: addressSources }, { privacyMode });
-        if (conflictReport.hasConflicts) {
-            logger_1.logger.warn('Conflicting address sources detected; highest-precedence source won', {
-                component: 'index',
-                conflicts: conflictReport.conflicts,
-            });
-        }
-        const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
-        const issueNumberInputRaw = core.getInput('issue_number') || '';
-        const issueNumberInput = issueNumberInputRaw.trim()
-            ? (0, inputs_1.parseNumberInput)(issueNumberInputRaw, 0, { min: 1 })
-            : undefined;
-        const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
-        const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
-            min: 1000,
-            max: 60000,
-        });
-        const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
-        const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
-        const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput("wait_until_funded_timeout_ms"), 120000, { min: 0, max: 600000 });
-        const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput("wait_until_funded_interval_ms"), 5000, { min: 1000, max: 60000 });
-        const horizonUrlFallback = core.getInput("horizon_url_fallback") || "";
-        const rpcFallbackUrlRaw = core.getInput("rpc_fallback_url") || "";
-        const fallbackUrls = rpcFallbackUrlRaw
-            ? rpcFallbackUrlRaw
-                .split(",")
-                .map((u) => u.trim())
-                .filter(Boolean)
-            : horizonUrlFallback
-                ? [horizonUrlFallback]
-                : [];
-        const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput("horizon_cache_ttl_ms"), 60000, {
-            min: 0,
-            max: 3600000,
-        });
-        const useCache = (0, inputs_1.parseBooleanInput)(core.getInput("use_cache"), false);
-        const useActionsCacheBackend = (0, inputs_1.parseBooleanInput)(core.getInput("use_actions_cache_backend"), false);
-        const useFriendbot = (0, inputs_1.parseBooleanInput)(core.getInput("use_friendbot"), false);
-        const friendbotUrl = core.getInput("friendbot_url") || "https://friendbot.stellar.org";
-        const friendbotTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput("friendbot_timeout_ms"), 15000, { min: 1000, max: 60000 });
-        let friendbotCalled = false;
-        let friendbotSuccess = false;
-        let friendbotTransactionHash = '';
-        const allowCrossNetworkFallback = (0, inputs_1.parseBooleanInput)(core.getInput("allow_cross_network_fallback"), false);
-        const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput("log_inputs"), false);
-        const trustbridgeConfigPath = core.getInput("trustbridge_config_path") || ".trustbridge.yml";
-        const githubAppToken = (0, inputs_1.resolveInput)("github_app_token", core.getInput("github_app_token"));
-        const rawGithubToken = core.getInput("github_token");
-        const githubToken = (0, inputs_1.resolveGitHubAuthToken)({
-            githubToken: rawGithubToken,
-            githubAppToken,
-        });
-        if (githubAppToken)
-            core.setSecret(githubAppToken);
-        if (rawGithubToken)
-            core.setSecret(rawGithubToken);
-        const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput("auto_wallet_labels"), false);
-        const readyLabels = resolveConfiguredReadyLabels();
-        const unassignOnNotReady = (0, inputs_1.parseBooleanInput)((0, inputs_1.resolveInput)("unassign_on_not_ready", core.getInput("unassign_on_not_ready")), false);
-        // SEP-0007 wallet deep links (Issue #44)
-        const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput("sep0007_deep_links"), false);
-        const sep0007OriginDomain = core.getInput("sep0007_origin_domain") || "";
-        // #145 — issues:write preflight
-        const preflightOnly = (0, inputs_1.parseBooleanInput)(core.getInput("preflight_only"), false);
-        // Multi-asset trustline validation (Issue #4)
-        const assetsJsonRaw = core.getInput("assets_json") || "";
-        // Soroban contract registry (Issue #7) — github_username is now read earlier
-        // (before the contract lookup block) so the fallback is available when needed.
-        // Plugin runner flag (Issue #198) — default off
-        const usePluginRunner = (0, inputs_1.parseBooleanInput)(core.getInput("use_plugin_runner"), false);
-        // Onboarding checklist in comments (Issue #154) — default on
-        const onboardingChecklist = (0, inputs_1.parseBooleanInput)(core.getInput("onboarding_checklist"), true);
-        // Security artifacts / delta vs previous run (Issue #148)
-        const writeValidationJsonEnabled = (0, inputs_1.parseBooleanInput)(core.getInput("write_validation_json"), false);
-        const validationJsonPath = core.getInput("validation_json_path") || "validation.json";
-        const previousValidationPath = "";
-        // privacyMode is read earlier (next to address resolution) so the
-        // conflict report can mask values; reused here for downstream consumers.
-        // External plugins from workspace (allowlisted only)
-        const trustbridgePluginsPathRaw = core.getInput("trustbridge_plugins_path") || "";
-        const allowedPluginPaths = trustbridgePluginsPathRaw
-            .split(",")
-            .map((p) => p.trim())
-            .filter(Boolean);
-        // Internationalization (Issue #59)
-        const localeInput = core.getInput("locale") || "en";
-        const locale = (0, i18n_1.parseLocaleInput)(localeInput);
-        // Batch validation (Issue #199)
-        const stellarAddressesRaw = core.getInput("stellar_addresses") || "";
-        // Full-report artifact path (used when comment exceeds size limit)
-        const reportOutputPath = core.getInput("report_output_path") || "trustbridge-report.md";
-        // Failure snooze window (Issue #155)
-        const snoozeWindowMinutes = (0, inputs_1.parseNumberInput)(core.getInput("snooze_window_minutes"), 30, {
-            min: 0,
-            max: 10080, // 7 days
-        });
-        const forceComment = (0, inputs_1.parseBooleanInput)(core.getInput("force_comment"), false);
-        const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
-        // Asset authorization & clawback policies (Issue #247)
-        const unauthorizedTrustlinePolicy = (0, inputs_1.parseUnauthorizedTrustlinePolicy)(core.getInput('unauthorized_trustline_policy') || 'warn');
-        const clawbackStrictMode = (0, inputs_1.parseBooleanInput)(core.getInput('clawback_strict_mode'), false);
-        // Issue #456 / #528 — posting policy and threading strategy are independent.
-        const { postingMode, commentThreadingMode } = resolveCommentModes(core.getInput("posting_mode"), core.getInput("comment_mode"));
-        const shouldPostComment = postingMode === "post";
-        // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
-        // instead of calling live Horizon. No network call is made.
-        const fixtureMode = (0, inputs_1.parseBooleanInput)(core.getInput('fixture_mode'), false);
-        const fixturePath = core.getInput('fixture_path') || '';
-        // Signed dashboard webhook (Issue #101)
-        // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
-        const webhookUrl = core.getInput("webhook_url") ||
-            core.getInput("dashboard_webhook_url") ||
-            "";
-        const webhookSecret = core.getInput("webhook_secret") || "";
-        const webhookTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput("webhook_timeout_ms"), 5000, {
-            min: 100,
-            max: 30000,
-        });
-        const webhookAuthModeRaw = (core.getInput("webhook_auth_mode") || "hmac")
-            .trim()
-            .toLowerCase();
-        const webhookAuthMode = webhookAuthModeRaw === "oidc" ? "oidc" : "hmac";
-        const webhookOidcAudience = core.getInput("webhook_oidc_audience") || "trustbridge-dashboard";
-        // GitHub Projects v2 integration (Issue #222)
-        const projectId = core.getInput("project_id") || "";
-        const projectStatusField = core.getInput("project_status_field") || "Status";
-        const projectStatusPass = core.getInput("project_status_pass") || "";
-        const projectStatusFail = core.getInput("project_status_fail") || "";
-        const projectTokenInput = core.getInput("project_token") || "";
-        if (projectTokenInput)
-            core.setSecret(projectTokenInput);
-        const projectToken = projectTokenInput || githubToken;
-        // Clear validation spans from any prior run in the same process (safety).
-        (0, validation_1.clearSpans)();
-        metrics_1.globalMetrics.stopTimer("input_parse");
-        // Register core plugins and load external plugins from allowlist
-        (0, corePlugins_1.registerCorePlugins)();
-        if (allowedPluginPaths.length > 0) {
-            try {
-                const externalPlugins = await (0, pluginLoader_1.loadPluginsFromAllowlist)({
-                    workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-                    allowedPluginPaths,
-                    debugMode,
-                });
-                for (const plugin of externalPlugins) {
-                    plugin_1.defaultRegistry.register(plugin);
-                }
-                if (externalPlugins.length > 0) {
-                    core.info(`Loaded ${externalPlugins.length} external plugin(s)`);
-                }
-            }
-            catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                core.warning(`Failed to load external plugins (proceeding with core plugins only): ${message}`);
-            }
-        }
-        // Never weaken TLS verification by default (Issue #71). TrustBridge does
-        // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
-        // environment has disabled it, surface that loudly rather than silently
-        // trusting an unverified Horizon endpoint.
-        if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-            logger_1.logger.warn("NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.", { component: "index" });
-        }
-        // ---------------------------------------------------------------------------
-        // Config-file overlay (Issue #196)
-        // Read the consumer .trustbridge.yml and merge values into action inputs.
-        // Explicit non-empty action inputs always win over config-file values.
-        // ---------------------------------------------------------------------------
-        const configResult = (0, configReader_1.readTrustbridgeConfigs)(trustbridgeConfigPath, process.env.GITHUB_WORKSPACE || process.cwd());
-        if (!configResult.validation.valid) {
-            const errMsg = configResult.validation.errors.join("; ");
-            core.setFailed(`Trustbridge config file error: ${errMsg}`);
-            return;
-        }
-        if (configResult.found) {
-            core.info(`Loaded trustbridge config from ${configResult.resolvedPath}`);
-            if (debugMode && configResult.redactedSnapshot) {
-                logger_1.logger.debug("Trustbridge config snapshot (redacted)", {
-                    component: "index",
-                    config: configResult.redactedSnapshot,
-                });
-            }
-        }
-        // Build set of inputs that were explicitly provided by the workflow author
-        const explicitInputs = new Set();
-        const checkInput = (name, raw) => {
-            if (raw.trim())
-                explicitInputs.add(name);
-        };
-        checkInput("horizonUrl", horizonUrl);
-        checkInput("horizonUrlFallback", horizonUrlFallback);
-        checkInput("rpcFallbackUrl", rpcFallbackUrlRaw);
-        checkInput("assetCode", assetCode);
-        checkInput("assetIssuer", assetIssuer);
-        checkInput("minXlmReserveRaw", minXlmReserveRaw);
-        checkInput("failOnMissing", core.getInput("fail_on_missing"));
-        // Merge config file values under action inputs
-        const merged = (0, configReader_1.mergeConsumerConfig)({
+    const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+    const assetCode = core.getInput('asset_code') || 'USDC';
+    const assetIssuer = core.getInput('asset_issuer') ||
+        'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
+    const stellarAddress = core.getInput('stellar_address_input').trim();
+    const failOnMissing = (0, inputs_1.parseBooleanInput)(core.getInput('fail_on_missing'), true);
+    const debugMode = (0, inputs_1.parseBooleanInput)(core.getInput('debug_mode'), false);
+    const horizonTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_timeout_ms'), 15000, {
+        min: 1000,
+        max: 60000,
+    });
+    const stickyComment = (0, inputs_1.parseBooleanInput)(core.getInput('sticky_comment'), true);
+    const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
+    const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
+    const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
+    const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
+    const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+    const fallbackUrls = rpcFallbackUrlRaw
+        ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
+        : horizonUrlFallback
+            ? [horizonUrlFallback]
+            : [];
+    const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_cache_ttl_ms'), 60000, {
+        min: 0,
+        max: 3600000,
+    });
+    const useCache = (0, inputs_1.parseBooleanInput)(core.getInput('use_cache'), false);
+    const logInputs = (0, inputs_1.parseBooleanInput)(core.getInput('log_inputs'), false);
+    const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+    const githubToken = core.getInput('github_token', { required: true });
+    // SEP-0007 wallet deep links (Issue #44)
+    const sep0007DeepLinks = (0, inputs_1.parseBooleanInput)(core.getInput('sep0007_deep_links'), false);
+    const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+    // Clear validation spans from any prior run in the same process (safety).
+    (0, validation_1.clearSpans)();
+    // Load optional consumer .trustbridge.yml config file (Issue #45).
+    // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
+    // validation errors surface via result.validation.errors so we fail fast
+    // with a clear message rather than silently ignoring bad configuration.
+    const consumerConfig = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath);
+    if (consumerConfig.found && !consumerConfig.validation.valid) {
+        core.setFailed(`trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`);
+        return;
+    }
+    logger_1.logger.setDebugMode(debugMode);
+    logger_1.logger.debug('Action inputs loaded', {
+        component: 'index',
+        horizonUrl,
+        horizonUrlFallback,
+        horizonCacheTtlMs,
+        assetCode,
+        assetIssuer,
+        minXlmReserveRaw,
+        debugMode,
+        horizonTimeoutMs,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
+        rpcFallbackUrl: rpcFallbackUrlRaw,
+        useCache,
+        sep0007DeepLinks,
+    });
+    if (logInputs) {
+        (0, logger_1.emitInputsLogRecord)({
             horizonUrl,
             horizonUrlFallback,
             rpcFallbackUrl: rpcFallbackUrlRaw,
             assetCode,
             assetIssuer,
-            minXlmReserveRaw,
+            minXlmReserve: minXlmReserveRaw,
+            stellarAddress,
             failOnMissing,
-        }, configResult.config, explicitInputs);
-        // Effective values (config-file overlays applied; explicit inputs win)
-        const effectiveHorizonUrl = merged.horizonUrl;
-        const effectiveHorizonUrlFallback = merged.horizonUrlFallback;
-        const effectiveAssetCode = merged.assetCode;
-        const effectiveAssetIssuer = merged.assetIssuer;
-        const effectiveMinXlmReserveRaw = merged.minXlmReserveRaw;
-        const effectiveRpcFallbackUrl = merged.rpcFallbackUrl;
-        const effectiveFailOnMissing = merged.failOnMissing;
-        const resolvedAddress = stellarAddress;
-        const effectiveResolvedAddress = stellarAddress;
-        const jobController = new AbortController();
-        const horizonMaxRequests = (0, inputs_1.parseNumberInput)(core.getInput("horizon_max_requests") || "0", 0, {
-            min: 0, // 0 = unlimited (matches action.yml)
-            max: 10000,
-        });
-        const maxRetries = (0, inputs_1.parseNumberInput)(core.getInput("max_retries") || "3", 3, {
-            min: 0,
-            max: 20,
-        });
-        const retryBaseDelayMs = (0, inputs_1.parseNumberInput)(core.getInput("retry_base_delay_ms") || "1000", 1000, {
-            min: 0,
-            max: 60000,
-        });
-        const retryMaxDelayMs = (0, inputs_1.parseNumberInput)(core.getInput("retry_max_delay_ms") || "30000", 30000, {
-            min: 0,
-            max: 600000,
-        });
-        logger_1.logger.setDebugMode(debugMode);
-        logger_1.logger.debug("Action inputs loaded", {
-            component: "index",
-            horizonUrl: effectiveHorizonUrl,
-            horizonUrlFallback: effectiveHorizonUrlFallback,
-            horizonCacheTtlMs,
-            assetCode: effectiveAssetCode,
-            assetIssuer: effectiveAssetIssuer,
-            minXlmReserveRaw: effectiveMinXlmReserveRaw,
             debugMode,
             horizonTimeoutMs,
             stickyComment,
             waitUntilFunded,
             waitUntilFundedTimeoutMs,
             waitUntilFundedIntervalMs,
-            rpcFallbackUrl: effectiveRpcFallbackUrl,
+            horizonCacheTtlMs,
             useCache,
-            allowCrossNetworkFallback,
-            sep0007DeepLinks,
-            onboardingChecklist,
-            trustbridgeConfigPath,
+            logInputs,
         });
-        (0, checks_1.validateStellarAddress)(stellarAddress);
-        const isContractDestination = /^C[A-Z2-7]{55}$/.test(stellarAddress.trim());
-        if (isContractDestination) {
-            if (!sorobanRpcUrl) {
-                throw new Error(`stellar_address_input resolves to a Soroban C-address "${stellarAddress}", but soroban_rpc_url is unset. Configure soroban_rpc_url to verify the contract exists on-chain before payout validation continues.`);
-            }
-            const contractExists = await (0, soroban_1.contractExistsOnChain)(stellarAddress, {
-                sorobanRpcUrl,
-                timeoutMs: horizonTimeoutMs,
-            });
-            const result = contractExists
-                ? {
-                    valid: true,
-                    accountFunded: true,
-                    trustlineExists: true,
-                    xlmBalance: '0',
-                    xlmReserveMet: true,
-                    assetBalance: '0',
-                    assetBalanceMet: true,
-                    checks: [
-                        {
-                            passed: true,
-                            label: 'Contract destination exists',
-                            detail: `Contract ${stellarAddress} was confirmed on Soroban RPC and is eligible for payout. Horizon account/trustline balance checks are intentionally skipped for C-address destinations.`,
-                        },
-                    ],
-                    reasonCode: 'CONTRACT_DESTINATION_OK',
-                }
-                : {
-                    valid: false,
-                    accountFunded: false,
-                    trustlineExists: false,
-                    xlmBalance: '0',
-                    xlmReserveMet: false,
-                    assetBalance: '0',
-                    assetBalanceMet: false,
-                    checks: [
-                        {
-                            passed: false,
-                            label: 'Contract destination exists',
-                            detail: `Contract ${stellarAddress} was not found on the configured Soroban RPC. C-address payout destinations must exist on-chain before they are eligible for payout.`,
-                        },
-                    ],
-                    reasonCode: 'CONTRACT_NOT_FOUND',
-                };
-            core.setOutput('ready', result.valid ? 'true' : 'false');
-            core.setOutput('reason_code', result.reasonCode ?? 'CONTRACT_DESTINATION');
-            core.setOutput('checks_json', JSON.stringify(result.checks));
-            core.summary.addHeading('C-address destination check', 3);
-            core.summary.addRaw(result.valid ? 'Contract destination validated on Soroban RPC.' : 'Contract destination missing from Soroban RPC.');
-            await core.summary.write();
-            return;
+    }
+    (0, checks_1.validateStellarAddress)(stellarAddress);
+    const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
+    const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
+    // Soroban fungible token contracts (SEP-41) use a "C..." contract address
+    // as their issuer instead of a classic "G..." account. Validate that
+    // shape up front so a malformed contract address fails fast with a clear
+    // error instead of silently reaching Horizon or the metrics/JSON output.
+    if (normalizedAsset.assetIssuer.startsWith('C')) {
+        const contractCheck = (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
+        if (!contractCheck.valid) {
+            throw new Error(`Invalid asset_issuer contract address: ${contractCheck.errors.join('; ')}`);
         }
-        const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
-        const minTrustlineLimitRaw = core.getInput("min_trustline_limit") || "";
-        const minTrustlineLimit = minTrustlineLimitRaw
-            ? (0, inputs_1.parseNumberInput)(minTrustlineLimitRaw, 0, { min: 0 })
-            : undefined;
-        const minAssetBalance = (0, checks_1.parseMinAssetBalance)(core.getInput("min_asset_balance") || "");
-        // Optional multi-asset JSON — validate early so bad input fails fast.
-        if (assetsJsonRaw.trim()) {
-            (0, assets_1.parseAssetsJson)(assetsJsonRaw);
+        metrics_1.globalMetrics.recordContractMetric('asset_issuer_contract_validated', 1, normalizedAsset.assetIssuer, 'count');
+    }
+    const checkConfig = {
+        ...normalizedAsset,
+        minXlmReserve,
+        horizonUrl,
+    };
+    core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
+    if (waitUntilFunded) {
+        core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
+    }
+    let result;
+    const horizonOptions = {
+        timeoutMs: horizonTimeoutMs,
+        horizonUrlFallback: horizonUrlFallback || undefined,
+        fallbackUrls,
+        cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
+        useCache,
+    };
+    try {
+        const account = waitUntilFunded
+            ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, stellarAddress, {
+                timeoutMs: waitUntilFundedTimeoutMs,
+                pollIntervalMs: waitUntilFundedIntervalMs,
+                requestTimeoutMs: horizonTimeoutMs,
+                onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
+                    component: 'index',
+                    attempt,
+                    elapsedMs,
+                }),
+            }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
+            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, horizonOptions);
+        result = (0, checks_1.runAccountChecks)(account, checkConfig);
+    }
+    catch (error) {
+        if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
+            result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig);
         }
-        // #145 — issues:write preflight (optional early exit)
-        // Skip when comment_mode won't post — dry-run/off don't need issues:write.
-        // Skip for discussion events too: discussions use the GraphQL path which
-        // requires `discussions: write`, not `issues: write` (Issue #221).
-        const discussionNodeId = (0, comment_1.resolveDiscussionNodeId)(github.context.payload);
-        if (shouldPostComment && !discussionNodeId) {
-            const preflight = await (0, preflight_1.runIssuesPreflight)(githubToken);
-            if (preflight.skip) {
-                core.info(preflight.message);
-            }
-        }
-        if (preflightOnly) {
-            core.info("preflight_only=true — exiting after issues:write preflight.");
-            return;
-        }
-        // SEP-0001 home domain check inputs (optional, off by default)
-        const homeDomainCheckEnabled = (0, inputs_1.parseBooleanInput)(core.getInput("home_domain_check_enabled"), false);
-        const expectedHomeDomain = core.getInput("expected_home_domain").trim() || undefined;
-        const homeDomainCheckModeRaw = core
-            .getInput("home_domain_check_mode")
-            .trim()
-            .toLowerCase();
-        const homeDomainCheckMode = homeDomainCheckModeRaw === "strict" ? "strict" : "warn";
-        // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-        // GitHub Checks API integration (Wave #26 — optional, off by default)
-        const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput("use_check_runs"), false);
-        // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
-        const checkLedgerFreshnessEnabled = (0, inputs_1.parseBooleanInput)(core.getInput("check_ledger_freshness"), false);
-        const maxLedgerLagSeconds = (0, inputs_1.parseNumberInput)(core.getInput("max_ledger_lag_seconds") || "60", 60, { min: 1, max: 3600 });
-        const ledgerFreshnessFailOnStale = (0, inputs_1.parseBooleanInput)(core.getInput("ledger_freshness_fail_on_stale"), false);
-        if (logInputs) {
-            (0, logger_1.emitInputsLogRecord)({
-                horizonUrl,
-                horizonUrlFallback,
-                rpcFallbackUrl: rpcFallbackUrlRaw,
-                assetCode,
-                assetIssuer,
-                minXlmReserve: minXlmReserveRaw,
-                minTrustlineLimit: minTrustlineLimitRaw,
-                stellarAddress,
-                failOnMissing: effectiveFailOnMissing,
-                debugMode,
-                horizonTimeoutMs,
-                stickyComment,
-                waitUntilFunded,
-                waitUntilFundedTimeoutMs,
-                waitUntilFundedIntervalMs,
-                horizonCacheTtlMs,
-                useCache,
-                horizonMaxRequests,
-                maxRetries,
-                retryBaseDelayMs,
-                retryMaxDelayMs,
-                allowCrossNetworkFallback,
-                logInputs,
-            });
-        }
-        const normalizedAsset = (0, assets_1.normalizeAssetConfig)({ assetCode, assetIssuer });
-        // Validate network/asset compatibility using the campaign preset (Issue #207).
-        // Catches testnet issuer on public Horizon (or vice versa) and preset conflicts.
-        (0, assets_1.validateNetworkAssetCompatibility)(horizonUrl, normalizedAsset.assetCode, normalizedAsset.assetIssuer, presetName || undefined);
-        // Soroban fungible token contracts (SEP-41) use a "C..." contract address
-        // as their issuer instead of a classic "G..." account. Validate that
-        // shape up front so a malformed contract address fails fast with a clear
-        // error instead of silently reaching Horizon or the metrics/JSON output.
-        if (normalizedAsset.assetIssuer.startsWith("C")) {
-            (0, validation_1.validateContractAddress)(normalizedAsset.assetIssuer);
-            // If the contract address format is strictly invalid, normalizeAssetConfig
-            // would have already failed fast above. We still call validateContractAddress
-            // here to ensure validation spans are consistently recorded.
-            metrics_1.globalMetrics.recordContractMetric("asset_issuer_contract_validated", 1, normalizedAsset.assetIssuer, "count");
-        }
-        // Claimable-balance policy (Issue #260) — default ignore
-        const claimablePolicyRaw = (core.getInput("claimable_balance_policy") || "ignore")
-            .trim()
-            .toLowerCase();
-        const claimableBalancePolicy = claimablePolicyRaw === "count" ? "count" : "ignore";
-        // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
-        const sep0010ChallengeXdr = core.getInput("sep0010_challenge_xdr") || "";
-        const sep0010DashboardUrl = core.getInput("sep0010_dashboard_url") || "";
-        // Custom comment template partial (#312) — workspace-relative path to a
-        // Markdown partial file injected before the footer.
-        const customCommentTemplatePath = core.getInput('custom_comment_template_path') || '';
-        const checkConfig = {
-            ...normalizedAsset,
-            minXlmReserve: Number(minXlmReserve),
-            minAssetBalance,
-            minTrustlineLimit,
-            horizonUrl,
-            homeDomainCheckEnabled,
-            expectedHomeDomain,
-            homeDomainCheckMode,
-            checkLedgerFreshness: checkLedgerFreshnessEnabled,
-            maxLedgerLagSeconds,
-            ledgerFreshnessFailOnStale,
-            claimableBalancePolicy,
-            unauthorizedTrustlinePolicy,
-            clawbackStrictMode,
-        };
-        // ---------------------------------------------------------------------------
-        // Batch mode (Issue #199)
-        // When stellar_addresses is set, validate all addresses and post a batch
-        // summary comment instead of the single-address flow.
-        // ---------------------------------------------------------------------------
-        if (stellarAddressesRaw.trim()) {
-            const batchAddresses = (0, batch_1.parseBatchAddresses)(stellarAddressesRaw);
-            core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
-            const batchCheckConfig = {
-                ...normalizedAsset,
-                minXlmReserve: Number(effectiveMinXlmReserveRaw),
-                horizonUrl: effectiveHorizonUrl,
-            };
-            const batchResults = await (0, batch_1.runBatchValidation)(batchAddresses, batchCheckConfig, effectiveHorizonUrl, {
-                fetchOptions: {
-                    timeoutMs: horizonTimeoutMs,
-                    maxRetries,
-                    retryBaseDelayMs,
-                    retryMaxDelayMs,
-                },
-            });
-            const batchSummary = (0, batch_1.buildBatchSummary)(batchResults);
-            const batchMarkdown = (0, batch_1.formatBatchSummaryMarkdown)(batchSummary, effectiveAssetCode);
-            if (shouldPostComment) {
-                try {
-                    const batchCommentUrl = await (0, comment_1.postIssueComment)(githubToken, batchMarkdown, {
-                        sticky: stickyComment,
-                        commentMode: commentThreadingMode,
-                        forceComment,
-                        snoozeWindowMs,
-                        issueNumber: issueNumberInput,
-                    });
-                    if (batchCommentUrl) {
-                        logger_1.logger.info("Batch comment created", {
-                            component: "index",
-                            commentUrl: batchCommentUrl,
-                        });
-                    }
-                }
-                catch (commentError) {
-                    const message = commentError instanceof Error
-                        ? commentError.message
-                        : String(commentError);
-                    core.warning(`Failed to post batch comment (non-fatal): ${message}`);
-                }
-            }
-            // Set batch-specific outputs
-            core.setOutput("batch_summary_json", JSON.stringify(batchSummary));
-            core.setOutput("batch_passed_count", String(batchSummary.passed));
-            core.setOutput("batch_failed_count", String(batchSummary.failed));
-            if (batchSummary.failed > 0 && effectiveFailOnMissing) {
-                core.setFailed(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
-            }
-            else if (batchSummary.failed > 0) {
-                core.warning(`Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`);
-            }
-            else {
-                core.info("Batch validation: all addresses passed.");
-            }
-            return;
-        }
-        core.info(`Checking Stellar account ${resolvedAddress} via ${horizonUrl}`);
-        if (waitUntilFunded) {
-            core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
-        }
-        // ---------------------------------------------------------------------------
-        // Ledger freshness / lag guard (Issue #107)
-        // Run before the account fetch so a stale Horizon is flagged before we trust
-        // the balance/trustline data it returns.
-        // ---------------------------------------------------------------------------
-        let freshnessResult;
-        if (checkLedgerFreshnessEnabled) {
-            core.info(`Checking ledger freshness (max lag: ${maxLedgerLagSeconds}s)…`);
-            try {
-                const raw = await (0, freshness_1.checkLedgerFreshness)(horizonUrl, {
-                    maxLagSeconds: maxLedgerLagSeconds,
-                    timeoutMs: Math.min(horizonTimeoutMs, 10000),
-                });
-                freshnessResult = {
-                    status: raw.status,
-                    lagSeconds: raw.lagSeconds,
-                    latestLedger: raw.latestLedger,
-                    message: raw.message,
-                    blocksValid: raw.status === "stale" && ledgerFreshnessFailOnStale,
-                };
-                if (raw.status === "stale") {
-                    const logMsg = `Ledger freshness check: STALE — ${raw.message}`;
-                    if (ledgerFreshnessFailOnStale) {
-                        core.error(logMsg);
-                    }
-                    else {
-                        core.warning(logMsg);
-                    }
-                }
-                else if (raw.status === "unknown") {
-                    core.warning(`Ledger freshness check: UNKNOWN — ${raw.message}`);
-                }
-                else {
-                    core.info(`Ledger freshness check: OK — ${raw.message}`);
-                }
-            }
-            catch (freshnessError) {
-                // Fail-open: a freshness check error never blocks the account check.
-                const msg = (0, inputs_1.getErrorMessage)(freshnessError);
-                core.warning(`Ledger freshness check failed (proceeding fail-open): ${msg}`);
-                freshnessResult = {
-                    status: "unknown",
-                    lagSeconds: null,
-                    latestLedger: null,
-                    message: `Freshness check error: ${msg}. Proceeding (fail-open).`,
-                    blocksValid: false,
-                };
-            }
-        }
-        let result = undefined;
-        const rateBudgetTracker = new resilience_1.RateBudgetTracker(horizonMaxRequests);
-        // Issue #209: Circuit breaker for Horizon fetches.
-        // Trips after 5 consecutive failures; recovers after 30s.
-        const horizonCircuitBreaker = new resilience_1.CircuitBreaker({
-            failureThreshold: 5,
-            recoveryTimeoutMs: 30000,
-            successThreshold: 2,
-        });
-        const customCache = (useCache || useActionsCacheBackend)
-            ? new cache_1.SimpleCache({
-                useActionsCacheBackend,
-                cacheKeyPrefix: 'trustbridge',
-            })
-            : undefined;
-        const horizonOptions = {
-            timeoutMs: horizonTimeoutMs,
-            maxRetries,
-            retryBaseDelayMs,
-            retryMaxDelayMs,
-            horizonUrlFallback: horizonUrlFallback || undefined,
-            fallbackUrls,
-            cacheTtlMs: (useCache || useActionsCacheBackend) ? horizonCacheTtlMs : 0,
-            useCache: useCache || useActionsCacheBackend,
-            cache: customCache,
-            allowCrossNetworkFallback,
-            rateBudgetTracker,
-            horizonMaxRequests,
-            circuitBreaker: horizonCircuitBreaker,
-            pinFingerprint: core.getInput('horizon_pin_fingerprint').trim() || undefined,
-        };
-        let account = null;
-        let horizonFetchStartMs = Date.now();
-        let horizonFetchLatencyMs = 0;
-        let horizonFetchStatusCode;
-        let horizonFetchError;
-        // Issue #304 — Fixture mode: short-circuit Horizon fetch with a local file.
-        if (fixtureMode) {
-            if (!fixturePath) {
-                core.setFailed('fixture_mode is true but fixture_path is not set. Provide a path to a JSON fixture file (e.g. fixtures/account-funded.json).');
-                return;
-            }
-            const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-            const resolvedFixturePath = path.resolve(workspaceRoot, fixturePath);
-            // Path-traversal guard: fixture must stay inside workspace root.
-            if (!resolvedFixturePath.startsWith(workspaceRoot + path.sep) && resolvedFixturePath !== workspaceRoot) {
-                core.setFailed(`fixture_path "${fixturePath}" resolves outside the workspace root. Path traversal is not allowed.`);
-                return;
-            }
-            try {
-                const fixtureRaw = fs.readFileSync(resolvedFixturePath, 'utf8');
-                account = JSON.parse(fixtureRaw);
-                core.info(`[fixture_mode] Loaded Horizon fixture from ${fixturePath} — no network call made.`);
-                horizonFetchStatusCode = 200;
-                horizonFetchLatencyMs = 0;
-                result = usePluginRunner
-                    ? (0, pluginRunner_1.runPlugins)({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, plugin_1.defaultRegistry)
-                    : await (0, checks_1.runAccountChecks)(account, checkConfig);
-            }
-            catch (fixtureError) {
-                const msg = (0, inputs_1.getErrorMessage)(fixtureError);
-                core.setFailed(`Failed to load fixture file "${fixturePath}": ${msg}`);
-                return;
-            }
+        else if (error instanceof horizon_1.HorizonError) {
+            core.error(error.message);
+            result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
         }
         else {
-            // Normal Horizon fetch path
-            try {
-                account = waitUntilFunded
-                    ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, effectiveResolvedAddress, {
-                        timeoutMs: waitUntilFundedTimeoutMs,
-                        pollIntervalMs: waitUntilFundedIntervalMs,
-                        requestTimeoutMs: horizonTimeoutMs,
-                        signal: jobController.signal,
-                        onPoll: (attempt, elapsedMs) => logger_1.logger.debug(`Account not yet funded — polling again`, {
-                            component: "index",
-                            attempt,
-                            elapsedMs,
-                        }),
-                    }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
-                    : await (0, horizon_1.fetchAccount)(horizonUrl, resolvedAddress, horizonOptions);
-                horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-                horizonFetchStatusCode = 200;
-                metrics_1.globalMetrics.stopTimer("horizon_fetch");
-                result = usePluginRunner
-                    ? (0, pluginRunner_1.runPlugins)({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, plugin_1.defaultRegistry)
-                    : await (0, checks_1.runAccountChecks)(account, checkConfig);
-            }
-            catch (error) {
-                horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-                metrics_1.globalMetrics.stopTimer("horizon_fetch");
-                if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-                    if (useFriendbot) {
-                        logger_1.logger.info('Account 404 encountered and use_friendbot enabled — calling Friendbot', {
-                            component: 'index',
-                            stellarAddress: effectiveResolvedAddress,
-                            friendbotUrl,
-                        });
-                        friendbotCalled = true;
-                        const fbResult = await (0, horizon_1.callFriendbot)(effectiveResolvedAddress, {
-                            friendbotUrl,
-                            timeoutMs: friendbotTimeoutMs,
-                        }, horizonUrl);
-                        friendbotSuccess = fbResult.success;
-                        friendbotTransactionHash = fbResult.transactionHash ?? '';
-                        if (fbResult.success) {
-                            logger_1.logger.info('Friendbot funding succeeded — re-fetching account', {
-                                component: 'index',
-                                transactionHash: fbResult.transactionHash,
-                            });
-                            try {
-                                account = await (0, horizon_1.fetchAccount)(horizonUrl, effectiveResolvedAddress, horizonOptions);
-                                horizonFetchStatusCode = 200;
-                                result = usePluginRunner
-                                    ? (0, pluginRunner_1.runPlugins)({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, plugin_1.defaultRegistry)
-                                    : await (0, checks_1.runAccountChecks)(account, checkConfig);
-                            }
-                            catch (refetchErr) {
-                                logger_1.logger.warn('Failed to re-fetch account after Friendbot funding', {
-                                    component: 'index',
-                                    error: refetchErr instanceof Error ? refetchErr.message : String(refetchErr),
-                                });
-                            }
-                        }
-                        else {
-                            logger_1.logger.warn(`Friendbot funding failed: ${fbResult.message}`, {
-                                component: 'index',
-                            });
-                        }
-                    }
-                    if (!account) {
-                        horizonFetchStatusCode = 404;
-                        horizonFetchError = error.message;
-                        // #144/#266: deterministic cross-network detection — probes canonical opposite
-                        // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
-                        const mismatchHint = await (0, checks_1.detectNetworkMismatch)(horizonUrl, stellarAddress).catch(() => undefined);
-                        if (mismatchHint) {
-                            core.warning(`Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
-                                `but horizon_url points at ${mismatchHint.configuredNetwork}.`);
-                        }
-                        // #260: claimable-balance-aware funded definition — when policy is 'count',
-                        // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
-                        let claimableCount;
-                        if (claimableBalancePolicy === "count") {
-                            try {
-                                const { fetchClaimableBalanceCount } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(9164)));
-                                claimableCount = await fetchClaimableBalanceCount(horizonUrl, stellarAddress);
-                                if (claimableCount > 0) {
-                                    core.info(`Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`);
-                                }
-                            }
-                            catch {
-                                claimableCount = 0;
-                            }
-                        }
-                        result = (0, checks_1.unfundedAccountResult)(stellarAddress, checkConfig, mismatchHint, claimableCount);
-                    }
-                }
-                else if ((0, horizon_1.isCircuitOpenError)(error)) {
-                    // #209/#434: the circuit breaker fast-failed the request, so Horizon was
-                    // never contacted and the account state is entirely unknown. Report this
-                    // as CIRCUIT_OPEN (not HORIZON_ERROR) and let the comment render a
-                    // dedicated banner so a resilience safeguard is not misread as an
-                    // account-level failure. statusCode is 0 — no HTTP response happened.
-                    horizonFetchStatusCode = 0;
-                    horizonFetchError = error.message;
-                    core.error(error.message);
-                    core.warning("Horizon circuit breaker is open — the account was not checked. " +
-                        "Re-run the workflow after the recovery window elapses.");
-                    metrics_1.globalMetrics.incrementCounter("errors");
-                    metrics_1.globalMetrics.incrementCounter("horizon_circuit_open");
-                    metrics_1.globalMetrics.recordMetric("horizon_circuit_open", 1, "count");
-                    result = (0, checks_1.circuitOpenFailureResult)(error.message, checkConfig);
-                }
-                else if (error instanceof horizon_1.HorizonError) {
-                    horizonFetchStatusCode = error.statusCode;
-                    horizonFetchError = error.message;
-                    core.error(error.message);
-                    metrics_1.globalMetrics.incrementCounter("errors");
-                    metrics_1.globalMetrics.recordMetric("horizon_error", error.statusCode, "http_status");
-                    result = (0, checks_1.horizonFailureResult)(error.message, checkConfig);
-                }
-                else if (error instanceof resilience_1.RateBudgetExhaustedError) {
-                    // Fail closed: the rate budget was exhausted (horizon_max_requests exceeded).
-                    // The account state is unknown — do NOT emit an unfunded/404 result.
-                    // This is a distinct reason_code so dashboards and downstream jobs can
-                    // differentiate "account not found" from "budget exhausted before we asked".
-                    horizonFetchError = error.message;
-                    core.error(error.message);
-                    metrics_1.globalMetrics.incrementCounter('errors');
-                    metrics_1.globalMetrics.recordMetric('horizon_rate_budget_exhausted', 1, 'count');
-                    result = (0, checks_1.rateBudgetExhaustedResult)(error.message, checkConfig);
-                }
-                else {
-                    const message = (0, inputs_1.getErrorMessage)(error);
-                    horizonFetchError = message;
-                    core.error(message);
-                    metrics_1.globalMetrics.incrementCounter("errors");
-                    result = (0, checks_1.horizonFailureResult)(message, checkConfig);
-                }
-            }
-            finally {
-                // Ensure the controller is not leaked if the function returns early.
-                jobController.abort();
-            }
-        } // end else (normal Horizon fetch path — fixtureMode === false)
-        // result is undefined only when the run was cancelled and we returned early above.
-        if (result == null) {
-            return;
+            const message = (0, inputs_1.getErrorMessage)(error);
+            core.error(message);
+            result = (0, checks_1.horizonFailureResult)(message, checkConfig);
         }
-        // Capture the validation timestamp once, used for validated_at output and delta.
-        const validatedAt = new Date().toISOString();
-        // Attach the freshness result to every result path so comment.ts can render it.
-        if (freshnessResult !== undefined) {
-            result = { ...result, ledgerFreshnessResult: freshnessResult };
-            // When stale AND fail-on-stale is enabled, override valid so the gate fires.
-            if (freshnessResult.blocksValid && result.valid) {
-                result = { ...result, valid: false };
-            }
-        }
-        // ---------------------------------------------------------------------------
-        // Multi-asset trustline checks (Issue #201)
-        // Run trustline checks for additional assets from assets_json.
-        // ---------------------------------------------------------------------------
-        let multiAssetResults = [];
-        if (assetsJsonRaw.trim()) {
-            const extraAssets = (0, assets_1.parseAssetsJson)(assetsJsonRaw);
-            const dedupedAssets = extraAssets.filter((a) => !(a.assetCode === normalizedAsset.assetCode &&
-                a.assetIssuer === normalizedAsset.assetIssuer));
-            if (dedupedAssets.length > 0 && account) {
-                core.info(`Checking trustlines for ${dedupedAssets.length} additional asset(s)…`);
-                for (const asset of dedupedAssets) {
-                    const hasTrustline = account.balances.some((b) => b.asset_type !== "native" &&
-                        "asset_code" in b &&
-                        b.asset_code === asset.assetCode &&
-                        "asset_issuer" in b &&
-                        b.asset_issuer === asset.assetIssuer);
-                    const balanceEntry = account.balances.find((b) => b.asset_type !== "native" &&
-                        "asset_code" in b &&
-                        b.asset_code === asset.assetCode &&
-                        "asset_issuer" in b &&
-                        b.asset_issuer === asset.assetIssuer);
-                    const balance = balanceEntry && "balance" in balanceEntry
-                        ? balanceEntry.balance
-                        : "0";
-                    multiAssetResults.push({
-                        assetCode: asset.assetCode,
-                        assetIssuer: asset.assetIssuer,
-                        trustlineExists: hasTrustline,
-                        balance,
-                    });
-                    if (hasTrustline) {
-                        core.info(`  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`);
-                    }
-                    else {
-                        core.warning(`  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`);
-                    }
-                }
-            }
-        }
-        if (writeValidationJsonEnabled) {
-            (0, outputs_1.writeValidationJson)({
-                result,
-                stellarAddress: effectiveResolvedAddress,
-                assetCode: effectiveAssetCode,
-                assetIssuer: effectiveAssetIssuer,
-                horizonUrl: effectiveHorizonUrl,
-                outputPath: validationJsonPath,
-                privacyMode,
-            });
-            core.info(`Wrote validation JSON artifact to ${validationJsonPath}`);
-        }
-        // ---------------------------------------------------------------------------
-        // SARIF output (Issue #197)
-        // Write SARIF 2.1.0 to disk when sarif_output_path is set.
-        // ---------------------------------------------------------------------------
-        const sarifOutputPath = core.getInput("sarif_output_path") || "";
-        if (sarifOutputPath.trim()) {
-            const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-            const resolvedSarifPath = path.isAbsolute(sarifOutputPath)
-                ? sarifOutputPath
-                : path.join(workspaceRoot, sarifOutputPath.trim());
-            // Path traversal guard
-            const normalizedWorkspace = path.normalize(workspaceRoot);
-            const normalizedSarif = path.normalize(resolvedSarifPath);
-            if (!normalizedSarif.startsWith(normalizedWorkspace + path.sep) &&
-                normalizedSarif !== normalizedWorkspace) {
-                core.warning(`sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.`);
-            }
-            else {
-                try {
-                    const sarif = (0, sarif_1.buildSarifOutput)(result, effectiveAssetCode, effectiveHorizonUrl, effectiveResolvedAddress);
-                    if (!(0, sarif_1.validateSarifSchema)(sarif)) {
-                        core.warning("Generated SARIF output failed schema validation — skipping SARIF write.");
-                    }
-                    else {
-                        const sarifJson = (0, sarif_1.serializeSarif)(sarif);
-                        const sarifDir = path.dirname(normalizedSarif);
-                        if (!fs.existsSync(sarifDir)) {
-                            fs.mkdirSync(sarifDir, { recursive: true });
-                        }
-                        fs.writeFileSync(normalizedSarif, sarifJson, "utf8");
-                        core.info(`Wrote SARIF 2.1.0 output to ${normalizedSarif}`);
-                    }
-                }
-                catch (sarifError) {
-                    const msg = sarifError instanceof Error ? sarifError.message : String(sarifError);
-                    core.warning(`Failed to write SARIF output (non-fatal): ${msg}`);
-                }
-            }
-        }
-        // Reserved inputs kept for forward-compatible workflows / labels / Soroban.
-        logger_1.logger.debug("Optional feature flags", {
-            component: "index",
-            autoWalletLabels,
-            sorobanRpcUrl: sorobanRpcUrl || undefined,
-            contractId: contractId || undefined,
-            githubUsername: githubUsername || undefined,
-            trustbridgeConfigPath,
-        });
-        // Issue #212: Load previous validation artifact for delta computation.
-        // Try local path first; fall back to auto-discovery via Actions API.
-        let previousArtifact = (0, delta_1.loadPreviousValidationArtifact)(previousValidationPath);
-        if (!previousArtifact && !previousValidationPath.trim()) {
-            previousArtifact = await (0, delta_1.discoverPreviousValidationArtifact)(githubToken);
-            if (previousArtifact) {
-                core.info("Auto-discovered previous validation artifact from prior workflow run.");
-            }
-        }
-        const delta = (0, delta_1.computeValidationDelta)(previousArtifact, result);
-        if (!previousArtifact && previousValidationPath.trim()) {
-            core.info("No previous validation artifact found — omitting delta (first run or missing download).");
-        }
-        else if (delta) {
-            core.info(`Validation delta vs previous run: newlyPassed=${delta.newlyPassed.length}, newlyFailed=${delta.newlyFailed.length}, unchanged=${delta.unchanged.length}`);
-        }
-        // Build diagnostics config when debug_mode is on (Issue #205).
-        // Never includes secrets; addresses are redacted in the block builder.
-        let diagnosticsConfig;
-        if (debugMode) {
-            diagnosticsConfig = {
-                inputs: {
-                    horizonUrl,
-                    horizonUrlFallback: horizonUrlFallback || undefined,
-                    assetCode: effectiveAssetCode,
-                    assetIssuer: effectiveAssetIssuer,
-                    minXlmReserve: effectiveMinXlmReserveRaw,
-                    horizonTimeoutMs,
-                    useCache,
-                    cacheTtlMs: horizonCacheTtlMs,
-                    allowCrossNetworkFallback,
-                    maxRetries,
-                    retryBaseDelayMs,
-                    retryMaxDelayMs,
-                    debugMode,
-                },
-                runInfo: {
-                    horizonStatusCode: horizonFetchStatusCode,
-                    horizonLatencyMs: horizonFetchLatencyMs,
-                    horizonError: horizonFetchError,
-                },
-            };
-        }
-        const commentBody = (0, comment_1.formatCommentBody)(result, {
-            ...checkConfig,
-            stellarAddress: effectiveResolvedAddress,
-            horizonUrl,
-            failOnMissing,
-            stickyComment,
-            waitUntilFunded,
-            waitUntilFundedTimeoutMs,
-            waitUntilFundedIntervalMs,
-            onboardingChecklist,
-            sep0007DeepLinks,
-            sep0007OriginDomain,
-            sep0010ChallengeXdr,
-            sep0010DashboardUrl,
-            locale,
-            debugMode,
-            docsBaseUrl: core.getInput('docs_base_url') || undefined,
-            delta,
-            diagnosticsConfig,
-            customCommentTemplatePath: customCommentTemplatePath || undefined,
-            // Per-asset trustline table (Issue #552) — surface the assets_json
-            // check results in the comment instead of only logging them.
-            assets: multiAssetResults.map((m) => ({
-                assetCode: m.assetCode,
-                assetIssuer: m.assetIssuer,
-                trustlineExists: m.trustlineExists,
-                balance: m.balance,
-            })),
-        });
-        const buildCommentBody = (existingBody) => {
-            const rawBody = (0, comment_1.formatCommentBody)(result, {
-                ...checkConfig,
-                stellarAddress: effectiveResolvedAddress,
-                horizonUrl,
-                failOnMissing,
-                stickyComment,
-                waitUntilFunded,
-                waitUntilFundedTimeoutMs,
-                waitUntilFundedIntervalMs,
-                onboardingChecklist,
-                sep0007DeepLinks,
-                sep0007OriginDomain,
-                sep0010ChallengeXdr,
-                sep0010DashboardUrl,
-                locale,
-                debugMode,
-                docsBaseUrl: core.getInput('docs_base_url') || undefined,
-                delta,
-                diagnosticsConfig,
-                customCommentTemplatePath: customCommentTemplatePath || undefined,
-                assets: multiAssetResults.map((m) => ({
-                    assetCode: m.assetCode,
-                    assetIssuer: m.assetIssuer,
-                    trustlineExists: m.trustlineExists,
-                    balance: m.balance,
-                })),
-            });
-            const conflictSection = (0, outputs_1.formatConflictReportMarkdown)(conflictReport);
-            const fullBody = conflictSection ? `${rawBody}\n${conflictSection}` : rawBody;
-            const bodyBytes = Buffer.byteLength(fullBody, 'utf8');
-            if (bodyBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
-                return (0, comment_1.buildTruncatedCommentBody)(fullBody, reportOutputPath);
-            }
-            return fullBody;
-        };
-        // Build a baseline body (no existing comment) for size-check and full-report write.
-        const baselineBody = buildCommentBody(undefined);
-        const baselineBytes = Buffer.byteLength(baselineBody, 'utf8');
-        let fullReportPath;
-        if (baselineBytes > comment_1.COMMENT_SIZE_LIMIT_BYTES) {
-            core.warning(`Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${comment_1.COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
-                `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`);
-            fullReportPath = (0, comment_1.writeFullReport)(buildCommentBody(undefined), reportOutputPath);
-        }
-        let commentUrl;
-        if (!shouldPostComment) {
-            core.info(`posting_mode=${postingMode} — skipping issue comment post (outputs still set).`);
-        }
-        else if (discussionNodeId) {
-            // Discussion events carry a GraphQL node id, not an issue number —
-            // comment via GraphQL, never the REST issues API (Issue #221).
-            // Checklist persistence for discussions passes undefined for the existing
-            // body; the factory still runs through the full format path.
-            const discussionBody = buildCommentBody(undefined);
-            try {
-                commentUrl = await (0, comment_1.postDiscussionComment)(githubToken, discussionBody, {
-                    sticky: stickyComment,
-                    forceComment,
-                    snoozeWindowMs,
-                });
-                if (commentUrl) {
-                    logger_1.logger.info("Discussion comment created", {
-                        component: "index",
-                        commentUrl,
-                    });
-                }
-                else {
-                    logger_1.logger.info("No discussion comment posted (no discussion context).", {
-                        component: "index",
-                    });
-                }
-            }
-            catch (commentError) {
-                const message = commentError instanceof Error
-                    ? commentError.message
-                    : String(commentError);
-                core.warning(`Failed to post discussion comment (non-fatal): ${message}`);
-            }
-        }
-        else {
-            metrics_1.globalMetrics.startTimer("comment_post");
-            try {
-                // Use bodyFactory so postIssueComment passes the fetched existing
-                // comment body to buildCommentBody — preserving checklist state (Issue #311)
-                // without a second findStickyComment round-trip.
-                commentUrl = await (0, comment_1.postIssueComment)(githubToken, baselineBody, {
-                    sticky: stickyComment,
-                    commentMode: commentThreadingMode,
-                    forceComment,
-                    snoozeWindowMs,
-                    bodyFactory: buildCommentBody,
-                });
-                metrics_1.globalMetrics.stopTimer("comment_post");
-                if (commentUrl) {
-                    logger_1.logger.info("Issue comment created", {
-                        component: "index",
-                        commentUrl,
-                    });
-                }
-            }
-            catch (commentError) {
-                metrics_1.globalMetrics.stopTimer("comment_post");
-                const message = commentError instanceof Error
-                    ? commentError.message
-                    : String(commentError);
-                core.warning(`Failed to post issue comment (non-fatal): ${message}`);
-            }
-        }
-        // Issue #535: publish every action output exactly once, at the end of the run.
-        // Comment URL, validation timestamp and the metric timings are only final at
-        // this point, so this call replaces the earlier partial call plus the
-        // redundant friendbot_* writes that followed it (toActionOutputs already
-        // emits those keys).  // ---------------------------------------------------------------------------
-        // GitHub Checks API integration (Wave #26 / Issue #421)
-        // When use_check_runs is true, creates a Check Run with check annotations.
-        // The check_run_id / check_run_conclusion outputs are published through
-        // setValidationOutputs below (Issue #550) so it remains the single
-        // publisher of every action.yml output.
-        // ---------------------------------------------------------------------------
-        let checkRunId;
-        let checkRunConclusion;
-        if (useCheckRuns && result) {
-            if (!githubToken) {
-                core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
-            }
-            else {
-                try {
-                    const checkRun = await (0, checks_run_1.createCheckRun)(result, githubToken, {
-                        stellarAddress: effectiveResolvedAddress,
-                    });
-                    checkRunId = checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : undefined;
-                    checkRunConclusion = checkRun.success ? (0, checks_run_1.determineCheckConclusion)(result) : undefined;
-                }
-                catch (checkRunError) {
-                    const message = checkRunError instanceof Error ? checkRunError.message : String(checkRunError);
-                    core.warning(`Failed to create Check Run (non-fatal): ${message}`);
-                }
-            }
-        }
-        // Issue #535: publish every action output exactly once, at the end of the run.
-        // Comment URL, validation timestamp and the metric timings are only final at
-        // this point, so this call replaces the earlier partial call plus the
-        // redundant friendbot_* writes that followed it (toActionOutputs already
-        // emits those keys). The Check Run outputs moved here in Issue #550 for the
-        // same reason: every action.yml output is published by this one call.
-        (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath, {
-            validatedAt,
-            timings: metrics_1.globalMetrics.getTimingBreakdown(),
-            friendbotCalled,
-            friendbotSuccess,
-            friendbotTransactionHash,
-            conflictReport,
-            checkRunId,
-            checkRunConclusion,
-        });
-        // ---------------------------------------------------------------------------
-        // Wallet labels (Issue #200)
-        // When auto_wallet_labels is true and we're in an issue context, apply
-        // the appropriate wallet state label to the issue.
-        // ---------------------------------------------------------------------------
-        if (autoWalletLabels && result) {
-            const issueNumber = github.context.payload.issue?.number;
-            if (issueNumber) {
-                const { owner, repo } = github.context.repo;
-                try {
-                    const octokit = github.getOctokit(githubToken, (0, proxy_1.getOctokitProxyOptions)());
-                    const labelResult = await (0, horizon_1.applyWalletLabels)(octokit, owner, repo, issueNumber, {
-                        accountFunded: result.accountFunded,
-                        trustlineExists: result.trustlineExists,
-                        xlmReserveMet: result.xlmReserveMet,
-                    }, { removeStale: true });
-                    if (labelResult.error) {
-                        core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
-                    }
-                    else {
-                        core.info(`Applied wallet label: ${labelResult.applied}`);
-                    }
-                }
-                catch (labelError) {
-                    const msg = labelError instanceof Error ? labelError.message : String(labelError);
-                    core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
-                }
-            }
-        }
-        if ((readyLabels.passLabel || readyLabels.failLabel) && result) {
-            const issueNumber = github.context.payload.issue?.number;
-            if (issueNumber) {
-                const { owner, repo } = github.context.repo;
-                try {
-                    const octokit = github.getOctokit(githubToken);
-                    const readyLabelResult = await (0, horizon_1.applyReadyLabels)(octokit, owner, repo, issueNumber, {
-                        ready: result.valid,
-                        passLabel: readyLabels.passLabel,
-                        failLabel: readyLabels.failLabel,
-                    });
-                    if (readyLabelResult.error) {
-                        core.warning(`Ready label update failed (non-fatal): ${readyLabelResult.error}`);
-                    }
-                    else if (readyLabelResult.applied) {
-                        core.info(`Applied ready label: ${readyLabelResult.applied}`);
-                    }
-                }
-                catch (labelError) {
-                    const msg = labelError instanceof Error ? labelError.message : String(labelError);
-                    core.warning(`Failed to apply ready label (non-fatal): ${msg}`);
-                }
-            }
-        }
-        // ---------------------------------------------------------------------------
-        // Auto-unassign on not-ready (Issue #228)
-        // When unassign_on_not_ready is true and readiness checks fail, automatically
-        // unassign the GitHub assignee(s) from the issue.
-        // ---------------------------------------------------------------------------
-        if (unassignOnNotReady && result && !result.valid) {
-            const issueNumber = github.context.payload.issue?.number;
-            const { owner, repo } = github.context.repo;
-            const octokit = github.getOctokit(githubToken, (0, proxy_1.getOctokitProxyOptions)());
-            await handleAutoUnassign({
-                octokit,
-                owner,
-                repo,
-                issueNumber: issueNumberInput ?? issueNumber,
-                payload: github.context.payload,
-                result,
-                unassignOnNotReady,
-            });
-        }
-        // GitHub Projects v2 integration (Issue #222)
-        const targetProjectStatus = result.valid
-            ? projectStatusPass
-            : projectStatusFail;
-        if (projectId.trim() && targetProjectStatus.trim()) {
-            const contentNodeId = github.context.payload.issue?.node_id ??
-                github.context.payload.pull_request?.node_id ??
-                "";
-            if (!projectToken) {
-                core.warning("[Projects v2] A project status is configured, but no GitHub token is available; skipping status update.");
-            }
-            else if (!contentNodeId) {
-                core.warning("[Projects v2] A project status is configured, but this event has no issue or pull request node ID; skipping status update.");
-            }
-            else {
-                try {
-                    const octokit = github.getOctokit(projectToken, (0, proxy_1.getOctokitProxyOptions)());
-                    await (0, projects_1.updateProjectV2Status)({
-                        octokit,
-                        projectId,
-                        contentNodeId,
-                        statusFieldName: projectStatusField,
-                        targetStatusValue: targetProjectStatus,
-                    });
-                }
-                catch (projectError) {
-                    const message = projectError instanceof Error
-                        ? projectError.message
-                        : String(projectError);
-                    core.warning(`[Projects v2] Failed to initialize status update (non-fatal): ${message}`);
-                }
-            }
-        }
-        // Signed dashboard webhook notification (Issue #101)
-        // Fires after comment posting; failures are isolated and never block the run.
-        if (webhookUrl) {
-            const { owner, repo } = github.context.repo;
-            const issueNumber = github.context.payload.issue?.number ?? null;
-            await (0, webhook_1.sendWebhookNotification)(result, effectiveResolvedAddress, {
-                webhookUrl,
-                webhookSecret,
-                timeoutMs: webhookTimeoutMs,
-                authMode: webhookAuthMode,
-                oidcAudience: webhookOidcAudience,
-            }, `${owner}/${repo}`, issueNumber);
-        }
-        if (debugMode) {
-            logger_1.logger.debug("Metrics summary (JSON artifact)", { component: "metrics" });
-            core.debug(metrics_1.globalMetrics.toJSON());
-            // Emit validation spans for observability (Issue #35)
-            const spans = (0, validation_1.getSpans)();
-            if (spans.length > 0) {
-                logger_1.logger.debug("Validation spans", {
-                    component: "validation",
-                    spanCount: spans.length,
-                });
-                core.debug(JSON.stringify(spans, null, 2));
-            }
-        }
-        // Stop total timer and collect timing metrics
-        metrics_1.globalMetrics.stopTimer("total");
-        // Emit OpenTelemetry trace summary when tracing is enabled
-        (0, tracing_1.emitTraceSummary)();
-        // Wave #27: write Job Summary with latency, failure codes, JSON artifact
-        await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary());
-        if (result.valid) {
-            core.info("All TrustBridge checks passed.");
-            return;
-        }
-        const summary = (0, summary_1.formatFailureSummary)(result);
-        const failureMessage = `TrustBridge checks failed: ${summary}`;
-        if (effectiveFailOnMissing) {
-            core.setFailed(failureMessage);
-        }
-        else {
-            core.warning(failureMessage);
-        }
+    }
+    (0, outputs_1.setValidationOutputs)(result);
+    const commentBody = (0, comment_1.formatCommentBody)(result, {
+        ...checkConfig,
+        stellarAddress,
+        horizonUrl,
+        failOnMissing,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
+        sep0007DeepLinks,
+        sep0007OriginDomain,
     });
+    let commentUrl;
+    try {
+        commentUrl = await (0, comment_1.postIssueComment)(githubToken, commentBody, { sticky: stickyComment });
+        if (commentUrl) {
+            logger_1.logger.info('Issue comment created', { component: 'index', commentUrl });
+        }
+    }
+    catch (commentError) {
+        const message = (0, inputs_1.getErrorMessage)(commentError);
+        core.warning(`Failed to post issue comment: ${message}`);
+    }
+    (0, outputs_1.setValidationOutputs)(result, commentUrl);
+    if (debugMode) {
+        logger_1.logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
+        core.debug(metrics_1.globalMetrics.toJSON());
+        // Emit validation spans for observability (Issue #35)
+        const spans = (0, validation_1.getSpans)();
+        if (spans.length > 0) {
+            logger_1.logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+            core.debug(JSON.stringify(spans, null, 2));
+        }
+    }
+    if (result.valid) {
+        core.info('All TrustBridge checks passed.');
+        return;
+    }
+    const summary = (0, summary_1.formatFailureSummary)(result);
+    const failureMessage = `TrustBridge checks failed: ${summary}`;
+    if (failOnMissing) {
+        core.setFailed(failureMessage);
+    }
+    else {
+        core.warning(failureMessage);
+    }
 }
-if (process.env.JEST_WORKER_ID === undefined) {
-    run().catch((error) => {
-        core.setFailed((0, inputs_1.getErrorMessage)(error));
-    });
-}
+run().catch((error) => {
+    core.setFailed((0, inputs_1.getErrorMessage)(error));
+});
 
 
 /***/ }),
 
 /***/ 8422:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRUSTBRIDGE_ENV_MAP = void 0;
 exports.parseBooleanInput = parseBooleanInput;
-exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
 exports.getErrorMessage = getErrorMessage;
-exports.parseAssigneeAddressMap = parseAssigneeAddressMap;
-exports.resolveAddressFromAssigneeMap = resolveAddressFromAssigneeMap;
-exports.parseUnauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy;
-exports.resolveInput = resolveInput;
-exports.parsePresetInput = parsePresetInput;
-exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
         return defaultValue;
@@ -42365,64 +35500,6 @@ function parseBooleanInput(value, defaultValue) {
         return false;
     }
     return defaultValue;
-}
-const TRUTHY = ['true', '1', 'yes'];
-const FALSY = ['false', '0', 'no'];
-/**
- * Resolve the maintainer-skip input, honouring the canonical
- * `skip_for_maintainers` name and the deprecated `skip_if_maintainer` alias
- * (Issue #448).
- *
- * Precedence rules, in order:
- *
- * 1. `skip_for_maintainers` wins whenever it carries an explicit boolean.
- *    A caller who writes `skip_for_maintainers: false` alongside a stale
- *    `skip_if_maintainer: true` gets the explicit `false` — the canonical
- *    input is never silently overridden.
- * 2. The alias is consulted only when the canonical input is unset/empty.
- *    This is what makes the alias usable at all: `action.yml` gives the
- *    canonical input a `false` default, so "canonical is unset" is detected
- *    from the raw (pre-default) input string rather than from the parsed
- *    value.
- * 3. If neither is supplied, the value is `false` (opt-in only).
- *
- * When both are supplied with conflicting values, `conflict` is set so the
- * caller can warn; the canonical value is still the one used.
- *
- * @param canonicalValue Raw `skip_for_maintainers` input.
- * @param aliasValue     Raw `skip_if_maintainer` input.
- * @returns              Resolved value plus provenance.
- */
-function resolveMaintainerSkipInput(canonicalValue, aliasValue) {
-    const canonical = (canonicalValue ?? '').trim();
-    const alias = (aliasValue ?? '').trim();
-    const canonicalIsBoolean = TRUTHY.includes(canonical.toLowerCase())
-        || FALSY.includes(canonical.toLowerCase());
-    const aliasIsBoolean = TRUTHY.includes(alias.toLowerCase())
-        || FALSY.includes(alias.toLowerCase());
-    if (canonicalIsBoolean) {
-        const enabled = parseBooleanInput(canonical, false);
-        return {
-            enabled,
-            source: 'skip_for_maintainers',
-            conflict: aliasIsBoolean && parseBooleanInput(alias, false) !== enabled,
-            usedDeprecatedAlias: false,
-        };
-    }
-    if (aliasIsBoolean) {
-        return {
-            enabled: parseBooleanInput(alias, false),
-            source: 'skip_if_maintainer',
-            conflict: false,
-            usedDeprecatedAlias: true,
-        };
-    }
-    return {
-        enabled: false,
-        source: 'default',
-        conflict: false,
-        usedDeprecatedAlias: false,
-    };
 }
 function parseNumberInput(value, defaultValue, options = {}) {
     if (value === undefined || value.trim() === '') {
@@ -42442,188 +35519,6 @@ function parseNumberInput(value, defaultValue, options = {}) {
 }
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
-}
-/**
- * Parse `assignee_address_map` from either inline JSON or a path to a JSON file.
- *
- * Inline JSON must start with `{`. Anything else is treated as a file path
- * relative to `workspaceRoot` (or absolute).
- */
-function parseAssigneeAddressMap(raw, options = {}) {
-    const trimmed = (raw ?? '').trim();
-    if (!trimmed) {
-        return {};
-    }
-    // Inline JSON: objects/arrays, or bare JSON literals that should fail validation.
-    // Anything else is treated as a file path relative to the workspace.
-    const looksLikeInlineJson = trimmed.startsWith('{') ||
-        trimmed.startsWith('[') ||
-        trimmed === 'null' ||
-        trimmed === 'true' ||
-        trimmed === 'false' ||
-        (trimmed.startsWith('"') && trimmed.endsWith('"'));
-    let jsonText = trimmed;
-    if (!looksLikeInlineJson) {
-        const root = options.workspaceRoot ?? process.cwd();
-        const candidate = path.isAbsolute(trimmed) ? trimmed : path.join(root, trimmed);
-        const resolvedPath = path.normalize(candidate);
-        const resolvedRoot = path.normalize(root);
-        if (!path.isAbsolute(trimmed) &&
-            !resolvedPath.startsWith(resolvedRoot + path.sep) &&
-            resolvedPath !== resolvedRoot) {
-            throw new Error(`assignee_address_map path resolves outside the workspace root: "${trimmed}"`);
-        }
-        if (!fs.existsSync(resolvedPath)) {
-            throw new Error(`assignee_address_map file not found: "${trimmed}". ` +
-                'Provide inline JSON ({"username":"G..."}) or a path to a roster JSON file.');
-        }
-        try {
-            jsonText = fs.readFileSync(resolvedPath, 'utf8');
-        }
-        catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            throw new Error(`Failed to read assignee_address_map file "${trimmed}": ${msg}`);
-        }
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(jsonText);
-    }
-    catch {
-        throw new Error('assignee_address_map must be valid JSON (object of GitHub username → G-address) ' +
-            'or a path to such a file. Received invalid JSON.');
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('assignee_address_map must be a JSON object mapping GitHub usernames to Stellar G-addresses.');
-    }
-    const result = {};
-    for (const [key, value] of Object.entries(parsed)) {
-        const login = key.trim();
-        if (!login) {
-            throw new Error('assignee_address_map contains an empty username key.');
-        }
-        if (typeof value !== 'string') {
-            throw new Error(`assignee_address_map entry for "${login}" must be a string Stellar G-address.`);
-        }
-        result[login.toLowerCase()] = value.trim();
-    }
-    return result;
-}
-/**
- * Look up a Stellar address for an assignee login in a parsed roster map.
- * Throws an actionable error when the login is missing or not in the map.
- */
-function resolveAddressFromAssigneeMap(map, assigneeLogin) {
-    const login = (assigneeLogin ?? '').trim();
-    if (!login) {
-        throw new Error('assignee_address_map was provided but no assignee login was found in the GitHub event context. ' +
-            'Use this input with `on: issues: types: [assigned]` (payload.assignee), ' +
-            'or ensure the issue has at least one assignee.');
-    }
-    const address = map[login.toLowerCase()];
-    if (!address) {
-        throw new Error(`Assignee "${login}" is not present in assignee_address_map. ` +
-            'Add an entry for this GitHub username mapping to their Stellar G-address, ' +
-            'or pass stellar_address_input explicitly instead of using the roster map.');
-    }
-    return address;
-}
-/**
- * Parses the `unauthorized_trustline_policy` input, which controls how a
- * trustline that exists but is not yet authorized by the issuer
- * (AUTHORIZATION_REQUIRED) is treated:
- *   - "fail"   — the trustline check does not pass; readiness outputs
- *                reflect the stricter meaning.
- *   - "warn"   — the trustline check still passes, but a warning is added
- *                to the comment. This is the safe default: it surfaces the
- *                risk without breaking existing green workflows.
- *   - "ignore" — no additional check or warning (pre-#72 behavior).
- */
-function parseUnauthorizedTrustlinePolicy(value) {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-        return 'warn';
-    }
-    if (normalized === 'fail' || normalized === 'warn' || normalized === 'ignore') {
-        return normalized;
-    }
-    throw new Error(`unauthorized_trustline_policy must be one of "fail", "warn", or "ignore". Received: "${value}"`);
-}
-// ---------------------------------------------------------------------------
-// #147 — TRUSTBRIDGE_* environment variable support
-// ---------------------------------------------------------------------------
-/**
- * Mapping of TRUSTBRIDGE_* environment variable names to action input names.
- * Explicit `with:` values always win; env is only used when with: is empty.
- */
-exports.TRUSTBRIDGE_ENV_MAP = {
-    TRUSTBRIDGE_HORIZON_URL: 'horizon_url',
-    TRUSTBRIDGE_HORIZON_URL_FALLBACK: 'horizon_url_fallback',
-    TRUSTBRIDGE_RPC_FALLBACK_URL: 'rpc_fallback_url',
-    TRUSTBRIDGE_ASSET_CODE: 'asset_code',
-    TRUSTBRIDGE_ASSET_ISSUER: 'asset_issuer',
-    TRUSTBRIDGE_MIN_XLM_RESERVE: 'min_xlm_reserve',
-    TRUSTBRIDGE_FAIL_ON_MISSING: 'fail_on_missing',
-    TRUSTBRIDGE_DEBUG_MODE: 'debug_mode',
-    TRUSTBRIDGE_HORIZON_TIMEOUT_MS: 'horizon_timeout_ms',
-    TRUSTBRIDGE_STICKY_COMMENT: 'sticky_comment',
-    TRUSTBRIDGE_WAIT_UNTIL_FUNDED: 'wait_until_funded',
-    TRUSTBRIDGE_WAIT_UNTIL_FUNDED_TIMEOUT_MS: 'wait_until_funded_timeout_ms',
-    TRUSTBRIDGE_WAIT_UNTIL_FUNDED_INTERVAL_MS: 'wait_until_funded_interval_ms',
-    TRUSTBRIDGE_HORIZON_CACHE_TTL_MS: 'horizon_cache_ttl_ms',
-    TRUSTBRIDGE_USE_CACHE: 'use_cache',
-    TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
-    TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
-    TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
-};
-/**
- * Resolve an action input with TRUSTBRIDGE_* env fallback.
- */
-function resolveInput(inputName, withValue, env = process.env) {
-    if (withValue !== '') {
-        return withValue;
-    }
-    const envKey = Object.entries(exports.TRUSTBRIDGE_ENV_MAP).find(([, mapped]) => mapped === inputName)?.[0];
-    if (envKey) {
-        const envValue = env[envKey];
-        if (envValue !== undefined && envValue !== '') {
-            return envValue;
-        }
-    }
-    return '';
-}
-/**
- * Resolve campaign preset name from network/preset inputs.
- * Empty string means "no preset".
- */
-function parsePresetInput(networkInput, presetInput) {
-    const preset = (presetInput ?? '').trim().toLowerCase();
-    if (preset)
-        return preset;
-    const network = (networkInput ?? '').trim().toLowerCase();
-    if (network === 'testnet' || network === 'public' || network === 'mainnet') {
-        return network === 'mainnet' ? 'public' : network;
-    }
-    return '';
-}
-/**
- * Resolves the effective GitHub authentication token from either `github_app_token`
- * (for GitHub App installation auth) or standard `github_token`.
- *
- * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
- * it takes precedence over `github_token`.
- * (Issue #225)
- */
-function resolveGitHubAuthToken(options) {
-    const appToken = options.githubAppToken?.trim();
-    if (appToken && appToken.length > 0) {
-        return appToken;
-    }
-    const token = options.githubToken?.trim();
-    if (token && token.length > 0) {
-        return token;
-    }
-    throw new Error('Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.');
 }
 
 
@@ -42648,170 +35543,22 @@ function resolveGitHubAuthToken(options) {
  * having to manually construct a Change Trust operation in Stellar Lab.
  *
  * Reference: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md
- *
- * ## FAQ anchor deep links (Issue #104)
- *
- * Each failing check maps to a specific anchor in `docs/FAQ.md` so
- * contributors land on the exact fix rather than a generic docs page.
- * Use `buildFaqLink` to generate a durable link from a check name,
- * or `getFaqAnchorForCheck` to resolve the anchor directly.
- *
- * The base URL defaults to this repository's `docs/FAQ.md` but can be
- * overridden with the `docs_base_url` action input for forks or mirrors.
- * Invalid overrides fall back to the default silently so comment posting
- * is never blocked by a bad URL input.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.KNOWN_HORIZON_NETWORKS = exports.FAQ_ANCHORS = exports.DEFAULT_FAQ_BASE_URL = void 0;
-exports.getFaqAnchorForCheck = getFaqAnchorForCheck;
-exports.buildFaqLink = buildFaqLink;
-exports.buildFaqLinkForCheck = buildFaqLinkForCheck;
 exports.inferStellarNetwork = inferStellarNetwork;
-exports.oppositeNetwork = oppositeNetwork;
-exports.canonicalHorizonUrl = canonicalHorizonUrl;
 exports.buildAccountViewerLink = buildAccountViewerLink;
 exports.buildChangeTrustLink = buildChangeTrustLink;
 exports.buildLobstrLink = buildLobstrLink;
 exports.buildSep0007TxLink = buildSep0007TxLink;
 exports.buildSep0007PayLink = buildSep0007PayLink;
-exports.isValidDashboardUrl = isValidDashboardUrl;
-exports.buildSep0010ChallengeSnippet = buildSep0010ChallengeSnippet;
-// ---------------------------------------------------------------------------
-// FAQ anchor deep links (Issue #104)
-// ---------------------------------------------------------------------------
-/**
- * The default base URL for the TrustBridge FAQ document.
- * All anchor fragments are appended to this URL.
- */
-exports.DEFAULT_FAQ_BASE_URL = 'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md';
-/**
- * Stable FAQ anchor names. Each corresponds to a heading in `docs/FAQ.md`
- * with an explicit `{#anchor-name}` fragment.
- *
- * Keep this enum in sync with the headings in `docs/FAQ.md`. The CI test
- * `__tests__/faq-anchors.test.ts` verifies every anchor name resolves to
- * a heading in the doc.
- */
-exports.FAQ_ANCHORS = {
-    ACCOUNT_NOT_FUNDED: 'account-not-funded',
-    TRUSTLINE_MISSING: 'trustline-missing',
-    XLM_RESERVE_TOO_LOW: 'xlm-reserve-too-low',
-    TESTING_ON_TESTNET: 'testing-on-testnet',
-    HORIZON_ERROR: 'horizon-error',
-    DEBUG_MODE: 'debug-mode',
-    WEBHOOK_NOT_RECEIVED: 'webhook-not-received',
-    CLAIMABLE_BALANCE: 'claimable-balance',
-    UNAUTHORIZED_TRUSTLINE: 'unauthorized-trustline',
-};
-/**
- * Map from check label keywords to FAQ anchor names.
- * Matching is case-insensitive on the label.
- */
-const CHECK_TO_ANCHOR_MAP = [
-    { keyword: 'funded', anchor: exports.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED },
-    // 'unauthorized' must come before 'trustline' so the more specific match wins
-    { keyword: 'unauthorized', anchor: exports.FAQ_ANCHORS.UNAUTHORIZED_TRUSTLINE },
-    { keyword: 'trustline', anchor: exports.FAQ_ANCHORS.TRUSTLINE_MISSING },
-    { keyword: 'reserve', anchor: exports.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
-    { keyword: 'xlm', anchor: exports.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
-    { keyword: 'horizon', anchor: exports.FAQ_ANCHORS.HORIZON_ERROR },
-    { keyword: 'claimable', anchor: exports.FAQ_ANCHORS.CLAIMABLE_BALANCE },
-];
-/**
- * Resolve the FAQ anchor most relevant to a check label.
- *
- * Returns `undefined` when no mapping is found so callers can omit the
- * FAQ link gracefully.
- *
- * @param checkLabel  The human-readable check label from the `ValidationResult`.
- */
-function getFaqAnchorForCheck(checkLabel) {
-    const lower = checkLabel.toLowerCase();
-    for (const { keyword, anchor } of CHECK_TO_ANCHOR_MAP) {
-        if (lower.includes(keyword)) {
-            return anchor;
-        }
-    }
-    return undefined;
-}
-/**
- * Build a full FAQ deep link URL for a given anchor.
- *
- * @param anchor   A value from `FAQ_ANCHORS`.
- * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
- *                 mirror). When the value is not a valid HTTPS URL, the
- *                 default base URL is used silently so comment posting is
- *                 never blocked by an invalid override.
- */
-function buildFaqLink(anchor, baseUrl) {
-    let base = exports.DEFAULT_FAQ_BASE_URL;
-    if (baseUrl) {
-        try {
-            const parsed = new URL(baseUrl);
-            if (parsed.protocol === 'https:') {
-                base = baseUrl.replace(/\/$/, '');
-            }
-            // Non-HTTPS or unparseable → fall through to default
-        }
-        catch {
-            // Invalid URL → fall through to default
-        }
-    }
-    return `${base}#${anchor}`;
-}
-/**
- * Build a FAQ deep link for a check label, resolving the anchor automatically.
- *
- * Returns `undefined` when no FAQ anchor is mapped for the given label, so
- * callers can skip rendering the link.
- *
- * @param checkLabel  The human-readable check label from the ValidationResult.
- * @param baseUrl     Optional FAQ base URL override.
- */
-function buildFaqLinkForCheck(checkLabel, baseUrl) {
-    const anchor = getFaqAnchorForCheck(checkLabel);
-    if (!anchor)
-        return undefined;
-    return buildFaqLink(anchor, baseUrl);
-}
 function inferStellarNetwork(horizonUrl) {
     return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
 }
-/**
- * Known Horizon presets and the network they belong to. Used by cross-network
- * detection to identify which network an address was most recently active on.
- */
-exports.KNOWN_HORIZON_NETWORKS = {
-    'https://horizon.stellar.org': 'public',
-    'https://horizon-testnet.stellar.org': 'testnet',
-};
-/**
- * Returns the "opposite" Stellar network (for cross-network mismatch error
- * messages that suggest switching to the correct Horizon URL).
- */
-function oppositeNetwork(network) {
-    return network === 'public' ? 'testnet' : 'public';
-}
-/**
- * Returns the canonical Horizon base URL for a given network.
- * Useful when suggesting "switch to the correct Horizon" in error messages.
- */
-function canonicalHorizonUrl(network) {
-    return network === 'public'
-        ? 'https://horizon.stellar.org'
-        : 'https://horizon-testnet.stellar.org';
-}
-function buildAccountViewerLink(stellarAddress, network, dashboardUrl) {
-    if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
-        throw new Error('Invalid dashboard URL');
-    }
+function buildAccountViewerLink(stellarAddress, network) {
     const params = new URLSearchParams({ network, account: stellarAddress });
     return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
 }
-function buildChangeTrustLink(network, dashboardUrl) {
-    if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
-        throw new Error('Invalid dashboard URL');
-    }
+function buildChangeTrustLink(network) {
     const params = new URLSearchParams({ network });
     return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
 }
@@ -42900,76 +35647,6 @@ function buildSep0007PayLink(options) {
     }
     return `web+stellar:pay?${params.toString()}`;
 }
-/**
- * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
- * private targets, no credentials.
- */
-function isValidDashboardUrl(url) {
-    try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== 'https:')
-            return false;
-        if (parsed.username || parsed.password)
-            return false;
-        // Block private/loopback/metadata hosts (same list as Horizon SSRF)
-        const blocked = [
-            /^127\./,
-            /^10\./,
-            /^192\.168\./,
-            /^172\.(1[6-9]|2\d|3[01])\./,
-            /^169\.254\./,
-            /^localhost$/i,
-        ];
-        const host = parsed.hostname;
-        for (const pat of blocked) {
-            if (pat.test(host))
-                return false;
-        }
-        if (host === 'metadata.google.internal')
-            return false;
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
-/**
- * Build a markdown snippet for SEP-0010 proof of wallet control.
- *
- * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
- * provided. When both are provided, the dashboard link is preferred and the
- * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
- * public issue comments — XDR is truncated to first 24 chars … last 8.
- *
- * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
- * this is informational remediation only.
- */
-function buildSep0010ChallengeSnippet(options) {
-    const network = options.network ?? 'public';
-    const hasDashboard = !!options.dashboardUrl && options.dashboardUrl.trim().length > 0;
-    const hasChallenge = !!options.challengeXdr && options.challengeXdr.trim().length > 0;
-    if (!hasDashboard && !hasChallenge) {
-        return undefined;
-    }
-    if (hasDashboard && isValidDashboardUrl(options.dashboardUrl)) {
-        const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
-        return (`**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +
-            `[Open dashboard proof](${options.dashboardUrl}) — network **${network}**. ` +
-            `_Challenge verification happens off-action; this link is informational and does not block \`ready\`._`);
-    }
-    if (hasChallenge) {
-        const xdr = options.challengeXdr.trim();
-        // Truncate XDR for display to avoid leaking full nonce and to keep comment size small
-        const display = xdr.length > 32 ? `${xdr.slice(0, 24)}…${xdr.slice(-8)}` : xdr;
-        const networkNote = network === 'testnet' ? ' (testnet)' : '';
-        return (`**SEP-0010 challenge${networkNote}:** prove wallet control by signing this challenge with Freighter and posting the signed XDR to your dashboard. ` +
-            `Challenge (truncated, do not reuse nonce): \`${display}\` ` +
-            `— [How to sign](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md). ` +
-            `_This snippet is informational and does not block \`ready\` unless documented._`);
-    }
-    // Dashboard URL invalid => fall back to no snippet to avoid posting a broken link
-    return undefined;
-}
 
 
 /***/ }),
@@ -43014,14 +35691,13 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Timer = exports.logger = void 0;
-exports.isSensitiveSecretKey = isSensitiveSecretKey;
 exports.redactStellarAddress = redactStellarAddress;
 exports.redactString = redactString;
 exports.redactHorizonUrl = redactHorizonUrl;
 exports.redactContext = redactContext;
 exports.buildInputsLogRecord = buildInputsLogRecord;
 exports.emitInputsLogRecord = emitInputsLogRecord;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
+const core = __importStar(__nccwpck_require__(7484));
 /**
  * Well-known context keys whose string values always carry a Stellar
  * address (G-address or C-address) and must be redacted.
@@ -43034,120 +35710,48 @@ const ADDRESS_CONTEXT_KEYS = new Set([
     'contractAddress',
 ]);
 /**
- * Pattern matching Stellar account identifiers that may appear in logs:
- * classic G-addresses (56 chars), C-addresses / Soroban contracts (56 chars),
- * and short-form M-address-like patterns (56 chars starting with M).
- * All standard StrKey addresses begin with G or C and are exactly 56 characters.
+ * Pattern matching Stellar G-addresses (classic) and C-addresses (Soroban
+ * contracts): 56-character StrKey starting with G or C, followed by 55
+ * base32 characters (A-Z, 2-7).
  */
 const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
 /**
- * Pattern matching muxed M-addresses in free-form text.
- * Muxed accounts encode as 69 characters: M + 68 base32 chars (version byte,
- * 32-byte ed25519 key, 8-byte muxed ID, 2-byte CRC-16/XMODEM checksum).
- * These are distinct from G/C addresses and require a separate regex.
- */
-const MUXED_ADDRESS_REGEX = /\bM[A-Z2-7]{68}\b/g;
-const PEM_PRIVATE_KEY_REGEX = /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]*PRIVATE KEY-----/gi;
-const SECRET_ASSIGNMENT_REGEX = /((?:[A-Za-z0-9_-]*?(?:token|secret|signature|hmac|key|auth|authorization)[A-Za-z0-9_-]*?)\s*(?:=|:)\s*)(?!-----BEGIN)([^\s,;]+)/gi;
-const SENSITIVE_SECRET_KEYS = new Set([
-    'token',
-    'githubtoken',
-    'github_token',
-    'githubapptoken',
-    'github_app_token',
-    'apptoken',
-    'app_token',
-    'key',
-    'privatekey',
-    'private_key',
-    'appprivatekey',
-    'app_private_key',
-    'secret',
-    'secretkey',
-    'secret_key',
-    'apikey',
-    'api_key',
-    'auth',
-    'authorization',
-    'password',
-]);
-function isSensitiveSecretKey(key) {
-    const lower = key.toLowerCase();
-    const normalized = lower.replace(/[-_]/g, '');
-    return (SENSITIVE_SECRET_KEYS.has(lower) ||
-        normalized.includes('token') ||
-        normalized.includes('secret') ||
-        normalized.includes('privatekey') ||
-        normalized.includes('signature') ||
-        normalized.includes('hmac') ||
-        normalized.includes('authorization') ||
-        normalized.includes('auth'));
-}
-/**
- * Redacts a single Stellar address to its first 4 and last 4 characters,
- * separated by `...`. Handles:
- *   - G-addresses and C-addresses (Soroban contracts): exactly 56 characters.
- *   - Muxed M-addresses: exactly 69 characters (M + 68 base32 chars).
- * Non-address strings are returned unchanged so non-address log values
- * never collide with the redaction pass.
+ * Redacts a single Stellar address (G- or C-address) to its first 4 and
+ * last 4 characters, separated by `...`. Non-address strings are returned
+ * unchanged so non-address log values never collide with the redaction
+ * pass.
  *
  * Examples:
  *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
  *     => 'GA5Z...KZVN'
- *   redactStellarAddress('MA7QYNF7SOWQ3GLR2BGMZEHXR8' + 'A'.repeat(43))
- *     => 'MA7Q...AAAA'
  */
 function redactStellarAddress(address) {
     if (!address)
         return address;
     const trimmed = address.trim();
+    if (trimmed.length !== 56)
+        return address;
     const first = trimmed.charAt(0);
-    // Muxed M-address: exactly 69 chars
-    if (first === 'M' && trimmed.length === 69) {
-        MUXED_ADDRESS_REGEX.lastIndex = 0;
-        if (MUXED_ADDRESS_REGEX.test(trimmed)) {
-            MUXED_ADDRESS_REGEX.lastIndex = 0;
-            return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
-        }
-        MUXED_ADDRESS_REGEX.lastIndex = 0;
+    if (first !== 'G' && first !== 'C')
+        return address;
+    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
+        // Reset regex state (global flag); bail out if it's not a clean match.
+        STELLAR_ADDRESS_REGEX.lastIndex = 0;
         return address;
     }
-    // Classic G-address or C-address: exactly 56 chars
-    if ((first === 'G' || first === 'C') && trimmed.length === 56) {
-        STELLAR_ADDRESS_REGEX.lastIndex = 0;
-        if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
-            // Reset regex state (global flag); bail out if it's not a clean match.
-            STELLAR_ADDRESS_REGEX.lastIndex = 0;
-            return address;
-        }
-        STELLAR_ADDRESS_REGEX.lastIndex = 0;
-        return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
-    }
-    return address;
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 /**
- * Redacts every Stellar address (G-, C-, and muxed M-addresses) and PEM
- * private key embedded in an arbitrary free-form string — error messages,
- * Horizon URLs, JSON snippets, stack traces, etc.
- *
- * Muxed M-addresses (69 chars) are scanned first so their longer pattern
- * cannot be partially matched by the 56-char G/C regex.
+ * Redacts every Stellar address embedded in an arbitrary free-form
+ * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
+ * Uses the same first-4/last-4 policy as `redactStellarAddress`.
  */
 function redactString(value) {
     if (!value)
         return value;
-    let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
-    masked = masked.replace(SECRET_ASSIGNMENT_REGEX, (_match, prefix, rawValue) => {
-        if (rawValue.startsWith('-----') || rawValue.startsWith('[REDACTED')) {
-            return `${prefix}${rawValue}`;
-        }
-        return `${prefix}[REDACTED]`;
-    });
-    // Redact muxed M-addresses (69 chars) before G/C addresses (56 chars)
-    MUXED_ADDRESS_REGEX.lastIndex = 0;
-    masked = masked.replace(MUXED_ADDRESS_REGEX, (match) => `${match.slice(0, 4)}...${match.slice(-4)}`);
     STELLAR_ADDRESS_REGEX.lastIndex = 0;
-    return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+    return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
 /**
  * Redacts a Horizon endpoint URL so any embedded account address in the
@@ -43155,29 +35759,17 @@ function redactString(value) {
  * matching an address shape are masked before the URL reaches a log line.
  * The base hostname / protocol is preserved so operators can still verify
  * which Horizon instance was called.
- *
- * Handles all three Stellar address forms:
- *   - G-addresses and C-addresses (56 chars)
- *   - Muxed M-addresses (69 chars)
  */
 function redactHorizonUrl(url) {
     if (!url)
         return url;
     const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
-    // Redact muxed M-addresses (69 chars) in path segments first
-    let masked = url.replace(/\/accounts\/(M[A-Z2-7]{68})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${addr.slice(0, 4)}...${addr.slice(-4)}${rest ?? ''}`);
-    // Then redact classic G/C addresses (56 chars) in path segments
-    masked = masked.replace(/\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
+    let masked = url.replace(/\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
     try {
         const parsed = new URL(masked);
         const safeParams = new URLSearchParams();
         for (const [key, rawValue] of parsed.searchParams.entries()) {
-            if (isSensitiveSecretKey(key)) {
-                safeParams.set(key, '[REDACTED]');
-            }
-            else {
-                safeParams.set(key, redactString(rawValue));
-            }
+            safeParams.set(key, redactString(rawValue));
         }
         const query = safeParams.toString();
         parsed.search = query ? `?${query}` : '';
@@ -43187,7 +35779,9 @@ function redactHorizonUrl(url) {
         }
     }
     catch {
-        // If URL parsing fails (e.g. malformed URL), fall back to string redaction
+        // If the URL is malformed, fall back to regex-only redaction on the
+        // raw string — we never want the redaction step itself to throw and
+        // mask the underlying log event we were trying to emit.
     }
     return redactString(masked);
 }
@@ -43195,12 +35789,15 @@ function redactHorizonUrl(url) {
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
- * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   and PEM keys via `redactString`.
+ *   via `redactString` so free-form messages attached to context don't
+ *   leak.
+ * - Non-string values               → passed through as-is (numbers,
+ *   booleans). Objects and arrays are recursed shallowly for the common
+ *   case of nested debug payloads.
  */
 function redactContext(context) {
     if (!context)
@@ -43208,10 +35805,6 @@ function redactContext(context) {
     const safe = {};
     for (const key of Object.keys(context)) {
         const raw = context[key];
-        if (isSensitiveSecretKey(key)) {
-            safe[key] = '[REDACTED]';
-            continue;
-        }
         if (key === 'component') {
             safe.component = raw;
             continue;
@@ -43238,10 +35831,7 @@ function redactValue(raw) {
     if (typeof raw === 'object') {
         const safeObj = {};
         for (const [k, v] of Object.entries(raw)) {
-            if (isSensitiveSecretKey(k)) {
-                safeObj[k] = '[REDACTED]';
-            }
-            else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+            if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
                 safeObj[k] = redactStellarAddress(v);
             }
             else if (k === 'horizonUrl' && typeof v === 'string') {
@@ -43396,7 +35986,6 @@ function buildInputsLogRecord(inputs) {
         assetCode: inputs.assetCode,
         assetIssuer: redactStellarAddress(inputs.assetIssuer) || redactString(inputs.assetIssuer),
         minXlmReserve: inputs.minXlmReserve,
-        minTrustlineLimit: inputs.minTrustlineLimit,
         stellarAddress: redactStellarAddress(inputs.stellarAddress),
         failOnMissing: inputs.failOnMissing,
         debugMode: inputs.debugMode,
@@ -43407,12 +35996,7 @@ function buildInputsLogRecord(inputs) {
         waitUntilFundedIntervalMs: inputs.waitUntilFundedIntervalMs,
         horizonCacheTtlMs: inputs.horizonCacheTtlMs,
         useCache: inputs.useCache,
-        horizonMaxRequests: inputs.horizonMaxRequests,
-        maxRetries: inputs.maxRetries ?? 3,
-        retryBaseDelayMs: inputs.retryBaseDelayMs ?? 1000,
-        retryMaxDelayMs: inputs.retryMaxDelayMs ?? 30000,
         logInputs: inputs.logInputs,
-        allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,
     };
 }
 /**
@@ -43434,352 +36018,33 @@ function emitInputsLogRecord(inputs) {
 /***/ }),
 
 /***/ 3758:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
-exports.buildAssetTrustlineTable = buildAssetTrustlineTable;
-exports.extractChecklistState = extractChecklistState;
-exports.buildOnboardingChecklist = buildOnboardingChecklist;
-const links_1 = __nccwpck_require__(3346);
-const i18n_1 = __nccwpck_require__(4859);
 function escapeMarkdownInline(value) {
-    // Escape Markdown control characters that can break comment structure or
-    // enable link/emphasis injection. Dots and hyphens are left alone so domains
-    // and URLs remain readable inside and outside inline code spans.
-    return value.replace(/([`*_{}[\]()#+!|>~])/g, '\\$1');
+    return value.replace(/([`*_{}[\]()#+.!|>~-])/g, '\\$1');
 }
 function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
-}
-/**
- * Render the per-asset trustline status table for the `assets_json` input
- * (Issue #552).
- *
- * The table is appended to the TrustBridge comment as its own `###` section
- * so maintainers can see, at a glance, the trustline state of every
- * additional asset — instead of having to dig through workflow logs.
- *
- * All dynamic values are escaped through `escapeMarkdownInline` / `inlineCode`
- * so an asset code or issuer can never inject Markdown structure. The issuer
- * is truncated for readability while remaining unambiguous (first 4 + last 4
- * characters); the full issuer is not rendered to keep the table compact —
- * Horizon/stellar.explore can resolve it from the asset code if needed.
- *
- * @param rows Per-asset results. When empty, returns `''` so callers can
- *             skip the section entirely (no empty headings in comments).
- * @param options.heading Section heading (defaults to "Asset trustlines").
- * @returns Markdown section (heading + table), or `''` when `rows` is empty.
- */
-function buildAssetTrustlineTable(rows, options = {}) {
-    if (!Array.isArray(rows) || rows.length === 0) {
-        return '';
-    }
-    const heading = options.heading ?? 'Asset trustlines';
-    const shortenIssuer = (issuer) => {
-        if (issuer.length <= 12)
-            return issuer;
-        return `${issuer.slice(0, 4)}…${issuer.slice(-4)}`;
-    };
-    const formatBalance = (row) => {
-        if (row.balance === 'unknown')
-            return '_unknown_';
-        if (!row.trustlineExists)
-            return '`0` — no trustline';
-        return `\`${row.balance}\``;
-    };
-    const lines = [
-        `### ${escapeMarkdownInline(heading)}`,
-        '',
-        '| Asset | Trustline | Balance | Issuer |',
-        '| --- | --- | --- | --- |',
-    ];
-    for (const row of rows) {
-        const asset = escapeMarkdownInline(row.assetCode);
-        const status = row.trustlineExists ? '✅ exists' : '❌ missing';
-        const issuer = inlineCode(shortenIssuer(row.assetIssuer));
-        lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
-    }
-    return lines.join('\n');
-}
-/**
- * Canonical (locale-independent) keys used in the Map returned by
- * `extractChecklistState` and accepted by `buildOnboardingChecklist` via
- * `options.previousChecks`.
- *
- * These are *stable identifiers*, not rendered text — a comment written in
- * `es` and re-rendered in `en` still maps onto the same key, which is what
- * makes checklist state survive a locale switch (Issue #436).
- */
-exports.CHECKLIST_FUND_KEY = 'Fund account';
-exports.CHECKLIST_RESERVE_KEY = 'Verify XLM balance';
-/**
- * The fixed set of checklist label keys used in the onboarding checklist.
- * These are the only keys that extractChecklistState will recognise so that
- * a malicious comment body can never inject unexpected checked state.
- *
- * @internal Exported for testing.
- */
-exports.CHECKLIST_LABEL_KEYS = [
-    exports.CHECKLIST_FUND_KEY,
-    // trustline label is dynamic (includes asset code), handled separately
-    exports.CHECKLIST_RESERVE_KEY,
-];
-/**
- * Sentinel prefix used to match the trustline checklist label regardless of
- * the asset code.  The parser matches any line whose bold label *starts with*
- * this prefix (up to the next ` trustline` suffix pattern) so asset codes
- * containing markdown-safe characters are matched correctly.
- *
- * @deprecated Locale-aware affixes are derived from the i18n string
- * `checklistTrustlineLabel`; these remain as the English defaults.
- */
-exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = 'Add ';
-/** @deprecated See {@link CHECKLIST_TRUSTLINE_LABEL_PREFIX}. */
-exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = ' trustline';
-/**
- * Key used to store the trustline checked state inside the Map returned by
- * extractChecklistState, regardless of the actual asset code.
- */
-exports.CHECKLIST_TRUSTLINE_KEY = 'trustline';
-/**
- * Marker injected into a localized trustline label template so the literal
- * prefix/suffix around the asset code can be derived without hard-coding
- * per-locale affixes.
- */
-const ASSET_CODE_SENTINEL = '\u0001';
-/**
- * Derive the literal affixes around the asset code for a given locale by
- * rendering the localized label template with a sentinel "asset code".
- */
-function trustlineAffixes(locale) {
-    const template = (0, i18n_1.getStrings)(locale).checklistTrustlineLabel(ASSET_CODE_SENTINEL);
-    const index = template.indexOf(ASSET_CODE_SENTINEL);
-    // A locale pack that drops the placeholder still yields a usable (possibly
-    // empty) affix pair — the label simply becomes a literal match.
-    const safeIndex = index === -1 ? template.length : index;
-    return {
-        prefix: template.slice(0, safeIndex),
-        suffix: index === -1 ? '' : template.slice(safeIndex + 1),
-    };
-}
-function localeLabelSet(locale) {
-    const strings = (0, i18n_1.getStrings)(locale);
-    return {
-        heading: strings.checklistHeading,
-        fund: strings.checklistFundAccountLabel,
-        reserve: strings.checklistReserveLabel,
-        trustline: trustlineAffixes(locale),
-    };
-}
-/**
- * All locale label sets, in canonical order. Used by `extractChecklistState`
- * so a comment body written in one locale is still parsed after the workflow
- * switches `locale` (Issue #436).
- */
-function allLocaleLabelSets() {
-    return i18n_1.SUPPORTED_LOCALES.map((locale) => localeLabelSet(locale));
-}
-/**
- * Parse an existing TrustBridge comment body and extract the checked/unchecked
- * state of each onboarding checklist item (Issue #311).
- *
- * Only lines that match one of the known checklist label patterns are
- * recognised — no user-controlled text is used as a map key, so a maliciously
- * crafted comment body cannot inject unexpected state. Labels are matched
- * against the built-in locale allowlist (or a single locale when
- * `options.locale` is supplied).
- *
- * The function is intentionally permissive about whitespace and case so that
- * minor formatting differences between action versions do not break persistence.
- *
- * @param body   Raw markdown body of an existing TrustBridge comment.
- * @param options Optional locale restriction.
- * @returns      A Map from canonical label key to checked boolean.
- *               Keys: `CHECKLIST_FUND_KEY`, `CHECKLIST_TRUSTLINE_KEY`,
- *               `CHECKLIST_RESERVE_KEY`.
- *               Only items found in the body are included — callers should
- *               treat a missing key as "no previous state".
- */
-function extractChecklistState(body, options = {}) {
-    const state = new Map();
-    if (!body || typeof body !== 'string') {
-        return state;
-    }
-    const labelSets = options.locale
-        ? [localeLabelSet(options.locale)]
-        : allLocaleLabelSets();
-    // Locate the onboarding checklist section so we only parse lines inside it.
-    // This prevents false positives from other task-list items in the comment.
-    // Every known locale heading is accepted so a locale switch does not hide
-    // the section (Issue #436).
-    const headingPattern = new RegExp(`^###[ \\t]+(?:${labelSets
-        .map((set) => escapeRegExp(set.heading))
-        .join('|')})[ \\t]*$`, 'im');
-    const headerMatch = headingPattern.exec(body);
-    if (!headerMatch) {
-        return state;
-    }
-    // Take only the text after the header.  Stop at the next `###` heading so we
-    // never read checklist state from an unrelated section.
-    const afterHeader = body.slice(headerMatch.index + headerMatch[0].length);
-    const nextHeaderMatch = /^###\s+/m.exec(afterHeader);
-    const checklistSection = nextHeaderMatch
-        ? afterHeader.slice(0, nextHeaderMatch.index)
-        : afterHeader;
-    // Parse task-list lines: `- [x]` or `- [ ]` followed by `**<label>**`.
-    // The label text after `**` is matched against the known allowlist.
-    //
-    // Pattern breakdown:
-    //   ^                 — start of line
-    //   [ \t]*-[ \t]+     — list marker with optional indent
-    //   \[(x| )\]         — checkbox: `[x]` = checked, `[ ]` = unchecked
-    //   [ \t]+            — space after checkbox
-    //   \*\*([^*]+)\*\*   — bold label text (no asterisks inside)
-    const linePattern = /^[ \t]*-[ \t]+\[(x| )\][ \t]+\*\*([^*]+)\*\*/gim;
-    let match;
-    const fundLabels = new Set(labelSets.map((set) => set.fund));
-    const reserveLabels = new Set(labelSets.map((set) => set.reserve));
-    while ((match = linePattern.exec(checklistSection)) !== null) {
-        const checked = match[1] === 'x';
-        const rawLabel = match[2].trim();
-        // Fund account — exact match against the locale allowlist
-        if (fundLabels.has(rawLabel)) {
-            state.set(exports.CHECKLIST_FUND_KEY, checked);
-            continue;
-        }
-        // Verify XLM balance — exact match against the locale allowlist
-        if (reserveLabels.has(rawLabel)) {
-            state.set(exports.CHECKLIST_RESERVE_KEY, checked);
-            continue;
-        }
-        // Trustline — dynamic label "<prefix><ASSET_CODE><suffix>"; match by affixes.
-        // Only ASCII printable characters are allowed in the asset code portion to
-        // prevent injection via embedded newlines or control characters.
-        for (const set of labelSets) {
-            const { prefix, suffix } = set.trustline;
-            if (!prefix && !suffix)
-                continue;
-            if (!rawLabel.startsWith(prefix) || !rawLabel.endsWith(suffix))
-                continue;
-            const assetCode = rawLabel.slice(prefix.length, rawLabel.length - suffix.length);
-            if (assetCode.length === 0)
-                continue;
-            if (!/^[\x20-\x7E]+$/.test(assetCode))
-                continue;
-            state.set(exports.CHECKLIST_TRUSTLINE_KEY, checked);
-            break;
-        }
-        // Any other bold label text is silently ignored.
-    }
-    return state;
-}
-/**
- * Escape a string for safe use inside a regular expression.
- */
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-/**
- * Render a GitHub Markdown task-list checklist whose boxes reflect live
- * `ValidationResult` state (fund → trustline → verify balance).
- *
- * All headings and labels come from the locale string pack (Issue #436) so a
- * non-`en` comment no longer mixes English checklist copy into a translated
- * comment.
- *
- * When `options.previousChecks` is supplied (extracted from a prior sticky
- * comment via `extractChecklistState`), a box is checked if EITHER the live
- * result says it passed OR the previous comment had the box checked.  This
- * preserves contributor-manually-checked boxes across sticky comment updates
- * (Issue #311).
- *
- * Checkboxes are comment-only (no GitHub Projects task-list API sync).
- */
-function buildOnboardingChecklist(result, options) {
-    const strings = (0, i18n_1.getStrings)(options.locale ?? 'en');
-    const safeAsset = escapeMarkdownInline(options.assetCode);
-    const fundFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`;
-    const trustFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.TRUSTLINE_MISSING}`;
-    const reserveFaq = `${links_1.DEFAULT_FAQ_BASE_URL}#${links_1.FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`;
-    const prev = options.previousChecks;
-    // Resolve each checkbox state: live result OR previously-checked.
-    const fundChecked = result.accountFunded || (prev?.get(exports.CHECKLIST_FUND_KEY) === true);
-    const trustChecked = result.trustlineExists || (prev?.get(exports.CHECKLIST_TRUSTLINE_KEY) === true);
-    const reserveChecked = result.xlmReserveMet || (prev?.get(exports.CHECKLIST_RESERVE_KEY) === true);
-    const lines = [
-        `### ${strings.checklistHeading}`,
-        '',
-        strings.checklistIntro,
-        '',
-        `- [${fundChecked ? 'x' : ' '}] **${strings.checklistFundAccountLabel}** — ${strings.checklistFundAccountDetail} ([FAQ](${fundFaq}))`,
-        `- [${trustChecked ? 'x' : ' '}] **${strings.checklistTrustlineLabel(safeAsset)}** — ${strings.checklistTrustlineDetail} ([FAQ](${trustFaq}))`,
-        `- [${reserveChecked ? 'x' : ' '}] **${strings.checklistReserveLabel}** — ${strings.checklistReserveDetail(String(options.minXlmReserve))} ([FAQ](${reserveFaq}))`,
-    ];
-    return lines.join('\n');
 }
 
 
 /***/ }),
 
 /***/ 5670:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 /**
  * Metrics collection for monitoring action performance and behavior.
- *
- * Wave #27 additions:
- *   - `JobSummaryRow` / `JobSummarySection` types for structured summary output
- *   - `MetricsCollector.buildJobSummary()` — produce a machine-readable
- *     `JobSummaryReport` from the current metrics state
- *   - `writeJobSummary()` — write the summary to GitHub Actions Job Summary
- *     via `@actions/core`; no-ops outside a GitHub Actions context
  */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.globalOctokitMetrics = exports.globalMetrics = exports.MetricsCollector = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
-exports.classifyOctokitStatus = classifyOctokitStatus;
-exports.writeJobSummary = writeJobSummary;
-exports.normalizeMetricHost = normalizeMetricHost;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
+exports.globalMetrics = exports.MetricsCollector = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
 const validation_1 = __nccwpck_require__(4344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -43788,159 +36053,6 @@ const validation_1 = __nccwpck_require__(4344);
  * makes it into the JSON metrics artifact (see toJSON()).
  */
 exports.CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
-/**
- * Classify an HTTP status code into an `OctokitOutcome`.
- */
-function classifyOctokitStatus(statusCode, headers) {
-    if (statusCode >= 200 && statusCode < 300)
-        return 'success';
-    if (statusCode === 401)
-        return 'auth_error';
-    if (statusCode === 403) {
-        // Rate-limit exceeded returns 403 with x-ratelimit-remaining: 0
-        const remaining = headers?.['x-ratelimit-remaining'];
-        if (remaining === '0')
-            return 'rate_limited';
-        return 'auth_error';
-    }
-    if (statusCode === 404)
-        return 'not_found';
-    if (statusCode === 429)
-        return 'rate_limited';
-    if (statusCode >= 500)
-        return 'server_error';
-    if (statusCode === 0)
-        return 'network_error';
-    return 'unknown';
-}
-/**
- * Instruments GitHub API (Octokit) calls for Wave #37.
- *
- * Usage:
- * ```ts
- * const octokitMetrics = new OctokitMetrics();
- * const result = await octokitMetrics.track('issues.createComment', () =>
- *   octokit.rest.issues.createComment({ ... })
- * );
- * ```
- *
- * After the run, `toJSON()` returns a structured artifact ready for upload
- * with `actions/upload-artifact` or inline debug output.
- */
-class OctokitMetrics {
-    constructor() {
-        this.records = [];
-    }
-    /**
-     * Wrap an Octokit call with latency and outcome tracking.
-     *
-     * @param operation  Logical name, e.g. `"issues.createComment"`.
-     * @param fn         The async Octokit call to execute.
-     * @param retries    Number of retries already attempted before this call.
-     *                   Pass the retry count from your retry loop; defaults to 0.
-     */
-    async track(operation, fn, retries = 0) {
-        const startedAt = new Date().toISOString();
-        const startMs = Date.now();
-        let statusCode = 0;
-        let outcome = 'network_error';
-        let errorMessage;
-        try {
-            const response = await fn();
-            statusCode = response.status;
-            outcome = classifyOctokitStatus(statusCode, response.headers);
-            return response;
-        }
-        catch (err) {
-            // Octokit throws `RequestError` for non-2xx responses; extract status.
-            const requestError = err;
-            if (typeof requestError.status === 'number') {
-                statusCode = requestError.status;
-                outcome = classifyOctokitStatus(statusCode, requestError.response?.headers);
-            }
-            else {
-                statusCode = 0;
-                outcome = 'network_error';
-            }
-            errorMessage = requestError.message ?? String(err);
-            throw err;
-        }
-        finally {
-            const latencyMs = Date.now() - startMs;
-            this.records.push({
-                operation,
-                statusCode,
-                latencyMs,
-                outcome,
-                retries,
-                startedAt,
-                errorMessage,
-            });
-        }
-    }
-    /**
-     * Record a pre-resolved outcome directly (e.g. from a catch block where
-     * the Octokit call already resolved but the caller handled the error).
-     */
-    record(record) {
-        this.records.push(record);
-    }
-    /**
-     * Build the summary object used for both in-memory inspection and JSON export.
-     */
-    getSummary() {
-        const outcomeBreakdown = {
-            success: 0,
-            auth_error: 0,
-            not_found: 0,
-            rate_limited: 0,
-            server_error: 0,
-            network_error: 0,
-            unknown: 0,
-        };
-        let totalLatencyMs = 0;
-        let totalRetries = 0;
-        for (const r of this.records) {
-            outcomeBreakdown[r.outcome] = (outcomeBreakdown[r.outcome] ?? 0) + 1;
-            totalLatencyMs += r.latencyMs;
-            totalRetries += r.retries;
-        }
-        const totalCalls = this.records.length;
-        const successCount = outcomeBreakdown.success;
-        const failureCount = totalCalls - successCount;
-        return {
-            totalCalls,
-            successCount,
-            failureCount,
-            totalLatencyMs,
-            averageLatencyMs: totalCalls > 0 ? Math.round(totalLatencyMs / totalCalls) : 0,
-            totalRetries,
-            outcomeBreakdown,
-            operations: this.records.map((r) => ({ ...r })),
-        };
-    }
-    /**
-     * Export the Octokit metrics as a JSON artifact string.
-     * Safe to pass directly to `core.debug()` or write to a file for
-     * `actions/upload-artifact`.
-     */
-    toJSON() {
-        return JSON.stringify(this.getSummary(), null, 2);
-    }
-    /**
-     * Return how many operations have been recorded.
-     */
-    get size() {
-        return this.records.length;
-    }
-    /**
-     * Clear all recorded operations.
-     */
-    reset() {
-        this.records = [];
-    }
-}
-exports.OctokitMetrics = OctokitMetrics;
 class MetricsCollector {
     constructor() {
         this.metrics = [];
@@ -44011,35 +36123,6 @@ class MetricsCollector {
         return elapsed;
     }
     /**
-     * Get a timing breakdown of execution phases in milliseconds (Issue #93).
-     */
-    getTimingBreakdown() {
-        const getMs = (name) => {
-            const point = this.metrics.find((m) => m.name === `${name}_duration`);
-            return point ? point.value : 0;
-        };
-        const input_parse_ms = getMs('input_parse');
-        const horizon_fetch_ms = getMs('horizon_fetch');
-        const checks_ms = getMs('checks');
-        const comment_post_ms = getMs('comment_post');
-        const total_ms = getMs('total_execution') || (input_parse_ms + horizon_fetch_ms + checks_ms + comment_post_ms);
-        return {
-            input_parse_ms,
-            horizon_fetch_ms,
-            checks_ms,
-            comment_post_ms,
-            total_ms,
-        };
-    }
-    /**
-     * Get a single timer value by name (e.g., 'input_parse' → milliseconds).
-     * Returns 0 if timer was never started or stopped.
-     */
-    getTimerValue(name) {
-        const point = this.metrics.find((m) => m.name === `${name}_duration`);
-        return point ? point.value : 0;
-    }
-    /**
      * Get a summary of all recorded metrics.
      */
     getSummary() {
@@ -44064,16 +36147,6 @@ class MetricsCollector {
         this.timers.clear();
     }
     /**
-     * Record campaign preset metric.
-     */
-    recordPresetMetric(presetId, network) {
-        this.recordMetric('campaign_preset_applied', 1, 'count', {
-            preset: presetId,
-            network,
-        });
-        this.incrementCounter(`preset_${presetId}_applied`);
-    }
-    /**
      * Get average value for a metric.
      */
     getAverageMetric(name) {
@@ -44084,115 +36157,9 @@ class MetricsCollector {
         const sum = metricPoints.reduce((acc, m) => acc + m.value, 0);
         return sum / metricPoints.length;
     }
-    /**
-     * Build a structured Job Summary report from current metrics state.
-     *
-     * The report contains:
-     *   - `latencyMs`     – average duration of any `*_duration` metrics (ms)
-     *   - `failureCodes`  – unique HTTP status codes recorded via
-     *                       `recordMetric('horizon_error', code, 'http_status')`
-     *   - `totalRuns`     – value of the `runs` counter
-     *   - `totalErrors`   – value of the `errors` counter
-     *   - `jsonArtifact`  – the full `getSummary()` payload serialised as JSON
-     *                       (tags stripped — no contract addresses)
-     *
-     * Safe to call at any time; never throws.
-     */
-    buildJobSummary() {
-        // Latency: average of all *_duration metrics
-        const durationPoints = this.metrics.filter((m) => m.name.endsWith('_duration'));
-        const latencyMs = durationPoints.length > 0
-            ? durationPoints.reduce((sum, m) => sum + m.value, 0) / durationPoints.length
-            : null;
-        // Failure codes: values of metrics named "horizon_error" with unit "http_status"
-        const failureCodes = [
-            ...new Set(this.metrics
-                .filter((m) => m.name === 'horizon_error' && m.unit === 'http_status')
-                .map((m) => m.value)),
-        ].sort((a, b) => a - b);
-        // JSON artifact (tags stripped to avoid leaking contract addresses)
-        const summary = this.getSummary();
-        const safeArtifact = {
-            totalMetrics: summary.totalMetrics,
-            counters: summary.counters,
-            metrics: summary.metrics.map((m) => ({
-                name: m.name,
-                value: m.value,
-                unit: m.unit,
-                timestamp: m.timestamp,
-            })),
-        };
-        return {
-            latencyMs,
-            failureCodes,
-            totalRuns: this.counters.get('runs') ?? 0,
-            totalErrors: this.counters.get('errors') ?? 0,
-            jsonArtifact: JSON.stringify(safeArtifact, null, 2),
-        };
-    }
 }
 exports.MetricsCollector = MetricsCollector;
-/**
- * Write a `JobSummaryReport` to the GitHub Actions Job Summary markdown
- * table using `core.summary`.
- *
- * No-ops (safe to call) when `GITHUB_STEP_SUMMARY` is not set, which is
- * always the case in local development and test environments.
- *
- * The output is intentionally human-readable so maintainers can inspect
- * the Job Summary tab in GitHub Actions for latency and failure-code trends
- * across Wave runs without reading raw log output.
- *
- * @param report   The report to render, typically from `MetricsCollector.buildJobSummary()`.
- * @param runLabel Optional label for the run (e.g. the Stellar address prefix, wave issue
- *                 number) — must not contain raw addresses; callers should redact before passing.
- */
-async function writeJobSummary(report, runLabel) {
-    try {
-        const label = runLabel ? ` — ${runLabel}` : '';
-        core.summary.addHeading(`TrustBridge Metrics${label}`, 2);
-        // Overview table
-        core.summary.addTable([
-            [
-                { data: 'Metric', header: true },
-                { data: 'Value', header: true },
-            ],
-            ['Total runs', String(report.totalRuns)],
-            ['Total errors', String(report.totalErrors)],
-            ['Avg latency', report.latencyMs !== null ? `${report.latencyMs.toFixed(1)} ms` : '_none recorded_'],
-            [
-                'Failure codes',
-                report.failureCodes.length > 0
-                    ? report.failureCodes.map((c) => `HTTP ${c}`).join(', ')
-                    : '_none_',
-            ],
-        ]);
-        // JSON artifact in a collapsible details block
-        core.summary.addDetails('Metrics JSON artifact', `\`\`\`json\n${report.jsonArtifact}\n\`\`\``);
-        await core.summary.write();
-    }
-    catch {
-        // Never let Job Summary I/O fail the action — it is observability-only.
-    }
-}
 exports.globalMetrics = new MetricsCollector();
-/** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
-exports.globalOctokitMetrics = new OctokitMetrics();
-/**
- * Normalize a Horizon URL down to a host label safe for metric tags.
- */
-function normalizeMetricHost(url) {
-    if (!url || typeof url !== 'string') {
-        return 'unknown_host';
-    }
-    try {
-        const parsed = new URL(url.trim());
-        return parsed.hostname || 'unknown_host';
-    }
-    catch {
-        return 'unknown_host';
-    }
-}
 
 
 /***/ }),
@@ -44236,3124 +36203,35 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.buildConflictReport = buildConflictReport;
-exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
-exports.writeValidationJson = writeValidationJson;
-exports.buildMatrixOutputs = buildMatrixOutputs;
-exports.sanitizeUsernameForMatrix = sanitizeUsernameForMatrix;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
-const badge_1 = __nccwpck_require__(3120);
-const delta_1 = __nccwpck_require__(1493);
-/**
- * Build a `ConflictReport` from a map of field → sources.
- * A conflict exists when a field has values from ≥ 2 sources that disagree.
- *
- * @param fieldSources  Map from field name to an array of `ConflictSource` items.
- * @param privacyMode   When true, address values are masked to first4…last4.
- * @param now           ISO-8601 timestamp override for testing.
- */
-function buildConflictReport(fieldSources, options = {}) {
-    const privacyMode = Boolean(options.privacyMode);
-    const generatedAt = options.now ?? new Date().toISOString();
-    const conflicts = [];
-    for (const [field, sources] of Object.entries(fieldSources)) {
-        if (!sources || sources.length < 2)
-            continue;
-        // Mask values if privacy mode — redact G/C addresses to first4…last4.
-        const maskedSources = sources.map((s) => ({
-            source: s.source,
-            value: privacyMode ? maskConflictValue(s.value) : s.value,
-        }));
-        const uniqueValues = new Set(maskedSources.map((s) => s.value));
-        if (uniqueValues.size <= 1)
-            continue; // All sources agree — no conflict.
-        // The first source in the array is the winner (caller must supply in
-        // precedence order: workflow_input > assignee_map > contract > config_file).
-        const resolvedValue = maskedSources[0].value;
-        conflicts.push({ field, resolvedValue, sources: maskedSources });
-    }
-    return {
-        hasConflicts: conflicts.length > 0,
-        conflicts,
-        generatedAt,
-    };
-}
-/**
- * Mask a value for privacy mode.
- * Redacts G/C Stellar addresses to first4…last4; leaves other values intact.
- */
-function maskConflictValue(value) {
-    return value.replace(/\b([GC][A-Z2-7]{55})\b/g, (addr) => {
-        return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
-    });
-}
-/**
- * Format a `ConflictReport` as a Markdown section for embedding in an issue
- * comment.
- *
- * Returns an empty string when there are no conflicts so callers can
- * unconditionally append the result.
- */
-function formatConflictReportMarkdown(report) {
-    if (!report || !report.hasConflicts)
-        return '';
-    const lines = [
-        '### ⚠️ Input source conflicts detected',
-        '',
-        '> Two or more sources provided different values for the same input field.',
-        '> The value with the highest precedence (`workflow_input` > `assignee_map` > `contract` > `config_file`) was used.',
-        '',
-        '| Field | Resolved value | Sources |',
-        '| --- | --- | --- |',
-    ];
-    for (const conflict of report.conflicts) {
-        const sourceSummary = conflict.sources
-            .map((s) => `\`${s.source}\`: \`${s.value}\``)
-            .join(', ');
-        lines.push(`| \`${conflict.field}\` | \`${conflict.resolvedValue}\` | ${sourceSummary} |`);
-    }
-    lines.push('');
-    return lines.join('\n');
-}
-function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
-    const timings = extras.timings ?? {};
-    const validatedAt = extras.validatedAt ?? new Date().toISOString();
-    const { markdown: badgeMarkdown, url: badgeUrl } = (0, badge_1.generateBadgeSnippets)(result);
-    const mismatch = result.networkPassphraseMismatch;
-    // Matrix-friendly outputs (Issue #3)
-    const assigneeResultsJson = extras.assigneeLogin && extras.stellarAddress
-        ? JSON.stringify({
-            [extras.assigneeLogin]: {
-                ready: result.valid,
-                stellar_address: extras.stellarAddress,
-                xlm_balance: result.xlmBalance,
-                account_funded: result.accountFunded,
-                trustline_exists: result.trustlineExists,
-                reason_code: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
-                validated_at: validatedAt,
-            },
-        })
-        : '{}';
-    const matrixReadyMap = extras.assigneeLogin
-        ? JSON.stringify({
-            [extras.assigneeLogin]: result.valid,
-        })
-        : '{}';
-    const assetsTrustlineStatus = (extras.assetsTrustlineStatus ?? []).map((status) => ({
-        asset_code: status.assetCode,
-        asset_issuer: status.assetIssuer,
-        trustline_exists: status.trustlineExists,
-        balance: status.balance,
-    }));
-    const presentTrustlines = assetsTrustlineStatus.filter((status) => status.trustline_exists).length;
+const core = __importStar(__nccwpck_require__(7484));
+function toActionOutputs(result, commentUrl) {
     return {
         trustline_exists: String(result.trustlineExists),
         xlm_balance: result.xlmBalance,
         account_funded: String(result.accountFunded),
         comment_url: commentUrl ?? '',
-        full_report_path: fullReportPath ?? '',
-        ready: String(result.valid),
-        validated_at: validatedAt,
-        reason_code: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
-        horizon_url: extras.horizonUrl ?? '',
-        asset_code: extras.assetCode ?? '',
-        asset_issuer: extras.assetIssuer ?? '',
-        checks_json: JSON.stringify(result.checks.map((check) => ({
-            label: check.label,
-            passed: check.passed,
-            detail: check.detail,
-        }))),
-        // Split balances — native vs asset (Issue #246). 7-decimal strings; legacy xlm_balance retained
-        asset_balance: result.assetBalance ?? '0',
-        native_balance: result.xlmBalance,
-        badge_markdown: badgeMarkdown,
-        badge_url: badgeUrl,
-        timings_json: JSON.stringify({
-            input_parse_ms: timings.input_parse_ms ?? 0,
-            horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
-            checks_ms: timings.checks_ms ?? 0,
-            comment_post_ms: timings.comment_post_ms ?? 0,
-            total_ms: timings.total_ms ?? 0,
-        }),
-        timing_input_parse_ms: String(timings.input_parse_ms ?? 0),
-        timing_horizon_fetch_ms: String(timings.horizon_fetch_ms ?? 0),
-        timing_checks_ms: String(timings.checks_ms ?? 0),
-        timing_comment_post_ms: String(timings.comment_post_ms ?? 0),
-        timing_total_ms: String(timings.total_ms ?? 0),
-        num_sponsoring: String(result.sponsorshipInfo?.numSponsoring ?? 0),
-        num_sponsored: String(result.sponsorshipInfo?.numSponsored ?? 0),
-        // #319 — conflict report
-        conflict_report: extras.conflictReport
-            ? JSON.stringify(extras.conflictReport)
-            : '',
-        has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
-        network_passphrase_mismatch: String(Boolean(mismatch)),
-        expected_network_passphrase: mismatch?.expectedPassphrase ?? '',
-        actual_network_passphrase: mismatch?.actualPassphrase ?? '',
-        assignee_results_json: assigneeResultsJson,
-        matrix_ready_map: matrixReadyMap,
-        // #550 — Check Run outputs published through the single output publisher.
-        // Empty strings when no Check Run was created, per the action.yml contract.
-        check_run_id: extras.checkRunId ?? '',
-        check_run_conclusion: extras.checkRunConclusion ?? '',
-        friendbot_called: String(Boolean(extras.friendbotCalled)),
-        friendbot_success: String(Boolean(extras.friendbotSuccess)),
-        friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
-        assets_trustline_status: JSON.stringify(assetsTrustlineStatus),
-        trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
     };
 }
-function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
-    const outputs = toActionOutputs(result, commentUrl, fullReportPath, extras);
+function setValidationOutputs(result, commentUrl) {
+    const outputs = toActionOutputs(result, commentUrl);
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
     }
-}
-/**
- * Write a structured `validation.json` artifact for security review and
- * cross-run delta comparison. Never includes `github_token` or auth headers.
- */
-function writeValidationJson(options) {
-    const buildOpts = {
-        result: options.result,
-        stellarAddress: options.stellarAddress,
-        assetCode: options.assetCode,
-        assetIssuer: options.assetIssuer,
-        horizonUrl: options.horizonUrl,
-        delta: options.delta,
-        privacyMode: options.privacyMode,
-    };
-    const payload = (0, delta_1.buildValidationArtifact)(buildOpts);
-    const root = options.workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
-    const absolutePath = path.isAbsolute(options.outputPath)
-        ? options.outputPath
-        : path.resolve(root, options.outputPath);
-    const dir = path.dirname(absolutePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(absolutePath, JSON.stringify(payload, null, 2), 'utf8');
-    return payload;
-}
-/**
- * Build matrix-friendly JSON outputs from multiple validation results.
- * This enables GitHub matrix workflows to access per-assignee results via
- * `fromJSON(steps.trustbridge.outputs.matrix_ready_map)`.
- *
- * Example usage in a matrix workflow:
- * ```yaml
- * strategy:
- *   matrix:
- *     assignee: [alice, bob, charlie]
- * steps:
- *   - id: check
- *     run: |
- *       READY=$(echo '${{ steps.trustbridge.outputs.matrix_ready_map }}' | jq -r '.["${{ matrix.assignee }}"]')
- *       echo "ready=$READY" >> $GITHUB_OUTPUT
- * ```
- *
- * @param results Array of validation results with assignee metadata
- * @returns JSON string maps for assignee_results_json and matrix_ready_map
- */
-function buildMatrixOutputs(results) {
-    const assigneeResults = {};
-    const readyMap = {};
-    for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of results) {
-        const validated = validatedAt ?? new Date().toISOString();
-        assigneeResults[assigneeLogin] = {
-            ready: validationResult.valid,
-            stellar_address: stellarAddress,
-            xlm_balance: validationResult.xlmBalance,
-            account_funded: validationResult.accountFunded,
-            trustline_exists: validationResult.trustlineExists,
-            reason_code: validationResult.reasonCode ?? (validationResult.valid ? 'SUCCESS' : 'FAILED'),
-            validated_at: validated,
-        };
-        readyMap[assigneeLogin] = validationResult.valid;
-    }
-    return {
-        assigneeResultsJson: JSON.stringify(assigneeResults),
-        matrixReadyMap: JSON.stringify(readyMap),
-    };
-}
-/**
- * Sanitize a GitHub username for use as a matrix dimension or output key.
- * Replaces characters that could cause issues in GitHub Actions expressions
- * with safe alternatives.
- *
- * Rules:
- * - Hyphens and underscores preserved
- * - Other special characters replaced with underscore
- * - Leading digits prefixed with underscore
- * - Empty string becomes "unknown"
- *
- * @param username GitHub username (e.g., from assignee.login)
- * @returns Sanitized key safe for GitHub Actions output names
- */
-function sanitizeUsernameForMatrix(username) {
-    if (!username || username.trim().length === 0) {
-        return 'unknown';
-    }
-    let sanitized = username
-        .trim()
-        .replace(/[^a-zA-Z0-9_-]/g, '_');
-    // Prefix with underscore if starts with digit
-    if (/^\d/.test(sanitized)) {
-        sanitized = '_' + sanitized;
-    }
-    return sanitized || 'unknown';
-}
-
-
-/***/ }),
-
-/***/ 2375:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-/**
- * @file plugin.ts
- * CheckPlugin interface and registry for the TrustBridge extensible
- * validation architecture.
- *
- * SECURITY CONTRACT
- * -----------------
- * Plugins are TypeScript modules reviewed and merged by maintainers.
- * They MUST NOT evaluate or execute content sourced from issue bodies,
- * comment text, environment variables, or any other runtime-supplied
- * string as code (no `eval`, `new Function`, dynamic `import()` of
- * user-supplied paths, or shell execution of untrusted strings).
- * All plugin inputs arrive through the typed `CheckPluginContext` and
- * outputs are constrained to `CheckPluginResult` — no escape hatches.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultRegistry = exports.PluginRegistry = void 0;
-// ---------------------------------------------------------------------------
-// Plugin registry
-// ---------------------------------------------------------------------------
-/**
- * Ordered, deduplication-safe registry of `CheckPlugin` instances.
- *
- * Usage:
- * ```ts
- * const registry = new PluginRegistry();
- * registry.register(accountFundedPlugin);
- * registry.register(trustlinePlugin);
- * const plugins = registry.list();
- * ```
- *
- * Plugins are stored in insertion order. Registering a plugin whose `id`
- * already exists is a no-op (first registration wins), so consumers can
- * safely call `register()` multiple times without duplicating checks.
- */
-class PluginRegistry {
-    constructor() {
-        this._plugins = new Map();
-    }
-    /**
-     * Register a plugin. If a plugin with the same `id` is already
-     * registered, this call is silently ignored (first-wins semantics).
-     */
-    register(plugin) {
-        if (!this._plugins.has(plugin.id)) {
-            this._plugins.set(plugin.id, plugin);
-        }
-    }
-    /**
-     * Remove a plugin by id. Returns `true` if it was present.
-     * Useful in tests to reset state between runs.
-     */
-    unregister(id) {
-        return this._plugins.delete(id);
-    }
-    /**
-     * Returns all registered plugins in insertion order.
-     */
-    list() {
-        return Array.from(this._plugins.values());
-    }
-    /**
-     * Returns the number of registered plugins.
-     */
-    get size() {
-        return this._plugins.size;
-    }
-    /**
-     * Remove all plugins. Primarily useful in tests.
-     */
-    clear() {
-        this._plugins.clear();
-    }
-}
-exports.PluginRegistry = PluginRegistry;
-/**
- * The default shared registry used by `runPlugins()` and `corePlugins.ts`.
- *
- * Consumers that need isolation (e.g. tests) should create their own
- * `new PluginRegistry()` and pass it explicitly to `runPlugins()`.
- */
-exports.defaultRegistry = new PluginRegistry();
-
-
-/***/ }),
-
-/***/ 2259:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * @file pluginLoader.ts
- * Load CheckPlugin modules from workspace-local paths with SSRF/path-traversal
- * hardening and allowlisting.
- *
- * SECURITY MODEL
- * ---------------
- * Plugins are loaded from the workspace only (not from npm, URLs, or node_modules).
- * The loader validates:
- * - Path does not escape the workspace root (no `../../../etc/passwd`)
- * - Path resolves to a regular file (not a directory, symlink, or dev)
- * - File exists and is readable
- * - Module exports a valid `CheckPlugin` interface
- *
- * Plugins are matched against an allowlist before loading. By default, no
- * external plugins are loaded — workflows must opt-in explicitly.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.PluginLoadError = void 0;
-exports.loadPlugin = loadPlugin;
-exports.loadPluginsFromAllowlist = loadPluginsFromAllowlist;
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
-const logger_1 = __nccwpck_require__(6999);
-/**
- * Error thrown when plugin loading fails (validation, file access, or export).
- */
-class PluginLoadError extends Error {
-    constructor(message, pluginPath, reason) {
-        super(message);
-        this.pluginPath = pluginPath;
-        this.reason = reason;
-        this.name = 'PluginLoadError';
-    }
-}
-exports.PluginLoadError = PluginLoadError;
-/**
- * Validate that a plugin path does not escape the workspace (path-traversal guard).
- *
- * Checks for:
- * - `../` sequences that go above workspaceRoot
- * - Absolute paths (must be relative)
- * - `..\\` on Windows
- *
- * Returns `{ valid: true }` or `{ valid: false, reason: string }`.
- */
-function validatePluginPath(workspaceRoot, pluginPath) {
-    // Reject absolute paths
-    if (path.isAbsolute(pluginPath)) {
-        return { valid: false, reason: 'Plugin path must be relative to workspaceRoot' };
-    }
-    // Resolve the path to catch any `../` escapes
-    const resolved = path.resolve(workspaceRoot, pluginPath);
-    const normalized = path.normalize(resolved);
-    // Ensure resolved path is still within workspace
-    if (!normalized.startsWith(path.normalize(workspaceRoot))) {
-        return { valid: false, reason: 'Plugin path escapes workspaceRoot' };
-    }
-    return { valid: true };
-}
-/**
- * Load a single plugin module from a workspace-relative path.
- *
- * The module must export a `default` or named export that matches the
- * `CheckPlugin` interface (with `id`, `label`, `run()`).
- *
- * Throws `PluginLoadError` on any validation or load failure.
- */
-async function loadPlugin(workspaceRoot, pluginPath, options) {
-    const debugMode = options?.debugMode ?? false;
-    // Step 1: validate path does not escape workspace
-    const pathValidation = validatePluginPath(workspaceRoot, pluginPath);
-    if (!pathValidation.valid) {
-        throw new PluginLoadError(`Plugin path validation failed: ${'reason' in pathValidation ? pathValidation.reason : 'invalid path'}`, pluginPath, 'path_traversal');
-    }
-    const absolutePath = path.resolve(workspaceRoot, pluginPath);
-    if (debugMode) {
-        logger_1.logger.debug(`Loading plugin from: ${absolutePath}`, { component: 'pluginLoader' });
-    }
-    // Step 2: check file exists
-    if (!fs.existsSync(absolutePath)) {
-        throw new PluginLoadError(`Plugin file not found: ${absolutePath}`, pluginPath, 'not_found');
-    }
-    // Step 3: verify it's a regular file (not directory, symlink, socket, etc.)
-    const stats = fs.statSync(absolutePath);
-    if (!stats.isFile()) {
-        throw new PluginLoadError(`Plugin path is not a regular file: ${absolutePath}`, pluginPath, 'not_file');
-    }
-    // Step 4: dynamically import the module
-    // Use file:// URL to ensure cross-platform compatibility
-    let moduleExport;
-    try {
-        const fileUrl = new URL(`file://${absolutePath}`).href;
-        // On Windows, file:// URLs need special handling; node's import() handles this
-        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
-        moduleExport = (await Promise.resolve(`${fileUrl}`).then(s => __importStar(require(s))));
-        if (debugMode) {
-            logger_1.logger.debug(`Module imported successfully`, {
-                component: 'pluginLoader',
-                pluginPath,
-                exportKeys: moduleExport ? Object.keys(moduleExport) : [],
-            });
-        }
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new PluginLoadError(`Failed to import plugin module: ${message}`, pluginPath, 'load_failed');
-    }
-    // Step 5: extract and validate the plugin export
-    // Try: default export, then named 'plugin' export, then first exported object with `id` and `run`
-    let plugin;
-    if (moduleExport && typeof moduleExport.default === 'object' && moduleExport.default !== null) {
-        plugin = moduleExport.default;
-    }
-    else if (moduleExport && typeof moduleExport.plugin === 'object' && moduleExport.plugin !== null) {
-        plugin = moduleExport.plugin;
-    }
-    else if (moduleExport) {
-        // Look for any export that has the plugin shape
-        const candidateKeys = Object.keys(moduleExport).filter((k) => typeof moduleExport[k] === 'object' && moduleExport[k] !== null);
-        if (candidateKeys.length > 0) {
-            plugin = moduleExport[candidateKeys[0]];
-        }
-    }
-    // Validate plugin shape
-    if (!isCheckPlugin(plugin)) {
-        throw new PluginLoadError(`Plugin export does not match CheckPlugin interface (missing id, label, or run)`, pluginPath, 'invalid_export');
-    }
-    if (debugMode) {
-        logger_1.logger.debug(`Plugin loaded successfully`, {
-            component: 'pluginLoader',
-            pluginPath,
-            pluginId: plugin.id,
-            pluginLabel: plugin.label,
-        });
-    }
-    return plugin;
-}
-/**
- * Type guard: check if an object matches the CheckPlugin interface.
- */
-function isCheckPlugin(obj) {
-    if (typeof obj !== 'object' || obj === null)
-        return false;
-    const plugin = obj;
-    return (typeof plugin.id === 'string' &&
-        plugin.id.length > 0 &&
-        typeof plugin.label === 'string' &&
-        plugin.label.length > 0 &&
-        typeof plugin.run === 'function');
-}
-/**
- * Load multiple plugins from workspace paths with allowlist enforcement.
- *
- * Only paths listed in `allowedPluginPaths` are loaded. Missing or invalid
- * plugins are logged as warnings but do not block the run (fail-open).
- * Two plugins exporting the same `id` throw a `PluginLoadError` with reason
- * `duplicate_id`.
- *
- * Returns an array of successfully loaded plugins.
- */
-async function loadPluginsFromAllowlist(config) {
-    const { workspaceRoot, allowedPluginPaths = [], debugMode = false } = config;
-    if (allowedPluginPaths.length === 0) {
-        if (debugMode) {
-            logger_1.logger.debug(`No external plugins allowlisted`, { component: 'pluginLoader' });
-        }
-        return [];
-    }
-    if (debugMode) {
-        logger_1.logger.debug(`Loading ${allowedPluginPaths.length} allowlisted plugins`, {
-            component: 'pluginLoader',
-            allowedPluginPaths,
-        });
-    }
-    const loaded = [];
-    const pathById = new Map();
-    for (const pluginPath of allowedPluginPaths) {
-        let plugin;
-        try {
-            plugin = await loadPlugin(workspaceRoot, pluginPath, { debugMode });
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            logger_1.logger.warn(`Failed to load plugin from ${pluginPath}: ${message}`, {
-                component: 'pluginLoader',
-            });
-            // Fail-open: continue loading other plugins
-            continue;
-        }
-        // Duplicate ids are a configuration error: the registry is first-wins, so
-        // one plugin would be silently dropped. Fail with a clear error instead.
-        const existingPath = pathById.get(plugin.id);
-        if (existingPath !== undefined) {
-            throw new PluginLoadError(`Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existingPath}. Plugin ids must be unique.`, pluginPath, 'duplicate_id');
-        }
-        pathById.set(plugin.id, pluginPath);
-        loaded.push(plugin);
-    }
-    if (debugMode) {
-        logger_1.logger.debug(`Loaded ${loaded.length}/${allowedPluginPaths.length} plugins`, {
-            component: 'pluginLoader',
-            loadedPluginIds: loaded.map((p) => p.id),
-        });
-    }
-    return loaded;
-}
-
-
-/***/ }),
-
-/***/ 9050:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-/**
- * @file pluginRunner.ts
- * Runs a set of CheckPlugins and composes their results into a
- * ValidationResult that is fully compatible with the existing comment,
- * output, and gate logic.
- *
- * The runner is intentionally decoupled from `runAccountChecks` so both
- * can coexist during a gradual migration: the monolith still handles
- * unfunded / Horizon-error paths, while the plugin system is the
- * forward-looking extension point for new checks.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runPlugins = runPlugins;
-const plugin_1 = __nccwpck_require__(2375);
-const markdown_1 = __nccwpck_require__(3758);
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-/**
- * Run every plugin registered in `registry` against `ctx`, then
- * compose their `CheckPluginResult`s into a `ValidationResult`.
- *
- * Composition rules
- * -----------------
- * - `valid`           — true only when every plugin passes.
- * - `accountFunded`   — derived from the plugin whose id ends with
- *                       `'account-funded'`, otherwise falls back to
- *                       `ctx.account !== null`.
- * - `trustlineExists` — derived from the plugin whose id ends with
- *                       `'trustline'`, otherwise `false`.
- * - `xlmBalance`      — taken from the native balance on `ctx.account`,
- *                       or `'unknown'` when `ctx.account` is null.
- * - `xlmReserveMet`   — derived from the plugin whose id ends with
- *                       `'xlm-reserve'`, otherwise `false`.
- * - `checks`          — one `CheckResultItem` per plugin, in
- *                       registration order.
- * - `remediation`     — all non-empty plugin `remediation` strings
- *                       joined with `'\n\n'`, or `undefined` when all
- *                       checks pass.
- *
- * @param ctx       Context object shared across all plugins.
- * @param registry  Optional registry; defaults to `defaultRegistry`.
- */
-function runPlugins(ctx, registry = plugin_1.defaultRegistry) {
-    const plugins = registry.list();
-    // Run each plugin, wrapping any unexpected throw so one bad plugin
-    // cannot silently kill the whole action.
-    const pluginOutputs = plugins.map((plugin) => {
-        try {
-            return { plugin, result: plugin.run(ctx) };
-        }
-        catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return {
-                plugin,
-                result: {
-                    passed: false,
-                    detail: `Plugin \`${plugin.id}\` threw an unexpected error: ${message}`,
-                    remediation: `Contact the plugin author to fix \`${plugin.id}\`.`,
-                },
-            };
-        }
-    });
-    // Build the checks array from plugin results.
-    const checks = pluginOutputs.map(({ plugin, result }) => {
-        const isCore = plugin.id.startsWith('trustbridge/');
-        return {
-            passed: result.passed,
-            label: isCore ? plugin.label : (0, markdown_1.escapeMarkdownInline)(plugin.label),
-            detail: isCore ? result.detail : (0, markdown_1.escapeMarkdownInline)(result.detail),
-        };
-    });
-    const valid = checks.every((c) => c.passed);
-    // Derive top-level ValidationResult fields from well-known plugin ids
-    // or from the context when the corresponding plugin is absent.
-    const accountFunded = deriveFlag(pluginOutputs, 'account-funded', ctx.account !== null);
-    const trustlineExists = deriveFlag(pluginOutputs, 'trustline', false);
-    const xlmReserveMet = deriveFlag(pluginOutputs, 'xlm-reserve', false);
-    const xlmBalance = ctx.account
-        ? (ctx.account.balances.find((b) => b.asset_type === 'native')?.balance ?? 'unknown')
-        : 'unknown';
-    // Collect remediation strings from failed plugins.
-    const remediationParts = pluginOutputs
-        .filter(({ result }) => !result.passed && result.remediation)
-        .map(({ plugin, result }) => {
-        const isCore = plugin.id.startsWith('trustbridge/');
-        return isCore ? result.remediation : (0, markdown_1.escapeMarkdownInline)(result.remediation);
-    });
-    const remediation = remediationParts.length > 0 ? remediationParts.join('\n\n') : undefined;
-    return {
-        valid,
-        accountFunded,
-        trustlineExists,
-        xlmBalance,
-        xlmReserveMet,
-        assetBalance: 'unknown',
-        assetBalanceMet: false,
-        checks,
-        remediation,
-        failedCheckLabels: checks.filter((c) => !c.passed).map((c) => {
-            const label = c.label.toLowerCase();
-            if (label.includes('horizon'))
-                return 'horizon_available';
-            if (label.includes('account funded') || label.includes('account-funded'))
-                return 'account_funded';
-            if (label.includes('trustline'))
-                return 'trustline';
-            if (label.includes('xlm') || label.includes('reserve'))
-                return 'xlm_reserve';
-            if (label.includes('kyc'))
-                return 'kyc';
-            if (label.includes('home domain'))
-                return 'home_domain';
-            return label.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-        }),
-    };
-}
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-/**
- * Derive a boolean flag from the first plugin whose id ends with `suffix`.
- * Falls back to `defaultValue` when no matching plugin is registered.
- */
-function deriveFlag(outputs, suffix, defaultValue) {
-    const match = outputs.find(({ plugin }) => plugin.id.endsWith(suffix));
-    return match !== undefined ? match.result.passed : defaultValue;
-}
-
-
-/***/ }),
-
-/***/ 4504:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * src/preflight.ts
- *
- * #145 — issues:write preflight check
- * #220 — extended to `pull_request` / `pull_request_target` events
- * #443 — optional Horizon fallback health probe
- *
- * Verifies that the supplied GitHub token has sufficient permission to post
- * issue/PR comments **before** any expensive Horizon calls are made.  Failing
- * fast here gives workflow authors a clear, actionable error instead of a
- * generic GitHub 403 that appears only after Horizon work has completed.
- *
- * ## Preflight sequence
- *
- * 1. **Issue/PR context check** — verify an issue or PR number can be
- *    resolved from the event payload (`payload.issue.number` for `issues`
- *    events, `payload.pull_request.number` for `pull_request`/
- *    `pull_request_target`). Comment posting is only possible in one of
- *    these contexts; `workflow_dispatch` and other events skip comment
- *    posting and therefore skip the preflight.
- * 2. **Permission probe** — call `GET /repos/{owner}/{repo}/issues/{number}/comments`
- *    with `per_page=1`.  A 403/401 response means the token lacks `issues: read`
- *    and certainly cannot write.  This is less aggressive than a dry-run
- *    `createComment` because it is read-only and will not clutter the issue.
- *    A 404 on the issue/PR itself is surfaced separately (closed/deleted).
- *    Note: this probe only proves *read* access — a `pull_request` (not
- *    `pull_request_target`) run on a **fork** PR gets a read-only
- *    `GITHUB_TOKEN` by default, so the probe can pass here and the later
- *    `createComment`/`updateComment` call can still 403. That failure is
- *    caught separately and logged as a non-fatal warning by the caller.
- * 3. **Optional Horizon health probe** (#443) — when enabled, HEAD (falling
- *    back to GET) the Horizon root on both the primary and fallback URLs so
- *    operators discover a bad secondary before a run fails mid-flight.
- *    Soft-warns by default; `horizon_probe_hard_fail: true` turns a failed
- *    probe into a hard failure.
- *
- * ## Failure modes
- *
- * | Situation | Code | `PreflightResult.skip` | Horizon called? |
- * |-----------|------|----------------------|-----------------|
- * | No issue/PR context | — | `true` | Yes (outputs still set) |
- * | Token lacks issues:read/write | 403/401 | `false` | No (run fails) |
- * | Issue/PR not found (404) | 404 | `false` | No (run fails) |
- * | Transient error (5xx) | 5xx | `false` | No (run fails fast) |
- * | Permission check passes | 200 | `false` | Yes |
- *
- * ## Design notes
- *
- * - When there is no issue/PR context the preflight returns `{ skip: true }`
- *   so the caller can proceed without posting a comment (same behaviour as
- *   today for `workflow_dispatch`).
- * - `preflight_only` input: when `true`, the action runs the preflight and
- *   exits immediately without calling Horizon.  Useful for diagnosing
- *   permission issues in new repositories without spending API quota.
- * - The Horizon health probe is opt-in (`horizon_probe: true`) and bounded by
- *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
- *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
- *   workflows.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.PreflightError = void 0;
-exports.runIssuesPreflight = runIssuesPreflight;
-exports.runHorizonHealthProbe = runHorizonHealthProbe;
-const github = __importStar(__nccwpck_require__(3228));
-const comment_1 = __nccwpck_require__(2246);
-/**
- * Run the issues:write preflight sequence.
- *
- * @param token   The `github_token` input value (used to build Octokit).
- * @param options Optional flags controlling preflight behaviour.
- * @returns       A `PreflightResult` — inspect `.skip` to decide whether to
- *                skip comment posting, or throw on hard failures.
- *
- * @throws When the token demonstrably lacks the required permission (401/403)
- *         or the issue is not found (404).  Callers should let these propagate
- *         to `core.setFailed`.
- */
-async function runIssuesPreflight(token, options = {}) {
-    const requireIssueContext = options.requireIssueContext === true;
-    const context = github.context;
-    const issueNumber = (0, comment_1.resolveIssueOrPullRequestNumber)(context.payload);
-    // ── 1. Issue/PR context check ─────────────────────────────────────────────
-    if (!issueNumber) {
-        if (requireIssueContext) {
-            throw new Error('issues:write preflight requires an issue or pull-request context ' +
-                '(issues, pull_request, or pull_request_target event) but none was found.');
-        }
-        return {
-            skip: true,
-            message: 'No issue or pull request context found — comment posting will be skipped. ' +
-                'This is normal for workflow_dispatch and push events. ' +
-                'TrustBridge checks will still run and outputs will be set.',
-        };
-    }
-    // ── 2. Permission probe ───────────────────────────────────────────────────
-    const octokit = github.getOctokit(token);
-    const { owner, repo } = context.repo;
-    try {
-        await octokit.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            per_page: 1,
-        });
-    }
-    catch (error) {
-        const status = extractHttpStatus(error);
-        if (status === 401) {
-            throw new PreflightError('GitHub token is not authorized (401). ' +
-                'Ensure the token is valid and has not expired. ' +
-                'For GITHUB_TOKEN, verify the workflow has `permissions: issues: write`.', 401);
-        }
-        if (status === 403) {
-            const isForkPullRequest = context.eventName === 'pull_request' &&
-                Boolean(context.payload
-                    .pull_request?.head?.repo?.fork);
-            const forkHint = isForkPullRequest
-                ? '\n\nThis looks like a `pull_request` run on a fork PR: `GITHUB_TOKEN` is read-only ' +
-                    'by default in that case, which explains a passing read probe but a failing write. ' +
-                    'Switch the workflow trigger to `pull_request_target` (with care — see the GitHub docs ' +
-                    'on the security implications) if you need to comment on fork PRs.'
-                : '';
-            throw new PreflightError('GitHub token lacks `issues: write` permission (403). ' +
-                'Add `permissions: issues: write` to your workflow job, for example:\n\n' +
-                '```yaml\npermissions:\n  issues: write\n  contents: read\n```\n\n' +
-                'If you are using a PAT, ensure it has the `repo` scope (public repos) ' +
-                'or `repo` + `issues` scopes (private repos).' +
-                forkHint, 403);
-        }
-        if (status === 404) {
-            throw new PreflightError(`Issue or pull request #${issueNumber} was not found (404). ` +
-                'It may have been deleted, or the repository name in the event payload is incorrect.', 404);
-        }
-        // Transient / unexpected errors — fail fast rather than proceeding
-        const message = error instanceof Error ? error.message : String(error);
-        throw new PreflightError(`issues:write preflight failed with an unexpected error (HTTP ${status ?? 'unknown'}): ${message}. ` +
-            'Retry the workflow or check your token permissions.', status ?? 0);
-    }
-    // ── 3. Optional Horizon health probe (#443) ───────────────────────────────
-    if (options.horizonProbe === true) {
-        await runHorizonHealthProbe(options);
-    }
-    return {
-        skip: false,
-        message: `issues:write preflight passed — issue/PR #${issueNumber} is accessible.`,
-        issueNumber,
-    };
-}
-// ---------------------------------------------------------------------------
-// Horizon health probe (#443)
-// ---------------------------------------------------------------------------
-/**
- * Probe the Horizon root on the primary and (when set) fallback URLs.
- *
- * Uses `HEAD` first and falls back to `GET` when the server rejects HEAD
- * (some Horizon deployments return 405).  A probe is considered healthy when
- * the response status is `< 400`.
- *
- * By default a failed probe only emits a warning; set
- * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
- */
-async function runHorizonHealthProbe(options) {
-    const fetchImpl = options.fetchImpl ?? fetch;
-    const warn = options.warn ?? ((message) => console.warn(message));
-    const timeoutMs = options.horizonProbeTimeoutMs ?? 5000;
-    const targets = [];
-    if (options.horizonUrl) {
-        targets.push({ label: 'primary', url: options.horizonUrl });
-    }
-    if (options.horizonUrlFallback) {
-        targets.push({ label: 'fallback', url: options.horizonUrlFallback });
-    }
-    for (const target of targets) {
-        const result = await probeHorizonUrl(target.url, fetchImpl, timeoutMs);
-        if (result.ok) {
-            continue;
-        }
-        const message = `Horizon ${target.label} URL health probe failed for ${target.url}: ${result.reason}. ` +
-            'The run will continue, but fetch failures may fall back to this URL mid-run.';
-        if (options.horizonProbeHardFail === true) {
-            throw new PreflightError(message, result.status ?? 0);
-        }
-        warn(message);
-    }
-}
-async function probeHorizonUrl(url, fetchImpl, timeoutMs) {
-    const head = await fetchWithTimeout(fetchImpl, url, 'HEAD', timeoutMs);
-    if (head.ok) {
-        return { ok: true, reason: 'ok', status: head.status };
-    }
-    // Some servers reject HEAD (405/501) — retry with GET before giving up.
-    if (head.status === 405 || head.status === 501) {
-        const get = await fetchWithTimeout(fetchImpl, url, 'GET', timeoutMs);
-        return get.ok
-            ? { ok: true, reason: 'ok', status: get.status }
-            : { ok: false, reason: get.reason, status: get.status };
-    }
-    return { ok: false, reason: head.reason, status: head.status };
-}
-async function fetchWithTimeout(fetchImpl, url, method, timeoutMs) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetchImpl(url, {
-            method,
-            signal: controller.signal,
-            redirect: 'follow',
-        });
-        if (response.status < 400) {
-            return { ok: true, reason: 'ok', status: response.status };
-        }
-        return {
-            ok: false,
-            reason: `HTTP ${response.status}`,
-            status: response.status,
-        };
-    }
-    catch (error) {
-        const reason = error instanceof Error && error.name === 'AbortError'
-            ? `timed out after ${timeoutMs}ms`
-            : error instanceof Error
-                ? error.message
-                : String(error);
-        return { ok: false, reason };
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-// ---------------------------------------------------------------------------
-// PreflightError
-// ---------------------------------------------------------------------------
-/**
- * Thrown by `runIssuesPreflight` when the token is missing permission or the
- * issue context is invalid.  Callers should surface this via `core.setFailed`.
- */
-class PreflightError extends Error {
-    constructor(message, statusCode) {
-        super(message);
-        this.statusCode = statusCode;
-        this.name = 'PreflightError';
-    }
-}
-exports.PreflightError = PreflightError;
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-/**
- * Best-effort extraction of an HTTP status code from an Octokit error.
- * Returns `undefined` when the error does not carry a numeric `status`.
- */
-function extractHttpStatus(error) {
-    if (error && typeof error === 'object' && 'status' in error) {
-        const status = error.status;
-        if (typeof status === 'number') {
-            return status;
-        }
-    }
-    return undefined;
-}
-
-
-/***/ }),
-
-/***/ 7233:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateProjectV2Status = updateProjectV2Status;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const logger_1 = __nccwpck_require__(6999);
-/**
- * Update the status field of an item in a GitHub Projects v2 board.
- *
- * Opt-in only: when projectId or targetStatusValue is empty, does nothing.
- * Automatically adds the issue/PR to the project if not already present (idempotent).
- * Handles missing token scopes or rate limits with descriptive warnings without failing the workflow.
- */
-async function updateProjectV2Status(options) {
-    const { octokit, projectId, contentNodeId, targetStatusValue } = options;
-    const statusFieldName = (options.statusFieldName || 'Status').trim();
-    if (!projectId || !projectId.trim()) {
-        return { updated: false };
-    }
-    if (!targetStatusValue || !targetStatusValue.trim()) {
-        return { updated: false };
-    }
-    if (!contentNodeId || !contentNodeId.trim()) {
-        core.warning('[Projects v2] Cannot update project item status: contentNodeId is missing.');
-        return { updated: false, error: 'Missing contentNodeId' };
-    }
-    const cleanProjectId = projectId.trim();
-    const cleanTargetValue = targetStatusValue.trim();
-    try {
-        // 1. Fetch project fields
-        const fieldsQuery = `
-      query getProjectFields($projectId: ID!) {
-        node(id: $projectId) {
-          ... on ProjectV2 {
-            id
-            fields(first: 50) {
-              nodes {
-                ... on ProjectV2SingleSelectField {
-                  id
-                  name
-                  options {
-                    id
-                    name
-                  }
-                }
-                ... on ProjectV2Field {
-                  id
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    `;
-        const projectResponse = await octokit.graphql(fieldsQuery, {
-            projectId: cleanProjectId,
-        });
-        const projectNode = projectResponse?.node;
-        if (!projectNode || !projectNode.fields?.nodes) {
-            const msg = `Project v2 with ID "${cleanProjectId}" not found or lacks readable fields. Check token scope and project_id.`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        const fieldNodes = projectNode.fields.nodes;
-        const targetField = fieldNodes.find((f) => f.name.trim().toLowerCase() === statusFieldName.toLowerCase());
-        if (!targetField) {
-            const availableFields = fieldNodes.map((f) => `"${f.name}"`).join(', ');
-            const msg = `Status field "${statusFieldName}" not found in Project v2. Available fields: ${availableFields}`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        // 2. Add or find item in project (idempotent)
-        const addItemMutation = `
-      mutation addProjectItem($projectId: ID!, $contentId: ID!) {
-        addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-          item {
-            id
-          }
-        }
-      }
-    `;
-        const addResponse = await octokit.graphql(addItemMutation, {
-            projectId: cleanProjectId,
-            contentId: contentNodeId,
-        });
-        const itemId = addResponse?.addProjectV2ItemById?.item?.id;
-        if (!itemId) {
-            const msg = `Could not add or locate content ${contentNodeId} in Project v2.`;
-            core.warning(`[Projects v2] ${msg}`);
-            return { updated: false, error: msg };
-        }
-        // 3. Update field value
-        if (targetField.options && targetField.options.length > 0) {
-            // Single-select field
-            const matchingOption = targetField.options.find((opt) => opt.name.trim().toLowerCase() === cleanTargetValue.toLowerCase());
-            if (!matchingOption) {
-                const availableOptions = targetField.options.map((opt) => `"${opt.name}"`).join(', ');
-                const msg = `Option "${cleanTargetValue}" not found for single-select field "${targetField.name}". Available options: ${availableOptions}`;
-                core.warning(`[Projects v2] ${msg}`);
-                return { updated: false, error: msg };
-            }
-            const updateMutation = `
-        mutation updateSingleSelectValue($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-          updateProjectV2ItemFieldValue(input: {
-            projectId: $projectId
-            itemId: $itemId
-            fieldId: $fieldId
-            value: {
-              singleSelectOptionId: $optionId
-            }
-          }) {
-            projectV2Item {
-              id
-            }
-          }
-        }
-      `;
-            await octokit.graphql(updateMutation, {
-                projectId: cleanProjectId,
-                itemId,
-                fieldId: targetField.id,
-                optionId: matchingOption.id,
-            });
-        }
-        else {
-            // Text field
-            const updateMutation = `
-        mutation updateTextValue($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
-          updateProjectV2ItemFieldValue(input: {
-            projectId: $projectId
-            itemId: $itemId
-            fieldId: $fieldId
-            value: {
-              text: $text
-            }
-          }) {
-            projectV2Item {
-              id
-            }
-          }
-        }
-      `;
-            await octokit.graphql(updateMutation, {
-                projectId: cleanProjectId,
-                itemId,
-                fieldId: targetField.id,
-                text: cleanTargetValue,
-            });
-        }
-        core.info(`[Projects v2] Updated item ${itemId} field "${targetField.name}" to "${cleanTargetValue}" in project ${cleanProjectId}.`);
-        return { updated: true, itemId };
-    }
-    catch (error) {
-        const rawMsg = error instanceof Error ? error.message : String(error);
-        let userMsg = rawMsg;
-        if (rawMsg.includes('Resource not accessible') ||
-            rawMsg.includes('FORBIDDEN') ||
-            rawMsg.includes('scope') ||
-            rawMsg.includes('Could not resolve to a node')) {
-            userMsg = `${rawMsg}. Ensure the token has the 'project' scope (or write:org / fine-grained Projects read & write permissions).`;
-        }
-        logger_1.logger.warn(`Projects v2 status update error: ${userMsg}`, { component: 'projects' });
-        core.warning(`[Projects v2] Failed to update project status (non-fatal): ${userMsg}`);
-        return { updated: false, error: userMsg };
-    }
-}
-
-
-/***/ }),
-
-/***/ 8903:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * HTTPS proxy support for enterprise environments (Issue #237).
- *
- * GHES runners often require an HTTP/HTTPS proxy to reach both the
- * Stellar Horizon API and the GitHub API. This module reads standard
- * proxy environment variables and returns a configured agent when needed.
- *
- * Environment variables honored:
- *   - `HTTPS_PROXY` / `https_proxy` — proxy URL for HTTPS requests
- *   - `HTTP_PROXY` / `http_proxy` — fallback proxy URL (used when HTTPS_PROXY is unset)
- *   - `NO_PROXY` / `no_proxy` — comma-separated list of hosts to bypass
- *
- * Security notes:
- *   - Proxy URLs containing userinfo (username:password) are redacted in logs.
- *   - SSRF protections are NOT disabled when using a proxy.
- *   - Only HTTPS proxies are supported for Horizon requests.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.redactProxyUrl = redactProxyUrl;
-exports.getProxyConfig = getProxyConfig;
-exports.shouldBypassProxy = shouldBypassProxy;
-exports.createProxyAgent = createProxyAgent;
-exports.createProxiedFetch = createProxiedFetch;
-exports.getOctokitProxyOptions = getOctokitProxyOptions;
-const https_proxy_agent_1 = __nccwpck_require__(3669);
-const url_1 = __nccwpck_require__(7016);
-const logger_1 = __nccwpck_require__(6999);
-/**
- * Redact userinfo from a proxy URL for safe logging.
- *
- * `http://user:pass@proxy:8080` → `http://proxy:8080`
- */
-function redactProxyUrl(url) {
-    try {
-        const parsed = new url_1.URL(url);
-        if (parsed.username || parsed.password) {
-            parsed.username = '';
-            parsed.password = '';
-            return parsed.toString();
-        }
-    }
-    catch {
-        // Not a valid URL — return as-is (caller will handle).
-    }
-    return url;
-}
-/**
- * Read proxy configuration from environment variables.
- *
- * Returns an empty `proxyUrl` when no proxy is configured, which means
- * the caller should use a direct connection.
- */
-function getProxyConfig() {
-    const proxyUrl = process.env.HTTPS_PROXY ||
-        process.env.https_proxy ||
-        process.env.HTTP_PROXY ||
-        process.env.http_proxy ||
-        '';
-    const noProxyRaw = process.env.NO_PROXY ||
-        process.env.no_proxy ||
-        '';
-    const noProxyHosts = noProxyRaw
-        .split(',')
-        .map((h) => h.trim().toLowerCase())
-        .filter(Boolean);
-    return { proxyUrl, noProxyHosts };
-}
-/**
- * Check whether a given hostname should bypass the proxy based on NO_PROXY.
- *
- * Supports exact matches and wildcard (`*`) entries.
- */
-function shouldBypassProxy(hostname, noProxyHosts) {
-    const lower = hostname.toLowerCase();
-    if (noProxyHosts.includes('*'))
-        return true;
-    if (noProxyHosts.includes(lower))
-        return true;
-    // Support domain suffix matching: `.example.com` matches `foo.example.com`
-    for (const entry of noProxyHosts) {
-        if (entry.startsWith('.') && lower.endsWith(entry))
-            return true;
-        if (lower.endsWith('.' + entry))
-            return true;
-    }
-    return false;
-}
-/**
- * Create an HTTPS proxy agent for a given target URL.
- *
- * Returns `undefined` when:
- *   - No proxy is configured
- *   - The target hostname is in the NO_PROXY list
- *   - The proxy URL is invalid
- *
- * The returned agent is an `https-proxy-agent` instance that can be passed
- * as the `agent` option to `node-fetch` or Octokit's `httpAgent`.
- */
-function createProxyAgent(targetUrl, config) {
-    const cfg = config ?? getProxyConfig();
-    if (!cfg.proxyUrl)
-        return undefined;
-    let targetHost;
-    try {
-        targetHost = new url_1.URL(targetUrl).hostname;
-    }
-    catch {
-        logger_1.logger.warn('Invalid target URL for proxy agent', {
-            component: 'proxy',
-            targetUrl: '(redacted)',
-        });
-        return undefined;
-    }
-    if (shouldBypassProxy(targetHost, cfg.noProxyHosts)) {
-        logger_1.logger.debug('Proxy bypass for hostname', {
-            component: 'proxy',
-            hostname: targetHost,
-        });
-        return undefined;
-    }
-    try {
-        const parsedProxy = new url_1.URL(cfg.proxyUrl);
-        if (!parsedProxy.hostname || !['http:', 'https:'].includes(parsedProxy.protocol)) {
-            throw new Error(`Invalid proxy URL protocol or hostname: ${cfg.proxyUrl}`);
-        }
-        const safeProxyUrl = redactProxyUrl(cfg.proxyUrl);
-        logger_1.logger.info('Creating proxy agent', {
-            component: 'proxy',
-            proxyUrl: safeProxyUrl,
-            targetHost,
-        });
-        return new https_proxy_agent_1.HttpsProxyAgent(cfg.proxyUrl);
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger_1.logger.warn(`Failed to create proxy agent: ${msg}`, { component: 'proxy' });
-        return undefined;
-    }
-}
-/**
- * Wrap a `node-fetch`-like function to route requests through an HTTPS proxy.
- *
- * The returned function has the same signature as `node-fetch` but transparently
- * injects the proxy agent into each request when a proxy is configured.
- *
- * SSRF protections remain active — the proxy agent only handles transport.
- */
-function createProxiedFetch(config) {
-    const cfg = config ?? getProxyConfig();
-    if (!cfg.proxyUrl) {
-        // No proxy configured — return the default fetch unchanged.
-        return undefined;
-    }
-    return async function proxiedFetch(url, init) {
-        const targetUrl = typeof url === 'string' ? url : url.url;
-        const agent = createProxyAgent(targetUrl, cfg);
-        if (!agent) {
-            // Bypass proxy for this specific request (NO_PROXY match or error).
-            const { default: fetch } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)));
-            return fetch(url, init);
-        }
-        const { default: fetch } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)));
-        return fetch(url, { ...init, agent });
-    };
-}
-/**
- * Get Octokit options with proxy agent configured when needed.
- *
- * Returns an options object suitable for passing to `github.getOctokit(token, options)`.
- * When no proxy is configured or the GitHub API host is in NO_PROXY, returns
- * only the `baseUrl` (no proxy agent).
- */
-function getOctokitProxyOptions(baseUrl) {
-    const cfg = getProxyConfig();
-    if (!cfg.proxyUrl)
-        return { baseUrl };
-    const targetUrl = baseUrl || 'https://api.github.com';
-    const agent = createProxyAgent(targetUrl, cfg);
-    if (!agent)
-        return { baseUrl };
-    return { baseUrl, request: { agent } };
-}
-
-
-/***/ }),
-
-/***/ 2334:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Advanced retry and rate-limiting strategies for resilient API interactions.
- *
- * Wave #26: GitHub Check Runs integration — resilience layer now surfaces
- * circuit-breaker state changes and per-attempt outcomes as GitHub Check Run
- * annotations so operators can observe retry / fallback activity directly in
- * the Actions UI rather than only in debug logs.
- *
- * Wave #36: Horizon HTTP mock matrix — deterministic per-scenario mock
- * factories (timeout, rate-limit, outage, success) for use in unit tests and
- * local dev without a live Horizon endpoint.
- *
- * Also exposes a local CLI check command that exercises the full resilience
- * pipeline against a live or stubbed Horizon endpoint (with optional secondary
- * Horizon failover).
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.HttpMockMatrix = exports.CircuitOpenError = exports.CircuitBreaker = exports.RateLimiter = exports.DEFAULT_RETRY_POLICY = exports.RateBudgetTracker = exports.RateBudgetExhaustedError = void 0;
-exports.calculateBackoffDelay = calculateBackoffDelay;
-exports.addJitter = addJitter;
-exports.sleep = sleep;
-exports.retryWithBackoff = retryWithBackoff;
-exports.emitCheckRunAnnotation = emitCheckRunAnnotation;
-exports.annotateRetry = annotateRetry;
-exports.annotateRateLimit = annotateRateLimit;
-exports.annotateFallback = annotateFallback;
-exports.annotateCircuitOpen = annotateCircuitOpen;
-exports.runCliCheck = runCliCheck;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const links_1 = __nccwpck_require__(3346);
-// ---------------------------------------------------------------------------
-// Rate Budget Tracker
-// ---------------------------------------------------------------------------
-class RateBudgetExhaustedError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'RateBudgetExhaustedError';
-        this.statusCode = 0;
-        this.retryable = false;
-    }
-}
-exports.RateBudgetExhaustedError = RateBudgetExhaustedError;
-class RateBudgetTracker {
-    constructor(maxRequests) {
-        this.maxRequests = maxRequests;
-        this.count = 0;
-    }
-    /**
-     * Records a request. Throws RateBudgetExhaustedError if the budget is exceeded.
-     * If maxRequests is 0, the budget is considered unlimited.
-     */
-    recordRequest() {
-        if (this.maxRequests > 0) {
-            this.count++;
-            if (this.count > this.maxRequests) {
-                throw new RateBudgetExhaustedError(`Rate budget exhausted: exceeded ${this.maxRequests} maximum Horizon requests per run.`);
-            }
-        }
-    }
-    get requestsMade() {
-        return this.count;
-    }
-}
-exports.RateBudgetTracker = RateBudgetTracker;
-/**
- * Default retry policy for API calls.
- * - maxRetries: 3 attempts
- * - initialDelayMs: 1000ms (1 second)
- * - maxDelayMs: 30000ms (30 seconds)
- * - backoffMultiplier: 2x exponential backoff
- * - timeoutMs: 15000ms (15 seconds) request timeout
- * - maxTotalWaitMs: 120000ms (2 minutes) total wait budget
- */
-exports.DEFAULT_RETRY_POLICY = {
-    maxRetries: 3,
-    initialDelayMs: 1000,
-    maxDelayMs: 30000,
-    backoffMultiplier: 2,
-    timeoutMs: 15000,
-    maxTotalWaitMs: 120000,
-};
-/**
- * Calculate the delay for a retry attempt using exponential backoff.
- */
-function calculateBackoffDelay(attempt, policy) {
-    const delay = policy.initialDelayMs * Math.pow(policy.backoffMultiplier, attempt);
-    return Math.min(delay, policy.maxDelayMs);
-}
-/**
- * Add random jitter to a delay to prevent thundering herd.
- * Ensures the result is >= 0 and optionally respects a maximum cap.
- */
-function addJitter(delayMs, jitterPercent = 10, maxDelayMs) {
-    const jitter = delayMs * (jitterPercent / 100);
-    const randomJitter = (Math.random() - 0.5) * 2 * jitter;
-    const jittered = Math.max(0, delayMs + randomJitter);
-    return maxDelayMs !== undefined ? Math.min(jittered, maxDelayMs) : jittered;
-}
-/**
- * Sleep for a given duration.
- */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-// ---------------------------------------------------------------------------
-// RateLimiter
-// ---------------------------------------------------------------------------
-/**
- * Simple rate limiter to throttle requests.
- */
-class RateLimiter {
-    /**
-     * Create a rate limiter with token bucket algorithm.
-     * @param capacity Maximum number of tokens (requests allowed per refill window)
-     * @param refillRatePerSecond How many tokens to refill per second
-     */
-    constructor(capacity, refillRatePerSecond) {
-        this.capacity = capacity;
-        this.refillRatePerSecond = refillRatePerSecond;
-        this.tokens = capacity;
-        this.lastRefillTime = Date.now();
-    }
-    /**
-     * Check if a request is allowed, consuming a token if so.
-     */
-    tryConsume(tokensNeeded = 1) {
-        this.refill();
-        if (this.tokens >= tokensNeeded) {
-            this.tokens -= tokensNeeded;
-            return true;
-        }
-        return false;
-    }
-    /**
-     * Get the number of milliseconds to wait before trying again.
-     */
-    waitTimeMs(tokensNeeded = 1) {
-        this.refill();
-        if (this.tokens >= tokensNeeded) {
-            return 0;
-        }
-        const deficit = tokensNeeded - this.tokens;
-        return (deficit / this.refillRatePerSecond) * 1000;
-    }
-    /**
-     * Refill tokens based on elapsed time.
-     */
-    refill() {
-        const now = Date.now();
-        const elapsedSeconds = (now - this.lastRefillTime) / 1000;
-        const tokensToAdd = elapsedSeconds * this.refillRatePerSecond;
-        this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
-        this.lastRefillTime = now;
-    }
-    /**
-     * Get current token count.
-     */
-    getAvailableTokens() {
-        this.refill();
-        return Math.floor(this.tokens);
-    }
-    /**
-     * Reset the rate limiter to full capacity.
-     */
-    reset() {
-        this.tokens = this.capacity;
-        this.lastRefillTime = Date.now();
-    }
-}
-exports.RateLimiter = RateLimiter;
-// ---------------------------------------------------------------------------
-// retryWithBackoff
-// ---------------------------------------------------------------------------
-/**
- * Execute a function with exponential backoff retry logic.
- */
-async function retryWithBackoff(fn, policy = exports.DEFAULT_RETRY_POLICY, shouldRetry = () => true) {
-    let lastError;
-    let totalWaitMs = 0;
-    for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
-        try {
-            return await fn();
-        }
-        catch (error) {
-            lastError = error;
-            if (attempt >= policy.maxRetries) {
-                throw error;
-            }
-            if (!shouldRetry(error, attempt)) {
-                throw error;
-            }
-            const delayMs = calculateBackoffDelay(attempt, policy);
-            const delayWithJitter = addJitter(delayMs, 10, policy.maxDelayMs);
-            if (delayWithJitter > policy.maxDelayMs || totalWaitMs + delayWithJitter > policy.maxTotalWaitMs) {
-                throw new Error(`Retry wait budget exhausted (attempted wait ${delayWithJitter}ms, ` +
-                    `max delay ${policy.maxDelayMs}ms, total wait ${totalWaitMs}ms, ` +
-                    `max total ${policy.maxTotalWaitMs}ms).`);
-            }
-            totalWaitMs += delayWithJitter;
-            await sleep(delayWithJitter);
-        }
-    }
-    throw lastError;
-}
-/**
- * Circuit-breaker implementation for the TrustBridge resilience layer.
- *
- * Wave #26 integration: when `onStateChange` is omitted the constructor
- * falls back to emitting `core.warning` / `core.notice` annotations so that
- * circuit trips and recoveries are always visible as GitHub Check Run
- * annotations in the Actions UI, even without `debug_mode: true`.
- *
- * States:
- *  - **closed** — normal operation; failures are counted.
- *  - **open**   — requests are short-circuited (fast-fail); a recovery timer
- *                 controls transition to 'half-open'.
- *  - **half-open** — a single probe request is allowed; success closes the
- *                    circuit, failure re-opens it.
- */
-class CircuitBreaker {
-    constructor(options = {}) {
-        this.state = 'closed';
-        this.consecutiveFailures = 0;
-        this.consecutiveSuccesses = 0;
-        this.openedAt = null;
-        this.failureThreshold = options.failureThreshold ?? 5;
-        this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30000;
-        this.successThreshold = options.successThreshold ?? 2;
-        // Wave #26: default handler surfaces state changes as Check Run annotations.
-        this.onStateChange =
-            options.onStateChange ??
-                ((from, to, reason) => {
-                    if (to === 'open') {
-                        core.warning(`[TrustBridge CircuitBreaker] Circuit opened (${from} → open): ${reason}`);
-                    }
-                    else if (to === 'closed') {
-                        core.notice(`[TrustBridge CircuitBreaker] Circuit closed (${from} → closed): ${reason}`);
-                    }
-                    else {
-                        core.notice(`[TrustBridge CircuitBreaker] Circuit state changed (${from} → ${to}): ${reason}`);
-                    }
-                });
-    }
-    /**
-     * Current circuit state.
-     */
-    getState() {
-        this._maybeTransitionToHalfOpen();
-        return this.state;
-    }
-    /**
-     * Execute `fn` through the circuit breaker.
-     *
-     * - **closed / half-open**: delegates to `fn`; records success or failure.
-     * - **open**: throws a `CircuitOpenError` immediately without calling `fn`.
-     */
-    async execute(fn) {
-        this._maybeTransitionToHalfOpen();
-        if (this.state === 'open') {
-            throw new CircuitOpenError(`Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures).`);
-        }
-        try {
-            const result = await fn();
-            this._recordSuccess();
-            return result;
-        }
-        catch (err) {
-            this._recordFailure(err);
-            throw err;
-        }
-    }
-    /**
-     * Force-reset the circuit to closed state. Useful in tests and for manual
-     * operator intervention.
-     */
-    reset() {
-        const prev = this.state;
-        this.state = 'closed';
-        this.consecutiveFailures = 0;
-        this.consecutiveSuccesses = 0;
-        this.openedAt = null;
-        if (prev !== 'closed') {
-            this.onStateChange(prev, 'closed', 'manual reset');
-        }
-    }
-    /**
-     * Snapshot of the breaker's internal counters — useful for tests and
-     * metrics emission without exposing mutable state.
-     */
-    getStats() {
-        this._maybeTransitionToHalfOpen();
-        return {
-            state: this.state,
-            consecutiveFailures: this.consecutiveFailures,
-            consecutiveSuccesses: this.consecutiveSuccesses,
-            openedAt: this.openedAt,
-        };
-    }
-    // ---- private helpers ----
-    _maybeTransitionToHalfOpen() {
-        if (this.state === 'open' &&
-            this.openedAt !== null &&
-            Date.now() - this.openedAt >= this.recoveryTimeoutMs) {
-            const prev = this.state;
-            this.state = 'half-open';
-            this.consecutiveSuccesses = 0;
-            this.onStateChange(prev, 'half-open', `recovery timeout of ${this.recoveryTimeoutMs}ms elapsed`);
-        }
-    }
-    _recordSuccess() {
-        if (this.state === 'half-open') {
-            this.consecutiveSuccesses += 1;
-            if (this.consecutiveSuccesses >= this.successThreshold) {
-                const prev = this.state;
-                this.state = 'closed';
-                this.consecutiveFailures = 0;
-                this.consecutiveSuccesses = 0;
-                this.openedAt = null;
-                this.onStateChange(prev, 'closed', `${this.successThreshold} consecutive successes in half-open`);
-            }
-        }
-        else if (this.state === 'closed') {
-            // Reset failure counter on success so isolated blips don't accumulate.
-            this.consecutiveFailures = 0;
-        }
-    }
-    _recordFailure(err) {
-        if (this.state === 'half-open') {
-            // Any failure in half-open immediately re-opens the circuit.
-            const prev = this.state;
-            this.state = 'open';
-            this.openedAt = Date.now();
-            this.consecutiveSuccesses = 0;
-            const reason = err instanceof Error ? err.message : String(err);
-            this.onStateChange(prev, 'open', `probe failed in half-open: ${reason}`);
-            return;
-        }
-        this.consecutiveFailures += 1;
-        if (this.state === 'closed' &&
-            this.consecutiveFailures >= this.failureThreshold) {
-            const prev = this.state;
-            this.state = 'open';
-            this.openedAt = Date.now();
-            const reason = err instanceof Error ? err.message : String(err);
-            this.onStateChange(prev, 'open', `${this.consecutiveFailures} consecutive failures (threshold: ${this.failureThreshold}): ${reason}`);
-        }
-    }
-}
-exports.CircuitBreaker = CircuitBreaker;
-/**
- * Thrown by `CircuitBreaker.execute` when the circuit is open and the
- * request was fast-failed without reaching the underlying operation.
- */
-class CircuitOpenError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'CircuitOpenError';
-    }
-}
-exports.CircuitOpenError = CircuitOpenError;
-/**
- * Post a resilience event as a GitHub Check Run annotation.
- *
- * Wraps `core.notice` / `core.warning` / `core.error` with a consistent
- * `[TrustBridge Resilience]` prefix so operators can filter the Actions log
- * for resilience events at a glance.
- */
-function emitCheckRunAnnotation(annotation) {
-    const formatted = `[TrustBridge Resilience] ${annotation.title}: ${annotation.message}`;
-    switch (annotation.level) {
-        case 'notice':
-            core.notice(formatted);
-            break;
-        case 'warning':
-            core.warning(formatted);
-            break;
-        case 'error':
-            core.error(formatted);
-            break;
-    }
-}
-/**
- * Convenience wrapper: emit a retry-scheduled annotation.
- *
- * @param attempt   0-based attempt index that just failed.
- * @param delayMs   How long the backoff sleep will be before the next attempt.
- * @param reason    Human-readable description of what failed (error message).
- */
-function annotateRetry(attempt, delayMs, reason) {
-    emitCheckRunAnnotation({
-        level: 'notice',
-        title: `Retry scheduled (attempt ${attempt + 1})`,
-        message: `Backing off ${delayMs}ms before next attempt. Reason: ${reason}`,
-    });
-}
-/**
- * Convenience wrapper: emit a rate-limit annotation.
- *
- * @param waitMs  How long the action will wait before retrying (from Retry-After).
- */
-function annotateRateLimit(waitMs) {
-    emitCheckRunAnnotation({
-        level: 'warning',
-        title: 'Rate limited',
-        message: `Horizon returned 429. Waiting ${waitMs}ms before retrying (Retry-After header respected).`,
-    });
-}
-/**
- * Convenience wrapper: emit a fallback-activated annotation.
- *
- * @param fallbackUrl  The fallback endpoint being tried (may be redacted by caller).
- * @param reason       Why primary failed.
- */
-function annotateFallback(fallbackUrl, reason) {
-    emitCheckRunAnnotation({
-        level: 'warning',
-        title: 'RPC fallback activated',
-        message: `Primary Horizon endpoint exhausted. Switching to fallback (${fallbackUrl}). Reason: ${reason}`,
-    });
-}
-/**
- * Convenience wrapper: emit a circuit-open annotation.
- *
- * @param consecutiveFailures  How many failures triggered the trip.
- */
-function annotateCircuitOpen(consecutiveFailures) {
-    emitCheckRunAnnotation({
-        level: 'error',
-        title: 'Circuit breaker opened',
-        message: `${consecutiveFailures} consecutive failures exceeded the threshold. Requests are temporarily blocked.`,
-    });
-}
-/**
- * Run a local CLI check against a Horizon endpoint.
- *
- * The check exercises the full resilience pipeline: timeout (via AbortSignal),
- * exponential backoff retries, and optional circuit-breaker integration. It
- * is intentionally side-effect-free (no GitHub Actions core calls) so it can
- * be used in local development, CI smoke tests, or scripting without a
- * GitHub context.
- *
- * @param options  CLI check options (address, horizon URL, timeout, policy).
- * @param fetchFn  Optional fetch override for unit tests (default: global fetch).
- * @returns        A {@link CliCheckResult} with reachability, timing, and retry info.
- *
- * @example
- * ```ts
- * const result = await runCliCheck({
- *   address: 'GABC...XYZ',
- *   horizonUrl: 'https://horizon-testnet.stellar.org',
- *   timeoutMs: 5000,
- * });
- * console.log(result.message);
- * ```
- */
-async function runCliCheck(options, fetchFn = (url, init) => fetch(url, init)) {
-    const horizonUrl = options.horizonUrl ?? 'https://horizon.stellar.org';
-    const secondaryUrl = options.secondaryHorizonUrl || (options.fallbackUrls && options.fallbackUrls[0]);
-    const policy = {
-        ...exports.DEFAULT_RETRY_POLICY,
-        timeoutMs: options.timeoutMs ?? exports.DEFAULT_RETRY_POLICY.timeoutMs,
-        ...options.retryPolicy,
-    };
-    const accountUrl = `${horizonUrl.replace(/\/$/, '')}/accounts/${options.address}`;
-    const startMs = Date.now();
-    let retries = 0;
-    let statusCode;
-    let horizonUrlUsed = horizonUrl;
-    let failedOver = false;
-    try {
-        await retryWithBackoff(async () => {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), policy.timeoutMs);
-            try {
-                const response = await fetchFn(accountUrl, { signal: controller.signal });
-                statusCode = response.status;
-                // Only retry on server-side transient errors.
-                if (response.status === 429 || (response.status >= 500 && response.status !== 503)) {
-                    throw new Error(`Transient HTTP ${response.status} — retrying`);
-                }
-                // 404 = not found, not a transient error.
-            }
-            finally {
-                clearTimeout(timer);
-            }
-        }, policy, (_error, attempt) => {
-            retries = attempt + 1;
-            return true;
-        });
-    }
-    catch {
-        // Exhausted retries or non-retryable error — fall through to result.
-    }
-    // If primary failed on transient error (not 404), fail over to secondary URL
-    if (statusCode !== 200 && statusCode !== 404 && secondaryUrl) {
-        const primaryNet = (0, links_1.inferStellarNetwork)(horizonUrl);
-        const secondaryNet = (0, links_1.inferStellarNetwork)(secondaryUrl);
-        if (primaryNet === secondaryNet || options.allowCrossNetworkFailover) {
-            const secondaryAccountUrl = `${secondaryUrl.replace(/\/$/, '')}/accounts/${options.address}`;
-            let secondaryRetries = 0;
-            try {
-                await retryWithBackoff(async () => {
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), policy.timeoutMs);
-                    try {
-                        const response = await fetchFn(secondaryAccountUrl, { signal: controller.signal });
-                        statusCode = response.status;
-                        if (response.status === 429 || (response.status >= 500 && response.status !== 503)) {
-                            throw new Error(`Transient HTTP ${response.status} on secondary — retrying`);
-                        }
-                    }
-                    finally {
-                        clearTimeout(timer);
-                    }
-                }, policy, (_error, attempt) => {
-                    secondaryRetries = attempt + 1;
-                    return true;
-                });
-                if (statusCode === 200 || statusCode === 404) {
-                    failedOver = true;
-                    horizonUrlUsed = secondaryUrl;
-                    retries += secondaryRetries;
-                }
-            }
-            catch {
-                retries += secondaryRetries;
-            }
-        }
-    }
-    const durationMs = Date.now() - startMs;
-    const reachable = statusCode === 200;
-    const message = reachable
-        ? failedOver
-            ? `Account ${options.address} is reachable on secondary Horizon ${horizonUrlUsed} (${durationMs}ms after primary failover).`
-            : `Account ${options.address} is reachable on Horizon (${durationMs}ms, ${retries} retries).`
-        : statusCode === 404
-            ? `Account ${options.address} was not found on Horizon (404) — not yet funded.`
-            : statusCode !== undefined
-                ? `Horizon returned HTTP ${statusCode} for ${options.address} (${durationMs}ms, ${retries} retries).`
-                : `Could not reach Horizon at ${horizonUrl} (${durationMs}ms, ${retries} retries).`;
-    return { reachable, statusCode, durationMs, message, retries, horizonUrlUsed, failedOver };
-}
-/**
- * Deterministic Horizon HTTP mock factory (Wave #36).
- *
- * Usage in tests:
- *
- * ```ts
- * const fetchFn = HttpMockMatrix.build('rate_limit');
- * await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, { fetchFn, maxRetries: 2 });
- * ```
- *
- * The matrix is intentionally thin — it returns the minimal response shape
- * that `fetchAccountOnce` / `fetchAccount` consumes, keeping it decoupled
- * from the full `node-fetch` Response surface.
- */
-class HttpMockMatrix {
-    /**
-     * Build a mock fetch function for the given scenario.
-     */
-    static build(scenario, options = {}) {
-        switch (scenario) {
-            case 'success':
-                return HttpMockMatrix._successFetch(options);
-            case 'not_found':
-                return HttpMockMatrix._staticResponseFetch(404, 'Not Found', {
-                    type: 'https://stellar.org/horizon-errors/not_found',
-                    title: 'Resource Missing',
-                    status: 404,
-                    detail: 'The resource at the requested endpoint does not exist.',
-                });
-            case 'rate_limit':
-                return HttpMockMatrix._staticResponseFetch(429, 'Too Many Requests', {
-                    type: 'https://stellar.org/horizon-errors/rate_limit_exceeded',
-                    title: 'Rate Limit Exceeded',
-                    status: 429,
-                    detail: 'Too many requests to Horizon.',
-                }, { 'retry-after': options.retryAfterSeconds ?? '0' });
-            case 'server_error':
-                return HttpMockMatrix._staticResponseFetch(503, 'Service Unavailable', {
-                    type: 'https://stellar.org/horizon-errors/server_error',
-                    title: 'Service Unavailable',
-                    status: 503,
-                    detail: 'Horizon is temporarily unavailable.',
-                });
-            case 'bad_gateway':
-                return HttpMockMatrix._staticResponseFetch(502, 'Bad Gateway', {
-                    type: 'https://stellar.org/horizon-errors/bad_gateway',
-                    title: 'Bad Gateway',
-                    status: 502,
-                    detail: 'Upstream gateway error.',
-                });
-            case 'gateway_timeout':
-                return HttpMockMatrix._staticResponseFetch(504, 'Gateway Timeout', {
-                    type: 'https://stellar.org/horizon-errors/gateway_timeout',
-                    title: 'Gateway Timeout',
-                    status: 504,
-                    detail: 'Upstream gateway timed out.',
-                });
-            case 'timeout':
-                return HttpMockMatrix._timeoutFetch(options.timeoutAfterMs ?? 0);
-            case 'network_error':
-                return HttpMockMatrix._networkErrorFetch();
-            case 'flaky_then_success':
-                return HttpMockMatrix._flakyFetch(options);
-            case 'always_fail':
-                return HttpMockMatrix._staticResponseFetch(503, 'Service Unavailable', {
-                    type: 'https://stellar.org/horizon-errors/server_error',
-                    title: 'Service Unavailable',
-                    status: 503,
-                    detail: 'Horizon is consistently unavailable.',
-                });
-            default: {
-                const _exhaustive = scenario;
-                throw new Error(`Unknown HorizonScenario: ${String(_exhaustive)}`);
-            }
-        }
-    }
-    /**
-     * Build a multi-scenario fetch function that serves different scenarios
-     * for primary vs. fallback Horizon URLs. Useful for testing RPC fallback
-     * paths without duplicating setup code.
-     *
-     * @param primaryScenario  Scenario served when the URL starts with `primaryUrl`.
-     * @param fallbackScenario Scenario served for all other URLs.
-     * @param primaryUrl       Prefix used to detect primary vs. fallback calls.
-     *                         Default: `'https://horizon.stellar.org'`.
-     */
-    static buildFallbackMatrix(primaryScenario, fallbackScenario, primaryUrl = 'https://horizon.stellar.org', options = {}) {
-        const primaryFetch = HttpMockMatrix.build(primaryScenario, options);
-        const fallbackFetch = HttpMockMatrix.build(fallbackScenario, options);
-        return (url, init) => {
-            if (url.startsWith(primaryUrl)) {
-                return primaryFetch(url, init);
-            }
-            return fallbackFetch(url, init);
-        };
-    }
-    // ---- private factories ----
-    static _makeHeaders(headers = {}) {
-        const lowered = {};
-        for (const [k, v] of Object.entries(headers)) {
-            lowered[k.toLowerCase()] = v;
-        }
-        return { get: (name) => lowered[name.toLowerCase()] ?? null };
-    }
-    static _defaultAccount(options) {
-        return (options.accountPayload ?? {
-            id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-            account_id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-            sequence: '1',
-            subentry_count: 1,
-            num_sponsoring: 0,
-            num_sponsored: 0,
-            balances: [
-                {
-                    balance: '10.0000000',
-                    asset_type: 'native',
-                    buying_liabilities: '0.0000000',
-                    selling_liabilities: '0.0000000',
-                },
-            ],
-        });
-    }
-    static _successFetch(options) {
-        const payload = HttpMockMatrix._defaultAccount(options);
-        return async () => ({
-            ok: true,
-            status: 200,
-            statusText: 'OK',
-            headers: HttpMockMatrix._makeHeaders(),
-            json: async () => payload,
-        });
-    }
-    static _staticResponseFetch(status, statusText, body, headers = {}) {
-        return async () => ({
-            ok: false,
-            status,
-            statusText,
-            headers: HttpMockMatrix._makeHeaders(headers),
-            json: async () => body,
-        });
-    }
-    static _timeoutFetch(timeoutAfterMs) {
-        return (_url, init) => new Promise((_resolve, reject) => {
-            const signal = init?.signal;
-            const abort = () => {
-                const err = new Error('The operation was aborted');
-                err.name = 'AbortError';
-                reject(err);
-            };
-            if (signal) {
-                if (signal.aborted) {
-                    abort();
-                    return;
-                }
-                signal.addEventListener('abort', abort);
-            }
-            if (timeoutAfterMs > 0) {
-                setTimeout(() => {
-                    if (signal && !signal.aborted) {
-                        abort();
-                    }
-                }, timeoutAfterMs);
-            }
-            // If timeoutAfterMs === 0 the mock just hangs until the AbortSignal fires.
-        });
-    }
-    static _networkErrorFetch() {
-        return async () => {
-            throw new Error('fetch failed: ECONNREFUSED');
-        };
-    }
-    static _flakyFetch(options) {
-        const failCount = options.flakyFailCount ?? 2;
-        const errorScenario = options.flakyErrorScenario ?? 'rate_limit';
-        const errorFetch = HttpMockMatrix.build(errorScenario, options);
-        const successFetch = HttpMockMatrix._successFetch(options);
-        let calls = 0;
-        return (url, init) => {
-            calls += 1;
-            if (calls <= failCount) {
-                return errorFetch(url, init);
-            }
-            return successFetch(url, init);
-        };
-    }
-}
-exports.HttpMockMatrix = HttpMockMatrix;
-
-
-/***/ }),
-
-/***/ 6260:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.fetchDashboardRoster = fetchDashboardRoster;
-const crypto = __importStar(__nccwpck_require__(6982));
-const validation_1 = __nccwpck_require__(4344);
-const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
-async function fetchDashboardRoster(url, secret, timeoutMs, allowHttp = false, fetchFn = fetch) {
-    const trimmedUrl = url.trim();
-    if (!trimmedUrl) {
-        throw new Error('Dashboard roster URL cannot be empty.');
-    }
-    const ssrfCheck = (0, validation_1.validateSsrfSafeUrl)(trimmedUrl, 'dashboard_roster_url', { allowHttp });
-    if (!ssrfCheck.valid) {
-        throw new Error(`Dashboard roster URL failed security validation: ${ssrfCheck.errors.join(', ')}`);
-    }
-    const timestamp = Date.now().toString();
-    const signature = secret
-        ? crypto.createHmac('sha256', secret).update(timestamp).digest('hex')
-        : '';
-    const headers = {
-        'Accept': 'application/json',
-    };
-    if (signature) {
-        headers['X-TrustBridge-Timestamp'] = timestamp;
-        headers['X-TrustBridge-Signature'] = `sha256=${signature}`;
-    }
-    let currentResponse;
-    let targetUrl = trimmedUrl;
-    let redirects = 0;
-    while (true) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            currentResponse = await fetchFn(targetUrl, {
-                method: 'GET',
-                headers,
-                signal: controller.signal,
-                redirect: 'manual', // We handle redirects manually for SSRF validation
-            });
-        }
-        catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            throw new Error(`Failed to fetch dashboard roster: ${msg}`);
-        }
-        finally {
-            clearTimeout(timeoutId);
-        }
-        if ([301, 302, 303, 307, 308].includes(currentResponse.status)) {
-            if (redirects >= 5)
-                throw new Error('Too many redirects');
-            redirects++;
-            const location = currentResponse.headers.get('location');
-            if (!location)
-                throw new Error('Redirect missing location');
-            const redirectUrl = new URL(location, targetUrl).toString();
-            const redirectSsrf = (0, validation_1.validateSsrfSafeUrl)(redirectUrl, 'dashboard_roster_redirect', { allowHttp });
-            if (!redirectSsrf.valid) {
-                throw new Error(`Dashboard roster redirect failed security validation: ${redirectSsrf.errors.join(', ')}`);
-            }
-            targetUrl = redirectUrl;
-            continue;
-        }
-        break;
-    }
-    if (!currentResponse.ok) {
-        throw new Error(`Dashboard roster returned HTTP ${currentResponse.status}`);
-    }
-    if (!currentResponse.body) {
-        throw new Error('Response body is empty');
-    }
-    // Stream body to enforce size limit safely
-    const body = currentResponse.body;
-    let receivedBytes = 0;
-    const chunks = [];
-    if (body && typeof body.getReader === 'function') {
-        // Web Streams API
-        const reader = body.getReader();
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done)
-                    break;
-                if (value) {
-                    receivedBytes += value.length;
-                    if (receivedBytes > MAX_ROSTER_SIZE_BYTES) {
-                        throw new Error('Response exceeded size limit');
-                    }
-                    chunks.push(value);
-                }
-            }
-        }
-        finally {
-            reader.releaseLock();
-        }
-    }
-    else if (body && typeof body[Symbol.asyncIterator] === 'function') {
-        // Node streams or other AsyncIterables
-        for await (const chunk of body) {
-            const data = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk);
-            receivedBytes += data.length;
-            if (receivedBytes > MAX_ROSTER_SIZE_BYTES) {
-                throw new Error('Response exceeded size limit');
-            }
-            chunks.push(data);
-        }
-    }
-    else {
-        // Fallback to arrayBuffer if no streaming is available
-        const buffer = await currentResponse.arrayBuffer();
-        if (buffer.byteLength > MAX_ROSTER_SIZE_BYTES) {
-            throw new Error('Response exceeded size limit');
-        }
-        chunks.push(new Uint8Array(buffer));
-    }
-    const text = Buffer.concat(chunks).toString('utf-8');
-    let parsed;
-    try {
-        parsed = JSON.parse(text);
-    }
-    catch {
-        throw new Error('Dashboard roster returned invalid JSON');
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('Dashboard roster JSON must be an object');
-    }
-    const result = {};
-    for (const [key, value] of Object.entries(parsed)) {
-        if (typeof value !== 'string') {
-            throw new Error(`Dashboard roster entry for "${key}" must be a string Stellar G-address.`);
-        }
-        result[key.trim().toLowerCase()] = value.trim();
-    }
-    return result;
-}
-
-
-/***/ }),
-
-/***/ 866:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-/**
- * SARIF (Static Analysis Results Interchange Format) 2.1.0 output generation.
- *
- * Emits TrustBridge validation results as SARIF for integration with GitHub
- * Advanced Security (GHAS) code scanning so wallet-check failures appear
- * alongside other security findings.
- *
- * SARIF reference: https://sarifweb.azurewebsites.net/
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.buildSarifRules = buildSarifRules;
-exports.checkToSarifLevel = checkToSarifLevel;
-exports.checkLabelToRuleId = checkLabelToRuleId;
-exports.checkToSarifResult = checkToSarifResult;
-exports.buildSarifOutput = buildSarifOutput;
-exports.serializeSarif = serializeSarif;
-exports.validateSarifSchema = validateSarifSchema;
-/**
- * Build SARIF rule definitions from TrustBridge checks.
- * Each check becomes a rule with a stable ID, description, and help URI.
- */
-function buildSarifRules() {
-    return [
-        {
-            id: 'TB001',
-            shortDescription: {
-                text: 'Stellar account is funded and active on the network',
-            },
-            fullDescription: {
-                text: 'Account must exist and be activated on the Stellar network before it can hold trustlines and balances.',
-            },
-            helpUri: 'https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/accounts',
-            properties: {
-                tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-                precision: 'high',
-            },
-        },
-        {
-            id: 'TB002',
-            shortDescription: {
-                text: 'Account has a trustline for the required asset',
-            },
-            fullDescription: {
-                text: 'The account must explicitly trust the asset issuer before it can receive the asset.',
-            },
-            helpUri: 'https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/account-data#trustlines',
-            properties: {
-                tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-                precision: 'high',
-            },
-        },
-        {
-            id: 'TB003',
-            shortDescription: {
-                text: 'Account meets minimum XLM reserve requirement',
-            },
-            fullDescription: {
-                text: 'The account must maintain a minimum XLM balance to keep the account open and pay transaction fees.',
-            },
-            helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/fees-and-metering#reserve',
-            properties: {
-                tags: ['trustbridge', 'stellar', 'wallet-readiness'],
-                precision: 'high',
-            },
-        },
-        {
-            id: 'TB004',
-            shortDescription: {
-                text: 'Horizon API is accessible and responding',
-            },
-            fullDescription: {
-                text: 'TrustBridge must be able to reach the configured Horizon API endpoint to verify account state.',
-            },
-            helpUri: 'https://developers.stellar.org/docs/data/apis/horizon',
-            properties: {
-                tags: ['trustbridge', 'stellar', 'infrastructure'],
-                precision: 'high',
-            },
-        },
-        {
-            id: 'TB005',
-            shortDescription: {
-                text: 'Asset trustline does not have clawback enabled',
-            },
-            fullDescription: {
-                text: 'The issuer can reclaim clawback-enabled assets at any time. Emitted when clawback_strict_mode blocks a clawback-enabled trustline.',
-            },
-            helpUri: 'https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8',
-            properties: {
-                tags: ['trustbridge', 'stellar', 'wallet-readiness', 'clawback'],
-                precision: 'high',
-            },
-        },
-    ];
-}
-/**
- * Map a TrustBridge check result to a SARIF result level.
- */
-function checkToSarifLevel(check) {
-    return check.passed ? 'note' : 'error';
-}
-/**
- * Map a TrustBridge check label to a SARIF rule ID.
- */
-function checkLabelToRuleId(label) {
-    if (label.includes('Account funded'))
-        return 'TB001';
-    // Checked before 'trustline' so clawback labels never fall into TB002.
-    if (label.includes('clawback'))
-        return 'TB005';
-    if (label.includes('trustline'))
-        return 'TB002';
-    if (label.includes('XLM reserve'))
-        return 'TB003';
-    if (label.includes('Horizon availability'))
-        return 'TB004';
-    return 'TB000'; // Unknown
-}
-/**
- * Build a single SARIF result from a TrustBridge check.
- */
-function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress) {
-    const ruleId = checkLabelToRuleId(check.label);
-    const level = checkToSarifLevel(check);
-    return {
-        ruleId,
-        level,
-        message: {
-            text: check.detail,
-        },
-        locations: [
-            {
-                physicalLocation: {
-                    artifactLocation: {
-                        uri: horizonUrl,
-                        description: {
-                            text: `Stellar Horizon endpoint for account ${stellarAddress}`,
-                        },
-                    },
-                },
-            },
-        ],
-        properties: {
-            assetCode,
-            checkLabel: check.label,
-            passed: check.passed,
-        },
-    };
-}
-/**
- * Build a complete SARIF 2.1.0 output from a TrustBridge ValidationResult.
- * Returns a valid SARIF object ready for serialization to JSON and upload
- * to GitHub Advanced Security via the upload-sarif action.
- */
-function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version = '1.0.0') {
-    const rules = buildSarifRules();
-    const sarif = {
-        version: '2.1.0',
-        $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
-        runs: [
-            {
-                tool: {
-                    driver: {
-                        name: 'TrustBridge Action',
-                        version,
-                        informationUri: 'https://github.com/Stellar-TrustBridge/trustbridge-action',
-                        semanticVersion: version,
-                        rules,
-                    },
-                },
-                results: result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress)),
-                properties: {
-                    trustbridgeVersion: version,
-                    runTimestamp: new Date().toISOString(),
-                    validationGate: {
-                        ready: result.valid,
-                        totalChecks: result.checks.length,
-                        passedChecks: result.checks.filter((c) => c.passed).length,
-                        failedChecks: result.checks.filter((c) => !c.passed).length,
-                    },
-                },
-            },
-        ],
-    };
-    return sarif;
-}
-/**
- * Serialize SARIF output to a JSON string.
- * Safe for writing to a file or environment variable.
- */
-function serializeSarif(sarif) {
-    return JSON.stringify(sarif, null, 2);
-}
-/**
- * Validate that a SARIF output matches the 2.1.0 schema essentials.
- * Returns true if the structure is valid, false otherwise.
- */
-function validateSarifSchema(sarif) {
-    if (!sarif || typeof sarif !== 'object')
-        return false;
-    const s = sarif;
-    if (s.version !== '2.1.0')
-        return false;
-    if (!Array.isArray(s.runs) || s.runs.length === 0)
-        return false;
-    const run = s.runs[0];
-    if (!run.tool || !run.tool || typeof run.tool !== 'object')
-        return false;
-    const tool = run.tool;
-    if (!tool.driver)
-        return false;
-    if (!Array.isArray(run.results))
-        return false;
-    return true;
-}
-
-
-/***/ }),
-
-/***/ 3286:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-/**
- * Failure snooze window (Issue #155).
- *
- * Prevents repeated validation failure comments from spamming an issue
- * within a configurable time window. Stores state in TrustBridge's sticky
- * comment to avoid external dependencies while maintaining per-issue snooze
- * isolation.
- *
- * ## Design
- *
- * **State Storage**: The previous check result (pass/fail) and timestamp are
- * encoded in a hidden marker in TrustBridge's sticky comment. When the action
- * runs, we parse the marker to detect snooze status.
- *
- * **Snooze Trigger**: If the current check fails AND the last check failed
- * AND we're still within the snooze window, suppress the comment update.
- * This prevents comment spam when contributors re-run workflows repeatedly
- * while fixing wallet issues.
- *
- * **Status Changes**: If the current check passes OR we're outside the
- * snooze window, post/update the comment normally. This surfaces both
- * fixes and persistent failures (user is reminded after timeout).
- *
- * **Always Update Outputs**: Even when snoozed, outputs are always set so
- * downstream workflow steps (like badge updates) reflect current state.
- *
- * **Force Post**: An optional `force_comment` input bypasses snooze logic
- * so maintainers can force an immediate comment post if needed.
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SNOOZE_REACTIONS = exports.SNOOZE_MARKER_PATTERN = void 0;
-exports.parseSnoozeMarker = parseSnoozeMarker;
-exports.formatSnoozeMarker = formatSnoozeMarker;
-exports.evaluateSnoozeState = evaluateSnoozeState;
-exports.isSnoozeReaction = isSnoozeReaction;
-exports.evaluateReactionSnooze = evaluateReactionSnooze;
-exports.evaluateCombinedSnoozeState = evaluateCombinedSnoozeState;
-/**
- * Hidden marker format in comment body:
- * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
- */
-exports.SNOOZE_MARKER_PATTERN = /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=(\d+) -->/;
-/**
- * Extract snooze marker from a comment body. Returns undefined if marker
- * not found (backward compatible with older comments).
- */
-function parseSnoozeMarker(commentBody) {
-    if (!commentBody)
-        return undefined;
-    const match = commentBody.match(exports.SNOOZE_MARKER_PATTERN);
-    if (!match)
-        return undefined;
-    return {
-        status: match[1],
-        timestamp: Number(match[2]),
-    };
-}
-/**
- * Generate a snooze marker string to embed in comment body.
- */
-function formatSnoozeMarker(status, timestamp = Date.now()) {
-    return `<!-- trustbridge-action:snooze:status=${status},timestamp=${timestamp} -->`;
-}
-/**
- * Determine snooze state based on current result, last marker, and snooze duration.
- *
- * ### Decision Logic
- *
- * - If current result **passes**: always post (unsnooze on success).
- * - If current result **fails** AND no prior marker: always post (first failure).
- * - If current result **fails** AND prior status **passed**: always post (status changed).
- * - If current result **fails** AND prior status **failed** AND elapsed < snoozeMs:
- *   - **Snoozed** (suppress comment, but still update outputs).
- * - If current result **fails** AND prior status **failed** AND elapsed >= snoozeMs:
- *   - **Post** (reminder after timeout; reset timer).
- */
-function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
-    const now = Date.now();
-    // If current check passes, always post (unsnooze).
-    if (currentPassed) {
-        return {
-            isSnoozed: false,
-            lastStatus: lastMarker?.status,
-            lastTimestamp: lastMarker?.timestamp,
-        };
-    }
-    // Current check failed.
-    // If no prior marker, this is the first failure — post it.
-    if (!lastMarker) {
-        return {
-            isSnoozed: false,
-            lastStatus: undefined,
-            lastTimestamp: undefined,
-        };
-    }
-    // Current failed, prior status known.
-    const elapsedMs = now - lastMarker.timestamp;
-    // Status changed from pass to fail — post it.
-    if (lastMarker.status === 'pass') {
-        return {
-            isSnoozed: false,
-            lastStatus: lastMarker.status,
-            lastTimestamp: lastMarker.timestamp,
-            elapsedMs,
-        };
-    }
-    // Status remains failed.
-    const withinWindow = elapsedMs < snoozeWindowMs;
-    return {
-        isSnoozed: withinWindow,
-        lastStatus: lastMarker.status,
-        lastTimestamp: lastMarker.timestamp,
-        elapsedMs,
-    };
-}
-/**
- * Supported reaction emojis/identifiers that trigger a snooze:
- * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
- * - 'eyes' / ':eyes:' — maintainer reviewing/monitoring reaction
- *
- * Random reactions (such as '+1', '👍', 'heart', 'rocket', 'laugh') do NOT snooze.
- */
-exports.SNOOZE_REACTIONS = ['zzz', ':zzz:', 'eyes', ':eyes:', '💤'];
-/**
- * Checks whether a reaction content string corresponds to a valid snooze trigger emoji.
- */
-function isSnoozeReaction(content) {
-    if (!content)
-        return false;
-    const normalized = content.trim().toLowerCase();
-    return (normalized === 'zzz' ||
-        normalized === ':zzz:' ||
-        normalized === 'eyes' ||
-        normalized === ':eyes:' ||
-        normalized === '💤' ||
-        normalized === ':zzz' ||
-        normalized.startsWith('zzz'));
-}
-/**
- * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
- */
-function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = Date.now()) {
-    if (currentPassed || !reactions || reactions.length === 0) {
-        return { isSnoozed: false };
-    }
-    // Filter out bot reactions and non-snooze emojis
-    const eligibleReactions = reactions.filter((r) => {
-        const isBot = r.user?.type === 'Bot' ||
-            (r.user?.login ? r.user.login.endsWith('[bot]') : false);
-        return !isBot && isSnoozeReaction(r.content);
-    });
-    if (eligibleReactions.length === 0) {
-        return { isSnoozed: false };
-    }
-    // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
-    const timestamps = eligibleReactions
-        .map((r) => {
-        const raw = r.created_at || r.createdAt;
-        const parsed = raw ? new Date(raw).getTime() : now;
-        return isNaN(parsed) ? now : parsed;
-    })
-        .sort((a, b) => b - a);
-    const latestTimestamp = timestamps[0];
-    const elapsedMs = now - latestTimestamp;
-    const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
-    return {
-        isSnoozed: withinWindow,
-        lastTimestamp: latestTimestamp,
-        elapsedMs,
-    };
-}
-/**
- * Evaluates snooze state combining both hidden body marker and UI reactions.
- *
- * An issue comment is snoozed if:
- * 1. Current check fails (not passed), AND
- * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
- */
-function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, now = Date.now()) {
-    if (currentPassed) {
-        return { isSnoozed: false };
-    }
-    const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
-    const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
-    if (reactionState.isSnoozed) {
-        return reactionState;
-    }
-    if (markerState.isSnoozed) {
-        return markerState;
-    }
-    return {
-        isSnoozed: false,
-        lastStatus: markerState.lastStatus,
-        lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
-        elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,
-    };
-}
-
-
-/***/ }),
-
-/***/ 3597:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Soroban contract registry client for TrustBridge.
- *
- * Resolves GitHub usernames to Stellar G-addresses by invoking the
- * `trustbridge-contract` on-chain registry via a Soroban RPC endpoint.
- *
- * The lookup is best-effort: callers must handle `ContractLookupError` and
- * fall back to the directly-supplied `stellar_address_input` when the
- * registry is unavailable or the username is not registered.
- */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ContractLookupError = void 0;
-exports.fetchFullContractRoster = fetchFullContractRoster;
-exports.lookupAddressFromContract = lookupAddressFromContract;
-exports.buildGetAddressXdr = buildGetAddressXdr;
-exports.parseAddressFromSimulateResult = parseAddressFromSimulateResult;
-exports.contractExistsOnChain = contractExistsOnChain;
-exports.parseContractExistsResult = parseContractExistsResult;
-const node_fetch_1 = __importDefault(__nccwpck_require__(6705));
-/** Errors thrown by the contract registry client. */
-class ContractLookupError extends Error {
-    constructor(message, retryable) {
-        super(message);
-        this.retryable = retryable;
-        this.name = 'ContractLookupError';
-    }
-}
-exports.ContractLookupError = ContractLookupError;
-/** Retryable HTTP status codes (rate-limit, gateway errors). */
-const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
-/** Resolve the requested roster identity through the same registry endpoint. */
-async function fetchFullContractRoster(githubUsername, config) {
-    const result = await lookupAddressFromContract(githubUsername, config);
-    return result.address ? { [githubUsername.toLowerCase()]: result.address } : {};
-}
-/**
- * Looks up a GitHub username in the trustbridge-contract on-chain registry.
- *
- * Sends a `simulateTransaction` JSON-RPC call to the Soroban RPC endpoint
- * invoking the `get_address` function of the registry contract.
- *
- * Returns `{ address: null, fromRegistry: false }` when the username is not
- * registered (contract returns empty/null). Throws `ContractLookupError` for
- * network errors, timeouts, and retryable server errors so callers can decide
- * whether to fall back or propagate.
- */
-async function lookupAddressFromContract(githubUsername, config) {
-    const { sorobanRpcUrl, contractId, timeoutMs = 15000 } = config;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const body = JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'simulateTransaction',
-        params: {
-            transaction: buildGetAddressXdr(contractId, githubUsername),
-        },
-    });
-    let response;
-    try {
-        response = await (0, node_fetch_1.default)(sorobanRpcUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            signal: controller.signal,
-        });
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const isAbort = message.includes('abort') || message.includes('timeout');
-        throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
-    }
-    finally {
-        clearTimeout(timer);
-    }
-    if (RETRYABLE_STATUS_CODES.has(response.status)) {
-        throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
-    }
-    if (!response.ok) {
-        throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
-    }
-    let json;
-    try {
-        json = await response.json();
-    }
-    catch {
-        throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
-    }
-    const address = parseAddressFromSimulateResult(json);
-    return { address, fromRegistry: address !== null };
-}
-/**
- * Builds a minimal base64-encoded XDR transaction envelope that invokes
- * `get_address(github_username)` on the registry contract.
- *
- * In production this would use the Stellar SDK to construct a proper
- * InvokeHostFunction transaction. Here we encode the call arguments as a
- * JSON-serialisable placeholder that the Soroban RPC `simulateTransaction`
- * endpoint accepts when the SDK is not bundled into the action.
- *
- * The placeholder format is recognised by the mock in tests and by any
- * Soroban RPC implementation that supports the `simulateTransaction` method
- * with a pre-built XDR string.
- */
-function buildGetAddressXdr(contractId, githubUsername) {
-    // Encode as a deterministic base64 payload that downstream mocks and
-    // real Soroban RPC implementations can decode.
-    const payload = JSON.stringify({ contractId, fn: 'get_address', args: [githubUsername] });
-    return Buffer.from(payload).toString('base64');
-}
-/**
- * Extracts a Stellar G-address from a `simulateTransaction` JSON-RPC result.
- *
- * The Soroban RPC `simulateTransaction` response wraps the return value in
- * `result.retval` as an XDR-encoded `ScVal`. For the registry contract the
- * return type is `Option<Address>`:
- *   - Registered:   `{ type: 'address', value: 'G...' }`
- *   - Not found:    `{ type: 'void' }` or `null`
- *
- * Returns the G-address string when found, or `null` when not registered.
- */
-function parseAddressFromSimulateResult(json) {
-    if (typeof json !== 'object' ||
-        json === null ||
-        !('result' in json)) {
-        return null;
-    }
-    const result = json['result'];
-    if (typeof result !== 'object' || result === null) {
-        return null;
-    }
-    const retval = result['retval'];
-    if (typeof retval !== 'object' || retval === null) {
-        return null;
-    }
-    const retvalObj = retval;
-    if (retvalObj['type'] === 'address' && typeof retvalObj['value'] === 'string') {
-        const addr = retvalObj['value'];
-        // Only return valid G-addresses
-        if (/^G[A-Z2-7]{55}$/.test(addr)) {
-            return addr;
-        }
-    }
-    return null;
-}
-/**
- * Verifies that a Soroban contract address exists on a configured RPC endpoint.
- *
- * This is a bounded, fail-closed check used for C-address payout destinations.
- * A C-address is treated as a contract payout target only when the Soroban RPC
- * confirms the contract exists; no Horizon account fetch is attempted for C-addresses.
- */
-async function contractExistsOnChain(contractAddress, config) {
-    const trimmed = contractAddress.trim();
-    if (!trimmed) {
-        return false;
-    }
-    if (!trimmed.startsWith('C') || trimmed.length !== 56 || !/^C[A-Z2-7]{55}$/.test(trimmed)) {
-        throw new ContractLookupError(`Expected a valid Soroban C-address contract destination, got: "${trimmed}"`, false);
-    }
-    const { sorobanRpcUrl, timeoutMs = 15000 } = config;
-    if (!sorobanRpcUrl || !sorobanRpcUrl.trim()) {
-        throw new ContractLookupError('Soroban RPC URL is required to verify a C-address payout destination. Configure soroban_rpc_url before using a C-address as stellar_address_input.', false);
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const body = JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getContractCode',
-        params: [trimmed],
-    });
-    let response;
-    try {
-        response = await (0, node_fetch_1.default)(sorobanRpcUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            signal: controller.signal,
-        });
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const isAbort = message.includes('abort') || message.includes('timeout');
-        throw new ContractLookupError(`Soroban RPC request failed: ${message}`, isAbort);
-    }
-    finally {
-        clearTimeout(timer);
-    }
-    if (RETRYABLE_STATUS_CODES.has(response.status)) {
-        throw new ContractLookupError(`Soroban RPC returned retryable status ${response.status}`, true);
-    }
-    if (!response.ok) {
-        throw new ContractLookupError(`Soroban RPC returned non-retryable status ${response.status}`, false);
-    }
-    let json;
-    try {
-        json = await response.json();
-    }
-    catch {
-        throw new ContractLookupError('Soroban RPC returned invalid JSON', false);
-    }
-    return parseContractExistsResult(json);
-}
-function parseContractExistsResult(json) {
-    if (typeof json !== 'object' || json === null) {
-        return false;
-    }
-    const record = json;
-    if ('error' in record && record.error !== undefined) {
-        return false;
-    }
-    if (!('result' in record) || record.result === undefined || record.result === null) {
-        return false;
-    }
-    const rawResult = record.result;
-    if (typeof rawResult === 'string') {
-        return rawResult.trim().length > 0;
-    }
-    if (typeof rawResult !== 'object' || rawResult === null) {
-        return false;
-    }
-    const result = rawResult;
-    const checks = [
-        result['exists'],
-        result['code'],
-        result['wasm'],
-        result['contract'],
-        result['contract_id'],
-        result['contractId'],
-    ];
-    return checks.some((value) => value === true || (typeof value === 'string' && value.trim().length > 0));
 }
 
 
 /***/ }),
 
 /***/ 8855:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DIGEST_MAX_LISTED_ISSUES = void 0;
 exports.summarizeChecks = summarizeChecks;
 exports.formatFailureSummary = formatFailureSummary;
-exports.aggregateDigest = aggregateDigest;
-exports.formatDigestComment = formatDigestComment;
-const delta_1 = __nccwpck_require__(1493);
 function summarizeChecks(result) {
     const failedLabels = result.checks
         .filter((check) => !check.passed)
@@ -47370,823 +36248,6 @@ function formatFailureSummary(result) {
     return summary.failedLabels.length > 0
         ? summary.failedLabels.join(', ')
         : 'none';
-}
-/**
- * Maximum number of entries listed per section in the Markdown digest.
- * Caps the comment size on large Wave issues (e.g. 200+ contributors).
- */
-exports.DIGEST_MAX_LISTED_ISSUES = 50;
-/**
- * Aggregate multiple `DigestEntry` items into a `DigestReport`.
- *
- * - When `privacyMode` is true, addresses are hashed (sha256 prefix) in the
- *   report so the digest can be posted publicly without leaking contributor
- *   addresses.
- * - Entries are capped at `DIGEST_MAX_LISTED_ISSUES` per section to keep
- *   comment size within GitHub limits.
- *
- * @param entries  One entry per issue/address validation run.
- * @param options  Aggregation options.
- */
-function aggregateDigest(entries, options = {}) {
-    const privacyMode = Boolean(options.privacyMode);
-    const generatedAt = options.now ?? new Date().toISOString();
-    // Apply privacy masking to addresses only when privacyMode is on.
-    const maskedEntries = entries.map((entry) => ({
-        ...entry,
-        stellarAddress: privacyMode
-            ? (0, delta_1.privacyMaskAddress)(entry.stellarAddress, true)
-            : entry.stellarAddress,
-    }));
-    const readyEntries = maskedEntries.filter((e) => e.result.valid);
-    const blockedEntries = maskedEntries.filter((e) => !e.result.valid);
-    const totalIssues = maskedEntries.length;
-    const readyCount = readyEntries.length;
-    const blockedCount = blockedEntries.length;
-    const readyRateNum = totalIssues > 0 ? (readyCount / totalIssues) * 100 : 0;
-    const readyRate = `${readyRateNum.toFixed(1)}%`;
-    return {
-        totalIssues,
-        readyCount,
-        blockedCount,
-        readyRate,
-        readyEntries: readyEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
-        blockedEntries: blockedEntries.slice(0, exports.DIGEST_MAX_LISTED_ISSUES),
-        generatedAt,
-        privacyMode,
-    };
-}
-/**
- * Format a `DigestReport` as a Markdown string suitable for posting as a
- * GitHub issue comment.
- *
- * - Lists ready and blocked contributors with their issue numbers and
- *   (optionally redacted) addresses.
- * - Caps each section at `DIGEST_MAX_LISTED_ISSUES` with a note when
- *   truncated.
- * - Includes a machine-readable gate summary (ready/blocked counts).
- */
-function formatDigestComment(report) {
-    const lines = [
-        '<!-- trustbridge-action:digest -->',
-        '## TrustBridge — Weekly Wallet Digest',
-        '',
-        `_Generated: \`${report.generatedAt}\`_`,
-        `_Privacy mode: ${report.privacyMode ? '**on** (addresses hashed)' : 'off'}_`,
-        '',
-        '### Summary',
-        '',
-        `| Metric | Value |`,
-        `| --- | --- |`,
-        `| Total issues checked | **${report.totalIssues}** |`,
-        `| ✅ Ready | **${report.readyCount}** |`,
-        `| ❌ Blocked | **${report.blockedCount}** |`,
-        `| Ready rate | **${report.readyRate}** |`,
-        '',
-    ];
-    // Blocked section
-    if (report.blockedEntries.length > 0) {
-        lines.push('### ❌ Blocked contributors', '');
-        for (const entry of report.blockedEntries) {
-            const failedLabels = entry.result.checks
-                .filter((c) => !c.passed)
-                .map((c) => c.label)
-                .join(', ');
-            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
-            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ❌ ${failedLabels}`);
-        }
-        if (report.blockedCount > exports.DIGEST_MAX_LISTED_ISSUES) {
-            lines.push(`- _… and ${report.blockedCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
-        }
-        lines.push('');
-    }
-    // Ready section
-    if (report.readyEntries.length > 0) {
-        lines.push('### ✅ Ready contributors', '');
-        for (const entry of report.readyEntries) {
-            const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
-            lines.push(`- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ✅ all checks pass`);
-        }
-        if (report.readyCount > exports.DIGEST_MAX_LISTED_ISSUES) {
-            lines.push(`- _… and ${report.readyCount - exports.DIGEST_MAX_LISTED_ISSUES} more (capped at ${exports.DIGEST_MAX_LISTED_ISSUES})_`);
-        }
-        lines.push('');
-    }
-    lines.push('---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_');
-    return lines.join('\n');
-}
-
-
-/***/ }),
-
-/***/ 5237:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Template loader for TrustBridge custom comment partials (#312).
- *
- * Allows repository owners to inject a Markdown "partial" into the TrustBridge
- * issue comment via a workspace file.  The partial is appended as a section
- * just before the footer so the i18n-driven core sections remain unchanged.
- *
- * Security model
- * ──────────────
- * 1. Path validation  — the resolved path must stay inside the workspace root;
- *    path traversal attempts (../../etc/passwd) fail immediately.
- * 2. Size cap         — files larger than MAX_TEMPLATE_BYTES (8 KB) are
- *    rejected to prevent comment-flooding attacks and GitHub size-limit hits.
- * 3. Dangerous pattern blocking — any `{{constructor}}`, `{{__proto__}}`,
- *    `{{prototype}}` placeholder or raw `<script`, `javascript:`, or `data:`
- *    URI content is rejected before interpolation.
- * 4. Interpolation escaping — every substituted value is run through
- *    `escapeMarkdownInline` so contributor-supplied strings (addresses, asset
- *    codes, issuer addresses, network names) cannot inject Markdown structures
- *    such as links, emphasis, headings, or code-spans into the partial.
- *    The lone exception is `{{status}}` which expands to a safe symbolic emoji.
- * 5. i18n integration — `{{locale:KEY}}` expands to the current locale string
- *    for KEY, making it safe to reference translated copy without bypassing i18n.
- * 6. Unknown placeholders are replaced with an empty string (never silently
- *    passed through) so unexpected `{{foo}}` tokens cannot leak raw data.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_TEMPLATE_BYTES = void 0;
-exports.validateTemplatePath = validateTemplatePath;
-exports.validateTemplateContent = validateTemplateContent;
-exports.interpolateTemplate = interpolateTemplate;
-exports.loadCommentTemplate = loadCommentTemplate;
-exports.buildTemplateContext = buildTemplateContext;
-const fs = __importStar(__nccwpck_require__(9896));
-const path = __importStar(__nccwpck_require__(6928));
-const markdown_1 = __nccwpck_require__(3758);
-const i18n_1 = __nccwpck_require__(4859);
-/** Maximum allowed template file size in bytes. */
-exports.MAX_TEMPLATE_BYTES = 8 * 1024; // 8 KB
-/**
- * Dangerous prototype-pollution / prototype-chain placeholder names.
- * Any template that uses these as `{{name}}` tokens is rejected outright.
- * All entries must be lowercase (comparison is done after toLowerCase()).
- */
-const FORBIDDEN_PLACEHOLDER_NAMES = new Set([
-    'constructor',
-    '__proto__',
-    'prototype',
-    '__definegetter__',
-    '__definesetter__',
-    '__lookupgetter__',
-    '__lookupsetter__',
-]);
-/**
- * Patterns in the raw template content that indicate active injection attempts.
- * Checked after path validation and size check, before interpolation.
- */
-const FORBIDDEN_CONTENT_PATTERNS = [
-    /<script[\s>]/i, // <script tags
-    /javascript\s*:/i, // javascript: URIs
-    /data\s*:\s*text\s*\/\s*html/i, // data:text/html URIs
-    /vbscript\s*:/i, // vbscript: URIs
-    /on\w+\s*=/i, // inline event handlers (onclick=, etc.)
-];
-/**
- * Validate that the given path resolves inside the workspace root.
- *
- * @param templatePath  Raw path from action input (relative or absolute).
- * @param workspaceRoot Absolute workspace root directory.
- * @throws `Error` if the resolved path escapes the workspace.
- */
-function validateTemplatePath(templatePath, workspaceRoot) {
-    const resolvedRoot = path.resolve(workspaceRoot);
-    const candidate = path.isAbsolute(templatePath)
-        ? templatePath
-        : path.join(resolvedRoot, templatePath);
-    const resolved = path.resolve(candidate);
-    // The resolved path must be the workspace root itself OR a descendant of it.
-    if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
-        throw new Error(`custom_comment_template_path resolves outside the workspace root: "${templatePath}". ` +
-            'Only paths inside the workspace are allowed.');
-    }
-    return resolved;
-}
-/**
- * Scan the raw template content for dangerous patterns and forbidden
- * prototype-chain placeholder names.
- *
- * @throws `Error` describing the first violation found.
- */
-function validateTemplateContent(raw) {
-    // Check for dangerous content patterns (XSS / HTML injection).
-    for (const pattern of FORBIDDEN_CONTENT_PATTERNS) {
-        if (pattern.test(raw)) {
-            throw new Error(`custom_comment_template contains a disallowed pattern (${pattern.source}). ` +
-                'Template content must be plain Markdown without HTML scripts, event handlers, or javascript:/vbscript: URIs.');
-        }
-    }
-    // Check for forbidden prototype-chain placeholders.
-    const placeholderPattern = /\{\{([^{}]+?)\}\}/g;
-    let match;
-    while ((match = placeholderPattern.exec(raw)) !== null) {
-        // locale:KEY form — only validate the prefix
-        const name = match[1].trim().toLowerCase();
-        // For dotted names (e.g. constructor.prototype.isAdmin), check the first segment.
-        const baseName = name.startsWith('locale:')
-            ? 'locale'
-            : name.split(/[\s.[\]()'"`]/)[0];
-        if (FORBIDDEN_PLACEHOLDER_NAMES.has(baseName)) {
-            throw new Error(`custom_comment_template uses a forbidden placeholder name: "{{${match[1]}}}". ` +
-                'Prototype-chain keys are not allowed as template variables.');
-        }
-    }
-}
-/**
- * Supported named variables for `{{variable}}` interpolation.
- *
- * Every value is escaped with `escapeMarkdownInline` before substitution,
- * preventing contributor-supplied strings from injecting Markdown structures.
- * `status` is the one exception — it is always a safe symbolic emoji string
- * produced internally by this module, not sourced from external input.
- */
-const SUPPORTED_VARIABLES = new Set([
-    'account',
-    'asset',
-    'issuer',
-    'network',
-    'horizon',
-    'status',
-]);
-/**
- * Interpolate `{{variable}}` and `{{locale:KEY}}` placeholders in a template
- * string.
- *
- * Rules:
- * - Known variables are replaced with their escaped context value.
- * - `{{locale:KEY}}` resolves the locale string for KEY from `getStrings()`.
- *   Only string-typed fields of `CommentStrings` are supported; function
- *   fields are excluded and resolve to an empty string.
- * - Unknown placeholders are replaced with an empty string (never echoed back).
- *
- * @param template  Raw template content (already validated).
- * @param ctx       Interpolation context.
- * @returns         Interpolated template string.
- */
-function interpolateTemplate(template, ctx) {
-    const strings = (0, i18n_1.getStrings)(ctx.locale);
-    return template.replace(/\{\{([^{}]+?)\}\}/g, (_match, rawKey) => {
-        const key = rawKey.trim();
-        // Handle {{locale:KEY}} for i18n string lookups.
-        if (key.toLowerCase().startsWith('locale:')) {
-            const i18nKey = key.slice('locale:'.length).trim();
-            const value = strings[i18nKey];
-            // Only allow string-typed fields (not function-typed check helpers).
-            if (typeof value === 'string') {
-                return (0, markdown_1.escapeMarkdownInline)(value);
-            }
-            return '';
-        }
-        const lowerKey = key.toLowerCase();
-        // Unknown or unsupported variable → empty string (safe default).
-        if (!SUPPORTED_VARIABLES.has(lowerKey)) {
-            return '';
-        }
-        // status is safe symbolic text, no escaping needed.
-        if (lowerKey === 'status') {
-            return ctx.status;
-        }
-        const raw = ctx[lowerKey] ?? '';
-        return (0, markdown_1.escapeMarkdownInline)(raw);
-    });
-}
-/**
- * Load, validate, and interpolate a custom comment template partial.
- *
- * Returns the rendered partial string on success, or `undefined` when:
- * - `templatePath` is empty or undefined (feature disabled).
- * - The file does not exist at the resolved path (non-fatal, emits a warning).
- *
- * Throws `Error` for all hard validation failures (path traversal, size
- * exceeded, forbidden content) so the action can surface them clearly.
- *
- * @param templatePath  Workspace-relative or absolute path to the `.md` file.
- * @param ctx           Interpolation context for variable substitution.
- * @param workspaceRoot Workspace root directory.  Defaults to
- *                      `GITHUB_WORKSPACE` env variable or `process.cwd()`.
- */
-function loadCommentTemplate(templatePath, ctx, workspaceRoot) {
-    if (!templatePath || templatePath.trim() === '') {
-        return undefined;
-    }
-    const root = workspaceRoot ?? process.env['GITHUB_WORKSPACE'] ?? process.cwd();
-    // 1. Path validation — must stay inside workspace.
-    const resolvedPath = validateTemplatePath(templatePath.trim(), root);
-    // 2. File existence — non-fatal, warn-only.
-    if (!fs.existsSync(resolvedPath)) {
-        // Caller is responsible for surfacing this as a core.warning.
-        return undefined;
-    }
-    // 3. Size check — reject oversized files before reading content.
-    const stat = fs.statSync(resolvedPath);
-    if (stat.size > exports.MAX_TEMPLATE_BYTES) {
-        throw new Error(`custom_comment_template_path "${templatePath}" exceeds the maximum allowed size of ` +
-            `${exports.MAX_TEMPLATE_BYTES} bytes (file is ${stat.size} bytes). ` +
-            'Keep template partials small to avoid hitting GitHub comment size limits.');
-    }
-    const raw = fs.readFileSync(resolvedPath, 'utf8');
-    // 4. Content security validation.
-    validateTemplateContent(raw);
-    // 5. Interpolate placeholders.
-    return interpolateTemplate(raw, ctx);
-}
-/**
- * Build a `TemplateContext` from comment-level values.
- *
- * Centralises the context construction so callers do not need to know
- * the full shape of `TemplateContext`.
- */
-function buildTemplateContext(params) {
-    return {
-        account: params.stellarAddress,
-        asset: params.assetCode,
-        issuer: params.assetIssuer,
-        horizon: params.horizonUrl,
-        network: params.network,
-        status: params.valid ? '✅ ready' : '❌ blocked',
-        locale: params.locale,
-    };
-}
-
-
-/***/ }),
-
-/***/ 7145:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Lightweight opt-in OpenTelemetry-compatible tracing for TrustBridge Action.
- * (Issue #299)
- *
- * ## Design goals
- * - Default OFF: zero overhead when tracing is not enabled.
- * - No required SaaS or external collector.
- * - Zero new production dependencies: uses only Node.js built-ins.
- * - PII safe: Stellar addresses are redacted to first-4…last-4 before any
- *   span attribute is recorded or exported.
- * - Compatible with the OTel data model (Span, SpanStatus, Attributes) so
- *   a future upgrade to @opentelemetry/sdk-trace-node is a drop-in swap.
- *
- * ## Enabling tracing
- *
- * Set the environment variable before running the action:
- *
- *   OTEL_TRACES_ENABLED=true   # opt in to trace collection
- *   OTEL_TRACES_EXPORTER=log   # (default) emit spans as core.debug JSON lines
- *   OTEL_TRACES_EXPORTER=console  # emit to process.stdout (local dev)
- *   OTEL_TRACES_EXPORTER=none  # collect but do not export (for tests)
- *
- * All options are case-insensitive for the value.
- *
- * ## Instrumented phases
- *
- * | Phase | Span name |
- * |-------|-----------|
- * | Horizon account fetch | `horizon.fetch_account` |
- * | GitHub issue comment post/update | `github.post_comment` |
- * | Dashboard webhook delivery | `webhook.deliver` |
- * | Full action run | `trustbridge.run` |
- *
- * ## PII redaction
- *
- * - `stellar_address` attributes are masked to `first4…last4`.
- * - `horizon_url` attributes have the path stripped (host only).
- * - `webhook_url` attributes have the path stripped.
- * - `github_token` and `webhook_secret` are NEVER placed in any attribute.
- *
- * ## Exporting to a real collector
- *
- * When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, TrustBridge will attempt to
- * export spans via HTTP/JSON OTLP to that endpoint. The payload follows the
- * OTLP/HTTP JSON format so any standard OpenTelemetry collector can receive
- * it. Requires `OTEL_TRACES_EXPORTER=otlp` as well.
- *
- * Example for a local collector:
- * ```yaml
- * env:
- *   OTEL_TRACES_ENABLED: 'true'
- *   OTEL_TRACES_EXPORTER: 'otlp'
- *   OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
- * ```
- *
- * See docs/USAGE.md#opentelemetry-tracing for the full guide.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.isTracingEnabled = isTracingEnabled;
-exports.getExporterType = getExporterType;
-exports.getTraceSpans = getTraceSpans;
-exports.clearTraceSpans = clearTraceSpans;
-exports.redactSpanAttributes = redactSpanAttributes;
-exports.withSpan = withSpan;
-exports.withSpanSync = withSpanSync;
-exports.exportSpan = exportSpan;
-exports.traceHorizonFetch = traceHorizonFetch;
-exports.traceCommentPost = traceCommentPost;
-exports.traceWebhookDeliver = traceWebhookDeliver;
-exports.traceActionRun = traceActionRun;
-exports.emitTraceSummary = emitTraceSummary;
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const logger_1 = __nccwpck_require__(6999);
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-/**
- * Whether tracing is enabled.
- * Reads `OTEL_TRACES_ENABLED` environment variable.
- * Default: false.
- */
-function isTracingEnabled() {
-    const val = process.env['OTEL_TRACES_ENABLED'] ?? '';
-    return val.toLowerCase() === 'true' || val === '1';
-}
-function getExporterType() {
-    const val = (process.env['OTEL_TRACES_EXPORTER'] ?? 'log').toLowerCase();
-    if (val === 'console')
-        return 'console';
-    if (val === 'none')
-        return 'none';
-    if (val === 'otlp')
-        return 'otlp';
-    return 'log';
-}
-// ---------------------------------------------------------------------------
-// In-process span store
-// ---------------------------------------------------------------------------
-const _traceSpans = [];
-/**
- * Return all recorded trace spans (for testing).
- * Returns a shallow copy so callers cannot mutate the internal store.
- */
-function getTraceSpans() {
-    return [..._traceSpans];
-}
-/**
- * Clear all recorded trace spans.
- * Call at the start of each test or action run.
- */
-function clearTraceSpans() {
-    _traceSpans.length = 0;
-}
-/** Internal: record a completed span into the store. */
-function storeSpan(span) {
-    try {
-        _traceSpans.push(span);
-    }
-    catch {
-        // Observability must never break the action.
-    }
-}
-// ---------------------------------------------------------------------------
-// PII redaction for span attributes
-// ---------------------------------------------------------------------------
-/**
- * Redact a span attributes record so no PII escapes into exported spans.
- * - Stellar addresses (G…/C…, 56 chars) → first4…last4.
- * - Horizon / webhook URLs → host only (path stripped).
- * - Token / secret fields → [REDACTED].
- */
-function redactSpanAttributes(attrs) {
-    const safe = {};
-    const SECRET_KEYS = new Set(['token', 'secret', 'password', 'api_key', 'private_key', 'github_token', 'webhook_secret']);
-    for (const [key, value] of Object.entries(attrs)) {
-        if (SECRET_KEYS.has(key.toLowerCase())) {
-            safe[key] = '[REDACTED]';
-            continue;
-        }
-        if (typeof value === 'string') {
-            // Redact embedded Stellar addresses
-            let v = value.replace(/\b[GC][A-Z2-7]{55}\b/g, (addr) => (0, logger_1.redactStellarAddress)(addr));
-            // Redact Horizon/webhook URL paths (keep scheme + host only)
-            if (key.toLowerCase().includes('url')) {
-                v = (0, logger_1.redactHorizonUrl)(v);
-            }
-            safe[key] = v;
-        }
-        else {
-            safe[key] = value;
-        }
-    }
-    return safe;
-}
-// ---------------------------------------------------------------------------
-// Span recording
-// ---------------------------------------------------------------------------
-/**
- * Execute an async operation within a named trace span.
- *
- * When tracing is disabled, `fn` is called directly with zero overhead.
- * When enabled, the span is recorded and exported after `fn` completes.
- *
- * @param opts  Span options (name, attributes, parentName).
- * @param fn    The async operation to trace.
- * @returns     The resolved value from `fn`.
- */
-async function withSpan(opts, fn) {
-    if (!isTracingEnabled()) {
-        return fn();
-    }
-    const startTimeMs = Date.now();
-    let status = 'OK';
-    let error;
-    try {
-        const result = await fn();
-        return result;
-    }
-    catch (err) {
-        status = 'ERROR';
-        error = err instanceof Error ? err.message : String(err);
-        throw err;
-    }
-    finally {
-        const durationMs = Date.now() - startTimeMs;
-        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
-        const span = {
-            name: opts.name,
-            startTimeMs,
-            durationMs,
-            status,
-            attributes: safeAttrs,
-            error,
-            parentName: opts.parentName,
-        };
-        storeSpan(span);
-        exportSpan(span);
-    }
-}
-/**
- * Record a synchronous operation within a named trace span.
- *
- * @param opts  Span options.
- * @param fn    Synchronous operation to trace.
- * @returns     The value returned by `fn`.
- */
-function withSpanSync(opts, fn) {
-    if (!isTracingEnabled()) {
-        return fn();
-    }
-    const startTimeMs = Date.now();
-    let status = 'OK';
-    let error;
-    try {
-        const result = fn();
-        return result;
-    }
-    catch (err) {
-        status = 'ERROR';
-        error = err instanceof Error ? err.message : String(err);
-        throw err;
-    }
-    finally {
-        const durationMs = Date.now() - startTimeMs;
-        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
-        const span = {
-            name: opts.name,
-            startTimeMs,
-            durationMs,
-            status,
-            attributes: safeAttrs,
-            error,
-            parentName: opts.parentName,
-        };
-        storeSpan(span);
-        exportSpan(span);
-    }
-}
-// ---------------------------------------------------------------------------
-// Span export
-// ---------------------------------------------------------------------------
-/**
- * Export a completed span to the configured exporter.
- * Never throws — observability must not break the action.
- */
-function exportSpan(span) {
-    try {
-        const exporter = getExporterType();
-        switch (exporter) {
-            case 'log':
-                core.debug(`[TrustBridge][trace] ${JSON.stringify(span)}`);
-                break;
-            case 'console':
-                console.log(`[TrustBridge][trace] ${JSON.stringify(span)}`);
-                break;
-            case 'none':
-                // Collect but do not emit (used in tests to inspect spans without log noise).
-                break;
-            case 'otlp':
-                // OTLP export is fire-and-forget — errors are swallowed so they never
-                // affect the action result. The collector must be running at
-                // OTEL_EXPORTER_OTLP_ENDPOINT for this to have any effect.
-                void exportOtlp(span).catch(() => {
-                    // Silently ignore export failures.
-                });
-                break;
-        }
-    }
-    catch {
-        // Swallow all export errors.
-    }
-}
-/**
- * Fire-and-forget OTLP/HTTP JSON export for a single span.
- * Only called when OTEL_TRACES_EXPORTER=otlp and OTEL_EXPORTER_OTLP_ENDPOINT is set.
- */
-async function exportOtlp(span) {
-    const endpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
-    if (!endpoint)
-        return;
-    // Minimal OTLP/JSON payload for a single span
-    const otlpPayload = {
-        resourceSpans: [
-            {
-                resource: { attributes: [{ key: 'service.name', value: { stringValue: 'trustbridge-action' } }] },
-                scopeSpans: [
-                    {
-                        scope: { name: 'trustbridge-action', version: '1' },
-                        spans: [
-                            {
-                                name: span.name,
-                                kind: 1, // SPAN_KIND_INTERNAL
-                                startTimeUnixNano: String(span.startTimeMs * 1000000),
-                                endTimeUnixNano: String((span.startTimeMs + span.durationMs) * 1000000),
-                                status: {
-                                    code: span.status === 'OK' ? 1 : span.status === 'ERROR' ? 2 : 0,
-                                    message: span.error ?? '',
-                                },
-                                attributes: Object.entries(span.attributes).map(([k, v]) => ({
-                                    key: k,
-                                    value: typeof v === 'boolean'
-                                        ? { boolValue: v }
-                                        : typeof v === 'number'
-                                            ? { intValue: String(v) }
-                                            : { stringValue: String(v) },
-                                })),
-                            },
-                        ],
-                    },
-                ],
-            },
-        ],
-    };
-    const url = endpoint.replace(/\/$/, '') + '/v1/traces';
-    await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(otlpPayload),
-        signal: AbortSignal.timeout(3000),
-    });
-}
-// ---------------------------------------------------------------------------
-// Named span helpers for the three instrumented phases
-// ---------------------------------------------------------------------------
-/**
- * Trace the Horizon account fetch phase.
- * Attributes: endpoint kind (primary/fallback), redacted URL, redacted address.
- */
-async function traceHorizonFetch(horizonUrl, stellarAddress, fn) {
-    return withSpan({
-        name: 'horizon.fetch_account',
-        attributes: {
-            'horizon_url': horizonUrl,
-            'stellar_address': stellarAddress,
-        },
-    }, fn);
-}
-/**
- * Trace the GitHub issue comment post/update phase.
- * Attributes: comment action (create/update), issue number.
- */
-async function traceCommentPost(issueNumber, action, fn) {
-    return withSpan({
-        name: 'github.post_comment',
-        attributes: {
-            'issue_number': issueNumber ?? 0,
-            'comment_action': action,
-        },
-    }, fn);
-}
-/**
- * Trace the dashboard webhook delivery phase.
- * Attributes: redacted webhook URL, auth mode.
- */
-async function traceWebhookDeliver(webhookUrl, authMode, fn) {
-    return withSpan({
-        name: 'webhook.deliver',
-        attributes: {
-            'webhook_url': webhookUrl,
-            'auth_mode': authMode,
-        },
-    }, fn);
-}
-/**
- * Trace the full action run (root span).
- * Attributes: redacted address, reason code, valid flag.
- */
-async function traceActionRun(stellarAddress, fn) {
-    return withSpan({
-        name: 'trustbridge.run',
-        attributes: {
-            'stellar_address': stellarAddress,
-        },
-    }, fn);
-}
-// ---------------------------------------------------------------------------
-// Summary export
-// ---------------------------------------------------------------------------
-/**
- * Emit a human-readable summary of all collected spans to `core.info`.
- * Called at the end of a run when tracing is enabled.
- * Never throws.
- */
-function emitTraceSummary() {
-    if (!isTracingEnabled())
-        return;
-    try {
-        const spans = getTraceSpans();
-        if (spans.length === 0)
-            return;
-        const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
-        const errorCount = spans.filter((s) => s.status === 'ERROR').length;
-        core.info(`[TrustBridge][trace] Run complete — ${spans.length} span(s), ` +
-            `${totalMs}ms total, ${errorCount} error(s). ` +
-            `Set OTEL_TRACES_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT to forward to a collector.`);
-    }
-    catch {
-        // Never throw from observability.
-    }
 }
 
 
@@ -48222,7 +36283,7 @@ function emitTraceSummary() {
  * A real OTEL exporter can be plugged in by replacing `recordSpan()`.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SECRET_FIELD_NAMES = exports.SSRF_BLOCKED_PATTERNS = void 0;
+exports.SECRET_FIELD_NAMES = void 0;
 exports.getSpans = getSpans;
 exports.clearSpans = clearSpans;
 exports.validateNumericInput = validateNumericInput;
@@ -48231,13 +36292,9 @@ exports.validateAssetCode = validateAssetCode;
 exports.validateUrl = validateUrl;
 exports.combineResults = combineResults;
 exports.validateSsrfSafeUrl = validateSsrfSafeUrl;
-exports.validateHorizonUrl = validateHorizonUrl;
 exports.sanitizeConfigString = sanitizeConfigString;
 exports.redactSecretFields = redactSecretFields;
 exports.validateTrustbridgeConfig = validateTrustbridgeConfig;
-exports.computeBaseReserveRequirement = computeBaseReserveRequirement;
-exports.validateDynamicReserve = validateDynamicReserve;
-exports.computeEffectiveReserveRequirement = computeEffectiveReserveRequirement;
 const _spans = [];
 /**
  * Return all recorded validation spans (for testing or debug export).
@@ -48412,29 +36469,15 @@ function validateUrl(url, fieldName, options = {}) {
             errors.push(`${fieldName} cannot be empty`);
             return { valid: false, errors, warnings };
         }
-        let parsed;
         try {
-            parsed = new URL(trimmed);
+            const parsed = new URL(trimmed);
+            const allowedProtos = options.protocols || ['http', 'https'];
+            if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
+                errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
+            }
         }
         catch {
             errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
-            return { valid: false, errors, warnings };
-        }
-        const allowedProtos = options.protocols || ['http', 'https'];
-        if (!allowedProtos.includes(parsed.protocol.replace(':', ''))) {
-            errors.push(`${fieldName} must use one of these protocols: ${allowedProtos.join(', ')}`);
-        }
-        if (parsed.username || parsed.password) {
-            errors.push(`${fieldName} must not contain embedded credentials (userinfo)`);
-        }
-        if (!options.allowPathTraversal) {
-            const pathSegments = parsed.pathname.split('/');
-            for (const segment of pathSegments) {
-                if (segment === '..') {
-                    errors.push(`${fieldName} must not contain path traversal segments ("..")`);
-                    break;
-                }
-            }
         }
         return {
             valid: errors.length === 0,
@@ -48461,30 +36504,8 @@ function combineResults(...results) {
 /**
  * Private IP ranges and loopback patterns that must never appear in a
  * consumer-supplied Horizon or RPC URL (SSRF prevention).
- *
- * ## Horizon SSRF Allowlist (Wave #20)
- *
- * Any URL that reaches `validateSsrfSafeUrl` is blocked if it matches any
- * entry in this list. The allowlist is intentionally _block_-oriented:
- * everything is permitted unless it matches a known-dangerous pattern.
- *
- * Blocked categories:
- *   - IPv4 loopback (127.x.x.x)
- *   - IPv4 link-local (169.254.x.x) — includes AWS/GCP/Azure metadata
- *   - IPv4 private class-A (10.x.x.x)
- *   - IPv4 private class-B (172.16–31.x.x)
- *   - IPv4 private class-C (192.168.x.x)
- *   - IPv6 loopback (::1)
- *   - IPv6 link-local (fe80::)
- *   - Bare "localhost" hostname
- *   - AWS instance metadata (169.254.169.254)
- *   - GCP metadata (metadata.google.internal)
- *   - file:// protocol
- *
- * Exported as `SSRF_BLOCKED_PATTERNS` so the CI audit job and tests can
- * assert that every category is covered without re-implementing the list.
  */
-exports.SSRF_BLOCKED_PATTERNS = [
+const SSRF_BLOCKED_PATTERNS = [
     // IPv4 loopback
     /^https?:\/\/127\./,
     // IPv4 link-local
@@ -48498,12 +36519,6 @@ exports.SSRF_BLOCKED_PATTERNS = [
     // IPv6 loopback / link-local
     /^https?:\/\/\[?::1\]?/,
     /^https?:\/\/\[?fe80:/i,
-    // IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1, ::ffff:192.168.1.1)
-    /^https?:\/\/\[?::ffff:(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i,
-    // IPv6 ULA (Unique Local Addresses: fc00::/7 — private equivalent of RFC1918)
-    /^https?:\/\/\[?f[cd][0-9a-f]{2}:/i,
-    // IPv6 loopback with zone ID (e.g., ::1%eth0)
-    /^https?:\/\/\[?::1[%]/,
     // Bare "localhost"
     /^https?:\/\/localhost[:/]/i,
     /^https?:\/\/localhost$/i,
@@ -48541,110 +36556,14 @@ function validateSsrfSafeUrl(url, fieldName, options = {}) {
         errors.push(`${fieldName} is not a valid URL: "${trimmed}"`);
         return { valid: false, errors, warnings };
     }
-    // Strip embedded credentials (http://user:pass@host → http://host) so
-    // SSRF patterns always match against the actual target host regardless
-    // of whether the URL contains a userinfo component.
-    const strippedUrl = trimmed.replace(/^(https?:\/\/)[^@/]*@/, '$1');
-    // SSRF pattern check — run against credential-stripped URL
-    for (const pattern of exports.SSRF_BLOCKED_PATTERNS) {
-        if (options.allowLocalhost && /^https?:\/\/localhost(?::|\/|$)/i.test(strippedUrl) && pattern.source.includes('localhost')) {
-            continue;
-        }
-        if (pattern.test(strippedUrl)) {
+    // SSRF pattern check
+    for (const pattern of SSRF_BLOCKED_PATTERNS) {
+        if (pattern.test(trimmed)) {
             errors.push(`${fieldName} targets a blocked address (private IP, loopback, or metadata endpoint): "${trimmed}"`);
             break;
         }
     }
     return { valid: errors.length === 0, errors, warnings };
-}
-/**
- * Convenience wrapper: validates a Horizon (or RPC fallback) URL against
- * the full SSRF block-list. Intended as the single entry-point used in
- * the CI audit job (Wave #20) and anywhere a Horizon URL is accepted.
- *
- * Compared to the lower-level `validateSsrfSafeUrl` this helper:
- *   - Always allows both http and https (testnet runs use http)
- *   - Uses the exported `SSRF_BLOCKED_PATTERNS` list so the audit can
- *     introspect the exact list that is enforced at runtime
- *
- * @param url       The candidate Horizon or RPC URL.
- * @param fieldName Human-readable field label used in error messages.
- */
-function validateHorizonUrl(url, fieldName = 'horizon_url', options = {}) {
-    // Allow http by default (testnet / private mirrors); pass allowHttp:false for https-only.
-    const allowHttp = options.allowHttp !== false;
-    const trimmed = url.trim();
-    const errors = [];
-    const warnings = [];
-    if (!trimmed) {
-        return { valid: false, errors: [`${fieldName} cannot be empty`], warnings };
-    }
-    // Reject path traversal / dot-segments on the raw string before URL() normalizes them away.
-    if (/(?:^|\/)(?:\.\.|%2e%2e)(?:\/|$)/i.test(trimmed) || /\/\.\//.test(trimmed)) {
-        errors.push(`${fieldName} must not contain path traversal segments ("..") or invalid path dots`);
-    }
-    const ssrf = validateSsrfSafeUrl(url, fieldName, {
-        allowHttp,
-        allowLocalhost: options.allowLocalhost,
-    });
-    const urlCheck = validateUrl(url, fieldName, {
-        protocols: allowHttp ? ['http', 'https'] : ['https'],
-    });
-    for (const e of [...urlCheck.errors, ...ssrf.errors]) {
-        if (!errors.includes(e))
-            errors.push(e);
-    }
-    for (const w of [...urlCheck.warnings, ...ssrf.warnings]) {
-        if (!warnings.includes(w))
-            warnings.push(w);
-    }
-    // Issue #315: Strict allowlist check
-    if (options.allowlist && options.allowlist.length > 0 && urlCheck.valid) {
-        try {
-            const parsedTarget = new URL(trimmed);
-            const targetHost = parsedTarget.host.toLowerCase();
-            let matched = false;
-            for (const allowed of options.allowlist) {
-                const cleanAllowed = allowed.trim();
-                if (!cleanAllowed)
-                    continue;
-                try {
-                    // If the allowlist entry is a full URL, parse and compare hosts
-                    const parsedAllowed = new URL(cleanAllowed);
-                    if (targetHost === parsedAllowed.host.toLowerCase()) {
-                        matched = true;
-                        break;
-                    }
-                }
-                catch {
-                    // If the allowlist entry is just a hostname/port
-                    if (targetHost === cleanAllowed.toLowerCase() || parsedTarget.hostname.toLowerCase() === cleanAllowed.toLowerCase()) {
-                        matched = true;
-                        break;
-                    }
-                }
-            }
-            if (!matched) {
-                errors.push(`${fieldName} host "${targetHost}" is not in the allowlist`);
-            }
-        }
-        catch {
-            // Ignore URL parse errors here, let urlCheck handle invalid format
-        }
-    }
-    const normalizedErrors = errors.map((e) => {
-        if (e.toLowerCase().includes('protocol'))
-            return e;
-        if (e.includes('must use one of these protocols') || e.includes('must use http or https') || e.includes('must use https')) {
-            return e.includes('protocol') ? e : e.replace(/must use/, 'must use protocol');
-        }
-        return e;
-    });
-    return {
-        valid: normalizedErrors.length === 0,
-        errors: normalizedErrors,
-        warnings,
-    };
 }
 /**
  * Characters and patterns that must not appear in consumer-supplied
@@ -48737,16 +36656,13 @@ function validateTrustbridgeConfig(raw) {
             if (typeof val !== 'string') {
                 results.push({ valid: false, errors: [`${urlField} must be a string`], warnings: [] });
             }
-            else if (urlField === 'horizon_url' || urlField === 'horizon_url_fallback') {
-                results.push(validateHorizonUrl(val, urlField, { allowHttp: true }));
-            }
             else {
                 results.push(validateSsrfSafeUrl(val, urlField, { allowHttp: true }));
             }
         }
     }
     // String fields — injection sanitization
-    for (const strField of ['asset_code', 'asset_issuer', 'min_xlm_reserve', 'min_asset_balance']) {
+    for (const strField of ['asset_code', 'asset_issuer', 'min_xlm_reserve']) {
         const val = raw[strField];
         if (val !== undefined && val !== null && val !== '') {
             if (typeof val !== 'string') {
@@ -48778,7 +36694,7 @@ function validateTrustbridgeConfig(raw) {
                 });
             }
         }
-        else if (!exports.SECRET_FIELD_NAMES.has(trimmedIssuer)) {
+        else if (!exports.SECRET_FIELD_NAMES.has('asset_issuer')) {
             // Neither G nor C — invalid format
             results.push({
                 valid: false,
@@ -48798,466 +36714,6 @@ function validateTrustbridgeConfig(raw) {
         }
     }
     return combineResults(...results);
-}
-/** Threshold below which a passing check still emits a "thin margin" warning. */
-const RESERVE_MARGIN_WARNING_XLM = 0.5;
-function sanitizeReserveCount(value) {
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-}
-/** Default base reserve (XLM per ledger entry) on the Stellar network. */
-const STELLAR_BASE_RESERVE_XLM_DEFAULT = 0.5;
-/**
- * Computes the real Stellar network minimum balance for an account from its
- * live subentry/sponsorship counters, per the protocol formula:
- *   (2 + subentries + sponsoring - sponsored) * baseReserve
- *
- * Malformed (negative or non-finite) counters are treated as 0 rather than
- * allowed to reduce the computed requirement — a corrupt or partial Horizon
- * response must never cause the engine to under-report what's required.
- */
-function computeBaseReserveRequirement(state, baseReserveXlm = STELLAR_BASE_RESERVE_XLM_DEFAULT) {
-    const subentryCount = sanitizeReserveCount(state.subentryCount);
-    const numSponsoring = sanitizeReserveCount(state.numSponsoring);
-    const numSponsored = sanitizeReserveCount(state.numSponsored);
-    const reserveEntries = 2 + subentryCount + numSponsoring - numSponsored;
-    return Math.max(0, reserveEntries) * baseReserveXlm;
-}
-/**
- * Validates that an account's actual XLM balance meets the dynamically
- * computed reserve requirement (base reserve for its live subentry/
- * sponsorship state, plus an optional safety buffer).
- *
- * Records an OTel-style span. Attributes carry only counts and computed
- * numbers — never a raw account balance or address.
- */
-function validateDynamicReserve(state, actualXlmBalance, options = {}) {
-    const startTimeMs = Date.now();
-    const bufferXlm = options.bufferXlm !== undefined && Number.isFinite(options.bufferXlm) && options.bufferXlm > 0
-        ? options.bufferXlm
-        : 0;
-    const errors = [];
-    const warnings = [];
-    if (!Number.isFinite(actualXlmBalance)) {
-        errors.push(`actualXlmBalance must be a finite number, got: ${actualXlmBalance}`);
-    }
-    for (const [field, value] of Object.entries(state)) {
-        if (!Number.isFinite(value) || value < 0) {
-            warnings.push(`${field} was invalid (${value}) and was treated as 0`);
-        }
-    }
-    const baseReserveRequirement = computeBaseReserveRequirement(state, options.baseReserveXlm);
-    const totalRequirement = baseReserveRequirement + bufferXlm;
-    const safeActual = Number.isFinite(actualXlmBalance) ? actualXlmBalance : 0;
-    const met = errors.length === 0 && safeActual >= totalRequirement;
-    if (errors.length === 0 && !met) {
-        errors.push(`XLM balance ${safeActual} is below the dynamically computed reserve requirement of ${totalRequirement} ` +
-            `(base ${baseReserveRequirement} + buffer ${bufferXlm})`);
-    }
-    else if (met && safeActual - totalRequirement < RESERVE_MARGIN_WARNING_XLM) {
-        warnings.push(`XLM balance ${safeActual} clears the reserve requirement of ${totalRequirement} by less than ` +
-            `${RESERVE_MARGIN_WARNING_XLM} XLM — consider funding additional headroom before future payouts.`);
-    }
-    const result = {
-        valid: errors.length === 0 && met,
-        errors,
-        warnings,
-        baseReserveRequirement,
-        bufferXlm,
-        totalRequirement,
-    };
-    recordSpan({
-        name: 'validateDynamicReserve',
-        attributes: {
-            subentryCount: sanitizeReserveCount(state.subentryCount),
-            numSponsoring: sanitizeReserveCount(state.numSponsoring),
-            numSponsored: sanitizeReserveCount(state.numSponsored),
-            baseReserveRequirement,
-            bufferXlm,
-            totalRequirement,
-            valid: result.valid,
-            errorCount: errors.length,
-        },
-        status: result.valid ? 'ok' : 'error',
-        durationMs: Date.now() - startTimeMs,
-        startTimeMs,
-        error: errors.length > 0 ? errors[0] : undefined,
-    });
-    return result;
-}
-/**
- * Computes the effective minimum reserve to enforce for an account: the
- * greater of the maintainer-configured static floor and the dynamically
- * computed requirement (base reserve for current account state, plus any
- * configured buffer). Never returns less than `configuredMinXlmReserve`, so
- * enabling the dynamic engine can only raise the bar, never lower it below
- * what a maintainer explicitly set.
- */
-function computeEffectiveReserveRequirement(configuredMinXlmReserve, state, options = {}) {
-    const dynamic = computeBaseReserveRequirement(state, options.baseReserveXlm) + (options.bufferXlm ?? 0);
-    const floor = Number.isFinite(configuredMinXlmReserve) ? configuredMinXlmReserve : 0;
-    return Math.max(floor, dynamic);
-}
-
-
-/***/ }),
-
-/***/ 8378:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Signed dashboard webhook support for TrustBridge Action (Issue #101).
- *
- * Provides optional HMAC-SHA256 signed webhook notifications to a consumer
- * dashboard or external endpoint after every validation run. The feature is
- * fully opt-in: when `webhook_url` is not configured the call path is never
- * entered and comment posting is unaffected.
- *
- * ## Security design
- * - Payloads are signed with HMAC-SHA256 using a shared secret supplied via
- *   `webhook_secret`. The signature is included as the
- *   `X-TrustBridge-Signature` HTTP header in the format
- *   `sha256=<hex-digest>`.
- * - The secret is **never** logged or embedded in comments. Log lines that
- *   reference the webhook only emit the URL (host-only, path redacted) and
- *   structural payload fields.
- * - Webhook failures are isolated: errors are caught, logged as warnings,
- *   and never propagate to the comment-posting or validation-result paths.
- * - A configurable timeout (`webhook_timeout_ms`, default 5 000 ms) prevents
- *   a slow receiver from stalling the action.
- *
- * ## Payload schema
- * ```json
- * {
- *   "schema_version": "1",
- *   "event": "validation_complete",
- *   "timestamp": "<ISO-8601>",
- *   "repository": "<owner/repo>",
- *   "issue_number": <number | null>,
- *   "stellar_address": "<redacted first-4…last-4>",
- *   "result": {
- *     "valid": <boolean>,
- *     "account_funded": <boolean>,
- *     "trustline_exists": <boolean>,
- *     "xlm_balance": "<string>",
- *     "checks": [{ "label": "<string>", "passed": <boolean> }]
- *   }
- * }
- * ```
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.WEBHOOK_STELLAR_ADDRESS_PATTERN = exports.WEBHOOK_REPOSITORY_PATTERN = exports.WEBHOOK_CHECK_REQUIRED_FIELDS = exports.WEBHOOK_RESULT_REQUIRED_FIELDS = exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS = void 0;
-exports.computeWebhookSignature = computeWebhookSignature;
-exports.verifyWebhookSignature = verifyWebhookSignature;
-exports.buildWebhookPayload = buildWebhookPayload;
-exports.validateWebhookPayload = validateWebhookPayload;
-exports.deliverWebhook = deliverWebhook;
-exports.sendWebhookNotification = sendWebhookNotification;
-const crypto = __importStar(__nccwpck_require__(6982));
-const core = __importStar(__nccwpck_require__(Object(function webpackMissingModule() { var e = new Error("Cannot find module '@actions/core'"); e.code = 'MODULE_NOT_FOUND'; throw e; }())));
-const logger_1 = __nccwpck_require__(6999);
-const tracing_1 = __nccwpck_require__(7145);
-// ---------------------------------------------------------------------------
-// HMAC signing
-// ---------------------------------------------------------------------------
-/**
- * Compute the HMAC-SHA256 signature for a raw payload body.
- *
- * Returns the signature as `sha256=<hex-digest>` — the same format used by
- * GitHub's own webhook signatures, making receiver verification
- * straightforward with any standard HMAC library.
- *
- * @param body    The raw UTF-8 JSON string that will be sent as the request body.
- * @param secret  The shared secret. Must not be empty.
- */
-function computeWebhookSignature(body, secret) {
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(body, 'utf8');
-    return `sha256=${hmac.digest('hex')}`;
-}
-/**
- * Verify a webhook signature using a constant-time comparison.
- *
- * Receivers should pass the raw request body so verification covers the exact
- * bytes that were signed rather than a re-serialised JSON representation.
- */
-function verifyWebhookSignature(body, signature, secret) {
-    const expected = computeWebhookSignature(body, secret);
-    const received = Buffer.from(signature, 'utf8');
-    const expectedBytes = Buffer.from(expected, 'utf8');
-    return received.length === expectedBytes.length && crypto.timingSafeEqual(received, expectedBytes);
-}
-// ---------------------------------------------------------------------------
-// Payload builder
-// ---------------------------------------------------------------------------
-/**
- * Build a sanitised webhook payload from a `ValidationResult`.
- *
- * All sensitive values (stellar address) are redacted using the same policy
- * as structured log output — the webhook receiver sees a first-4/last-4
- * masked address, never the full public key.
- */
-function buildWebhookPayload(result, stellarAddress, repository, issueNumber) {
-    return {
-        schema_version: '1',
-        event: 'validation_complete',
-        timestamp: new Date().toISOString(),
-        repository,
-        issue_number: issueNumber,
-        stellar_address: (0, logger_1.redactStellarAddress)(stellarAddress),
-        result: {
-            valid: result.valid,
-            account_funded: result.accountFunded,
-            trustline_exists: result.trustlineExists,
-            xlm_balance: result.xlmBalance ?? '0',
-            checks: result.checks.map((c) => ({ label: c.label, passed: c.passed })),
-        },
-    };
-}
-// ---------------------------------------------------------------------------
-// Schema validation (Issue #471)
-// ---------------------------------------------------------------------------
-/** Mirrors `schemas/webhook-payload.schema.json`; kept in sync by webhook-contract tests. */
-exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS = [
-    'schema_version',
-    'event',
-    'timestamp',
-    'repository',
-    'issue_number',
-    'stellar_address',
-    'result',
-];
-exports.WEBHOOK_RESULT_REQUIRED_FIELDS = [
-    'valid',
-    'account_funded',
-    'trustline_exists',
-    'xlm_balance',
-    'checks',
-];
-exports.WEBHOOK_CHECK_REQUIRED_FIELDS = ['label', 'passed'];
-exports.WEBHOOK_REPOSITORY_PATTERN = '^[^/]+/[^/]+$';
-exports.WEBHOOK_STELLAR_ADDRESS_PATTERN = '^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$';
-const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-function checkObjectKeys(obj, allowed, at, errors) {
-    for (const field of allowed) {
-        if (!(field in obj))
-            errors.push(`${at}: missing required property "${field}"`);
-    }
-    for (const key of Object.keys(obj)) {
-        if (!allowed.includes(key))
-            errors.push(`${at}: unexpected property "${key}"`);
-    }
-}
-function isPlainObject(value) {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-/**
- * Validate an outbound webhook payload against
- * `schemas/webhook-payload.schema.json`.
- *
- * @returns A list of violations; empty when the payload is conformant.
- */
-function validateWebhookPayload(payload) {
-    const errors = [];
-    if (!isPlainObject(payload))
-        return ['payload: must be an object'];
-    checkObjectKeys(payload, exports.WEBHOOK_PAYLOAD_REQUIRED_FIELDS, 'payload', errors);
-    if (payload.schema_version !== '1')
-        errors.push('schema_version: must be "1"');
-    if (payload.event !== 'validation_complete')
-        errors.push('event: must be "validation_complete"');
-    if (typeof payload.timestamp !== 'string' || !ISO_DATE_TIME.test(payload.timestamp) || isNaN(Date.parse(payload.timestamp))) {
-        errors.push('timestamp: must be an ISO-8601 date-time string');
-    }
-    if (typeof payload.repository !== 'string' || !new RegExp(exports.WEBHOOK_REPOSITORY_PATTERN).test(payload.repository)) {
-        errors.push('repository: must be in "owner/repo" format');
-    }
-    const issue = payload.issue_number;
-    if (issue !== null && (typeof issue !== 'number' || !Number.isInteger(issue) || issue < 1)) {
-        errors.push('issue_number: must be an integer >= 1 or null');
-    }
-    if (typeof payload.stellar_address !== 'string' || !new RegExp(exports.WEBHOOK_STELLAR_ADDRESS_PATTERN).test(payload.stellar_address)) {
-        errors.push('stellar_address: must be a redacted address (first-4...last-4)');
-    }
-    const result = payload.result;
-    if (!isPlainObject(result)) {
-        if ('result' in payload)
-            errors.push('result: must be an object');
-        return errors;
-    }
-    checkObjectKeys(result, exports.WEBHOOK_RESULT_REQUIRED_FIELDS, 'result', errors);
-    for (const field of ['valid', 'account_funded', 'trustline_exists']) {
-        if (field in result && typeof result[field] !== 'boolean')
-            errors.push(`result.${field}: must be a boolean`);
-    }
-    if ('xlm_balance' in result && typeof result.xlm_balance !== 'string') {
-        errors.push('result.xlm_balance: must be a string');
-    }
-    if ('checks' in result) {
-        if (!Array.isArray(result.checks)) {
-            errors.push('result.checks: must be an array');
-        }
-        else {
-            result.checks.forEach((check, i) => {
-                const at = `result.checks[${i}]`;
-                if (!isPlainObject(check)) {
-                    errors.push(`${at}: must be an object`);
-                    return;
-                }
-                checkObjectKeys(check, exports.WEBHOOK_CHECK_REQUIRED_FIELDS, at, errors);
-                if ('label' in check && typeof check.label !== 'string')
-                    errors.push(`${at}.label: must be a string`);
-                if ('passed' in check && typeof check.passed !== 'boolean')
-                    errors.push(`${at}.passed: must be a boolean`);
-            });
-        }
-    }
-    return errors;
-}
-// ---------------------------------------------------------------------------
-// Delivery
-// ---------------------------------------------------------------------------
-/**
- * Deliver a signed webhook notification to the configured endpoint.
- *
- * - Validates the payload against `schemas/webhook-payload.schema.json` and
- *   refuses to send (fail closed) when it does not conform.
- * - Signs the JSON payload with HMAC-SHA256 when a secret is provided.
- * - Respects `timeoutMs` via `AbortController`.
- * - **Never throws** — all errors are swallowed and returned in the result
- *   object so the caller's comment-posting path is not affected.
- *
- * @internal Exported for unit testing; callers should prefer
- *           `sendWebhookNotification`.
- */
-async function deliverWebhook(payload, config, fetchFn = fetch) {
-    const timeoutMs = config.timeoutMs ?? 5000;
-    // Fail closed: never send a body that breaks the published receiver contract.
-    const violations = validateWebhookPayload(payload);
-    if (violations.length > 0) {
-        return {
-            sent: false,
-            error: `payload failed webhook-payload.schema.json validation: ${violations.join('; ')}`,
-        };
-    }
-    let body;
-    try {
-        body = JSON.stringify(payload);
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { sent: false, error: `payload serialisation failed: ${msg}` };
-    }
-    const headers = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'trustbridge-action/1',
-        // Schema version header allows receivers to route/validate without parsing the body first.
-        // Updated whenever schema_version in the payload changes (Issue #296).
-        'X-TrustBridge-Schema-Version': payload.schema_version,
-    };
-    if (config.authMode === 'oidc' || config.oidcToken) {
-        if (config.oidcToken) {
-            headers['Authorization'] = `Bearer ${config.oidcToken}`;
-        }
-    }
-    else if (config.webhookSecret) {
-        headers['X-TrustBridge-Signature'] = computeWebhookSignature(body, config.webhookSecret);
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetchFn(config.webhookUrl, {
-            method: 'POST',
-            headers,
-            body,
-            signal: controller.signal,
-        });
-        return { sent: true, statusCode: response.status };
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { sent: false, error: msg };
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-/**
- * High-level entry point called from `src/index.ts` after validation
- * completes. Builds the payload, delivers the webhook, and logs the outcome
- * — all without throwing so the rest of the action run is unaffected.
- *
- * @param result        The completed `ValidationResult`.
- * @param stellarAddress  Raw (unredacted) Stellar address — redaction happens
- *                      inside this function before it leaves the process.
- * @param config        Resolved webhook configuration.
- * @param repository    `owner/repo` string from the GitHub context.
- * @param issueNumber   Current issue number, or `null` when not in an issue context.
- */
-async function sendWebhookNotification(result, stellarAddress, config, repository, issueNumber) {
-    if (!config.webhookUrl)
-        return;
-    return (0, tracing_1.traceWebhookDeliver)(config.webhookUrl, config.authMode || 'hmac', async () => {
-        // Redact the URL for log output so any embedded credentials are masked.
-        const safeUrl = (0, logger_1.redactHorizonUrl)(config.webhookUrl);
-        const effectiveConfig = { ...config };
-        if (config.authMode === 'oidc' && !config.oidcToken) {
-            const audience = config.oidcAudience || 'trustbridge-dashboard';
-            try {
-                const token = await core.getIDToken(audience);
-                if (token) {
-                    core.setSecret(token);
-                    effectiveConfig.oidcToken = token;
-                }
-            }
-            catch (oidcError) {
-                const msg = oidcError instanceof Error ? oidcError.message : String(oidcError);
-                core.warning(`[TrustBridge] OIDC token minting failed for audience "${audience}": ${msg}. Ensure the workflow has 'permissions: id-token: write'.`);
-            }
-        }
-        const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber);
-        const delivery = await deliverWebhook(payload, effectiveConfig);
-        if (delivery.sent) {
-            core.info(`[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`);
-        }
-        else {
-            core.warning(`[TrustBridge] Webhook delivery to ${safeUrl} failed (non-fatal): ${delivery.error ?? 'unknown error'}. Comment posting continues.`);
-        }
-    });
 }
 
 
@@ -49292,6 +36748,14 @@ module.exports = require("async_hooks");
 
 "use strict";
 module.exports = require("buffer");
+
+/***/ }),
+
+/***/ 5317:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("child_process");
 
 /***/ }),
 
@@ -49463,19 +36927,19 @@ module.exports = require("string_decoder");
 
 /***/ }),
 
+/***/ 3557:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("timers");
+
+/***/ }),
+
 /***/ 4756:
 /***/ ((module) => {
 
 "use strict";
 module.exports = require("tls");
-
-/***/ }),
-
-/***/ 2018:
-/***/ ((module) => {
-
-"use strict";
-module.exports = require("tty");
 
 /***/ }),
 
@@ -51185,7 +38649,8 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 	}
 /******/ 	
 /************************************************************************/
-/******/ 	/* webpack/runtime/asset-relocator-loader */
+/******/ 	/* webpack/runtime/compat */
+/******/ 	
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/

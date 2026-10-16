@@ -1,756 +1,32 @@
-import * as core from "@actions/core";
-import * as github from "@actions/github";
-import * as fs from "fs";
-import * as path from "path";
+import * as core from '@actions/core';
 import {
   CheckConfig,
-  detectNetworkMismatch,
   horizonFailureResult,
-  parseMinAssetBalance,
   parseMinXlmReserve,
   runAccountChecks,
   unfundedAccountResult,
   validateStellarAddress,
-  HomeDomainCheckMode,
-  LedgerFreshnessCheckResult,
-  ValidationResult,
-  rateBudgetExhaustedResult,
-  circuitOpenFailureResult,
 } from './checks';
-import {
-  fetchAccount,
-  HorizonError,
-  isCircuitOpenError,
-  waitForFundedAccount,
-  applyWalletLabels,
-  applyReadyLabels,
-  callFriendbot,
-} from './horizon';
-import type { HorizonAccount, HorizonBalance } from './horizon';
-import { SimpleCache } from './cache';
-import { checkLedgerFreshness } from './freshness';
-import { createCheckRun, determineCheckConclusion } from './checks-run';
-import {
-  formatCommentBody,
-  postIssueComment,
-  postDiscussionComment,
-  resolveDiscussionNodeId,
-  COMMENT_SIZE_LIMIT_BYTES,
-  buildTruncatedCommentBody,
-  writeFullReport,
-  isTrustBridgeSlashCommand,
-  isBotCommentAuthor,
-} from "./comment";
-import {
-  normalizeAssetConfig,
-  parseAssetsJson,
-  getCampaignPreset,
-  validateNetworkAssetCompatibility,
-} from "./assets";
-import {
-  getErrorMessage,
-  parseAssigneeAddressMap,
-  parseBooleanInput,
-  parseNumberInput,
-  parsePresetInput,
-  parseUnauthorizedTrustlinePolicy,
-  resolveAddressFromAssigneeMap,
-  resolveGitHubAuthToken,
-  resolveInput,
-  resolveMaintainerSkipInput,
-  resolveReadyLabelInputs,
-} from "./inputs";
-import { formatFailureSummary } from "./summary";
-import { setValidationOutputs, writeValidationJson, buildConflictReport, formatConflictReportMarkdown } from "./outputs";
-import type {
-  AssetTrustlineStatus,
-  ConflictReport,
-  ConflictSource,
-} from "./outputs";
-import { updateProjectV2Status } from "./projects";
-import {
-  computeValidationDelta,
-  loadPreviousValidationArtifact,
-  discoverPreviousValidationArtifact,
-} from './delta';
+import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { formatCommentBody, postIssueComment } from './comment';
+import { normalizeAssetConfig } from './assets';
+import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
+import { formatFailureSummary } from './summary';
+import { setValidationOutputs } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
-import { globalMetrics, writeJobSummary } from './metrics';
-import { RateBudgetTracker, CircuitBreaker, RateBudgetExhaustedError } from './resilience';
+import { globalMetrics } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
-import { parseLocaleInput } from './i18n';
-import { listenForRunnerCancellation, sendWebhookNotification } from './webhook';
-import { runIssuesPreflight } from './preflight';
-import { loadCodeowners, isMaintainerActor } from './codeowners';
-import { fetchDashboardRoster } from './roster';
-import { getOctokitProxyOptions } from './proxy';
-import { lookupAddressFromContract, fetchFullContractRoster, ContractLookupError, contractExistsOnChain } from './soroban';
-import { registerCorePlugins } from './corePlugins';
-import { defaultRegistry } from './plugin';
-import { runPlugins } from './pluginRunner';
-import { loadPluginsFromAllowlist } from './pluginLoader';
-import { readTrustbridgeConfigs, mergeConsumerConfig } from './configReader';
-import {
-  parseBatchAddresses,
-  runBatchValidation,
-  buildBatchSummary,
-  formatBatchSummaryMarkdown,
-} from './batch';
-import { buildSarifOutput, validateSarifSchema, serializeSarif } from './sarif';
-import { DiagnosticsConfig } from './diagnostics';
-import { traceActionRun, emitTraceSummary, clearTraceSpans } from './tracing';
-
-export type PostingMode = 'post' | 'dry-run' | 'off';
-export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
-export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
-const VALID_COMMENT_THREADING_MODES: CommentThreadingMode[] = ['sticky', 'new', 'reply'];
-
-export function resolveCommentModes(
-  postingModeInput: string,
-  commentModeInput: string,
-): { postingMode: PostingMode; commentThreadingMode?: CommentThreadingMode } {
-  const normalizedPostingMode = postingModeInput.trim().toLowerCase();
-  const normalizedCommentMode = commentModeInput.trim().toLowerCase();
-  const legacyPostingMode = VALID_POSTING_MODES.includes(
-    normalizedCommentMode as PostingMode,
-  )
-    ? (normalizedCommentMode as PostingMode)
-    : undefined;
-  const postingModeRaw =
-    normalizedPostingMode || legacyPostingMode || 'post';
-
-  if (!VALID_POSTING_MODES.includes(postingModeRaw as PostingMode)) {
-    throw new Error(
-      `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
-    );
-  }
-
-  const commentThreadingMode = VALID_COMMENT_THREADING_MODES.includes(
-    normalizedCommentMode as CommentThreadingMode,
-  )
-    ? (normalizedCommentMode as CommentThreadingMode)
-    : undefined;
-
-  return {
-    postingMode: postingModeRaw as PostingMode,
-    commentThreadingMode,
-  };
-}
-
-/**
- * Resolve the GitHub assignee login from the current Actions event payload.
- * Prefers `payload.assignee` (issues.assigned), then the first issue assignee.
- */
-function resolveAssigneeLoginFromContext(): string | undefined {
-  const payload = github.context.payload as {
-    assignee?: { login?: string };
-    issue?: { assignees?: Array<{ login?: string }> };
-  };
-
-  const fromEvent = payload.assignee?.login?.trim();
-  if (fromEvent) {
-    return fromEvent;
-  }
-
-  const assignees = payload.issue?.assignees;
-  if (Array.isArray(assignees)) {
-    for (const entry of assignees) {
-      const login = entry?.login?.trim();
-      if (login) {
-        return login;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-/**
- * Resolve the Stellar G-address to validate.
- *
- * Issue #219 — Precedence order (winner documented + logged):
- * 1. Soroban contract registry lookup (when soroban_rpc_url + contract_id are set)
- * 2. Assignee address map (when assignee_address_map is set)
- * 3. Direct stellar_address_input
- *
- * Each source is tried in order; the first non-empty result wins.
- * Conflicts are logged as warnings so maintainers know which source won.
- */
-function resolveStellarAddressInput(
-  stellarAddressInput: string,
-  assigneeAddressMapRaw: string,
-  contractAddress?: string,
-  dashboardAddress?: string,
-): string {
-  const resolvedFrom: string[] = [];
-
-  // Source 1: Contract registry lookup
-  if (contractAddress) {
-    resolvedFrom.push("contract");
-    logger.info("Address resolved from contract registry", {
-      component: "index",
-      source: "contract",
-    });
-    return contractAddress;
-  }
-
-  // Source 2: Dashboard roster API
-  if (dashboardAddress) {
-    resolvedFrom.push('dashboard_roster');
-    logger.info('Address resolved from dashboard roster', {
-      component: 'index',
-      source: 'dashboard_roster',
-    });
-    return dashboardAddress;
-  }
-
-  // Source 2: Assignee address map
-  const mapRaw = assigneeAddressMapRaw.trim();
-  if (mapRaw) {
-    const map = parseAssigneeAddressMap(mapRaw, {
-      workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-    });
-    const assigneeLogin = resolveAssigneeLoginFromContext();
-    const address = resolveAddressFromAssigneeMap(map, assigneeLogin);
-    resolvedFrom.push("assignee_map");
-    logger.info("Address resolved from assignee address map", {
-      component: "index",
-      source: "assignee_map",
-      assigneeLogin,
-    });
-    return address;
-  }
-
-  // Source 3: Direct input
-  const direct = stellarAddressInput.trim();
-  if (direct) {
-    resolvedFrom.push("direct_input");
-    logger.debug("Address resolved from direct input", {
-      component: "index",
-      source: "direct_input",
-    });
-    return direct;
-  }
-
-  throw new Error(
-    "Provide stellar_address_input (a Stellar G-address), assignee_address_map " +
-      "(JSON / file path mapping GitHub usernames to G-addresses), or configure " +
-      "soroban_rpc_url + contract_id for on-chain registry lookup.",
-  );
-}
-
-/**
- * Options for `handleAutoUnassign` (Issue #228).
- */
-export interface AutoUnassignOptions {
-  octokit: {
-    rest: {
-      issues: {
-        removeAssignees: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          assignees: string[];
-        }) => Promise<unknown>;
-      };
-    };
-  };
-  owner: string;
-  repo: string;
-  issueNumber?: number;
-  payload: unknown;
-  result: ValidationResult;
-  unassignOnNotReady: boolean;
-}
-
-/**
- * Automatically unassigns the assignee(s) from the GitHub issue when
- * readiness checks fail (ready is false) and the policy input is enabled.
- *
- * Safe guards:
- * - Default off (requires opt-in via unassign_on_not_ready: true).
- * - Only runs when ready is false (result.valid === false).
- * - Never unassigns on transient Horizon infrastructure/connectivity errors
- *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
- * - Filters out bot assignees (e.g. app/bot accounts).
- * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
- * - Safely skips when there is no issue context (e.g. workflow_dispatch).
- */
-export async function handleAutoUnassign(
-  options: AutoUnassignOptions,
-): Promise<string[] | undefined> {
-  if (!options.unassignOnNotReady) {
-    return undefined;
-  }
-
-  if (options.result.valid) {
-    logger.debug(
-      "Skipping auto-unassign: readiness checks passed (valid is true)",
-      {
-        component: "index",
-      },
-    );
-    return undefined;
-  }
-
-  // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
-  if (
-    options.result.reasonCode === 'HORIZON_ERROR' ||
-    options.result.reasonCode === 'HORIZON_TIMEOUT' ||
-    options.result.reasonCode === 'TLS_ERROR' ||
-    options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED'
-  ) {
-    core.info(
-      "Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.",
-    );
-    return undefined;
-  }
-
-  const payload = options.payload as
-    | {
-        assignee?: { login?: string; type?: string };
-        issue?: {
-          number?: number;
-          assignees?: Array<{ login?: string; type?: string }>;
-        };
-      }
-    | null
-    | undefined;
-
-  const issueNumber = options.issueNumber ?? payload?.issue?.number;
-  if (!issueNumber) {
-    logger.debug(
-      "Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)",
-      {
-        component: "index",
-      },
-    );
-    return undefined;
-  }
-
-  const isBot = (login?: string, type?: string): boolean => {
-    if (!login) return false;
-    return type === "Bot" || login.endsWith("[bot]");
-  };
-
-  const targetAssignees: string[] = [];
-
-  // Case 1: Specific assignee from issues.assigned event
-  const eventAssignee = payload?.assignee;
-  if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
-    targetAssignees.push(eventAssignee.login);
-  } else if (Array.isArray(payload?.issue?.assignees)) {
-    // Case 2: All non-bot assignees on the issue
-    for (const assignee of payload.issue.assignees) {
-      if (assignee?.login && !isBot(assignee.login, assignee.type)) {
-        if (!targetAssignees.includes(assignee.login)) {
-          targetAssignees.push(assignee.login);
-        }
-      }
-    }
-  }
-
-  if (targetAssignees.length === 0) {
-    logger.debug(
-      "Skipping auto-unassign: no eligible human assignees found on issue",
-      {
-        component: "index",
-      },
-    );
-    return undefined;
-  }
-
-  try {
-    await options.octokit.rest.issues.removeAssignees({
-      owner: options.owner,
-      repo: options.repo,
-      issue_number: issueNumber,
-      assignees: targetAssignees,
-    });
-    core.info(
-      `Auto-unassigned ${targetAssignees.join(", ")} from issue #${issueNumber} because readiness checks failed.`,
-    );
-    return targetAssignees;
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    core.warning(
-      `Failed to unassign ${targetAssignees.join(", ")} from issue #${issueNumber} (non-fatal): ${msg}`,
-    );
-    return undefined;
-  }
-}
-
-/**
- * Resolve the ready-state label pair, honouring the deprecated aliases that
- * action.yml still declares. See `resolveReadyLabelInputs` for the precedence
- * rules and the whitespace-only-as-unset rationale. (Issue #669)
- */
-function resolveConfiguredReadyLabels(): {
-  passLabel: string;
-  failLabel: string;
-} {
-  const resolved = resolveReadyLabelInputs({
-    passLabel: core.getInput("pass_label"),
-    readyPassLabel: core.getInput("ready_pass_label"),
-    readyLabelPass: core.getInput("ready_label_pass"),
-    failLabel: core.getInput("fail_label"),
-    readyFailLabel: core.getInput("ready_fail_label"),
-    readyLabelFail: core.getInput("ready_label_fail"),
-  });
-
-  if (resolved.usedDeprecatedAlias) {
-    logger.warn(
-      "Using a deprecated ready-label input alias. Migrate to pass_label/fail_label; " +
-        "the aliases (ready_pass_label, ready_label_pass, ready_fail_label, " +
-        "ready_label_fail) are retained for backward compatibility and may be removed.",
-    );
-  }
-
-  return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
-}
-
-/**
- * Result of evaluating the milestone gate (Issue #230).
- */
-export interface MilestoneGateDecision {
-  /** True when the issue/PR should be skipped because of the milestone gate. */
-  shouldSkip: boolean;
-  /** Human-readable reason for the skip (empty when shouldSkip is false). */
-  reason: string;
-  /** Full message including the "Skipping validation." suffix. */
-  fullMessage: string;
-  /** The raw milestone title from the event payload (empty if none). */
-  milestoneTitle: string;
-}
-
-/**
- * Evaluate the milestone gate for the given event payload.
- *
- * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
- * is checked against the allowlist. If the milestone is missing or not in the
- * list, the result indicates the step should be skipped (with the reason).
- *
- * This function is side-effect-free so it can be unit-tested without mocking
- * `@actions/core`.
- */
-export function evaluateMilestoneGate(
-  milestoneAllowlistRaw: string,
-  _milestoneFailOnSkip: boolean,
-  payload: Record<string, unknown>,
-): MilestoneGateDecision {
-  const empty: MilestoneGateDecision = {
-    shouldSkip: false,
-    reason: '',
-    fullMessage: '',
-    milestoneTitle: '',
-  };
-
-  const raw = milestoneAllowlistRaw.trim();
-  if (!raw) {
-    return empty;
-  }
-
-  const allowedMilestones = raw
-    .split(",")
-    .map((m) => m.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (allowedMilestones.length === 0) {
-    return empty;
-  }
-
-  const p = payload as Record<string, unknown>;
-  const isIssueContext = p.issue !== undefined;
-  const isPullRequest = p.pull_request !== undefined;
-
-  let currentMilestoneRaw = '';
-  if (isIssueContext) {
-    const issue = p.issue as { milestone?: { title?: string } } | undefined;
-    if (issue?.milestone) {
-      currentMilestoneRaw = issue.milestone.title || '';
-    }
-  } else if (isPullRequest) {
-    const pr = p.pull_request as { milestone?: { title?: string } } | undefined;
-    if (pr?.milestone) {
-      currentMilestoneRaw = pr.milestone.title || '';
-    }
-  }
-  const currentMilestone = currentMilestoneRaw.trim().toLowerCase();
-
-  let skipReason = '';
-  if (!currentMilestone) {
-    skipReason =
-      'Milestone gate: No milestone found on this event, but milestone_allowlist is active.';
-  } else if (!allowedMilestones.includes(currentMilestone)) {
-    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
-  }
-
-  if (skipReason) {
-    return {
-      shouldSkip: true,
-      reason: skipReason,
-      fullMessage: `${skipReason} Skipping validation.`,
-      milestoneTitle: currentMilestoneRaw,
-    };
-  }
-
-  return {
-    shouldSkip: false,
-    reason: '',
-    fullMessage: '',
-    milestoneTitle: currentMilestoneRaw,
-  };
-}
+import { readTrustbridgeConfig } from './configReader';
 
 async function run(): Promise<void> {
-  // Clear any trace spans from previous runs (safety)
-  clearTraceSpans();
-
-  return traceActionRun('trustbridge-action', async () => {
-  // Milestone gating (Issue #230)
-  const milestoneAllowlistRaw = core.getInput("milestone_allowlist") || "";
-  const milestoneFailOnSkip = parseBooleanInput(
-    core.getInput("milestone_fail_on_skip"),
-    false,
-  );
-
-  const milestoneDecision = evaluateMilestoneGate(
-    milestoneAllowlistRaw,
-    milestoneFailOnSkip,
-    github.context.payload,
-  );
-
-  if (milestoneDecision.shouldSkip) {
-    const fullMessage = milestoneDecision.fullMessage;
-    if (milestoneFailOnSkip) {
-      core.setFailed(fullMessage);
-    } else {
-      core.info(fullMessage);
-    }
-
-    core.setOutput("ready", "false");
-    core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
-    core.setOutput("checks_json", "[]");
-
-    core.summary.addHeading("Milestone Gate Skipped", 3);
-    core.summary.addRaw(fullMessage);
-    await core.summary.write();
-
-    return;
-  }
-
-  // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
-  // Issue #448: `skip_for_maintainers` is canonical; `skip_if_maintainer` is a
-  // deprecated alias that is only consulted when the canonical input is unset.
-  const maintainerSkip = resolveMaintainerSkipInput(
-    core.getInput('skip_for_maintainers'),
-    core.getInput('skip_if_maintainer'),
-  );
-  if (maintainerSkip.usedDeprecatedAlias) {
-    core.warning(
-      "`skip_if_maintainer` is deprecated and will be removed in a future major " +
-        "release. Use `skip_for_maintainers` instead — it is the canonical name " +
-        "and takes precedence whenever it is set explicitly.",
-    );
-  }
-  if (maintainerSkip.conflict) {
-    core.warning(
-      "Both `skip_for_maintainers` and the deprecated `skip_if_maintainer` were " +
-        "supplied with conflicting values. Using `skip_for_maintainers`; the " +
-        "deprecated alias is ignored.",
-    );
-  }
-  const skipForMaintainers = maintainerSkip.enabled;
-  if (skipForMaintainers) {
-    const actor =
-      github.context.actor ||
-      (github.context.payload.sender as { login?: string } | undefined)?.login ||
-      '';
-    const maintainersAllowlistRaw = core.getInput('maintainers_allowlist') || '';
-    const maintainersAllowlist = maintainersAllowlistRaw
-      .split(',')
-      .map((m) => m.trim())
-      .filter(Boolean);
-    const customCodeownersPath = '';
-
-    const rawGithubToken = core.getInput('github_token');
-    const githubAppToken = resolveInput('github_app_token', core.getInput('github_app_token'));
-    const token = resolveGitHubAuthToken({
-      githubToken: rawGithubToken,
-      githubAppToken,
-    });
-
-    const codeowners = await loadCodeowners({
-      customPath: customCodeownersPath || undefined,
-      githubToken: token || undefined,
-    });
-
-    const isMaintainer = isMaintainerActor(actor, codeowners, maintainersAllowlist);
-
-    if (isMaintainer) {
-      const skipMessage = `Actor @${actor} is a maintainer (matched in CODEOWNERS / maintainers_allowlist). Skipping TrustBridge validation checks (skip_for_maintainers=true).`;
-      core.info(skipMessage);
-
-      core.setOutput('ready', 'true');
-      core.setOutput('reason_code', 'MAINTAINER_SKIPPED');
-      core.setOutput('checks_json', '[]');
-      core.setOutput('account_funded', 'true');
-      core.setOutput('trustline_exists', 'true');
-      core.setOutput('xlm_balance', '0');
-
-      core.summary.addHeading('Maintainer Validation Skipped', 3);
-      core.summary.addRaw(skipMessage);
-      await core.summary.write();
-
-      return;
-    }
-  }
-
-  // Campaign presets (Issue #207) — resolved first so they can provide defaults.
-  const networkInput = core.getInput("network") || "";
-  const presetInput = core.getInput("preset") || "";
-  const presetName = parsePresetInput(networkInput, presetInput);
-  const campaignPreset = presetName ? getCampaignPreset(presetName) : undefined;
-  if (presetName && !campaignPreset) {
-    throw new Error(
-      `Unknown campaign preset "${presetName}". Valid presets: testnet, testnet-usdc, public, mainnet.`,
-    );
-  }
-
-  const horizonUrl =
-    core.getInput("horizon_url") ||
-    campaignPreset?.horizonUrl ||
-    "https://horizon.stellar.org";
-  const assetCode =
-    core.getInput("asset_code") || campaignPreset?.assetCode || "USDC";
+  const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+  const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
-    core.getInput("asset_issuer") ||
-    campaignPreset?.assetIssuer ||
-    "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-  const minXlmReserveRaw =
-    core.getInput("min_xlm_reserve") || campaignPreset?.minXlmReserve || "1.5";
-  const stellarAddressInput = core.getInput("stellar_address_input");
-  const assigneeAddressMapRaw = core.getInput("assignee_address_map");
-
-  // Issue #317: Dashboard roster API inputs
-  const dashboardRosterUrl = core.getInput('dashboard_roster_url') || '';
-  const dashboardRosterSecret = core.getInput('dashboard_roster_secret') || '';
-  const dashboardRosterTimeoutMs = parseNumberInput(core.getInput('dashboard_roster_timeout_ms') || '5000', 5000, { min: 1000, max: 60000 });
-  const dashboardRosterAllowHttp = parseBooleanInput(core.getInput('dashboard_roster_allow_http'), false);
-
-  // Issue #318: Soroban full roster inputs
-  const sorobanFullRoster = parseBooleanInput(core.getInput('soroban_full_roster'), false);
-  const sorobanRosterPageLimit = parseNumberInput(core.getInput('soroban_roster_page_limit') || '10', 10, { min: 1, max: 1000 });
-
-  // Issue #549: github_username is used as a fallback lookup key for Soroban get_address
-  // when the workflow event context (issues.assigned / pull_request) does not provide an
-  // assignee login.  Typical case: workflow_dispatch or cron runs where the caller knows
-  // the contributor's username but no GitHub event assignee is present.
-  const githubUsername = (core.getInput('github_username') || '').trim();
-
-  // Issue #219 / #318: Contract registry lookup (source 1 of address resolution).
-  const sorobanRpcUrl = core.getInput('soroban_rpc_url') || '';
-  const contractId = core.getInput('contract_id') || '';
-  let contractResolvedAddress: string | undefined;
-  if (sorobanRpcUrl && contractId) {
-    // Precedence: event-derived assignee login → github_username input → skip lookup
-    const assigneeLogin = resolveAssigneeLoginFromContext() ?? (githubUsername || undefined);
-    if (assigneeLogin) {
-      try {
-        if (sorobanFullRoster) {
-          const map = await fetchFullContractRoster(assigneeLogin, {
-            sorobanRpcUrl,
-            contractId,
-            pageLimit: sorobanRosterPageLimit,
-          });
-          const found = map[assigneeLogin.toLowerCase()];
-          if (found) contractResolvedAddress = found;
-        } else {
-          const lookup = await lookupAddressFromContract(assigneeLogin, {
-            sorobanRpcUrl,
-            contractId,
-          });
-          if (lookup.address) {
-            contractResolvedAddress = lookup.address;
-          }
-        }
-      } catch (err) {
-        const isRetryable = err instanceof ContractLookupError && err.retryable;
-        logger.warn("Contract registry lookup failed, falling back", {
-          component: "index",
-          error: err instanceof Error ? err.message : String(err),
-          retryable: isRetryable,
-        });
-      }
-    }
-  }
-
-  // Issue #317: Dashboard roster lookup (source 2 of address resolution).
-  let dashboardResolvedAddress: string | undefined;
-  if (dashboardRosterUrl) {
-    const assigneeLogin = resolveAssigneeLoginFromContext();
-    if (assigneeLogin) {
-      try {
-        const map = await fetchDashboardRoster(dashboardRosterUrl, dashboardRosterSecret, dashboardRosterTimeoutMs, dashboardRosterAllowHttp);
-        const found = map[assigneeLogin.toLowerCase()];
-        if (found) dashboardResolvedAddress = found;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn('Dashboard roster fetch failed, falling back', { error: msg });
-      }
-    }
-  }
-
-  const stellarAddress = resolveStellarAddressInput(
-    stellarAddressInput,
-    assigneeAddressMapRaw,
-    contractResolvedAddress,
-    dashboardResolvedAddress,
-  );
-
-  // Wire buildConflictReport into multi-source address resolution (#525):
-  // collect every non-empty source in resolution-precedence order
-  // (contract > dashboard_roster > assignee_map > workflow_input) so the
-  // first entry is the winner. A conflict exists when ≥2 sources disagree.
-  const privacyMode = parseBooleanInput(core.getInput('privacy_mode'), false);
-  const addressSources: ConflictSource[] = [];
-  if (contractResolvedAddress) {
-    addressSources.push({ source: 'contract', value: contractResolvedAddress });
-  }
-  if (dashboardResolvedAddress) {
-    addressSources.push({ source: 'dashboard_roster', value: dashboardResolvedAddress });
-  }
-  if (assigneeAddressMapRaw.trim()) {
-    try {
-      const map = parseAssigneeAddressMap(assigneeAddressMapRaw, {
-        workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-      });
-      const assigneeLogin = resolveAssigneeLoginFromContext();
-      const mapAddress = resolveAddressFromAssigneeMap(map, assigneeLogin);
-      if (mapAddress) {
-        addressSources.push({ source: 'assignee_map', value: mapAddress });
-      }
-    } catch {
-      // Map parse failures are handled downstream; omit from conflict report.
-    }
-  }
-  if (stellarAddressInput.trim()) {
-    addressSources.push({ source: 'workflow_input', value: stellarAddressInput.trim() });
-  }
-  const conflictReport: ConflictReport = buildConflictReport(
-    { stellar_address: addressSources },
-    { privacyMode },
-  );
-  if (conflictReport.hasConflicts) {
-    logger.warn('Conflicting address sources detected; highest-precedence source won', {
-      component: 'index',
-      conflicts: conflictReport.conflicts,
-    });
-  }
+    core.getInput('asset_issuer') ||
+    'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+  const minXlmReserveRaw = core.getInput('min_xlm_reserve') || '1.5';
+  const stellarAddress = core.getInput('stellar_address_input').trim();
   const failOnMissing = parseBooleanInput(core.getInput('fail_on_missing'), true);
-  const issueNumberInputRaw = core.getInput('issue_number') || '';
-  const issueNumberInput = issueNumberInputRaw.trim()
-    ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
-    : undefined;
   const debugMode = parseBooleanInput(core.getInput('debug_mode'), false);
   const horizonTimeoutMs = parseNumberInput(core.getInput('horizon_timeout_ms'), 15000, {
     min: 1000,
@@ -759,485 +35,69 @@ async function run(): Promise<void> {
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
   const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
-    core.getInput("wait_until_funded_timeout_ms"),
+    core.getInput('wait_until_funded_timeout_ms'),
     120000,
     { min: 0, max: 600000 },
   );
   const waitUntilFundedIntervalMs = parseNumberInput(
-    core.getInput("wait_until_funded_interval_ms"),
+    core.getInput('wait_until_funded_interval_ms'),
     5000,
     { min: 1000, max: 60000 },
   );
-  const horizonUrlFallback = core.getInput("horizon_url_fallback") || "";
-  const rpcFallbackUrlRaw = core.getInput("rpc_fallback_url") || "";
+  const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
+  const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
   const fallbackUrls = rpcFallbackUrlRaw
-    ? rpcFallbackUrlRaw
-        .split(",")
-        .map((u) => u.trim())
-        .filter(Boolean)
+    ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
     : horizonUrlFallback
       ? [horizonUrlFallback]
       : [];
-  const horizonCacheTtlMs = parseNumberInput(
-    core.getInput("horizon_cache_ttl_ms"),
-    60000,
-    {
-      min: 0,
-      max: 3_600_000,
-    },
-  );
-  const useCache = parseBooleanInput(core.getInput("use_cache"), false);
-  const useActionsCacheBackend = parseBooleanInput(
-    core.getInput("use_actions_cache_backend"),
-    false,
-  );
-  const useFriendbot = parseBooleanInput(core.getInput("use_friendbot"), false);
-  const friendbotUrl = core.getInput("friendbot_url") || "https://friendbot.stellar.org";
-  const friendbotTimeoutMs = parseNumberInput(
-    core.getInput("friendbot_timeout_ms"),
-    15000,
-    { min: 1000, max: 60000 },
-  );
-  let friendbotCalled = false;
-  let friendbotSuccess = false;
-  let friendbotTransactionHash = '';
-  const allowCrossNetworkFallback = parseBooleanInput(
-    core.getInput("allow_cross_network_fallback"),
-    false,
-  );
-  const logInputs = parseBooleanInput(core.getInput("log_inputs"), false);
-  const trustbridgeConfigPath =
-    core.getInput("trustbridge_config_path") || ".trustbridge.yml";
-  const githubAppToken = resolveInput(
-    "github_app_token",
-    core.getInput("github_app_token"),
-  );
-  const rawGithubToken = core.getInput("github_token");
-  const githubToken = resolveGitHubAuthToken({
-    githubToken: rawGithubToken,
-    githubAppToken,
+  const horizonCacheTtlMs = parseNumberInput(core.getInput('horizon_cache_ttl_ms'), 60000, {
+    min: 0,
+    max: 3_600_000,
   });
-  if (githubAppToken) core.setSecret(githubAppToken);
-  if (rawGithubToken) core.setSecret(rawGithubToken);
-  const autoWalletLabels = parseBooleanInput(
-    core.getInput("auto_wallet_labels"),
-    false,
-  );
-  const readyLabels = resolveConfiguredReadyLabels();
-  const unassignOnNotReady = parseBooleanInput(
-    resolveInput(
-      "unassign_on_not_ready",
-      core.getInput("unassign_on_not_ready"),
-    ),
-    false,
-  );
+  const useCache = parseBooleanInput(core.getInput('use_cache'), false);
+  const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
+  const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+  const githubToken = core.getInput('github_token', { required: true });
 
   // SEP-0007 wallet deep links (Issue #44)
-  const sep0007DeepLinks = parseBooleanInput(
-    core.getInput("sep0007_deep_links"),
-    false,
-  );
-  const sep0007OriginDomain = core.getInput("sep0007_origin_domain") || "";
-
-  // #145 — issues:write preflight
-  const preflightOnly = parseBooleanInput(
-    core.getInput("preflight_only"),
-    false,
-  );
-
-  // Multi-asset trustline validation (Issue #4)
-  const assetsJsonRaw = core.getInput("assets_json") || "";
-
-  // Soroban contract registry (Issue #7) — github_username is now read earlier
-  // (before the contract lookup block) so the fallback is available when needed.
-
-  // Plugin runner flag (Issue #198) — default off
-  const usePluginRunner = parseBooleanInput(
-    core.getInput("use_plugin_runner"),
-    false,
-  );
-
-  // Onboarding checklist in comments (Issue #154) — default on
-  const onboardingChecklist = parseBooleanInput(
-    core.getInput("onboarding_checklist"),
-    true,
-  );
-
-  // Security artifacts / delta vs previous run (Issue #148)
-  const writeValidationJsonEnabled = parseBooleanInput(
-    core.getInput("write_validation_json"),
-    false,
-  );
-  const validationJsonPath =
-    core.getInput("validation_json_path") || "validation.json";
-  const previousValidationPath = "";
-  // privacyMode is read earlier (next to address resolution) so the
-  // conflict report can mask values; reused here for downstream consumers.
-
-  // External plugins from workspace (allowlisted only)
-  const trustbridgePluginsPathRaw =
-    core.getInput("trustbridge_plugins_path") || "";
-  const allowedPluginPaths = trustbridgePluginsPathRaw
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  // Internationalization (Issue #59)
-  const localeInput = core.getInput("locale") || "en";
-  const locale = parseLocaleInput(localeInput);
-
-  // Batch validation (Issue #199)
-  const stellarAddressesRaw = core.getInput("stellar_addresses") || "";
-
-  // Full-report artifact path (used when comment exceeds size limit)
-  const reportOutputPath = core.getInput("report_output_path") || "trustbridge-report.md";
-
-  // Failure snooze window (Issue #155)
-  const snoozeWindowMinutes = parseNumberInput(
-    core.getInput("snooze_window_minutes"),
-    30,
-    {
-      min: 0,
-      max: 10080, // 7 days
-    },
-  );
-  const forceComment = parseBooleanInput(core.getInput("force_comment"), false);
-  const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
-
-  // Asset authorization & clawback policies (Issue #247)
-  const unauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy(
-    core.getInput('unauthorized_trustline_policy') || 'warn',
-  );
-  const clawbackStrictMode = parseBooleanInput(core.getInput('clawback_strict_mode'), false);
-
-  // Issue #456 / #528 — posting policy and threading strategy are independent.
-  const { postingMode, commentThreadingMode } = resolveCommentModes(
-    core.getInput("posting_mode"),
-    core.getInput("comment_mode"),
-  );
-  const shouldPostComment = postingMode === "post";
-
-  // Issue #304 — Offline fixture mode: load a recorded Horizon JSON snapshot
-  // instead of calling live Horizon. No network call is made.
-  const fixtureMode = parseBooleanInput(core.getInput('fixture_mode'), false);
-  const fixturePath = core.getInput('fixture_path') || '';
-
-  // Signed dashboard webhook (Issue #101)
-  // dashboard_webhook_url is a Wave #38 / dry-run harness alias for webhook_url.
-  const webhookUrl =
-    core.getInput("webhook_url") ||
-    core.getInput("dashboard_webhook_url") ||
-    "";
-  const webhookSecret = core.getInput("webhook_secret") || "";
-  const webhookTimeoutMs = parseNumberInput(
-    core.getInput("webhook_timeout_ms"),
-    5000,
-    {
-      min: 100,
-      max: 30000,
-    },
-  );
-  const webhookAuthModeRaw = (core.getInput("webhook_auth_mode") || "hmac")
-    .trim()
-    .toLowerCase();
-  const webhookAuthMode: "hmac" | "oidc" =
-    webhookAuthModeRaw === "oidc" ? "oidc" : "hmac";
-  const webhookOidcAudience =
-    core.getInput("webhook_oidc_audience") || "trustbridge-dashboard";
-
-  // GitHub Projects v2 integration (Issue #222)
-  const projectId = core.getInput("project_id") || "";
-  const projectStatusField = core.getInput("project_status_field") || "Status";
-  const projectStatusPass = core.getInput("project_status_pass") || "";
-  const projectStatusFail = core.getInput("project_status_fail") || "";
-  const projectTokenInput = core.getInput("project_token") || "";
-  if (projectTokenInput) core.setSecret(projectTokenInput);
-  const projectToken = projectTokenInput || githubToken;
+  const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
+  const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
 
-  globalMetrics.stopTimer("input_parse");
-
-  // Register core plugins and load external plugins from allowlist
-  registerCorePlugins();
-
-  if (allowedPluginPaths.length > 0) {
-    try {
-      const externalPlugins = await loadPluginsFromAllowlist({
-        workspaceRoot: process.env.GITHUB_WORKSPACE || process.cwd(),
-        allowedPluginPaths,
-        debugMode,
-      });
-
-      for (const plugin of externalPlugins) {
-        defaultRegistry.register(plugin);
-      }
-
-      if (externalPlugins.length > 0) {
-        core.info(`Loaded ${externalPlugins.length} external plugin(s)`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      core.warning(
-        `Failed to load external plugins (proceeding with core plugins only): ${message}`,
-      );
-    }
-  }
-
-  // Never weaken TLS verification by default (Issue #71). TrustBridge does
-  // not set NODE_TLS_REJECT_UNAUTHORIZED itself; if something else in the
-  // environment has disabled it, surface that loudly rather than silently
-  // trusting an unverified Horizon endpoint.
-  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-    logger.warn(
-      "NODE_TLS_REJECT_UNAUTHORIZED=0 is set in this environment — TLS certificate verification is disabled process-wide. TrustBridge does not set this itself; see docs/USAGE.md for private-mirror TLS guidance.",
-      { component: "index" },
+  // Load optional consumer .trustbridge.yml config file (Issue #45).
+  // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
+  // validation errors surface via result.validation.errors so we fail fast
+  // with a clear message rather than silently ignoring bad configuration.
+  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath);
+  if (consumerConfig.found && !consumerConfig.validation.valid) {
+    core.setFailed(
+      `trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`,
     );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Config-file overlay (Issue #196)
-  // Read the consumer .trustbridge.yml and merge values into action inputs.
-  // Explicit non-empty action inputs always win over config-file values.
-  // ---------------------------------------------------------------------------
-  const configResult = readTrustbridgeConfigs(
-    trustbridgeConfigPath,
-    process.env.GITHUB_WORKSPACE || process.cwd(),
-  );
-
-  if (!configResult.validation.valid) {
-    const errMsg = configResult.validation.errors.join("; ");
-    core.setFailed(`Trustbridge config file error: ${errMsg}`);
     return;
   }
 
-  if (configResult.found) {
-    core.info(`Loaded trustbridge config from ${configResult.resolvedPath}`);
-    if (debugMode && configResult.redactedSnapshot) {
-      logger.debug("Trustbridge config snapshot (redacted)", {
-        component: "index",
-        config: configResult.redactedSnapshot,
-      });
-    }
-  }
-
-  // Build set of inputs that were explicitly provided by the workflow author
-  const explicitInputs = new Set<string>();
-  const checkInput = (name: string, raw: string) => {
-    if (raw.trim()) explicitInputs.add(name);
-  };
-  checkInput("horizonUrl", horizonUrl);
-  checkInput("horizonUrlFallback", horizonUrlFallback);
-  checkInput("rpcFallbackUrl", rpcFallbackUrlRaw);
-  checkInput("assetCode", assetCode);
-  checkInput("assetIssuer", assetIssuer);
-  checkInput("minXlmReserveRaw", minXlmReserveRaw);
-  checkInput("failOnMissing", core.getInput("fail_on_missing"));
-
-  // Merge config file values under action inputs
-  const merged = mergeConsumerConfig(
-    {
-      horizonUrl,
-      horizonUrlFallback,
-      rpcFallbackUrl: rpcFallbackUrlRaw,
-      assetCode,
-      assetIssuer,
-      minXlmReserveRaw,
-      failOnMissing,
-    },
-    configResult.config,
-    explicitInputs,
-  );
-
-  // Effective values (config-file overlays applied; explicit inputs win)
-  const effectiveHorizonUrl = merged.horizonUrl as string;
-  const effectiveHorizonUrlFallback = merged.horizonUrlFallback as string;
-  const effectiveAssetCode = merged.assetCode as string;
-  const effectiveAssetIssuer = merged.assetIssuer as string;
-  const effectiveMinXlmReserveRaw = merged.minXlmReserveRaw as string;
-  const effectiveRpcFallbackUrl = merged.rpcFallbackUrl as string;
-  const effectiveFailOnMissing = merged.failOnMissing as boolean;
-  const resolvedAddress = stellarAddress;
-  const effectiveResolvedAddress = stellarAddress;
-  const jobController = new AbortController();
-  const horizonMaxRequests = parseNumberInput(
-    core.getInput("horizon_max_requests") || "0",
-    0,
-    {
-      min: 0, // 0 = unlimited (matches action.yml)
-      max: 10000,
-    },
-  );
-  const maxRetries = parseNumberInput(core.getInput("max_retries") || "3", 3, {
-    min: 0,
-    max: 20,
-  });
-  const retryBaseDelayMs = parseNumberInput(
-    core.getInput("retry_base_delay_ms") || "1000",
-    1000,
-    {
-      min: 0,
-      max: 60_000,
-    },
-  );
-  const retryMaxDelayMs = parseNumberInput(
-    core.getInput("retry_max_delay_ms") || "30000",
-    30000,
-    {
-      min: 0,
-      max: 600_000,
-    },
-  );
-
   logger.setDebugMode(debugMode);
-  logger.debug("Action inputs loaded", {
-    component: "index",
-    horizonUrl: effectiveHorizonUrl,
-    horizonUrlFallback: effectiveHorizonUrlFallback,
+  logger.debug('Action inputs loaded', {
+    component: 'index',
+    horizonUrl,
+    horizonUrlFallback,
     horizonCacheTtlMs,
-    assetCode: effectiveAssetCode,
-    assetIssuer: effectiveAssetIssuer,
-    minXlmReserveRaw: effectiveMinXlmReserveRaw,
+    assetCode,
+    assetIssuer,
+    minXlmReserveRaw,
     debugMode,
     horizonTimeoutMs,
     stickyComment,
     waitUntilFunded,
     waitUntilFundedTimeoutMs,
     waitUntilFundedIntervalMs,
-    rpcFallbackUrl: effectiveRpcFallbackUrl,
+    rpcFallbackUrl: rpcFallbackUrlRaw,
     useCache,
-    allowCrossNetworkFallback,
     sep0007DeepLinks,
-    onboardingChecklist,
-    trustbridgeConfigPath,
   });
-
-  validateStellarAddress(stellarAddress);
-
-  const isContractDestination = /^C[A-Z2-7]{55}$/.test(stellarAddress.trim());
-  if (isContractDestination) {
-    if (!sorobanRpcUrl) {
-      throw new Error(
-        `stellar_address_input resolves to a Soroban C-address "${stellarAddress}", but soroban_rpc_url is unset. Configure soroban_rpc_url to verify the contract exists on-chain before payout validation continues.`,
-      );
-    }
-
-    const contractExists = await contractExistsOnChain(stellarAddress, {
-      sorobanRpcUrl,
-      timeoutMs: horizonTimeoutMs,
-    });
-
-    const result: ValidationResult = contractExists
-      ? {
-          valid: true,
-          accountFunded: true,
-          trustlineExists: true,
-          xlmBalance: '0',
-          xlmReserveMet: true,
-          assetBalance: '0',
-          assetBalanceMet: true,
-          checks: [
-            {
-              passed: true,
-              label: 'Contract destination exists',
-              detail: `Contract ${stellarAddress} was confirmed on Soroban RPC and is eligible for payout. Horizon account/trustline balance checks are intentionally skipped for C-address destinations.`,
-            },
-          ],
-          reasonCode: 'CONTRACT_DESTINATION_OK',
-        }
-      : {
-          valid: false,
-          accountFunded: false,
-          trustlineExists: false,
-          xlmBalance: '0',
-          xlmReserveMet: false,
-          assetBalance: '0',
-          assetBalanceMet: false,
-          checks: [
-            {
-              passed: false,
-              label: 'Contract destination exists',
-              detail: `Contract ${stellarAddress} was not found on the configured Soroban RPC. C-address payout destinations must exist on-chain before they are eligible for payout.`,
-            },
-          ],
-          reasonCode: 'CONTRACT_NOT_FOUND',
-        };
-
-    core.setOutput('ready', result.valid ? 'true' : 'false');
-    core.setOutput('reason_code', result.reasonCode ?? 'CONTRACT_DESTINATION');
-    core.setOutput('checks_json', JSON.stringify(result.checks));
-    core.summary.addHeading('C-address destination check', 3);
-    core.summary.addRaw(result.valid ? 'Contract destination validated on Soroban RPC.' : 'Contract destination missing from Soroban RPC.');
-    await core.summary.write();
-    return;
-  }
-
-  const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
-  const minTrustlineLimitRaw = core.getInput("min_trustline_limit") || "";
-  const minTrustlineLimit = minTrustlineLimitRaw
-    ? parseNumberInput(minTrustlineLimitRaw, 0, { min: 0 })
-    : undefined;
-  const minAssetBalance = parseMinAssetBalance(
-    core.getInput("min_asset_balance") || "",
-  );
-
-  // Optional multi-asset JSON — validate early so bad input fails fast.
-  if (assetsJsonRaw.trim()) {
-    parseAssetsJson(assetsJsonRaw);
-  }
-
-  // #145 — issues:write preflight (optional early exit)
-  // Skip when comment_mode won't post — dry-run/off don't need issues:write.
-  // Skip for discussion events too: discussions use the GraphQL path which
-  // requires `discussions: write`, not `issues: write` (Issue #221).
-  const discussionNodeId = resolveDiscussionNodeId(github.context.payload);
-  if (shouldPostComment && !discussionNodeId) {
-    const preflight = await runIssuesPreflight(githubToken);
-    if (preflight.skip) {
-      core.info(preflight.message);
-    }
-  }
-  if (preflightOnly) {
-    core.info("preflight_only=true — exiting after issues:write preflight.");
-    return;
-  }
-
-  // SEP-0001 home domain check inputs (optional, off by default)
-  const homeDomainCheckEnabled = parseBooleanInput(
-    core.getInput("home_domain_check_enabled"),
-    false,
-  );
-  const expectedHomeDomain =
-    core.getInput("expected_home_domain").trim() || undefined;
-  const homeDomainCheckModeRaw = core
-    .getInput("home_domain_check_mode")
-    .trim()
-    .toLowerCase();
-  const homeDomainCheckMode: HomeDomainCheckMode =
-    homeDomainCheckModeRaw === "strict" ? "strict" : "warn";
-
-  // SEP-0001 stellar.toml fetch and caching inputs (optional, off by default)
-  // GitHub Checks API integration (Wave #26 — optional, off by default)
-  const useCheckRuns = parseBooleanInput(
-    core.getInput("use_check_runs"),
-    false,
-  );
-
-  // Ledger freshness / lag guard inputs (Issue #107 — optional, off by default)
-  const checkLedgerFreshnessEnabled = parseBooleanInput(
-    core.getInput("check_ledger_freshness"),
-    false,
-  );
-  const maxLedgerLagSeconds = parseNumberInput(
-    core.getInput("max_ledger_lag_seconds") || "60",
-    60,
-    { min: 1, max: 3600 },
-  );
-  const ledgerFreshnessFailOnStale = parseBooleanInput(
-    core.getInput("ledger_freshness_fail_on_stale"),
-    false,
-  );
 
   if (logInputs) {
     emitInputsLogRecord({
@@ -1247,9 +107,8 @@ async function run(): Promise<void> {
       assetCode,
       assetIssuer,
       minXlmReserve: minXlmReserveRaw,
-      minTrustlineLimit: minTrustlineLimitRaw,
       stellarAddress,
-      failOnMissing: effectiveFailOnMissing,
+      failOnMissing,
       debugMode,
       horizonTimeoutMs,
       stickyComment,
@@ -1258,181 +117,39 @@ async function run(): Promise<void> {
       waitUntilFundedIntervalMs,
       horizonCacheTtlMs,
       useCache,
-      horizonMaxRequests,
-      maxRetries,
-      retryBaseDelayMs,
-      retryMaxDelayMs,
-      allowCrossNetworkFallback,
       logInputs,
     });
   }
 
-  const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
+  validateStellarAddress(stellarAddress);
+  const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
 
-  // Validate network/asset compatibility using the campaign preset (Issue #207).
-  // Catches testnet issuer on public Horizon (or vice versa) and preset conflicts.
-  validateNetworkAssetCompatibility(
-    horizonUrl,
-    normalizedAsset.assetCode,
-    normalizedAsset.assetIssuer,
-    presetName || undefined,
-  );
+  const normalizedAsset = normalizeAssetConfig({ assetCode, assetIssuer });
 
   // Soroban fungible token contracts (SEP-41) use a "C..." contract address
   // as their issuer instead of a classic "G..." account. Validate that
   // shape up front so a malformed contract address fails fast with a clear
   // error instead of silently reaching Horizon or the metrics/JSON output.
-  if (normalizedAsset.assetIssuer.startsWith("C")) {
-    validateContractAddress(normalizedAsset.assetIssuer);
-    // If the contract address format is strictly invalid, normalizeAssetConfig
-    // would have already failed fast above. We still call validateContractAddress
-    // here to ensure validation spans are consistently recorded.
+  if (normalizedAsset.assetIssuer.startsWith('C')) {
+    const contractCheck = validateContractAddress(normalizedAsset.assetIssuer);
+    if (!contractCheck.valid) {
+      throw new Error(`Invalid asset_issuer contract address: ${contractCheck.errors.join('; ')}`);
+    }
     globalMetrics.recordContractMetric(
-      "asset_issuer_contract_validated",
+      'asset_issuer_contract_validated',
       1,
       normalizedAsset.assetIssuer,
-      "count",
+      'count',
     );
   }
-
-  // Claimable-balance policy (Issue #260) — default ignore
-  const claimablePolicyRaw = (
-    core.getInput("claimable_balance_policy") || "ignore"
-  )
-    .trim()
-    .toLowerCase();
-  const claimableBalancePolicy =
-    claimablePolicyRaw === "count" ? ("count" as const) : ("ignore" as const);
-
-  // SEP-0010 challenge snippet inputs (Issue #252) — optional, does not block ready
-  const sep0010ChallengeXdr = core.getInput("sep0010_challenge_xdr") || "";
-  const sep0010DashboardUrl = core.getInput("sep0010_dashboard_url") || "";
-
-  // Custom comment template partial (#312) — workspace-relative path to a
-  // Markdown partial file injected before the footer.
-  const customCommentTemplatePath = core.getInput('custom_comment_template_path') || '';
 
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
-    minXlmReserve: Number(minXlmReserve),
-    minAssetBalance,
-    minTrustlineLimit,
+    minXlmReserve,
     horizonUrl,
-    homeDomainCheckEnabled,
-    expectedHomeDomain,
-    homeDomainCheckMode,
-    checkLedgerFreshness: checkLedgerFreshnessEnabled,
-    maxLedgerLagSeconds,
-    ledgerFreshnessFailOnStale,
-    claimableBalancePolicy,
-    unauthorizedTrustlinePolicy,
-    clawbackStrictMode,
   };
 
-  // ---------------------------------------------------------------------------
-  // Batch mode (Issue #199)
-  // When stellar_addresses is set, validate all addresses and post a batch
-  // summary comment instead of the single-address flow.
-  // ---------------------------------------------------------------------------
-  if (stellarAddressesRaw.trim()) {
-    const batchAddresses = parseBatchAddresses(stellarAddressesRaw);
-    core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
-
-    const batchCheckConfig: CheckConfig = {
-      ...normalizedAsset,
-      minXlmReserve: Number(effectiveMinXlmReserveRaw),
-      horizonUrl: effectiveHorizonUrl,
-      // Issue #725: batch mode used to drop the clawback policy entirely, so a
-      // clawback-enabled asset never failed a batch row even with
-      // `clawback_strict_mode: true`.
-      clawbackStrictMode,
-    };
-
-    // Issue #725: `assets_json` entries participate in the per-address clawback
-    // strict evaluation, so batch rows can be attributed to a specific
-    // `code:issuer` pair instead of only reporting that "the row failed".
-    const batchExtraAssets = assetsJsonRaw.trim()
-      ? parseAssetsJson(assetsJsonRaw)
-      : [];
-
-    const batchResults = await runBatchValidation(
-      batchAddresses,
-      batchCheckConfig,
-      effectiveHorizonUrl,
-      {
-        fetchOptions: {
-          timeoutMs: horizonTimeoutMs,
-          maxRetries,
-          retryBaseDelayMs,
-          retryMaxDelayMs,
-        },
-        extraAssets: batchExtraAssets,
-      },
-    );
-
-    const batchSummary = buildBatchSummary(batchResults, { clawbackStrictMode });
-    const batchMarkdown = formatBatchSummaryMarkdown(
-      batchSummary,
-      effectiveAssetCode,
-    );
-
-    if (shouldPostComment) {
-      try {
-        const batchCommentUrl = await postIssueComment(
-          githubToken,
-          batchMarkdown,
-          {
-            sticky: stickyComment,
-            commentMode: commentThreadingMode,
-            forceComment,
-            snoozeWindowMs,
-            issueNumber: issueNumberInput,
-          },
-        );
-        if (batchCommentUrl) {
-          logger.info("Batch comment created", {
-            component: "index",
-            commentUrl: batchCommentUrl,
-          });
-        }
-      } catch (commentError) {
-        const message =
-          commentError instanceof Error
-            ? commentError.message
-            : String(commentError);
-        core.warning(`Failed to post batch comment (non-fatal): ${message}`);
-      }
-    }
-
-    // Issue #725: surface strict clawback attribution in the run log, counted
-    // separately from every other batch failure bucket.
-    if (batchSummary.clawbackStrictFailures > 0) {
-      core.warning(
-        `Batch validation: ${batchSummary.clawbackStrictFailures} address(es) blocked by \`clawback_strict_mode: true\` (reason_code: CLAWBACK_STRICT_MODE).`,
-      );
-    }
-
-    // Set batch-specific outputs
-    core.setOutput("batch_summary_json", JSON.stringify(batchSummary));
-    core.setOutput("batch_passed_count", String(batchSummary.passed));
-    core.setOutput("batch_failed_count", String(batchSummary.failed));
-
-    if (batchSummary.failed > 0 && effectiveFailOnMissing) {
-      core.setFailed(
-        `Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`,
-      );
-    } else if (batchSummary.failed > 0) {
-      core.warning(
-        `Batch validation: ${batchSummary.failed} of ${batchSummary.total} addresses failed.`,
-      );
-    } else {
-      core.info("Batch validation: all addresses passed.");
-    }
-
-    return;
-  }
-
-  core.info(`Checking Stellar account ${resolvedAddress} via ${horizonUrl}`);
+  core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
 
   if (waitUntilFunded) {
     core.info(
@@ -1440,870 +157,91 @@ async function run(): Promise<void> {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Ledger freshness / lag guard (Issue #107)
-  // Run before the account fetch so a stale Horizon is flagged before we trust
-  // the balance/trustline data it returns.
-  // ---------------------------------------------------------------------------
-  let freshnessResult: LedgerFreshnessCheckResult | undefined;
-  if (checkLedgerFreshnessEnabled) {
-    core.info(`Checking ledger freshness (max lag: ${maxLedgerLagSeconds}s)…`);
-    try {
-      const raw = await checkLedgerFreshness(horizonUrl, {
-        maxLagSeconds: maxLedgerLagSeconds,
-        timeoutMs: Math.min(horizonTimeoutMs, 10_000),
-      });
-
-      freshnessResult = {
-        status: raw.status,
-        lagSeconds: raw.lagSeconds,
-        latestLedger: raw.latestLedger,
-        message: raw.message,
-        blocksValid: raw.status === "stale" && ledgerFreshnessFailOnStale,
-      };
-
-      if (raw.status === "stale") {
-        const logMsg = `Ledger freshness check: STALE — ${raw.message}`;
-        if (ledgerFreshnessFailOnStale) {
-          core.error(logMsg);
-        } else {
-          core.warning(logMsg);
-        }
-      } else if (raw.status === "unknown") {
-        core.warning(`Ledger freshness check: UNKNOWN — ${raw.message}`);
-      } else {
-        core.info(`Ledger freshness check: OK — ${raw.message}`);
-      }
-    } catch (freshnessError) {
-      // Fail-open: a freshness check error never blocks the account check.
-      const msg = getErrorMessage(freshnessError);
-      core.warning(
-        `Ledger freshness check failed (proceeding fail-open): ${msg}`,
-      );
-      freshnessResult = {
-        status: "unknown",
-        lagSeconds: null,
-        latestLedger: null,
-        message: `Freshness check error: ${msg}. Proceeding (fail-open).`,
-        blocksValid: false,
-      };
-    }
-  }
-
-  let result: ValidationResult | undefined = undefined;
-
-  const rateBudgetTracker = new RateBudgetTracker(horizonMaxRequests);
-
-  // Issue #209: Circuit breaker for Horizon fetches.
-  // Trips after 5 consecutive failures; recovers after 30s.
-  const horizonCircuitBreaker = new CircuitBreaker({
-    failureThreshold: 5,
-    recoveryTimeoutMs: 30_000,
-    successThreshold: 2,
-  });
-
-  const customCache = (useCache || useActionsCacheBackend)
-    ? new SimpleCache({
-        useActionsCacheBackend,
-        cacheKeyPrefix: 'trustbridge',
-      })
-    : undefined;
+  let result;
 
   const horizonOptions = {
     timeoutMs: horizonTimeoutMs,
-    maxRetries,
-    retryBaseDelayMs,
-    retryMaxDelayMs,
     horizonUrlFallback: horizonUrlFallback || undefined,
     fallbackUrls,
-    cacheTtlMs: (useCache || useActionsCacheBackend) ? horizonCacheTtlMs : 0,
-    useCache: useCache || useActionsCacheBackend,
-    cache: customCache,
-    allowCrossNetworkFallback,
-    rateBudgetTracker,
-    horizonMaxRequests,
-    circuitBreaker: horizonCircuitBreaker,
-    pinFingerprint: core.getInput('horizon_pin_fingerprint').trim() || undefined,
+    cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
+    useCache,
   };
 
-  let account: HorizonAccount | null = null;
-  let horizonFetchStartMs = Date.now();
-  let horizonFetchLatencyMs = 0;
-  let horizonFetchStatusCode: number | undefined;
-  let horizonFetchError: string | undefined;
-
-  // Issue #304 — Fixture mode: short-circuit Horizon fetch with a local file.
-  if (fixtureMode) {
-    if (!fixturePath) {
-      core.setFailed('fixture_mode is true but fixture_path is not set. Provide a path to a JSON fixture file (e.g. fixtures/account-funded.json).');
-      return;
-    }
-    const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-    const resolvedFixturePath = path.resolve(workspaceRoot, fixturePath);
-    // Path-traversal guard: fixture must stay inside workspace root.
-    if (!resolvedFixturePath.startsWith(workspaceRoot + path.sep) && resolvedFixturePath !== workspaceRoot) {
-      core.setFailed(`fixture_path "${fixturePath}" resolves outside the workspace root. Path traversal is not allowed.`);
-      return;
-    }
-    try {
-      const fixtureRaw = fs.readFileSync(resolvedFixturePath, 'utf8');
-      account = JSON.parse(fixtureRaw) as HorizonAccount;
-      core.info(`[fixture_mode] Loaded Horizon fixture from ${fixturePath} — no network call made.`);
-      horizonFetchStatusCode = 200;
-      horizonFetchLatencyMs = 0;
-      result = usePluginRunner
-      ? runPlugins({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, defaultRegistry)
-      : await runAccountChecks(account, checkConfig);
-    } catch (fixtureError) {
-      const msg = getErrorMessage(fixtureError);
-      core.setFailed(`Failed to load fixture file "${fixturePath}": ${msg}`);
-      return;
-    }
-  } else {
-  // Normal Horizon fetch path
   try {
-    account = waitUntilFunded
+    const account = waitUntilFunded
       ? await waitForFundedAccount(
           horizonUrl,
-          effectiveResolvedAddress,
+          stellarAddress,
           {
             timeoutMs: waitUntilFundedTimeoutMs,
             pollIntervalMs: waitUntilFundedIntervalMs,
             requestTimeoutMs: horizonTimeoutMs,
-            signal: jobController.signal,
             onPoll: (attempt, elapsedMs) =>
               logger.debug(`Account not yet funded — polling again`, {
-                component: "index",
+                component: 'index',
                 attempt,
                 elapsedMs,
               }),
           },
-          (hUrl, sAddr, opts) =>
-            fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
+          (hUrl, sAddr, opts) => fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
         )
-      : await fetchAccount(horizonUrl, resolvedAddress, horizonOptions);
-    horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-    horizonFetchStatusCode = 200;
-    globalMetrics.stopTimer("horizon_fetch");
-    result = usePluginRunner
-      ? runPlugins({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, defaultRegistry)
-      : await runAccountChecks(account, checkConfig);
+      : await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
+    result = runAccountChecks(account, checkConfig);
   } catch (error) {
-    horizonFetchLatencyMs = Date.now() - horizonFetchStartMs;
-    globalMetrics.stopTimer("horizon_fetch");
     if (error instanceof HorizonError && error.statusCode === 404) {
-      if (useFriendbot) {
-        logger.info('Account 404 encountered and use_friendbot enabled — calling Friendbot', {
-          component: 'index',
-          stellarAddress: effectiveResolvedAddress,
-          friendbotUrl,
-        });
-        friendbotCalled = true;
-        const fbResult = await callFriendbot(
-          effectiveResolvedAddress,
-          {
-            friendbotUrl,
-            timeoutMs: friendbotTimeoutMs,
-          },
-          horizonUrl,
-        );
-        friendbotSuccess = fbResult.success;
-        friendbotTransactionHash = fbResult.transactionHash ?? '';
-        if (fbResult.success) {
-          logger.info('Friendbot funding succeeded — re-fetching account', {
-            component: 'index',
-            transactionHash: fbResult.transactionHash,
-          });
-          try {
-            account = await fetchAccount(horizonUrl, effectiveResolvedAddress, horizonOptions);
-            horizonFetchStatusCode = 200;
-            result = usePluginRunner
-      ? runPlugins({ account, config: checkConfig, stellarAddress: effectiveResolvedAddress }, defaultRegistry)
-      : await runAccountChecks(account, checkConfig);
-          } catch (refetchErr) {
-            logger.warn('Failed to re-fetch account after Friendbot funding', {
-              component: 'index',
-              error: refetchErr instanceof Error ? refetchErr.message : String(refetchErr),
-            });
-          }
-        } else {
-          logger.warn(`Friendbot funding failed: ${fbResult.message}`, {
-            component: 'index',
-          });
-        }
-      }
-
-      if (!account) {
-        horizonFetchStatusCode = 404;
-        horizonFetchError = error.message;
-        // #144/#266: deterministic cross-network detection — probes canonical opposite
-        // with SSRF guard, 5s timeout; does not probe arbitrary fallback URLs.
-        const mismatchHint = await detectNetworkMismatch(
-          horizonUrl,
-          stellarAddress,
-        ).catch(() => undefined);
-        if (mismatchHint) {
-          core.warning(
-            `Cross-network mismatch detected: address is active on ${mismatchHint.activeOnNetwork} ` +
-              `but horizon_url points at ${mismatchHint.configuredNetwork}.`,
-          );
-        }
-        // #260: claimable-balance-aware funded definition — when policy is 'count',
-        // fetch claimable_balances (bounded 5s, no throw). Default 'ignore' skips request.
-        let claimableCount: number | undefined;
-        if (claimableBalancePolicy === "count") {
-          try {
-            const { fetchClaimableBalanceCount } = await import("./horizon");
-            claimableCount = await fetchClaimableBalanceCount(
-              horizonUrl,
-              stellarAddress,
-            );
-            if (claimableCount > 0) {
-              core.info(
-                `Found ${claimableCount} claimable balance(s) for ${stellarAddress} (policy=count).`,
-              );
-            }
-          } catch {
-            claimableCount = 0;
-          }
-        }
-        result = unfundedAccountResult(
-          stellarAddress,
-          checkConfig,
-          mismatchHint,
-          claimableCount,
-        );
-      }
-    } else if (isCircuitOpenError(error)) {
-        // #209/#434: the circuit breaker fast-failed the request, so Horizon was
-        // never contacted and the account state is entirely unknown. Report this
-        // as CIRCUIT_OPEN (not HORIZON_ERROR) and let the comment render a
-        // dedicated banner so a resilience safeguard is not misread as an
-        // account-level failure. statusCode is 0 — no HTTP response happened.
-        horizonFetchStatusCode = 0;
-        horizonFetchError = error.message;
-        core.error(error.message);
-        core.warning(
-          "Horizon circuit breaker is open — the account was not checked. " +
-            "Re-run the workflow after the recovery window elapses.",
-        );
-        globalMetrics.incrementCounter("errors");
-        globalMetrics.incrementCounter("horizon_circuit_open");
-        globalMetrics.recordMetric("horizon_circuit_open", 1, "count");
-        result = circuitOpenFailureResult(error.message, checkConfig);
-      } else if (error instanceof HorizonError) {
-      horizonFetchStatusCode = error.statusCode;
-      horizonFetchError = error.message;
+      result = unfundedAccountResult(stellarAddress, checkConfig);
+    } else if (error instanceof HorizonError) {
       core.error(error.message);
-      globalMetrics.incrementCounter("errors");
-      globalMetrics.recordMetric(
-        "horizon_error",
-        error.statusCode,
-        "http_status",
-      );
       result = horizonFailureResult(error.message, checkConfig);
-    } else if (error instanceof RateBudgetExhaustedError) {
-      // Fail closed: the rate budget was exhausted (horizon_max_requests exceeded).
-      // The account state is unknown — do NOT emit an unfunded/404 result.
-      // This is a distinct reason_code so dashboards and downstream jobs can
-      // differentiate "account not found" from "budget exhausted before we asked".
-      horizonFetchError = error.message;
-      core.error(error.message);
-      globalMetrics.incrementCounter('errors');
-      globalMetrics.recordMetric('horizon_rate_budget_exhausted', 1, 'count');
-      result = rateBudgetExhaustedResult(error.message, checkConfig);
     } else {
       const message = getErrorMessage(error);
-      horizonFetchError = message;
       core.error(message);
-      globalMetrics.incrementCounter("errors");
       result = horizonFailureResult(message, checkConfig);
     }
-  } finally {
-    // Ensure the controller is not leaked if the function returns early.
-    jobController.abort();
-  }
-  } // end else (normal Horizon fetch path — fixtureMode === false)
-
-  // result is undefined only when the run was cancelled and we returned early above.
-  if (result == null) {
-    return;
   }
 
-  // Capture the validation timestamp once, used for validated_at output and delta.
-  const validatedAt = new Date().toISOString();
-
-  // Attach the freshness result to every result path so comment.ts can render it.
-  if (freshnessResult !== undefined) {
-    result = { ...result, ledgerFreshnessResult: freshnessResult };
-    // When stale AND fail-on-stale is enabled, override valid so the gate fires.
-    if (freshnessResult.blocksValid && result.valid) {
-      result = { ...result, valid: false };
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Multi-asset trustline checks (Issue #201)
-  // Run trustline checks for additional assets from assets_json.
-  // ---------------------------------------------------------------------------
-  let multiAssetResults: AssetTrustlineStatus[] = [];
-  if (assetsJsonRaw.trim()) {
-    const extraAssets = parseAssetsJson(assetsJsonRaw);
-    const dedupedAssets = extraAssets.filter(
-      (a) =>
-        !(
-          a.assetCode === normalizedAsset.assetCode &&
-          a.assetIssuer === normalizedAsset.assetIssuer
-        ),
-    );
-    if (dedupedAssets.length > 0 && account) {
-      core.info(
-        `Checking trustlines for ${dedupedAssets.length} additional asset(s)…`,
-      );
-      for (const asset of dedupedAssets) {
-        const hasTrustline = account.balances.some(
-          (b: HorizonBalance) =>
-            b.asset_type !== "native" &&
-            "asset_code" in b &&
-            b.asset_code === asset.assetCode &&
-            "asset_issuer" in b &&
-            b.asset_issuer === asset.assetIssuer,
-        );
-        const balanceEntry = account.balances.find(
-          (b: HorizonBalance) =>
-            b.asset_type !== "native" &&
-            "asset_code" in b &&
-            b.asset_code === asset.assetCode &&
-            "asset_issuer" in b &&
-            b.asset_issuer === asset.assetIssuer,
-        );
-        const balance =
-          balanceEntry && "balance" in balanceEntry
-            ? balanceEntry.balance
-            : "0";
-        multiAssetResults.push({
-          assetCode: asset.assetCode,
-          assetIssuer: asset.assetIssuer,
-          trustlineExists: hasTrustline,
-          balance,
-        });
-        if (hasTrustline) {
-          core.info(
-            `  ✓ ${asset.assetCode} (${asset.assetIssuer}) — trustline exists`,
-          );
-        } else {
-          core.warning(
-            `  ✗ ${asset.assetCode} (${asset.assetIssuer}) — trustline missing`,
-          );
-        }
-      }
-    }
-  }
-
-  if (writeValidationJsonEnabled) {
-    writeValidationJson({
-      result,
-      stellarAddress: effectiveResolvedAddress,
-      assetCode: effectiveAssetCode,
-      assetIssuer: effectiveAssetIssuer,
-      horizonUrl: effectiveHorizonUrl,
-      outputPath: validationJsonPath,
-      privacyMode,
-    });
-    core.info(`Wrote validation JSON artifact to ${validationJsonPath}`);
-  }
-
-  // ---------------------------------------------------------------------------
-  // SARIF output (Issue #197)
-  // Write SARIF 2.1.0 to disk when sarif_output_path is set.
-  // ---------------------------------------------------------------------------
-  const sarifOutputPath = core.getInput("sarif_output_path") || "";
-  if (sarifOutputPath.trim()) {
-    const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-    const resolvedSarifPath = path.isAbsolute(sarifOutputPath)
-      ? sarifOutputPath
-      : path.join(workspaceRoot, sarifOutputPath.trim());
-
-    // Path traversal guard
-    const normalizedWorkspace = path.normalize(workspaceRoot);
-    const normalizedSarif = path.normalize(resolvedSarifPath);
-    if (
-      !normalizedSarif.startsWith(normalizedWorkspace + path.sep) &&
-      normalizedSarif !== normalizedWorkspace
-    ) {
-      core.warning(
-        `sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.`,
-      );
-    } else {
-      try {
-        const sarif = buildSarifOutput(
-          result,
-          effectiveAssetCode,
-          effectiveHorizonUrl,
-          effectiveResolvedAddress,
-        );
-        if (!validateSarifSchema(sarif)) {
-          core.warning(
-            "Generated SARIF output failed schema validation — skipping SARIF write.",
-          );
-        } else {
-          const sarifJson = serializeSarif(sarif);
-          const sarifDir = path.dirname(normalizedSarif);
-          if (!fs.existsSync(sarifDir)) {
-            fs.mkdirSync(sarifDir, { recursive: true });
-          }
-          fs.writeFileSync(normalizedSarif, sarifJson, "utf8");
-          core.info(`Wrote SARIF 2.1.0 output to ${normalizedSarif}`);
-        }
-      } catch (sarifError) {
-        const msg =
-          sarifError instanceof Error ? sarifError.message : String(sarifError);
-        core.warning(`Failed to write SARIF output (non-fatal): ${msg}`);
-      }
-    }
-  }
-
-  // Reserved inputs kept for forward-compatible workflows / labels / Soroban.
-  logger.debug("Optional feature flags", {
-    component: "index",
-    autoWalletLabels,
-    sorobanRpcUrl: sorobanRpcUrl || undefined,
-    contractId: contractId || undefined,
-    githubUsername: githubUsername || undefined,
-    trustbridgeConfigPath,
-  });
-
-  // Issue #212: Load previous validation artifact for delta computation.
-  // Try local path first; fall back to auto-discovery via Actions API.
-  let previousArtifact = loadPreviousValidationArtifact(previousValidationPath);
-  if (!previousArtifact && !previousValidationPath.trim()) {
-    previousArtifact = await discoverPreviousValidationArtifact(githubToken);
-    if (previousArtifact) {
-      core.info(
-        "Auto-discovered previous validation artifact from prior workflow run.",
-      );
-    }
-  }
-  const delta = computeValidationDelta(previousArtifact, result);
-  if (!previousArtifact && previousValidationPath.trim()) {
-    core.info(
-      "No previous validation artifact found — omitting delta (first run or missing download).",
-    );
-  } else if (delta) {
-    core.info(
-      `Validation delta vs previous run: newlyPassed=${delta.newlyPassed.length}, newlyFailed=${delta.newlyFailed.length}, unchanged=${delta.unchanged.length}`,
-    );
-  }
-
-  // Build diagnostics config when debug_mode is on (Issue #205).
-  // Never includes secrets; addresses are redacted in the block builder.
-  let diagnosticsConfig: DiagnosticsConfig | undefined;
-  if (debugMode) {
-    diagnosticsConfig = {
-      inputs: {
-        horizonUrl,
-        horizonUrlFallback: horizonUrlFallback || undefined,
-        assetCode: effectiveAssetCode,
-        assetIssuer: effectiveAssetIssuer,
-        minXlmReserve: effectiveMinXlmReserveRaw,
-        horizonTimeoutMs,
-        useCache,
-        cacheTtlMs: horizonCacheTtlMs,
-        allowCrossNetworkFallback,
-        maxRetries,
-        retryBaseDelayMs,
-        retryMaxDelayMs,
-        debugMode,
-      },
-      runInfo: {
-        horizonStatusCode: horizonFetchStatusCode,
-        horizonLatencyMs: horizonFetchLatencyMs,
-        horizonError: horizonFetchError,
-      },
-    };
-  }
+  setValidationOutputs(result);
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
-    stellarAddress: effectiveResolvedAddress,
+    stellarAddress,
     horizonUrl,
     failOnMissing,
     stickyComment,
     waitUntilFunded,
     waitUntilFundedTimeoutMs,
     waitUntilFundedIntervalMs,
-    onboardingChecklist,
     sep0007DeepLinks,
     sep0007OriginDomain,
-    sep0010ChallengeXdr,
-    sep0010DashboardUrl,
-    locale,
-    debugMode,
-    privacyMode,
-    docsBaseUrl: core.getInput('docs_base_url') || undefined,
-    delta,
-    diagnosticsConfig,
-    customCommentTemplatePath: customCommentTemplatePath || undefined,
-    // Per-asset trustline table (Issue #552) — surface the assets_json
-    // check results in the comment instead of only logging them.
-    assets: multiAssetResults.map((m) => ({
-      assetCode: m.assetCode,
-      assetIssuer: m.assetIssuer,
-      trustlineExists: m.trustlineExists,
-      balance: m.balance,
-    })),
   });
-
-  const buildCommentBody = (existingBody?: string) => {
-    const rawBody = formatCommentBody(result, {
-      ...checkConfig,
-      stellarAddress: effectiveResolvedAddress,
-      horizonUrl,
-      failOnMissing,
-      stickyComment,
-      waitUntilFunded,
-      waitUntilFundedTimeoutMs,
-      waitUntilFundedIntervalMs,
-      onboardingChecklist,
-      sep0007DeepLinks,
-      sep0007OriginDomain,
-      sep0010ChallengeXdr,
-      sep0010DashboardUrl,
-      locale,
-      debugMode,
-      privacyMode,
-      delta,
-      diagnosticsConfig,
-      customCommentTemplatePath: customCommentTemplatePath || undefined,
-      assets: multiAssetResults.map((m) => ({
-        assetCode: m.assetCode,
-        assetIssuer: m.assetIssuer,
-        trustlineExists: m.trustlineExists,
-        balance: m.balance,
-      })),
-    });
-
-    const conflictSection = formatConflictReportMarkdown(conflictReport);
-    const fullBody = conflictSection ? `${rawBody}\n${conflictSection}` : rawBody;
-    const bodyBytes = Buffer.byteLength(fullBody, 'utf8');
-    if (bodyBytes > COMMENT_SIZE_LIMIT_BYTES) {
-      return buildTruncatedCommentBody(fullBody, reportOutputPath);
-    }
-    return fullBody;
-  };
-
-  // Build a baseline body (no existing comment) for size-check and full-report write.
-  const baselineBody = buildCommentBody(undefined);
-  const baselineBytes = Buffer.byteLength(baselineBody, 'utf8');
-  let fullReportPath: string | undefined;
-
-  if (baselineBytes > COMMENT_SIZE_LIMIT_BYTES) {
-    core.warning(
-      `Comment body is ${baselineBytes} bytes, which exceeds GitHub's ${COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
-        `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`,
-    );
-    fullReportPath = writeFullReport(buildCommentBody(undefined), reportOutputPath);
-  }
 
   let commentUrl: string | undefined;
-  if (!shouldPostComment) {
-    core.info(
-      `posting_mode=${postingMode} — skipping issue comment post (outputs still set).`,
-    );
-  } else if (discussionNodeId) {
-    // Discussion events carry a GraphQL node id, not an issue number —
-    // comment via GraphQL, never the REST issues API (Issue #221).
-    // Checklist persistence for discussions passes undefined for the existing
-    // body; the factory still runs through the full format path.
-    const discussionBody = buildCommentBody(undefined);
-    try {
-      commentUrl = await postDiscussionComment(githubToken, discussionBody, {
-        sticky: stickyComment,
-        commentMode: commentThreadingMode,
-        forceComment,
-        snoozeWindowMs,
-      });
-      if (commentUrl) {
-        logger.info("Discussion comment created", {
-          component: "index",
-          commentUrl,
-        });
-      } else {
-        logger.info("No discussion comment posted (no discussion context).", {
-          component: "index",
-        });
-      }
-    } catch (commentError) {
-      const message =
-        commentError instanceof Error
-          ? commentError.message
-          : String(commentError);
-      core.warning(`Failed to post discussion comment (non-fatal): ${message}`);
+  try {
+    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
+    if (commentUrl) {
+      logger.info('Issue comment created', { component: 'index', commentUrl });
     }
-  } else {
-    globalMetrics.startTimer("comment_post");
-    try {
-      // Use bodyFactory so postIssueComment passes the fetched existing
-      // comment body to buildCommentBody — preserving checklist state (Issue #311)
-      // without a second findStickyComment round-trip.
-      commentUrl = await postIssueComment(githubToken, baselineBody, {
-        sticky: stickyComment,
-        commentMode: commentThreadingMode,
-        forceComment,
-        snoozeWindowMs,
-        bodyFactory: buildCommentBody,
-      });
-      globalMetrics.stopTimer("comment_post");
-      if (commentUrl) {
-        logger.info("Issue comment created", {
-          component: "index",
-          commentUrl,
-        });
-      }
-    } catch (commentError) {
-      globalMetrics.stopTimer("comment_post");
-      const message =
-        commentError instanceof Error
-          ? commentError.message
-          : String(commentError);
-      core.warning(`Failed to post issue comment (non-fatal): ${message}`);
-    }
+  } catch (commentError) {
+    const message = getErrorMessage(commentError);
+    core.warning(`Failed to post issue comment: ${message}`);
   }
 
-  // Issue #535: publish every action output exactly once, at the end of the run.
-  // Comment URL, validation timestamp and the metric timings are only final at
-  // this point, so this call replaces the earlier partial call plus the
-  // redundant friendbot_* writes that followed it (toActionOutputs already
-  // emits those keys).  // ---------------------------------------------------------------------------
-  // GitHub Checks API integration (Wave #26 / Issue #421)
-  // When use_check_runs is true, creates a Check Run with check annotations.
-  // The check_run_id / check_run_conclusion outputs are published through
-  // setValidationOutputs below (Issue #550) so it remains the single
-  // publisher of every action.yml output.
-  // ---------------------------------------------------------------------------
-  let checkRunId: string | undefined;
-  let checkRunConclusion: string | undefined;
-  if (useCheckRuns && result) {
-    if (!githubToken) {
-      core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
-    } else {
-      try {
-        const checkRun = await createCheckRun(result, githubToken, {
-          stellarAddress: effectiveResolvedAddress,
-        });
-        checkRunId = checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : undefined;
-        checkRunConclusion = checkRun.success ? determineCheckConclusion(result) : undefined;
-      } catch (checkRunError) {
-        const message =
-          checkRunError instanceof Error ? checkRunError.message : String(checkRunError);
-        core.warning(`Failed to create Check Run (non-fatal): ${message}`);
-      }
-    }
-  }
-
-  // Issue #535: publish every action output exactly once, at the end of the run.
-  // Comment URL, validation timestamp and the metric timings are only final at
-  // this point, so this call replaces the earlier partial call plus the
-  // redundant friendbot_* writes that followed it (toActionOutputs already
-  // emits those keys). The Check Run outputs moved here in Issue #550 for the
-  // same reason: every action.yml output is published by this one call.
-  setValidationOutputs(result, commentUrl, fullReportPath, {
-    validatedAt,
-    timings: globalMetrics.getTimingBreakdown(),
-    friendbotCalled,
-    friendbotSuccess,
-    friendbotTransactionHash,
-    conflictReport,
-    checkRunId,
-    checkRunConclusion,
-  });
-
-  // ---------------------------------------------------------------------------
-  // Wallet labels (Issue #200)
-  // When auto_wallet_labels is true and we're in an issue context, apply
-  // the appropriate wallet state label to the issue.
-  // ---------------------------------------------------------------------------
-  if (autoWalletLabels && result) {
-    const issueNumber = github.context.payload.issue?.number;
-    if (issueNumber) {
-      const { owner, repo } = github.context.repo;
-      try {
-        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
-        const labelResult = await applyWalletLabels(
-          octokit,
-          owner,
-          repo,
-          issueNumber,
-          {
-            accountFunded: result.accountFunded,
-            trustlineExists: result.trustlineExists,
-            xlmReserveMet: result.xlmReserveMet,
-          },
-          { removeStale: true },
-        );
-        if (labelResult.error) {
-          core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
-        } else {
-          core.info(`Applied wallet label: ${labelResult.applied}`);
-        }
-      } catch (labelError) {
-        const msg =
-          labelError instanceof Error ? labelError.message : String(labelError);
-        core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
-      }
-    }
-  }
-
-  if ((readyLabels.passLabel || readyLabels.failLabel) && result) {
-    const issueNumber = github.context.payload.issue?.number;
-    if (issueNumber) {
-      const { owner, repo } = github.context.repo;
-      try {
-        const octokit = github.getOctokit(githubToken);
-        const readyLabelResult = await applyReadyLabels(
-          octokit,
-          owner,
-          repo,
-          issueNumber,
-          {
-            ready: result.valid,
-            passLabel: readyLabels.passLabel,
-            failLabel: readyLabels.failLabel,
-          },
-        );
-        if (readyLabelResult.error) {
-          core.warning(
-            `Ready label update failed (non-fatal): ${readyLabelResult.error}`,
-          );
-        } else if (readyLabelResult.applied) {
-          core.info(`Applied ready label: ${readyLabelResult.applied}`);
-        }
-      } catch (labelError) {
-        const msg =
-          labelError instanceof Error ? labelError.message : String(labelError);
-        core.warning(`Failed to apply ready label (non-fatal): ${msg}`);
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Auto-unassign on not-ready (Issue #228)
-  // When unassign_on_not_ready is true and readiness checks fail, automatically
-  // unassign the GitHub assignee(s) from the issue.
-  // ---------------------------------------------------------------------------
-  if (unassignOnNotReady && result && !result.valid) {
-    const issueNumber = github.context.payload.issue?.number;
-    const { owner, repo } = github.context.repo;
-    const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
-    await handleAutoUnassign({
-      octokit,
-      owner,
-      repo,
-      issueNumber: issueNumberInput ?? issueNumber,
-      payload: github.context.payload,
-      result,
-      unassignOnNotReady,
-    });
-  }
-
-  // GitHub Projects v2 integration (Issue #222)
-  const targetProjectStatus = result.valid
-    ? projectStatusPass
-    : projectStatusFail;
-  if (projectId.trim() && targetProjectStatus.trim()) {
-    const contentNodeId =
-      github.context.payload.issue?.node_id ??
-      github.context.payload.pull_request?.node_id ??
-      "";
-
-    if (!projectToken) {
-      core.warning(
-        "[Projects v2] A project status is configured, but no GitHub token is available; skipping status update.",
-      );
-    } else if (!contentNodeId) {
-      core.warning(
-        "[Projects v2] A project status is configured, but this event has no issue or pull request node ID; skipping status update.",
-      );
-    } else {
-      try {
-        const octokit = github.getOctokit(
-          projectToken,
-          getOctokitProxyOptions(),
-        );
-        await updateProjectV2Status({
-          octokit,
-          projectId,
-          contentNodeId,
-          statusFieldName: projectStatusField,
-          targetStatusValue: targetProjectStatus,
-        });
-      } catch (projectError) {
-        const message =
-          projectError instanceof Error
-            ? projectError.message
-            : String(projectError);
-        core.warning(
-          `[Projects v2] Failed to initialize status update (non-fatal): ${message}`,
-        );
-      }
-    }
-  }
-
-  // Signed dashboard webhook notification (Issue #101)
-  // Fires after comment posting; failures are isolated and never block the run.
-  if (webhookUrl) {
-    const { owner, repo } = github.context.repo;
-    const issueNumber = github.context.payload.issue?.number ?? null;
-    const webhookAbortController = new AbortController();
-    const removeRunnerCancellationListeners = listenForRunnerCancellation(
-      webhookAbortController,
-    );
-    try {
-      await sendWebhookNotification(
-        result,
-        effectiveResolvedAddress,
-        {
-          webhookUrl,
-          webhookSecret,
-          timeoutMs: webhookTimeoutMs,
-          authMode: webhookAuthMode,
-          oidcAudience: webhookOidcAudience,
-          signal: webhookAbortController.signal,
-        },
-        `${owner}/${repo}`,
-        issueNumber,
-      );
-    } finally {
-      removeRunnerCancellationListeners();
-    }
-  }
+  setValidationOutputs(result, commentUrl);
 
   if (debugMode) {
-    logger.debug("Metrics summary (JSON artifact)", { component: "metrics" });
+    logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
     core.debug(globalMetrics.toJSON());
 
     // Emit validation spans for observability (Issue #35)
     const spans = getSpans();
     if (spans.length > 0) {
-      logger.debug("Validation spans", {
-        component: "validation",
-        spanCount: spans.length,
-      });
+      logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
       core.debug(JSON.stringify(spans, null, 2));
     }
   }
 
-  // Stop total timer and collect timing metrics
-  globalMetrics.stopTimer("total");
-
-  // Emit OpenTelemetry trace summary when tracing is enabled
-  emitTraceSummary();
-
-  // Wave #27: write Job Summary with latency, failure codes, JSON artifact
-  await writeJobSummary(globalMetrics.buildJobSummary());
-
   if (result.valid) {
-    core.info("All TrustBridge checks passed.");
+    core.info('All TrustBridge checks passed.');
     return;
   }
 
@@ -2311,20 +249,13 @@ async function run(): Promise<void> {
 
   const failureMessage = `TrustBridge checks failed: ${summary}`;
 
-  if (effectiveFailOnMissing) {
+  if (failOnMissing) {
     core.setFailed(failureMessage);
   } else {
     core.warning(failureMessage);
   }
-  });
 }
 
-
-// Skip auto-run under Jest so performance / integration tests can import `run`.
-export { run };
-
-if (process.env.JEST_WORKER_ID === undefined) {
-  run().catch((error) => {
-    core.setFailed(getErrorMessage(error));
-  });
-}
+run().catch((error) => {
+  core.setFailed(getErrorMessage(error));
+});

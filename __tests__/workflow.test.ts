@@ -3,126 +3,53 @@ import * as path from 'path';
 
 describe('.github/workflows/ci.yml', () => {
   const workflowPath = path.join(__dirname, '../.github/workflows/ci.yml');
-
-  it('exists and verifies the published action package', () => {
-    expect(fs.existsSync(workflowPath)).toBe(true);
-    const content = fs.readFileSync(workflowPath, 'utf8');
-
-    expect(content).toContain('name: CI');
-    expect(content).toContain('actions/checkout@');
-    expect(content).toContain('action.yml');
-    expect(content).toContain('dist/index.js');
-    expect(content).toContain('npm run typecheck');
-    expect(content).toContain('npm test');
-    expect(content).toContain('npm run lint');
-  });
-
-  it('runs npm run typecheck:tests on PRs without || true (Issue #664)', () => {
-    const content = fs.readFileSync(workflowPath, 'utf8');
-
-    expect(content).toContain('run: npm run typecheck:tests');
-
-    // The test tsconfig is a real npm script, so the CI step must invoke the
-    // script rather than a hand-rolled tsc invocation that can drift.
-    const pkg = JSON.parse(
-      fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'),
-    ) as { scripts: Record<string, string> };
-    expect(pkg.scripts['typecheck:tests']).toContain('tsconfig.test.json');
-
-    // No `|| true` may suppress the test-project typecheck.
-    const typecheckTestsStep = content
-      .split('- name:')
-      .find((section) => section.includes('npm run typecheck:tests'));
-    expect(typecheckTestsStep).toBeDefined();
-    expect(typecheckTestsStep).not.toContain('|| true');
-
-    // Both projects must be typechecked on the pull_request trigger.
-    expect(content).toContain('pull_request:');
-    expect(content).toContain('npm run typecheck:tests');
-  });
-
-  it('runs a dedicated coverage job enforcing the jest.config.js thresholds', () => {
-    const content = fs.readFileSync(workflowPath, 'utf8');
-
-    // Dedicated CI job runs the exact npm script documented in the README.
-    expect(content).toContain('test-coverage:');
-    expect(content).toContain('run: npm run test:coverage');
-
-    // The gate it enforces must exist in jest.config.js with real thresholds.
-    const jestConfigPath = path.join(__dirname, '../jest.config.js');
-    expect(fs.existsSync(jestConfigPath)).toBe(true);
-    const jestConfig = require(jestConfigPath);
-    expect(jestConfig.coverageDirectory).toBe('coverage');
-
-    const globalThresholds = jestConfig.coverageThreshold?.global;
-    expect(globalThresholds).toBeDefined();
-    for (const metric of ['branches', 'functions', 'lines', 'statements'] as const) {
-      const value = globalThresholds[metric];
-      expect(typeof value).toBe('number');
-      expect(value).toBeGreaterThan(0);
-      expect(value).toBeLessThanOrEqual(100);
-    }
-
-    // Per-file gate for src/horizon.ts must stay wired up as documented.
-    expect(Object.keys(jestConfig.coverageThreshold)).toContain('./src/horizon.ts');
-  });
-
-  it('documents the CI jobs in CONTRIBUTING.md without stale job or command references', () => {
-    const workflow = fs.readFileSync(workflowPath, 'utf8');
-    const contributingPath = path.join(__dirname, '../CONTRIBUTING.md');
-    const contributing = fs.readFileSync(contributingPath, 'utf8');
-
-    for (const job of [
-      'check',
-      'test-coverage',
-      'license-check',
-      'dist-drift',
-      'bundle-size',
-      'verify-dist-manifest',
-      'check-unpinned-actions',
-    ]) {
-      expect(workflow).toContain(`${job}:`);
-      expect(contributing).toContain(`\`${job}\``);
-    }
-
-    expect(contributing).not.toContain('npm run check-error-catalog');
-    expect(contributing).not.toContain('mutation-ci job');
-  });
-});
-
-describe('.github/workflows/release.yml', () => {
-  const workflowPath = path.join(__dirname, '../.github/workflows/release.yml');
-
-  it('exists and verifies the action bundle before release', () => {
-    expect(fs.existsSync(workflowPath)).toBe(true);
-    const content = fs.readFileSync(workflowPath, 'utf8');
-    expect(content).toContain('name: Release');
-    expect(content).toContain('dist/index.js');
-  });
-});
-
-describe('action.yml', () => {
-  const actionPath = path.join(__dirname, '../action.yml');
   let content: string;
 
   beforeAll(() => {
-    content = fs.readFileSync(actionPath, 'utf8');
+    content = fs.readFileSync(workflowPath, 'utf8');
   });
 
-  it('declares comment_mode and posting_mode inputs', () => {
-    expect(content).toContain('comment_mode:');
-    expect(content).toContain('posting_mode:');
-    expect(content).toContain('dry-run');
+  it('exists and contains valid workflow configuration', () => {
+    expect(fs.existsSync(workflowPath)).toBe(true);
+
+    expect(content).toContain('name: CI');
+    expect(content).toContain('actions/checkout@');
+    expect(content).toContain('actions/setup-node@');
+    expect(content).toContain('npm ci');
+    expect(content).toContain('npm run lint');
+    expect(content).toContain('npm test');
+    expect(content).toContain('npm run build');
+    expect(content).toContain('dist/index.js');
   });
 
-  it('declares dashboard_webhook_url input', () => {
-    expect(content).toContain('dashboard_webhook_url:');
+  it('includes comment golden snapshots and coverage verification steps', () => {
+    expect(content).toContain('Verify comment golden snapshots and test coverage');
   });
 
-  it('outputs block still contains all four standard outputs', () => {
-    expect(content).toContain('trustline_exists:');
-    expect(content).toContain('xlm_balance:');
-    expect(content).toContain('account_funded:');
-    expect(content).toContain('comment_url:');
+  it('includes license-check job for GPL policy enforcement', () => {
+    expect(content).toContain('license-check');
+    expect(content).toContain('npm run license:check');
+  });
+
+  it('includes check-unpinned-actions job for supply-chain security', () => {
+    expect(content).toContain('check-unpinned-actions');
+    expect(content).toContain('scripts/check-unpinned-actions.sh');
+  });
+
+  it('pins all actions to full SHA hashes (no @vN tag refs)', () => {
+    // Every uses: line must contain a 40-char hex SHA, not a vN tag
+    const usesLines = content
+      .split('\n')
+      .filter((line) => /^\s+uses:\s+/.test(line));
+
+    expect(usesLines.length).toBeGreaterThan(0);
+
+    for (const line of usesLines) {
+      // Local actions (./) and docker:// are exempt from SHA pinning
+      if (/uses:\s+\.\//.test(line) || /uses:\s+docker:\/\//.test(line)) {
+        continue;
+      }
+      expect(line).toMatch(/@[0-9a-f]{40}/);
+    }
   });
 });

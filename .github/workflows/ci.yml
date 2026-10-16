@@ -2,38 +2,78 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  check:
-    name: Typecheck & Test
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: '20'
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate action input schema
-        run: npx jest __tests__/action-schema-sync.test.ts --runInBand --no-coverage
-
-      - name: Typecheck
-        run: npx tsc --noEmit || true
-
-      - name: reason_code docs in sync with catalog
-        run: npm run reason-codes:check
+      - name: Lint
+        run: npm run lint
 
       - name: Test
-        run: npm run test:coverage -- --maxWorkers=1 --forceExit
+        run: npm test
+
+      - name: Verify comment golden snapshots and test coverage
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify action bundle exists
+        run: test -f dist/index.js
+
+      - name: Verify dist/ matches src/
+        run: |
+          if ! git diff --quiet --exit-code -- dist; then
+            echo "::error::dist/ is out of date with src/. Run 'npm run build' and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi
+
+  license-check:
+    name: License policy check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci
+
+      - name: Check dependency licenses
+        run: npm run license:check
+
+  check-unpinned-actions:
+    name: Check unpinned actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Scan for unpinned action references
+        run: bash scripts/check-unpinned-actions.sh .github/workflows

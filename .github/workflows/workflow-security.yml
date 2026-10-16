@@ -1,72 +1,61 @@
 name: Workflow Security
 
+# Runs zizmor static analysis on workflow files to catch credential-exfiltration
+# patterns, unpinned action references, and other security anti-patterns before
+# they are merged. Triggered on any push or PR that touches workflow files.
+#
+# Related issues:
+#   #661 — CI: run zizmor workflow security scan on workflow changes
+#   #555 — Add root .actionlint.yaml for example-workflow suppressions
+#
+# Configuration:
+#   .github/zizmor.yml  — suppression rules for known-safe patterns
+#   .actionlint.yaml    — actionlint suppression rules (root of repo)
+
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
-      - ".github/workflows/**"
+      - '.github/workflows/**'
+      - '.github/zizmor.yml'
+      - '.actionlint.yaml'
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
-      - ".github/workflows/**"
+      - '.github/workflows/**'
+      - '.github/zizmor.yml'
+      - '.actionlint.yaml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Validate workflow YAML
-        run: |
-          python3 - <<'PY'
-          import pathlib
-          import sys
-
-          try:
-              import yaml
-          except ImportError:
-              import subprocess
-              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"])
-              import yaml
-
-          errors = []
-          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
-              try:
-                  with path.open() as fh:
-                      yaml.safe_load(fh)
-              except Exception as exc:  # noqa: BLE001
-                  errors.append(f"{path}: {exc}")
-
-          if errors:
-              print("\n".join(errors))
-              sys.exit(1)
-          print(f"Validated {len(list(pathlib.Path('.github/workflows').glob('*.yml')))} workflow files")
-          PY
-
-  # #661 / #555 – zizmor static analysis for workflow security findings.
-  # .github/zizmor.yml holds narrowly-scoped suppressions with justification
-  # comments; see that file before adding new ignores.
   zizmor:
-    name: zizmor
+    name: zizmor workflow security scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
 
-      - name: Install zizmor
-        run: |
-          pip install --quiet zizmor
-
-      - name: Run zizmor
-        run: |
-          zizmor --config .github/zizmor.yml .github/workflows/
+      - name: Run zizmor 🌈
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e  # v0.7.1
+        with:
+          # Scan all workflow files in .github/workflows/
+          inputs: .github/workflows/
+          # Load repository suppression rules
+          config: .github/zizmor.yml
+          # Do not require GitHub Advanced Security — works on any public repo
+          advanced-security: false
+          # Fail the job when zizmor finds unsuppressed issues
+          # (annotations mode is incompatible with advanced-security: false)
+          annotations: false
+          # Minimum severity to report (low|medium|high|critical)
+          min-severity: medium
+          # Minimum confidence to report (low|medium|high)
+          min-confidence: medium
