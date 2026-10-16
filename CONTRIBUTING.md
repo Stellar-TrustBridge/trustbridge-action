@@ -25,13 +25,16 @@ The `.github/workflows/ci.yml` workflow runs on pushes and pull requests targeti
 
 ```bash
 npm run typecheck
+npm run typecheck:tests
 npm test
 npm run lint --if-present
 ```
 
+`npm run typecheck` uses the root `tsconfig.json`, which covers `src/` only and loads the `node` types. `npm run typecheck:tests` uses `tsconfig.test.json`, which covers `src/` **and** `__tests__/` with the `jest` types added. Run both: the root project cannot see a type error in a test file, mock, or fixture, so a green `npm run typecheck` does not imply the test suite typechecks.
+
 CI also runs these gates:
 
-- `check`: verifies the action package files, then runs typecheck, tests, and lint.
+- `check`: verifies the action package files, then runs typecheck, the `Typecheck (tests)` step (`npm run typecheck:tests`, no `|| true` fallback), tests, and lint.
 - `test-coverage`: runs `npm run test:coverage` and enforces the thresholds in `jest.config.js`.
 - `license-check`: runs `npm run license:check`.
 - `dist-drift`: typechecks tests, builds the distribution, checks source maps, and fails if the build changes committed files in `dist/`.

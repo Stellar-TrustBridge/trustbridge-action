@@ -1605,6 +1605,9 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `HORIZON_TIMEOUT` | Horizon API request timed out before returning a response. |
 | `HORIZON_ERROR` | Horizon API returned an HTTP error (5xx or non-404 4xx). |
 | `TLS_ERROR` | Transport-layer TLS/certificate verification failed connecting to Horizon. |
+| `CIRCUIT_OPEN` | The Horizon circuit breaker tripped after repeated consecutive failures, so the run failed closed without issuing further requests. Resolve the underlying Horizon outage and re-run. |
+| `RATE_BUDGET_EXHAUSTED` | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before validation completed. Raise the budget or retry. |
+| `MILESTONE_GATE_SKIPPED` | The milestone gate skipped validation because the issue milestone was not in `milestone_allowlist`. No account checks were performed. |
 | `INVALID_ADDRESS` | Provided Stellar address failed StrKey format/checksum validation. |
 | `MAINTAINER_SKIPPED` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
 

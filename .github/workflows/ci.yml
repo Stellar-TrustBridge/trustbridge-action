@@ -28,5 +28,13 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit || true
 
+      # Issue #664 — the root tsconfig excludes __tests__ and only pulls in the
+      # "node" types, so `npm run typecheck` never sees a test-only type error.
+      # tsconfig.test.json covers src/ + __tests__ with jest types, so a broken
+      # mock, fixture, or path alias fails the build here rather than at runtime.
+      # No `|| true`: test-project type errors must fail the merge.
+      - name: Typecheck (tests)
+        run: npm run typecheck:tests
+
       - name: Test
         run: npx jest --maxWorkers=1 --no-coverage --forceExit || true

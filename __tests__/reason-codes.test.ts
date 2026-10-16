@@ -105,6 +105,38 @@ describe('reason-codes.json catalog integrity', () => {
       expect(catalogCodes.has(code)).toBe(true);
     }
   });
+
+  // Issue #667 — resilience and gating codes that predate this catalog entry.
+  // They are emitted at runtime, so the catalog (a public API surface) must
+  // list them or downstream dashboard switches silently fall through to FAILED.
+  it('catalog contains the resilience and gating codes emitted at runtime (Issue #667)', () => {
+    const catalogCodes = new Set(catalog.codes.map((e) => e.code));
+    for (const code of ['CIRCUIT_OPEN', 'RATE_BUDGET_EXHAUSTED', 'MILESTONE_GATE_SKIPPED']) {
+      expect(catalogCodes.has(code)).toBe(true);
+    }
+  });
+
+  // Issue #665 — CLAWBACK_BLOCKED is documented in docs/USAGE.md and emitted
+  // by runAccountChecks, so it must be cataloged alongside the other checks codes.
+  it('catalog contains CLAWBACK_BLOCKED (Issue #665)', () => {
+    const catalogCodes = new Set(catalog.codes.map((e) => e.code));
+    expect(catalogCodes.has('CLAWBACK_BLOCKED')).toBe(true);
+  });
+
+  // Every catalog entry must point at a real source module so the emittedBy
+  // field stays actionable instead of pointing at a file that no longer exists.
+  it('every emittedBy references a module that exists on disk', () => {
+    const missing: string[] = [];
+    for (const entry of catalog.codes) {
+      const match = (entry as { emittedBy?: string }).emittedBy?.match(/^(src\/[\w./-]+)/);
+      if (!match) continue;
+      const modulePath = match[1]!;
+      if (!fs.existsSync(path.resolve(__dirname, '..', modulePath))) {
+        missing.push(`${entry.code} -> ${modulePath}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +167,12 @@ const KNOWN_REASON_CODES = [
   'HORIZON_ERROR',
   'TLS_ERROR',
   'TRUSTLINE_UNAUTHORIZED',
+  // Issue #665/#667: codes emitted by runAccountChecks and the resilience /
+  // gating paths. Listed here so the CI lock below covers them too.
+  'CLAWBACK_BLOCKED',
+  'CIRCUIT_OPEN',
+  'RATE_BUDGET_EXHAUSTED',
+  'MILESTONE_GATE_SKIPPED',
   'MAINTAINER_SKIPPED',
 ] as const;
 
