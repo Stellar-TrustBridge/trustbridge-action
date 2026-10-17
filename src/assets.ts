@@ -191,6 +191,53 @@ export function dedupeAssets(assets: AssetConfigInput[]): AssetConfigInput[] {
   });
 }
 
+/**
+ * Issuer flavour of an asset (Issue #730).
+ *
+ * Classic Stellar assets are issued by a G-account; Stellar Asset Contracts
+ * (SAC) are issued by a Soroban contract id (C-address). The two need
+ * different validation: a Horizon account balance entry always names a
+ * G-account issuer, so a C-address issuer can never be confirmed through the
+ * classic trustline path and must be resolved contract-aware instead.
+ */
+export type AssetIssuerKind = 'classic' | 'soroban-contract';
+
+/** StrKey format of a Soroban contract id (C-address): C + 55 base32 chars. */
+const SOROBAN_CONTRACT_ID_REGEX = /^C[A-Z2-7]{55}$/;
+
+/**
+ * Classify an asset issuer as a classic G-account or a Soroban contract id.
+ *
+ * The value is **not** validated here — use `assertValidAssetIssuer` first.
+ * Anything that is not a well-formed C-address is treated as classic so
+ * existing G-address callers keep their exact behaviour.
+ */
+export function classifyAssetIssuer(assetIssuer: string): AssetIssuerKind {
+  return isSorobanContractIssuer(assetIssuer) ? 'soroban-contract' : 'classic';
+}
+
+/** True when `assetIssuer` is a well-formed Soroban contract id (C-address). */
+export function isSorobanContractIssuer(assetIssuer: string): boolean {
+  return SOROBAN_CONTRACT_ID_REGEX.test((assetIssuer ?? '').trim());
+}
+
+/**
+ * Validate an asset code supplied for a Soroban SAC issuer.
+ *
+ * SAC contracts enforce the same 1–12 uppercase alphanumeric rule as classic
+ * assets, so this is `assertValidAssetCode` with a contract-specific error
+ * message that tells the operator the mismatch is on the *issuer* side.
+ */
+export function assertValidSacAssetCode(assetIssuer: string, assetCode: string): void {
+  try {
+    assertValidAssetCode(assetCode);
+  } catch {
+    throw new Error(
+      `asset_code must be 1-12 uppercase alphanumeric characters to match the Soroban SAC contract issuer ${assetIssuer}. Received: "${assetCode}"`,
+    );
+  }
+}
+
 export interface AssetClawbackStatus {
   clawbackEnabled: boolean;
 }

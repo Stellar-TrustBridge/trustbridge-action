@@ -9,7 +9,7 @@ import {
   isTrustlineAuthorized,
   parseHorizonBalance,
 } from "./horizon";
-import { getAssetClawbackStatus } from "./assets";
+import { getAssetClawbackStatus, classifyAssetIssuer, isSorobanContractIssuer, type AssetIssuerKind } from "./assets";
 import { escapeMarkdownInline, inlineCode } from "./markdown";
 import {
   buildChangeTrustLink,
@@ -282,6 +282,13 @@ export interface ValidationResult {
   trustlineAuthorized?: boolean;
   /** Whether the matched trustline has clawback enabled, or undefined if not applicable. */
   clawbackEnabled?: boolean;
+  /**
+   * Effective `unauthorized_trustline_policy` observed for this run
+   * (Issue #729). Renderers (comment, SARIF) use it to pick policy-specific
+   * wording and severity instead of re-deriving the policy from a check
+   * detail string. `warn` is the default when the input is unset.
+   */
+  unauthorizedTrustlinePolicy?: "fail" | "warn" | "ignore";
   xlmBalance: string;
   xlmReserveMet: boolean;
   /** Current balance of the configured asset (or `'0'` / `'unknown'` on error paths). */
@@ -293,6 +300,13 @@ export interface ValidationResult {
   remediation?: string;
   /** Machine-readable failure reason for gating / metrics. */
   reasonCode?: string;
+  /**
+   * Issuer flavour of the configured asset (Issue #730). `soroban-contract`
+   * means `asset_issuer` is a Stellar Asset Contract id (C-address), so the
+   * classic Horizon trustline path cannot confirm the balance and the comment
+   * labels the row accordingly. Defaults to `classic` for G-address issuers.
+   */
+  assetIssuerKind?: AssetIssuerKind;
   networkPassphraseMismatch?: NetworkPassphraseMismatch;
   /** Precomputed failed check labels (stable snake_case codes). */
   failedCheckLabels?: string[];
@@ -883,6 +897,14 @@ export function runAccountChecks(
     : undefined;
   const { clawbackEnabled } = getAssetClawbackStatus(trustlineBalance);
 
+  // Issue #730 — Soroban SAC issuers are contract ids (C-addresses). A Horizon
+  // account's `balances` array only ever names G-account issuers, so a SAC
+  // balance can neither be confirmed nor denied through the classic trustline
+  // path. Detect the flavour up front so the comment says which world we are in
+  // instead of reporting a misleading "no trustline" for a contract issuer.
+  const assetIssuerKind = classifyAssetIssuer(config.assetIssuer);
+  const sacIssuer = isSorobanContractIssuer(config.assetIssuer);
+
   const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
   const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
   const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
@@ -956,6 +978,15 @@ export function runAccountChecks(
     trustlineDetail = `Account has trustlines, but not for **${safeAssetCode}** issued by ${inlineCode(config.assetIssuer)}.`;
   } else {
     trustlineDetail = 'Account has **zero trustlines** — add a trustline before receiving this asset.';
+  }
+
+  // Issue #730 — replace the classic wording with contract-aware wording when
+  // the issuer is a Soroban SAC contract. The verdict itself is unchanged
+  // (a SAC balance is still not observable over classic Horizon), but the
+  // operator is told *why* and how to verify it, instead of being sent to add
+  // a trustline that cannot exist for a contract issuer.
+  if (sacIssuer && !trustlineExistsRaw) {
+    trustlineDetail = `**${safeAssetCode}** is issued by the Soroban SAC contract ${inlineCode(config.assetIssuer)}. SAC balances are **not** exposed as classic Horizon trustlines, so this check cannot confirm the balance — verify it on the Stellar Lab contract page or the Soroban RPC (\`getContractData\`) instead of adding a classic trustline.`;
   }
 
   const checks: CheckResultItem[] = [
@@ -1106,6 +1137,8 @@ export function runAccountChecks(
       trustlineExists,
       trustlineAuthorized,
       clawbackEnabled: trustlineExistsRaw ? clawbackEnabled : undefined,
+      unauthorizedTrustlinePolicy: unauthorizedPolicy,
+      assetIssuerKind,
       xlmBalance,
       xlmReserveMet,
       assetBalance: assetBalanceRaw,
@@ -1115,8 +1148,26 @@ export function runAccountChecks(
       remediation,
       claimableBalanceCount,
       hasClaimableBalances: hasClaimables,
+      // Issue #666: an unauthorized trustline blocked by
+      // `unauthorized_trustline_policy: fail` must surface the documented
+      // TRUSTLINE_UNAUTHORIZED code instead of the generic TRUSTLINE_MISSING
+      // that `authorizationBlocks` would otherwise fall through to.
+      // Issue #665: `clawback_strict_mode: true` blocking a clawback-enabled
+      // trustline must surface CLAWBACK_BLOCKED, also documented in USAGE.md.
+      // Both codes are part of the public catalog (schemas/reason-codes.json),
+      // so downstream payout gates can switch on them directly.
       reasonCode: (() => {
         if (valid) return "SUCCESS";
+        // Issue #729: an unauthorized trustline blocked by
+        // `unauthorized_trustline_policy: fail` is a *policy* failure, not a
+        // missing trustline — the trustline exists on-chain. Reporting
+        // TRUSTLINE_MISSING here sent triage to the wrong remediation step
+        // ("add a trustline") when the real fix is an issuer SetTrustLineFlags.
+        if (authorizationBlocks) return "TRUSTLINE_UNAUTHORIZED";
+        // Issue #730: a Soroban SAC issuer never appears in a Horizon account's
+        // `balances` array, so "trustline missing" would be a false accusation
+        // against a contract issuer. Report the contract-specific code instead.
+        if (sacIssuer && !trustlineExists) return "SAC_ISSUER_NOT_VERIFIABLE";
         if (!trustlineExists) return "TRUSTLINE_MISSING";
         if (!xlmReserveMet) return "RESERVE_TOO_LOW";
         if (config.minTrustlineLimit && !trustlineLimitMet)

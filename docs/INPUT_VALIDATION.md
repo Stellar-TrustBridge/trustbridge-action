@@ -22,6 +22,36 @@ TrustBridge validates inputs before calling Horizon so failures stay clear and c
 
 `sticky_comment` accepts the same boolean-friendly values. When true (default), the action updates its previous issue comment in place instead of creating a new one on every run.
 
+## `unauthorized_trustline_policy` (Issue #729)
+
+Controls what happens when a trustline **exists** but the issuer has set `AUTHORIZATION_REQUIRED` and has not authorized the account yet (`is_authorized: false`). The value is trimmed, lowercased and must be one of `warn`, `fail` or `ignore`; an empty value falls back to `warn`, and anything else fails fast with:
+
+```
+unauthorized_trustline_policy must be one of "fail", "warn", or "ignore". Received: "<value>"
+```
+
+| Value | Trustline check | `ready` | `reason_code` | Comment banner | SARIF |
+| --- | --- | --- | --- | --- | --- |
+| `warn` (default) | passes | `true` | `SUCCESS` | `> ⚠️ **Issuer authorization required**` with "this does **not** fail the run" | trustline result stays at `note` under `TB002` |
+| `fail` | fails | `false` | `TRUSTLINE_UNAUTHORIZED` | `> 🚫 **Issuer authorization required**` with "Blocking — … `reason_code: TRUSTLINE_UNAUTHORIZED`" | trustline result promoted to `error` under `TB006` |
+| `ignore` | passes | `true` | `SUCCESS` | none — the banner is omitted entirely | no authorization finding |
+
+Notes:
+
+- **`warn` is the safe default.** It surfaces the risk in the comment without turning an existing green workflow red. Only `fail` marks the run as failed, and only when `fail_on_missing`/gate semantics say so.
+- **The two modes are worded differently on purpose** — triage distinguishes a blocking policy failure from an informational warning by the glyph (🚫 vs ⚠️), the heading, and the `reason_code` bullet, not by re-reading a sentence inside a ✅ bullet.
+- **`reason_code` is never `TRUSTLINE_MISSING` for this case.** The trustline exists on-chain; the fix is an issuer `SetTrustLineFlags` (or legacy `AllowTrust`) operation, not another Change Trust.
+- **`ignore`** reproduces the pre-#72 behaviour: no additional check, no banner, no SARIF finding.
+- The effective policy is echoed on the validation result as `unauthorizedTrustlinePolicy` so the comment and SARIF renderers never re-derive it from a check detail string.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: G...
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    unauthorized_trustline_policy: fail   # or: warn (default)
+```
+
 ## Timeout values
 
 `horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.

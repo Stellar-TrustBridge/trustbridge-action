@@ -23,6 +23,12 @@ jobs:
       # Expose matrix-friendly outputs for downstream jobs
       assignee_results: ${{ steps.trustbridge.outputs.assignee_results_json }}
       ready_map: ${{ steps.trustbridge.outputs.matrix_ready_map }}
+      # Batch-mode outputs. Declared in action.yml as of Issue #670; these are
+      # empty in single-address runs, so guard on the count being non-empty
+      # rather than assuming batch mode.
+      batch_summary: ${{ steps.trustbridge.outputs.batch_summary_json }}
+      batch_passed: ${{ steps.trustbridge.outputs.batch_passed_count }}
+      batch_failed: ${{ steps.trustbridge.outputs.batch_failed_count }}
     
     steps:
       - name: Checkout
@@ -51,6 +57,16 @@ jobs:
         run: |
           echo "## Validation Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Batch counts are declared outputs (Issue #670). They are numeric
+          # strings in batch mode and empty otherwise, so branch on the string
+          # rather than coercing an empty value to 0.
+          PASSED='${{ steps.trustbridge.outputs.batch_passed_count }}'
+          FAILED='${{ steps.trustbridge.outputs.batch_failed_count }}'
+          if [ -n "$PASSED" ]; then
+            echo "**Passed:** $PASSED · **Failed:** $FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           
           # Parse and display results from assignee_results_json
           RESULTS='${{ steps.trustbridge.outputs.assignee_results_json }}'

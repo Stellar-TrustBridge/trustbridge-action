@@ -41,6 +41,7 @@ import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
 import { traceCommentPost } from './tracing';
+import { redactStellarAddress } from './logger';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -138,6 +139,15 @@ export interface CommentConfig extends CheckConfig {
    */
   assets?: AssetTrustlineRow[];
   existingCommentBody?: string;
+  /**
+   * When true, redact Stellar addresses (G‑ and C‑addresses) in the comment
+   * body using the same redaction format as log output (`redactStellarAddress`
+   * from `logger.ts`). SEP-0007 wallet deep links are omitted because they
+   * require the full destination address.
+   *
+   * Matches the `privacy_mode` action input.
+   */
+  privacyMode?: boolean;
 }
 
 export const TRUSTBRIDGE_FOOTER =
@@ -176,6 +186,15 @@ export function formatCommentBody(
   const strings = getStrings(config.locale ?? "en");
   const assetBalanceCheckEnabled = !!config.minAssetBalance;
 
+  // Issue #691 — redact Soroban C‑addresses when privacy mode is on,
+  // using the same `redactStellarAddress` helper as log output.
+  const displayAddress = config.privacyMode
+    ? redactStellarAddress(config.stellarAddress)
+    : config.stellarAddress;
+  const displayIssuer = config.privacyMode
+    ? redactStellarAddress(config.assetIssuer)
+    : config.assetIssuer;
+
   // Generate snooze marker with current check status (Issue #155)
   const snoozeMarker = formatSnoozeMarker(result.valid ? "pass" : "fail");
 
@@ -193,9 +212,9 @@ export function formatCommentBody(
       snoozeMarker,
       "## TrustBridge — Stellar Account Check",
       "",
-      `${strings.checkedAccount} ${inlineCode(config.stellarAddress)}`,
+      `${strings.checkedAccount} ${inlineCode(displayAddress)}`,
       `${strings.horizon} ${inlineCode(config.horizonUrl)}`,
-      `${strings.asset} **${config.assetCode}** · Issuer: ${inlineCode(config.assetIssuer)}`,
+      `${strings.asset} **${config.assetCode}** · Issuer: ${inlineCode(displayIssuer)}`,
     ];
 
     lines.push(
@@ -220,13 +239,37 @@ export function formatCommentBody(
       );
     }
 
+    // Issuer-authorization banner (Issue #729 — unauthorized_trustline_policy).
+    // The trustline check passes in `warn` mode, so without an explicit
+    // banner the only signal is a sentence buried inside a ✅ bullet — triage
+    // cannot tell an informational warning apart from a blocking policy
+    // failure. Warn mode therefore uses a ⚠️ heading and states explicitly
+    // that the run is NOT failed; `fail` mode uses a 🚫 heading and surfaces
+    // the matching `reason_code`. `ignore` renders nothing, matching the
+    // "no additional check or warning" contract of the policy.
+    const unauthorizedPolicy = result.unauthorizedTrustlinePolicy ?? 'warn';
+    if (result.trustlineAuthorized === false && unauthorizedPolicy !== 'ignore') {
+      const blocking = unauthorizedPolicy === 'fail';
+      const authFaqUrl = buildFaqLinkForCheck(
+        `${config.assetCode} trustline`,
+        config.docsBaseUrl,
+      );
+      lines.push(
+        "",
+        `> ${blocking ? '🚫' : '⚠️'} **${escapeMarkdownInline(strings.unauthorizedTrustlineHeading)}**`,
+        `> - ${blocking ? strings.unauthorizedTrustlineFail : strings.unauthorizedTrustlineWarn}`,
+        `> - ${blocking ? strings.unauthorizedTrustlineFailNote : strings.unauthorizedTrustlineWarnNote}`,
+        `> - ${strings.reasonCode} ${inlineCode(blocking ? 'TRUSTLINE_UNAUTHORIZED' : 'SUCCESS')}`,
+        authFaqUrl ? `> - [→ FAQ](${authFaqUrl})` : "",
+      );
+    }
+
     // Circuit breaker banner (Issue #434) — a run that fast-failed because the
     // Horizon circuit was open must say so, otherwise the Results list looks
     // like a plain account failure and triage chases the wrong root cause.
     // Rendered immediately after Results so it is the first thing a maintainer
     // reads. Contains no account data, addresses, or balances.
-    if (result.circuitOpen) {
-      lines.push(
+    if (result.circuitOpen) {      lines.push(
         "",
         `> ⚡ **${strings.circuitBreakerHeading}**`,
         `> - ${strings.circuitBreakerOpen}`,
@@ -349,13 +392,15 @@ export function formatCommentBody(
       "",
       `### ${strings.addTrustlineHeading}`,
       "",
-      `- [${strings.viewAccountOnLab}](${buildAccountViewerLink(config.stellarAddress, stellarLabNetwork)})`,
+      `- [${strings.viewAccountOnLab}](${buildAccountViewerLink(displayAddress, stellarLabNetwork)})`,
       `- [${strings.openTransactionBuilder}](${buildChangeTrustLink(stellarLabNetwork)})`,
-      `- [${strings.lobstrWallet}](${buildLobstrLink()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${config.assetIssuer}\``,
+      `- [${strings.lobstrWallet}](${buildLobstrLink()}) — ${strings.lobstrDescription} **${config.assetCode}** from issuer \`${displayIssuer}\``,
     );
 
     // SEP-0007 wallet deep links (Issue #44) — independent of the checklist flag.
-    if (config.sep0007DeepLinks) {
+    // Skipped in privacy mode because the destination address would be redacted
+    // and the resulting URI would be non-functional (Issue #691).
+    if (config.sep0007DeepLinks && !config.privacyMode) {
       const payLink = buildSep0007PayLink({
         destination: config.stellarAddress,
         amount: String(STELLAR_MIN_ACCOUNT_BALANCE_XLM),
@@ -380,7 +425,7 @@ export function formatCommentBody(
       challengeXdr: config.sep0010ChallengeXdr,
       dashboardUrl: config.sep0010DashboardUrl,
       network: stellarLabNetwork,
-      stellarAddress: config.stellarAddress,
+      stellarAddress: displayAddress,
     });
     if (sep0010Snippet) {
       lines.push(
@@ -545,9 +590,9 @@ export function formatCommentBody(
     if (config.customCommentTemplatePath) {
       try {
         const templateCtx = buildTemplateContext({
-          stellarAddress: config.stellarAddress,
+          stellarAddress: displayAddress,
           assetCode: config.assetCode,
-          assetIssuer: config.assetIssuer,
+          assetIssuer: displayIssuer,
           horizonUrl: config.horizonUrl,
           network: inferStellarNetwork(config.horizonUrl),
           valid: result.valid,
@@ -1618,7 +1663,7 @@ export async function postDiscussionComment(
   body: string,
   options: UpsertDiscussionCommentOptions = {},
 ): Promise<string | undefined> {
-  const sticky = options.sticky ?? true;
+  const sticky = resolveCommentMode(options.commentMode, options.sticky) === 'sticky';
   const forceComment = options.forceComment ?? false;
   const snoozeWindowMs = options.snoozeWindowMs ?? 0;
   const context = github.context;

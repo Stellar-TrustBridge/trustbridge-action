@@ -540,3 +540,299 @@ describe('Issue #549 — github_username fallback: lookupAddressFromContract acc
     expect(decoded2.args[0]).toBe(explicitGithubUsername);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #730 — Soroban SAC (Stellar Asset Contract) issuer support
+//
+// A SAC issues an asset from a contract id, so the issuer is a C-address and
+// the classic Horizon trustline path can never confirm the balance. These
+// tests drive the real parsers against contract-representative fixtures (see
+// docs/SOROBAN_CONTRACT_FIXTURES.md) plus the synthetic malformed-id cases.
+// ---------------------------------------------------------------------------
+
+import {
+  fetchSacContractMetadata,
+  parseSacContractMetadata,
+  verifySacIssuerAssetCode,
+  isSorobanContractId,
+  classifyAssetIssuer,
+  isSorobanContractIssuer,
+} from '../src/soroban';
+import {
+  assertValidSacAssetCode,
+  classifyAssetIssuer as classifyAssetIssuerFromAssets,
+  isSorobanContractIssuer as isSorobanContractIssuerFromAssets,
+} from '../src/assets';
+import { redactContractAddress, redactContext, redactStellarAddress } from '../src/logger';
+
+const SAC_CONTRACT_ID = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+const SAC_CONTRACT_ID_2 = 'CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB4X';
+const SAC_FIXTURE_PATH = path.join(
+  __dirname,
+  'fixtures',
+  'soroban',
+  'sac_contract_metadata.json',
+);
+
+interface SacFixtureFile {
+  _fixture_version: string;
+  _generated_from: string;
+  _fixture_contract_id: string;
+  scenarios: Record<string, unknown>;
+}
+
+function loadSacFixture(): SacFixtureFile {
+  return JSON.parse(fs.readFileSync(SAC_FIXTURE_PATH, 'utf8')) as SacFixtureFile;
+}
+
+describe('Issue #730: SAC contract fixtures', () => {
+  const fixture = loadSacFixture();
+
+  it('fixture file is valid JSON with the documented shape', () => {
+    expect(typeof fixture._fixture_version).toBe('string');
+    expect(fixture._fixture_version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(fixture._generated_from).toContain('/contracts/');
+    expect(fixture._fixture_contract_id).toBe(SAC_CONTRACT_ID);
+    expect(Object.keys(fixture.scenarios).length).toBeGreaterThan(0);
+  });
+
+  it('the fixture contract id is a well-formed Soroban contract id', () => {
+    expect(isSorobanContractId(fixture._fixture_contract_id)).toBe(true);
+    expect(isSorobanContractIssuerFromAssets(fixture._fixture_contract_id)).toBe(true);
+  });
+});
+
+describe('Issue #730: isSorobanContractId', () => {
+  it('accepts a well-formed C-address', () => {
+    expect(isSorobanContractId(SAC_CONTRACT_ID)).toBe(true);
+    expect(isSorobanContractId(`  ${SAC_CONTRACT_ID}  `)).toBe(true);
+  });
+
+  it('rejects a G-address, a short id and a wrong-alphabet id', () => {
+    expect(isSorobanContractId('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')).toBe(false);
+    expect(isSorobanContractId('CNOTACONTRACT')).toBe(false);
+    expect(isSorobanContractId('C' + '0'.repeat(55))).toBe(false);
+    expect(isSorobanContractId('')).toBe(false);
+  });
+});
+
+describe('Issue #730: issuer classification (src/assets.ts)', () => {
+  it('classifies a C-address as a soroban contract', () => {
+    expect(classifyAssetIssuer(SAC_CONTRACT_ID)).toBe('soroban-contract');
+    expect(classifyAssetIssuerFromAssets(SAC_CONTRACT_ID)).toBe('soroban-contract');
+  });
+
+  it('classifies a G-address as classic', () => {
+    const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    expect(classifyAssetIssuer(issuer)).toBe('classic');
+    expect(isSorobanContractIssuerFromAssets(issuer)).toBe(false);
+  });
+
+  it('classifies an invalid issuer as classic so existing flows are unchanged', () => {
+    expect(classifyAssetIssuer('not-an-issuer')).toBe('classic');
+    expect(classifyAssetIssuer('')).toBe('classic');
+  });
+
+  it('validates a SAC asset code with a contract-specific error message', () => {
+    expect(() => assertValidSacAssetCode(SAC_CONTRACT_ID, 'USDC')).not.toThrow();
+    expect(() => assertValidSacAssetCode(SAC_CONTRACT_ID, 'usdc')).not.toThrow();
+    expect(() => assertValidSacAssetCode(SAC_CONTRACT_ID, 'way-too-long-asset-code')).toThrow(
+      /Soroban SAC contract issuer/,
+    );
+  });
+});
+
+describe('Issue #730: parseSacContractMetadata', () => {
+  const fixture = loadSacFixture();
+
+  it('reads the SAC reporting fields from a node that exposes them', () => {
+    const meta = parseSacContractMetadata(
+      fixture.scenarios['sac_with_reporting_fields'],
+      SAC_CONTRACT_ID,
+    );
+
+    expect(meta.exists).toBe(true);
+    expect(meta.name).toBe('USD Coin');
+    expect(meta.symbol).toBe('USDC');
+    expect(meta.decimals).toBe(7);
+    expect(meta.symbolVerified).toBe(true);
+    expect(meta.issuerKind).toBe('soroban-contract');
+    expect(meta.source).toBe('horizon');
+  });
+
+  it('coerces a string decimals value', () => {
+    const meta = parseSacContractMetadata(
+      fixture.scenarios['sac_reporting_fields_string_decimals'],
+      SAC_CONTRACT_ID,
+    );
+
+    expect(meta.exists).toBe(true);
+    expect(meta.decimals).toBe(7);
+    expect(meta.symbol).toBe('USDC');
+  });
+
+  it('reports an older node without reporting fields as unverified, not missing', () => {
+    const meta = parseSacContractMetadata(
+      fixture.scenarios['sac_without_reporting_fields'],
+      SAC_CONTRACT_ID,
+    );
+
+    expect(meta.exists).toBe(true);
+    expect(meta.symbol).toBeUndefined();
+    expect(meta.symbolVerified).toBe(false);
+    // Inconclusive — the caller must not fail on it.
+    expect(verifySacIssuerAssetCode(meta, 'USDC')).toBeNull();
+  });
+
+  it('returns exists=false for a JSON-RPC error envelope', () => {
+    const meta = parseSacContractMetadata(fixture.scenarios['error_envelope'], SAC_CONTRACT_ID);
+
+    expect(meta.exists).toBe(false);
+    expect(meta.symbolVerified).toBe(false);
+  });
+
+  it('returns exists=false for non-object input', () => {
+    expect(parseSacContractMetadata(null, SAC_CONTRACT_ID).exists).toBe(false);
+    expect(parseSacContractMetadata('nope', SAC_CONTRACT_ID).exists).toBe(false);
+  });
+});
+
+describe('Issue #730: verifySacIssuerAssetCode', () => {
+  const fixture = loadSacFixture();
+
+  it('accepts a matching symbol (case-insensitive)', () => {
+    const meta = parseSacContractMetadata(
+      fixture.scenarios['sac_with_reporting_fields'],
+      SAC_CONTRACT_ID,
+    );
+    expect(verifySacIssuerAssetCode(meta, 'USDC')).toBe(true);
+    expect(verifySacIssuerAssetCode(meta, 'usdc')).toBe(true);
+  });
+
+  it('rejects a symbol mismatch', () => {
+    const meta = parseSacContractMetadata(
+      fixture.scenarios['sac_symbol_mismatch'],
+      SAC_CONTRACT_ID_2,
+    );
+    expect(meta.symbol).toBe('TST');
+    expect(verifySacIssuerAssetCode(meta, 'USDC')).toBe(false);
+  });
+
+  it('returns null when no reporting field is available', () => {
+    expect(
+      verifySacIssuerAssetCode(
+        { contractId: SAC_CONTRACT_ID, issuerKind: 'soroban-contract', exists: true, symbolVerified: false, source: 'horizon' },
+        'USDC',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('Issue #730: fetchSacContractMetadata', () => {
+  const fixture = loadSacFixture();
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  function mockGet(status: number, body: unknown): void {
+    mockFetch.mockResolvedValueOnce({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as never);
+  }
+
+  it('happy path: resolves SAC metadata from the Horizon contracts endpoint', async () => {
+    mockGet(200, fixture.scenarios['sac_with_reporting_fields']);
+
+    const meta = await fetchSacContractMetadata(SAC_CONTRACT_ID, {
+      horizonUrl: RPC_URL,
+      timeoutMs: 5000,
+    });
+
+    expect(meta.exists).toBe(true);
+    expect(meta.symbol).toBe('USDC');
+    expect(verifySacIssuerAssetCode(meta, 'USDC')).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      `${RPC_URL}/contracts/${SAC_CONTRACT_ID}`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('treats a 404 from an older node as "not exposed", never as a throw', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => fixture.scenarios['not_found'],
+    } as never);
+
+    const meta = await fetchSacContractMetadata(SAC_CONTRACT_ID, { horizonUrl: RPC_URL });
+
+    expect(meta.exists).toBe(false);
+    expect(meta.source).toBe('horizon');
+    expect(meta.symbolVerified).toBe(false);
+  });
+
+  it('skips the live fetch entirely in offline mode', async () => {
+    const meta = await fetchSacContractMetadata(SAC_CONTRACT_ID, {});
+
+    expect(meta.source).toBe('skipped');
+    expect(meta.exists).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed contract id before any network call', async () => {
+    const malformed = (fixture.scenarios['malformed_contract_id'] as { value: string }).value;
+
+    const meta = await fetchSacContractMetadata(malformed, { horizonUrl: RPC_URL });
+
+    expect(meta.source).toBe('invalid-contract-id');
+    expect(meta.issuerKind).toBe('classic');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a retryable error on HTTP 503', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) } as never);
+
+    await expect(
+      fetchSacContractMetadata(SAC_CONTRACT_ID, { horizonUrl: RPC_URL }),
+    ).rejects.toMatchObject({ name: 'ContractLookupError', retryable: true });
+  });
+
+  it('surfaces a non-retryable error on HTTP 500', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) } as never);
+
+    await expect(
+      fetchSacContractMetadata(SAC_CONTRACT_ID, { horizonUrl: RPC_URL }),
+    ).rejects.toMatchObject({ name: 'ContractLookupError', retryable: false });
+  });
+});
+
+describe('Issue #730: C-address redaction in logs (src/logger.ts)', () => {
+  it('redacts a contract id to first4...last4', () => {
+    expect(redactContractAddress(SAC_CONTRACT_ID)).toBe('CAAA...D2KM');
+  });
+
+  it('agrees with redactStellarAddress so the two policies cannot drift', () => {
+    expect(redactContractAddress(SAC_CONTRACT_ID)).toBe(redactStellarAddress(SAC_CONTRACT_ID));
+  });
+
+  it('never leaks a full C-address through a log context key', () => {
+    for (const key of ['contractAddress', 'contractId', 'sacContractId', 'issuerContractId', 'assetIssuer']) {
+      const safe = redactContext({ [key]: SAC_CONTRACT_ID });
+      expect(safe?.[key]).toBe('CAAA...D2KM');
+      expect(String(safe?.[key])).not.toContain(SAC_CONTRACT_ID);
+    }
+  });
+
+  it('redacts a C-address embedded in free-form debug text', () => {
+    const safe = redactContext({ note: `issuer ${SAC_CONTRACT_ID} is a SAC` });
+    expect(safe?.note).toBe('issuer CAAA...D2KM is a SAC');
+  });
+
+  it('leaves a non-contract value untouched', () => {
+    expect(redactContractAddress('not-a-contract')).toBe('not-a-contract');
+    expect(redactContractAddress('')).toBe('');
+  });
+});

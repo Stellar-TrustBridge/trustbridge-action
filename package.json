@@ -49,6 +49,7 @@
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
+    "ajv": "^8.17.1",
     "@stryker-mutator/core": "^8.7.1",
     "@stryker-mutator/jest-runner": "^8.7.1",
     "@stryker-mutator/typescript-checker": "^8.7.1",

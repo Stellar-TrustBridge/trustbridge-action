@@ -45,6 +45,18 @@ export interface CommentStrings {
   circuitBreakerRecoveryHint: string;
   circuitBreakerReasonCode: string;
 
+  // Issuer-authorization banner (Issue #729 — unauthorized_trustline_policy)
+  /** Heading shown when the trustline is not authorized by the issuer. */
+  unauthorizedTrustlineHeading: string;
+  /** Body copy for `unauthorized_trustline_policy: warn` (non-blocking). */
+  unauthorizedTrustlineWarn: string;
+  /** Body copy for `unauthorized_trustline_policy: fail` (blocking). */
+  unauthorizedTrustlineFail: string;
+  /** Trailing note clarifying that warn mode does not block the run. */
+  unauthorizedTrustlineWarnNote: string;
+  /** Trailing note clarifying that fail mode blocks the run. */
+  unauthorizedTrustlineFailNote: string;
+
   // Onboarding checklist (Issue #436 — previously English-only in markdown.ts)
   checklistHeading: string;
   checklistIntro: string;
@@ -163,6 +175,16 @@ const EN: CommentStrings = {
   circuitBreakerRecoveryHint:
     'This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow. If it keeps happening, check the Horizon endpoint health and your `horizon_url` / `max_retries` settings.',
   circuitBreakerReasonCode: 'Reason code: `CIRCUIT_OPEN`',
+
+  unauthorizedTrustlineHeading: 'Issuer authorization required',
+  unauthorizedTrustlineWarn:
+    'The trustline exists but the issuer has **not authorized** it (`AUTHORIZATION_REQUIRED`). Transfers of this asset will fail until the issuer authorizes it — ask the issuer to submit a `SetTrustLineFlags` operation for this account.',
+  unauthorizedTrustlineFail:
+    'The trustline exists but the issuer has **not authorized** it (`AUTHORIZATION_REQUIRED`), and `unauthorized_trustline_policy: fail` treats that as a blocking failure.',
+  unauthorizedTrustlineWarnNote:
+    'Informational only — this does **not** fail the run (`unauthorized_trustline_policy: warn`).',
+  unauthorizedTrustlineFailNote:
+    'Blocking — the run is marked failed with `reason_code: TRUSTLINE_UNAUTHORIZED`.',
 
   checklistHeading: 'Onboarding checklist',
   checklistIntro:
@@ -288,6 +310,16 @@ const ES: CommentStrings = {
     'Es una protección de resiliencia, no un problema de la cuenta. Espera a que termine la ventana de recuperación y vuelve a ejecutar el workflow. Si se repite, comprueba la salud del endpoint de Horizon y los ajustes `horizon_url` / `max_retries`.',
   circuitBreakerReasonCode: 'Código de razón: `CIRCUIT_OPEN`',
 
+  unauthorizedTrustlineHeading: 'Se requiere autorización del emisor',
+  unauthorizedTrustlineWarn:
+    'La línea de confianza existe pero el emisor **no la ha autorizado** (`AUTHORIZATION_REQUIRED`). Las transferencias de este activo fallarán hasta que el emisor la autorice: pide al emisor que envíe una operación `SetTrustLineFlags` para esta cuenta.',
+  unauthorizedTrustlineFail:
+    'La línea de confianza existe pero el emisor **no la ha autorizado** (`AUTHORIZATION_REQUIRED`), y `unauthorized_trustline_policy: fail` lo trata como un fallo bloqueante.',
+  unauthorizedTrustlineWarnNote:
+    'Solo informativo: esto **no** hace fallar la ejecución (`unauthorized_trustline_policy: warn`).',
+  unauthorizedTrustlineFailNote:
+    'Bloqueante: la ejecución se marca como fallida con `reason_code: TRUSTLINE_UNAUTHORIZED`.',
+
   checklistHeading: 'Lista de incorporación',
   checklistIntro:
     '_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._',
@@ -411,6 +443,16 @@ const PT: CommentStrings = {
   circuitBreakerRecoveryHint:
     'Isto é uma proteção de resiliência, não um problema com a conta. Aguarde a janela de recuperação e execute o workflow novamente. Se persistir, verifique a saúde do endpoint do Horizon e as definições `horizon_url` / `max_retries`.',
   circuitBreakerReasonCode: 'Código de motivo: `CIRCUIT_OPEN`',
+
+  unauthorizedTrustlineHeading: 'Autorização do emissor necessária',
+  unauthorizedTrustlineWarn:
+    'A linha de confiança existe mas o emissor **não a autorizou** (`AUTHORIZATION_REQUIRED`). As transferências deste ativo vão falhar até o emissor autorizá-la: peça ao emissor que envie uma operação `SetTrustLineFlags` para esta conta.',
+  unauthorizedTrustlineFail:
+    'A linha de confiança existe mas o emissor **não a autorizou** (`AUTHORIZATION_REQUIRED`), e `unauthorized_trustline_policy: fail` trata isso como uma falha bloqueante.',
+  unauthorizedTrustlineWarnNote:
+    'Apenas informativo: isto **não** faz a execução falhar (`unauthorized_trustline_policy: warn`).',
+  unauthorizedTrustlineFailNote:
+    'Bloqueante: a execução é marcada como falhada com `reason_code: TRUSTLINE_UNAUTHORIZED`.',
 
   checklistHeading: 'Lista de integração',
   checklistIntro:
@@ -541,6 +583,16 @@ const JA: CommentStrings = {
     'これはアカウントの問題ではなく、レジリエンス保護です。復旧ウィンドウの経過を待ってからワークフローを再実行してください。繰り返し発生する場合は、Horizon エンドポイントの健全性と `horizon_url` / `max_retries` の設定を確認してください。',
   circuitBreakerReasonCode: '理由コード: `CIRCUIT_OPEN`',
 
+  unauthorizedTrustlineHeading: '発行者の承認が必要です',
+  unauthorizedTrustlineWarn:
+    'トラストラインは存在しますが、発行者は**承認していません**（`AUTHORIZATION_REQUIRED`）。発行者が承認するまで、このアセットの送金は失敗します。発行者にこのアカウントの `SetTrustLineFlags` オペレーションを依頼してください。',
+  unauthorizedTrustlineFail:
+    'トラストラインは存在しますが、発行者は**承認していません**（`AUTHORIZATION_REQUIRED`）。`unauthorized_trustline_policy: fail` の設定により、これはブロックされる失敗として扱われます。',
+  unauthorizedTrustlineWarnNote:
+    '情報のみ: `unauthorized_trustline_policy: warn` の場合、実行は**失敗しません**。',
+  unauthorizedTrustlineFailNote:
+    'ブロック: 実行は `reason_code: TRUSTLINE_UNAUTHORIZED` で失敗としてマークされます。',
+
   checklistHeading: 'オンボーディングチェックリスト',
   checklistIntro:
     '_以下の手順を順番に完了してください。チェックボックスは Horizon のライブチェックから自動更新されます。_',
@@ -664,6 +716,16 @@ const FR: CommentStrings = {
     'Il s’agit d’une protection de résilience, pas d’un problème de compte. Attendez la fin de la fenêtre de récupération, puis relancez le workflow. Si cela persiste, vérifiez la santé du point de terminaison Horizon et les réglages `horizon_url` / `max_retries`.',
   circuitBreakerReasonCode: 'Code de motif : `CIRCUIT_OPEN`',
 
+  unauthorizedTrustlineHeading: 'Autorisation de l’émetteur requise',
+  unauthorizedTrustlineWarn:
+    'La ligne de confiance existe mais l’émetteur ne l’a **pas autorisée** (`AUTHORIZATION_REQUIRED`). Les transferts de cet actif échoueront tant que l’émetteur ne l’aura pas autorisée — demandez à l’émetteur d’envoyer une opération `SetTrustLineFlags` pour ce compte.',
+  unauthorizedTrustlineFail:
+    'La ligne de confiance existe mais l’émetteur ne l’a **pas autorisée** (`AUTHORIZATION_REQUIRED`), et `unauthorized_trustline_policy: fail` traite cela comme un échec bloquant.',
+  unauthorizedTrustlineWarnNote:
+    'Purement informatif : cela ne fait **pas** échouer l’exécution (`unauthorized_trustline_policy: warn`).',
+  unauthorizedTrustlineFailNote:
+    'Bloquant : l’exécution est marquée en échec avec `reason_code: TRUSTLINE_UNAUTHORIZED`.',
+
   checklistHeading: 'Liste d’intégration',
   checklistIntro:
     '_Effectuez ces étapes dans l’ordre. Les cases se mettent à jour automatiquement à partir des vérifications Horizon._',
@@ -786,6 +848,16 @@ const DE: CommentStrings = {
   circuitBreakerRecoveryHint:
     'Dies ist ein Resilienzschutz und kein Problem mit dem Konto. Warten Sie das Ende des Wiederherstellungsfensters ab und starten Sie den Workflow erneut. Sollte dies wiederholt auftreten, prüfen Sie die Erreichbarkeit des Horizon-Endpunkts sowie die Einstellungen `horizon_url` / `max_retries`.',
   circuitBreakerReasonCode: 'Grundcode: `CIRCUIT_OPEN`',
+
+  unauthorizedTrustlineHeading: 'Autorisierung des Emittenten erforderlich',
+  unauthorizedTrustlineWarn:
+    'Die Trustline existiert, wurde vom Emittenten aber **nicht autorisiert** (`AUTHORIZATION_REQUIRED`). Übertragungen dieses Assets schlagen fehl, bis der Emittent sie autorisiert — bitten Sie den Emittenten, eine `SetTrustLineFlags`-Operation für dieses Konto einzureichen.',
+  unauthorizedTrustlineFail:
+    'Die Trustline existiert, wurde vom Emittenten aber **nicht autorisiert** (`AUTHORIZATION_REQUIRED`), und `unauthorized_trustline_policy: fail` behandelt dies als blockierenden Fehler.',
+  unauthorizedTrustlineWarnNote:
+    'Nur informativ: Der Lauf wird dadurch **nicht** fehlschlagen (`unauthorized_trustline_policy: warn`).',
+  unauthorizedTrustlineFailNote:
+    'Blockierend: Der Lauf wird mit `reason_code: TRUSTLINE_UNAUTHORIZED` als fehlgeschlagen markiert.',
 
   checklistHeading: 'Onboarding-Checkliste',
   checklistIntro:

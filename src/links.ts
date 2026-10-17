@@ -1,3 +1,5 @@
+import { assertValidAssetCode, assertValidAssetIssuer, normalizeAssetCode } from './assets';
+
 /**
  * Stellar Laboratory and wallet deep-link helpers.
  *
@@ -264,6 +266,26 @@ export function buildSep0007TxLink(options: Sep0007TxOptions): string {
   return `web+stellar:tx?${params.toString()}`;
 }
 
+function validateSep0007PayLinkOptions(options: Sep0007PayOptions): void {
+  const assetCode = options.assetCode?.trim();
+  const assetIssuer = options.assetIssuer?.trim();
+
+  if (assetCode || assetIssuer) {
+    if (!assetCode) {
+      throw new Error('assetCode is required when assetIssuer is provided.');
+    }
+    if (!assetIssuer) {
+      throw new Error('assetIssuer is required when assetCode is provided.');
+    }
+    assertValidAssetCode(assetCode);
+    assertValidAssetIssuer(assetIssuer);
+  }
+
+  if (options.networkPassphrase !== undefined && !options.networkPassphrase.trim()) {
+    throw new Error('networkPassphrase must be a non-empty string when provided.');
+  }
+}
+
 /**
  * Options for building a SEP-0007 `pay` deep link.
  */
@@ -308,6 +330,8 @@ export interface Sep0007PayOptions {
  * ```
  */
 export function buildSep0007PayLink(options: Sep0007PayOptions): string {
+  validateSep0007PayLinkOptions(options);
+
   const network = options.network ?? 'public';
   const passphrase =
     options.networkPassphrase ??
@@ -323,9 +347,9 @@ export function buildSep0007PayLink(options: Sep0007PayOptions): string {
     params.set('amount', options.amount);
   }
   if (options.assetCode) {
-    params.set('asset_code', options.assetCode);
+    params.set('asset_code', normalizeAssetCode(options.assetCode));
     if (options.assetIssuer) {
-      params.set('asset_issuer', options.assetIssuer);
+      params.set('asset_issuer', options.assetIssuer.trim());
     }
   }
   if (options.memo) {

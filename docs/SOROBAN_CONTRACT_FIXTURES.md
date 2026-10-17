@@ -1,7 +1,9 @@
 # Soroban Contract Fixtures
 
-This document explains the checked-in fixture for Soroban contract compatibility tests
-(`__tests__/fixtures/soroban/get_address_simulate_result.json`) introduced in issue #294.
+This document explains the checked-in fixtures for Soroban contract compatibility tests:
+
+- `__tests__/fixtures/soroban/get_address_simulate_result.json` — registry lookup, introduced in issue #294.
+- `__tests__/fixtures/soroban/sac_contract_metadata.json` — SAC (C-address) issuer metadata, introduced in issue #730.
 
 ---
 
@@ -25,6 +27,33 @@ The fixture covers seven scenarios:
 
 The parser (`parseAddressFromSimulateResult` in `src/soroban.ts`) is tested against
 every scenario in the CI step `Soroban contract compatibility tests`.
+
+---
+
+## `sac_contract_metadata.json` (issue #730)
+
+A Stellar Asset Contract issues an asset from a **C-address**, and its balance is never
+exposed as a classic Horizon trustline. This fixture is a versioned golden snapshot of the
+response shapes TrustBridge reads from `GET {horizon_url}/contracts/{contract_id}` to obtain
+the SAC reporting fields (`name()`, `symbol()`, `decimals()`).
+
+| Scenario | Description |
+|----------|-------------|
+| `sac_with_reporting_fields` | Node reports the SAC fields inline and under a nested `sac` object; `symbol()` = `USDC` |
+| `sac_reporting_fields_string_decimals` | `decimals` reported as a string (`"7"`), no nested `sac` object — exercises the coercion path |
+| `sac_without_reporting_fields` | Older node exposes contract code but no SAC fields — `exists: true`, `symbolVerified: false`, asset-code check inconclusive |
+| `sac_symbol_mismatch` | The contract reports `TST` while `asset_code` is `USDC` — a real misconfiguration that must fail the asset-code check |
+| `not_found` | HTTP 404 problem document from a node without the Soroban contracts endpoint |
+| `error_envelope` | JSON-RPC error envelope — resolves to `exists: false`, never throws |
+| `malformed_contract_id` | Not a valid C-address — the fetch is refused before any network call |
+
+Consumers in `src/soroban.ts`: `parseSacContractMetadata`, `verifySacIssuerAssetCode` and
+`fetchSacContractMetadata`. Every scenario is exercised in `__tests__/soroban.test.ts` under
+`Issue #730`.
+
+Fixture versioning follows the same rules as the registry fixture: new scenario bumps
+`_fixture_version` minor, an ABI/node shape change bumps it major, and a comment or
+description fix bumps it patch.
 
 ---
 

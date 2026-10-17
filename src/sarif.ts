@@ -33,6 +33,11 @@ export interface SarifRule {
  */
 export type SarifLevel = 'note' | 'warning' | 'error';
 
+/** Rule ID for the generic "account has the required trustline" finding. */
+export const TRUSTLINE_RULE_ID = 'TB002';
+/** Rule ID for "trustline exists but the issuer has not authorized it". */
+export const UNAUTHORIZED_TRUSTLINE_RULE_ID = 'TB006';
+
 /**
  * Build SARIF rule definitions from TrustBridge checks.
  * Each check becomes a rule with a stable ID, description, and help URI.
@@ -109,6 +114,20 @@ export function buildSarifRules(): SarifRule[] {
         precision: 'high',
       },
     },
+    {
+      id: 'TB006',
+      shortDescription: {
+        text: 'Asset trustline is authorized by the issuer',
+      },
+      fullDescription: {
+        text: 'The issuer requires AUTHORIZATION_REQUIRED and has not authorized this trustline, so transfers of the asset fail. Emitted when unauthorized_trustline_policy: fail blocks a trustline that exists but is not authorized.',
+      },
+      helpUri: 'https://developers.stellar.org/docs/tokens/control-asset-access#authorization-required-0x1',
+      properties: {
+        tags: ['trustbridge', 'stellar', 'wallet-readiness', 'authorization'],
+        precision: 'high',
+      },
+    },
   ];
 }
 
@@ -133,6 +152,29 @@ export function checkLabelToRuleId(label: string): string {
 }
 
 /**
+ * Resolve the SARIF severity for an unauthorized trustline according to the
+ * effective `unauthorized_trustline_policy` (Issue #729).
+ *
+ * - `fail` — blocking policy failure: reported as an `error` under the
+ *   dedicated {@link UNAUTHORIZED_TRUSTLINE_RULE_ID} rule.
+ * - `warn` (default) — informational only: the trustline check passes, so the
+ *   finding stays at `note` severity under the generic trustline rule.
+ * - `ignore` — the policy asks for no finding at all, so `undefined` means
+ *   "omit the authorization result".
+ */
+export function unauthorizedTrustlineSarifSeverity(
+  result: Pick<ValidationResult, 'trustlineAuthorized' | 'unauthorizedTrustlinePolicy'>,
+): { level: SarifLevel; ruleId: string } | undefined {
+  if (result.trustlineAuthorized !== false) return undefined;
+  const policy = result.unauthorizedTrustlinePolicy ?? 'warn';
+  if (policy === 'ignore') return undefined;
+  if (policy === 'fail') {
+    return { level: 'error', ruleId: UNAUTHORIZED_TRUSTLINE_RULE_ID };
+  }
+  return { level: 'note', ruleId: TRUSTLINE_RULE_ID };
+}
+
+/**
  * Build a single SARIF result from a TrustBridge check.
  */
 export function checkToSarifResult(
@@ -140,9 +182,10 @@ export function checkToSarifResult(
   assetCode: string,
   horizonUrl: string,
   stellarAddress: string,
+  severityOverride?: { level: SarifLevel; ruleId: string },
 ): Record<string, unknown> {
-  const ruleId = checkLabelToRuleId(check.label);
-  const level = checkToSarifLevel(check);
+  const ruleId = severityOverride?.ruleId ?? checkLabelToRuleId(check.label);
+  const level = severityOverride?.level ?? checkToSarifLevel(check);
 
   return {
     ruleId,
@@ -183,6 +226,21 @@ export function buildSarifOutput(
   version: string = '1.0.0',
 ): Record<string, unknown> {
   const rules = buildSarifRules();
+  // Issue #729 — the authorization finding only appears when the policy asks
+  // for it: `fail` promotes the trustline result to an `error` under TB006,
+  // `warn` keeps it at `note` severity, `ignore` omits it entirely.
+  const unauthorizedSeverity = unauthorizedTrustlineSarifSeverity(result);
+  const results = result.checks.map((check) =>
+    checkToSarifResult(
+      check,
+      assetCode,
+      horizonUrl,
+      stellarAddress,
+      unauthorizedSeverity && check.label.toLowerCase().includes('trustline')
+        ? unauthorizedSeverity
+        : undefined,
+    ),
+  );
   const sarif = {
     version: '2.1.0',
     $schema:
@@ -198,9 +256,7 @@ export function buildSarifOutput(
             rules,
           },
         },
-        results: result.checks.map((check) =>
-          checkToSarifResult(check, assetCode, horizonUrl, stellarAddress),
-        ),
+        results,
         properties: {
           trustbridgeVersion: version,
           runTimestamp: new Date().toISOString(),

@@ -58,6 +58,7 @@ import {
   resolveGitHubAuthToken,
   resolveInput,
   resolveMaintainerSkipInput,
+  resolveReadyLabelInputs,
 } from "./inputs";
 import { formatFailureSummary } from "./summary";
 import { setValidationOutputs, writeValidationJson, buildConflictReport, formatConflictReportMarkdown } from "./outputs";
@@ -77,7 +78,7 @@ import { globalMetrics, writeJobSummary } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, RateBudgetExhaustedError } from './resilience';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { parseLocaleInput } from './i18n';
-import { sendWebhookNotification } from './webhook';
+import { listenForRunnerCancellation, sendWebhookNotification } from './webhook';
 import { runIssuesPreflight } from './preflight';
 import { loadCodeowners, isMaintainerActor } from './codeowners';
 import { fetchDashboardRoster } from './roster';
@@ -378,19 +379,126 @@ export async function handleAutoUnassign(
   }
 }
 
+/**
+ * Resolve the ready-state label pair, honouring the deprecated aliases that
+ * action.yml still declares. See `resolveReadyLabelInputs` for the precedence
+ * rules and the whitespace-only-as-unset rationale. (Issue #669)
+ */
 function resolveConfiguredReadyLabels(): {
   passLabel: string;
   failLabel: string;
 } {
-  const passLabel = (
-    core.getInput("pass_label") ||
-    ""
-  ).trim();
-  const failLabel = (
-    core.getInput("fail_label") ||
-    ""
-  ).trim();
-  return { passLabel, failLabel };
+  const resolved = resolveReadyLabelInputs({
+    passLabel: core.getInput("pass_label"),
+    readyPassLabel: core.getInput("ready_pass_label"),
+    readyLabelPass: core.getInput("ready_label_pass"),
+    failLabel: core.getInput("fail_label"),
+    readyFailLabel: core.getInput("ready_fail_label"),
+    readyLabelFail: core.getInput("ready_label_fail"),
+  });
+
+  if (resolved.usedDeprecatedAlias) {
+    logger.warn(
+      "Using a deprecated ready-label input alias. Migrate to pass_label/fail_label; " +
+        "the aliases (ready_pass_label, ready_label_pass, ready_fail_label, " +
+        "ready_label_fail) are retained for backward compatibility and may be removed.",
+    );
+  }
+
+  return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
+}
+
+/**
+ * Result of evaluating the milestone gate (Issue #230).
+ */
+export interface MilestoneGateDecision {
+  /** True when the issue/PR should be skipped because of the milestone gate. */
+  shouldSkip: boolean;
+  /** Human-readable reason for the skip (empty when shouldSkip is false). */
+  reason: string;
+  /** Full message including the "Skipping validation." suffix. */
+  fullMessage: string;
+  /** The raw milestone title from the event payload (empty if none). */
+  milestoneTitle: string;
+}
+
+/**
+ * Evaluate the milestone gate for the given event payload.
+ *
+ * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
+ * is checked against the allowlist. If the milestone is missing or not in the
+ * list, the result indicates the step should be skipped (with the reason).
+ *
+ * This function is side-effect-free so it can be unit-tested without mocking
+ * `@actions/core`.
+ */
+export function evaluateMilestoneGate(
+  milestoneAllowlistRaw: string,
+  _milestoneFailOnSkip: boolean,
+  payload: Record<string, unknown>,
+): MilestoneGateDecision {
+  const empty: MilestoneGateDecision = {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: '',
+  };
+
+  const raw = milestoneAllowlistRaw.trim();
+  if (!raw) {
+    return empty;
+  }
+
+  const allowedMilestones = raw
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowedMilestones.length === 0) {
+    return empty;
+  }
+
+  const p = payload as Record<string, unknown>;
+  const isIssueContext = p.issue !== undefined;
+  const isPullRequest = p.pull_request !== undefined;
+
+  let currentMilestoneRaw = '';
+  if (isIssueContext) {
+    const issue = p.issue as { milestone?: { title?: string } } | undefined;
+    if (issue?.milestone) {
+      currentMilestoneRaw = issue.milestone.title || '';
+    }
+  } else if (isPullRequest) {
+    const pr = p.pull_request as { milestone?: { title?: string } } | undefined;
+    if (pr?.milestone) {
+      currentMilestoneRaw = pr.milestone.title || '';
+    }
+  }
+  const currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+
+  let skipReason = '';
+  if (!currentMilestone) {
+    skipReason =
+      'Milestone gate: No milestone found on this event, but milestone_allowlist is active.';
+  } else if (!allowedMilestones.includes(currentMilestone)) {
+    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+  }
+
+  if (skipReason) {
+    return {
+      shouldSkip: true,
+      reason: skipReason,
+      fullMessage: `${skipReason} Skipping validation.`,
+      milestoneTitle: currentMilestoneRaw,
+    };
+  }
+
+  return {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: currentMilestoneRaw,
+  };
 }
 
 async function run(): Promise<void> {
@@ -405,51 +513,29 @@ async function run(): Promise<void> {
     false,
   );
 
-  if (milestoneAllowlistRaw.trim()) {
-    const allowedMilestones = milestoneAllowlistRaw
-      .split(",")
-      .map((m) => m.trim().toLowerCase())
-      .filter(Boolean);
-    const payload = github.context.payload;
-    const isIssueContext = payload.issue !== undefined;
-    const isPullRequest = payload.pull_request !== undefined;
+  const milestoneDecision = evaluateMilestoneGate(
+    milestoneAllowlistRaw,
+    milestoneFailOnSkip,
+    github.context.payload,
+  );
 
-    let currentMilestone = "";
-    let currentMilestoneRaw = "";
-    if (isIssueContext && payload.issue?.milestone) {
-      currentMilestoneRaw = payload.issue.milestone.title || "";
-    } else if (isPullRequest && payload.pull_request?.milestone) {
-      currentMilestoneRaw = payload.pull_request.milestone.title || "";
+  if (milestoneDecision.shouldSkip) {
+    const fullMessage = milestoneDecision.fullMessage;
+    if (milestoneFailOnSkip) {
+      core.setFailed(fullMessage);
+    } else {
+      core.info(fullMessage);
     }
-    currentMilestone = currentMilestoneRaw.trim().toLowerCase();
 
-    if (allowedMilestones.length > 0) {
-      let skipReason = "";
-      if (!currentMilestone) {
-        skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
-      } else if (!allowedMilestones.includes(currentMilestone)) {
-        skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
-      }
+    core.setOutput("ready", "false");
+    core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
+    core.setOutput("checks_json", "[]");
 
-      if (skipReason) {
-        const fullMessage = `${skipReason} Skipping validation.`;
-        if (milestoneFailOnSkip) {
-          core.setFailed(fullMessage);
-        } else {
-          core.info(fullMessage);
-        }
+    core.summary.addHeading("Milestone Gate Skipped", 3);
+    core.summary.addRaw(fullMessage);
+    await core.summary.write();
 
-        core.setOutput("ready", "false");
-        core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
-        core.setOutput("checks_json", "[]");
-
-        core.summary.addHeading("Milestone Gate Skipped", 3);
-        core.summary.addRaw(fullMessage);
-        await core.summary.write();
-
-        return;
-      }
-    }
+    return;
   }
 
   // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
@@ -1256,7 +1342,18 @@ async function run(): Promise<void> {
       ...normalizedAsset,
       minXlmReserve: Number(effectiveMinXlmReserveRaw),
       horizonUrl: effectiveHorizonUrl,
+      // Issue #725: batch mode used to drop the clawback policy entirely, so a
+      // clawback-enabled asset never failed a batch row even with
+      // `clawback_strict_mode: true`.
+      clawbackStrictMode,
     };
+
+    // Issue #725: `assets_json` entries participate in the per-address clawback
+    // strict evaluation, so batch rows can be attributed to a specific
+    // `code:issuer` pair instead of only reporting that "the row failed".
+    const batchExtraAssets = assetsJsonRaw.trim()
+      ? parseAssetsJson(assetsJsonRaw)
+      : [];
 
     const batchResults = await runBatchValidation(
       batchAddresses,
@@ -1269,10 +1366,11 @@ async function run(): Promise<void> {
           retryBaseDelayMs,
           retryMaxDelayMs,
         },
+        extraAssets: batchExtraAssets,
       },
     );
 
-    const batchSummary = buildBatchSummary(batchResults);
+    const batchSummary = buildBatchSummary(batchResults, { clawbackStrictMode });
     const batchMarkdown = formatBatchSummaryMarkdown(
       batchSummary,
       effectiveAssetCode,
@@ -1304,6 +1402,14 @@ async function run(): Promise<void> {
             : String(commentError);
         core.warning(`Failed to post batch comment (non-fatal): ${message}`);
       }
+    }
+
+    // Issue #725: surface strict clawback attribution in the run log, counted
+    // separately from every other batch failure bucket.
+    if (batchSummary.clawbackStrictFailures > 0) {
+      core.warning(
+        `Batch validation: ${batchSummary.clawbackStrictFailures} address(es) blocked by \`clawback_strict_mode: true\` (reason_code: CLAWBACK_STRICT_MODE).`,
+      );
     }
 
     // Set batch-specific outputs
@@ -1833,6 +1939,7 @@ async function run(): Promise<void> {
     sep0010DashboardUrl,
     locale,
     debugMode,
+    privacyMode,
     docsBaseUrl: core.getInput('docs_base_url') || undefined,
     delta,
     diagnosticsConfig,
@@ -1864,7 +1971,7 @@ async function run(): Promise<void> {
       sep0010DashboardUrl,
       locale,
       debugMode,
-      docsBaseUrl: core.getInput('docs_base_url') || undefined,
+      privacyMode,
       delta,
       diagnosticsConfig,
       customCommentTemplatePath: customCommentTemplatePath || undefined,
@@ -1912,6 +2019,7 @@ async function run(): Promise<void> {
     try {
       commentUrl = await postDiscussionComment(githubToken, discussionBody, {
         sticky: stickyComment,
+        commentMode: commentThreadingMode,
         forceComment,
         snoozeWindowMs,
       });
@@ -2146,19 +2254,28 @@ async function run(): Promise<void> {
   if (webhookUrl) {
     const { owner, repo } = github.context.repo;
     const issueNumber = github.context.payload.issue?.number ?? null;
-    await sendWebhookNotification(
-      result,
-      effectiveResolvedAddress,
-      {
-        webhookUrl,
-        webhookSecret,
-        timeoutMs: webhookTimeoutMs,
-        authMode: webhookAuthMode,
-        oidcAudience: webhookOidcAudience,
-      },
-      `${owner}/${repo}`,
-      issueNumber,
+    const webhookAbortController = new AbortController();
+    const removeRunnerCancellationListeners = listenForRunnerCancellation(
+      webhookAbortController,
     );
+    try {
+      await sendWebhookNotification(
+        result,
+        effectiveResolvedAddress,
+        {
+          webhookUrl,
+          webhookSecret,
+          timeoutMs: webhookTimeoutMs,
+          authMode: webhookAuthMode,
+          oidcAudience: webhookOidcAudience,
+          signal: webhookAbortController.signal,
+        },
+        `${owner}/${repo}`,
+        issueNumber,
+      );
+    } finally {
+      removeRunnerCancellationListeners();
+    }
   }
 
   if (debugMode) {

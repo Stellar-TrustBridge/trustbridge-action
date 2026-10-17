@@ -59,6 +59,12 @@ export interface DigestReport {
   readyCount: number;
   /** Number of issues where at least one check failed. */
   blockedCount: number;
+  /**
+   * Number of issues blocked specifically by `clawback_strict_mode`
+   * (Issue #725). Counted separately from warn-mode clawback warnings so the
+   * digest can distinguish a policy block from an informational warning.
+   */
+  clawbackStrictFailureCount: number;
   /** Ready rate as a percentage string (e.g. "66.7%"). */
   readyRate: string;
   /** Entries that are fully ready (all checks pass). */
@@ -69,6 +75,28 @@ export interface DigestReport {
   generatedAt: string;
   /** Whether address redaction is active. */
   privacyMode: boolean;
+}
+
+/**
+ * Detect a clawback strict-mode failure in a `ValidationResult`
+ * (Issue #725).
+ *
+ * `checks.ts` emits a dedicated `"<ASSET> clawback safety"` check that only
+ * fails when the matched trustline has clawback enabled *and*
+ * `clawback_strict_mode` is on — so a failed clawback check is by definition a
+ * strict-mode block, never a warn-mode advisory.
+ */
+export function isClawbackStrictFailure(result: ValidationResult): boolean {
+  return result.checks.some(
+    (check) => !check.passed && /clawback/i.test(check.label),
+  );
+}
+
+/** Count how many of `results` failed because of `clawback_strict_mode`. */
+export function countClawbackStrictFailures(
+  results: ValidationResult[],
+): number {
+  return results.filter(isClawbackStrictFailure).length;
 }
 
 /**
@@ -116,6 +144,9 @@ export function aggregateDigest(
     totalIssues,
     readyCount,
     blockedCount,
+    clawbackStrictFailureCount: countClawbackStrictFailures(
+      maskedEntries.map((e) => e.result),
+    ),
     readyRate,
     readyEntries: readyEntries.slice(0, DIGEST_MAX_LISTED_ISSUES),
     blockedEntries: blockedEntries.slice(0, DIGEST_MAX_LISTED_ISSUES),
@@ -135,6 +166,7 @@ export function aggregateDigest(
  * - Includes a machine-readable gate summary (ready/blocked counts).
  */
 export function formatDigestComment(report: DigestReport): string {
+  const clawbackStrictFailureCount = report.clawbackStrictFailureCount ?? 0;
   const lines: string[] = [
     '<!-- trustbridge-action:digest -->',
     '## TrustBridge — Weekly Wallet Digest',
@@ -150,8 +182,18 @@ export function formatDigestComment(report: DigestReport): string {
     `| ✅ Ready | **${report.readyCount}** |`,
     `| ❌ Blocked | **${report.blockedCount}** |`,
     `| Ready rate | **${report.readyRate}** |`,
-    '',
   ];
+
+  // Issue #725: strict clawback blocks are counted (and labelled) separately
+  // from every other blocked contributor so triage can distinguish a policy
+  // block from a missing trustline or low reserve.
+  if (clawbackStrictFailureCount > 0) {
+    lines.push(
+      `| 🚫 Clawback strict blocks | **${clawbackStrictFailureCount}** |`,
+    );
+  }
+
+  lines.push('');
 
   // Blocked section
   if (report.blockedEntries.length > 0) {
@@ -162,8 +204,11 @@ export function formatDigestComment(report: DigestReport): string {
         .map((c) => c.label)
         .join(', ');
       const title = entry.issueTitle ? ` — ${entry.issueTitle}` : '';
+      const clawbackSuffix = isClawbackStrictFailure(entry.result)
+        ? ' (`CLAWBACK_STRICT_MODE`)'
+        : '';
       lines.push(
-        `- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ❌ ${failedLabels}`,
+        `- **#${entry.issueNumber}**${title}: \`${entry.stellarAddress}\` — ❌ ${failedLabels}${clawbackSuffix}`,
       );
     }
     if (report.blockedCount > DIGEST_MAX_LISTED_ISSUES) {

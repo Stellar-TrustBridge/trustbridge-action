@@ -1,5 +1,6 @@
 import * as github from "@actions/github";
 import { CheckConfig, ValidationResult } from "./checks";
+import { type AssetTrustlineRow } from './markdown';
 import { MetricsCollector } from './metrics';
 import { CommentReaction } from './snooze';
 import { DiagnosticsConfig } from './diagnostics';
@@ -91,6 +92,14 @@ export interface CommentConfig extends CheckConfig {
      * Leave unset or empty to disable the feature entirely.
      */
     customCommentTemplatePath?: string;
+    /**
+     * Per-asset trustline status for the `assets_json` input (Issue #552).
+     * When non-empty, a per-asset breakdown table is rendered after the
+     * Balances section so the comment matches the behaviour documented in
+     * `action.yml` for `assets_trustline_status` / `trustlines_summary`.
+     * Leave undefined/empty to omit the section (single-asset runs).
+     */
+    assets?: AssetTrustlineRow[];
     existingCommentBody?: string;
 }
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
@@ -320,6 +329,13 @@ export interface FindStickyCommentOptions {
  * for upsert.
  */
 export declare function findStickyComment(octokit: Octokit, owner: string, repo: string, issueNumber: number, options?: FindStickyCommentOptions): Promise<number | undefined>;
+/**
+ * Find TrustBridge's first (oldest) comment on the issue, if any.
+ *
+ * Scans comments in chronological order to find the initial TrustBridge comment
+ * to thread replies under when `comment_mode: 'reply'` is used (#419).
+ */
+export declare function findFirstTrustBridgeComment(octokit: Octokit, owner: string, repo: string, issueNumber: number, options?: FindStickyCommentOptions): Promise<number | undefined>;
 export declare function postIssueComment(token: string, body: string, options?: UpsertCommentOptions): Promise<string | undefined>;
 /**
  * Extract the GitHub Discussion node id from an event payload, if present.

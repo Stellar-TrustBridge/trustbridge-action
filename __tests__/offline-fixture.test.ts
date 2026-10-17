@@ -14,54 +14,73 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { HorizonAccount } from '../src/horizon';
+import {
+  makeHorizonAccount,
+  TEST_HORIZON_ACCOUNT_ID,
+  TEST_HORIZON_ASSET_ISSUER,
+} from './helpers/horizon-account';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const FIXTURE_FUNDED: HorizonAccount = {
-  id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-  account_id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-  sequence: '123456789',
-  subentry_count: 1,
-  num_sponsoring: 0,
-  num_sponsored: 0,
-  balances: [
+const FIXTURE_FUNDED: HorizonAccount = makeHorizonAccount({
+  trustlines: [
     {
-      balance: '10.0000000',
-      asset_type: 'native',
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-    },
-    {
+      assetCode: 'USDC',
+      assetIssuer: TEST_HORIZON_ASSET_ISSUER,
       balance: '50.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
     },
   ],
-};
+});
 
-const FIXTURE_NO_TRUSTLINE: HorizonAccount = {
-  id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-  account_id: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-  sequence: '123456789',
-  subentry_count: 0,
-  balances: [
-    {
-      balance: '10.0000000',
-      asset_type: 'native',
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-    },
-  ],
-};
+const FIXTURE_NO_TRUSTLINE: HorizonAccount = makeHorizonAccount();
 
 // ---------------------------------------------------------------------------
 // Fixture file writing helpers
 // ---------------------------------------------------------------------------
+
+describe('makeHorizonAccount fixture helper', () => {
+  it('builds configurable balances, trustlines, flags, and subentry counts', () => {
+    const account = makeHorizonAccount({
+      nativeBalance: '7.5000000',
+      trustlines: [
+        {
+          assetCode: 'LONGASSET',
+          assetIssuer: TEST_HORIZON_ASSET_ISSUER,
+          balance: '12.0000000',
+          limit: '100.0000000',
+          isAuthorized: false,
+          isAuthorizedToMaintainLiabilities: true,
+          isClawbackEnabled: true,
+        },
+      ],
+      flags: { auth_required: true, auth_revocable: true },
+      subentryCount: 4,
+      numSponsoring: 2,
+      numSponsored: 1,
+    });
+
+    expect(account.account_id).toBe(TEST_HORIZON_ACCOUNT_ID);
+    expect(account.balances).toEqual([
+      expect.objectContaining({ asset_type: 'native', balance: '7.5000000' }),
+      expect.objectContaining({
+        asset_type: 'credit_alphanum12',
+        asset_code: 'LONGASSET',
+        asset_issuer: TEST_HORIZON_ASSET_ISSUER,
+        balance: '12.0000000',
+        limit: '100.0000000',
+        is_authorized: false,
+        is_authorized_to_maintain_liabilities: true,
+        is_clawback_enabled: true,
+      }),
+    ]);
+    expect(account.flags).toEqual({ auth_required: true, auth_revocable: true });
+    expect(account.subentry_count).toBe(4);
+    expect(account.num_sponsoring).toBe(2);
+    expect(account.num_sponsored).toBe(1);
+  });
+});
 
 function writeTempFixture(dir: string, name: string, content: unknown): string {
   const filePath = path.join(dir, name);
@@ -89,7 +108,7 @@ describe('Issue #304 — Offline fixture mode (unit: path resolution)', () => {
     const raw = fs.readFileSync(fixturePath, 'utf8');
     const account = JSON.parse(raw) as HorizonAccount;
 
-    expect(account.id).toBe('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
+    expect(account.id).toBe(TEST_HORIZON_ACCOUNT_ID);
     expect(account.balances).toHaveLength(2);
 
     const native = account.balances.find((b) => b.asset_type === 'native');
@@ -244,13 +263,13 @@ describe('Issue #304 — offline workflow integration pattern', () => {
     const account = JSON.parse(raw) as HorizonAccount;
 
     // Address validation still runs in fixture mode
-    const addr = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+    const addr = TEST_HORIZON_ACCOUNT_ID;
     expect(() => validateStellarAddress(addr)).not.toThrow();
 
     // Run checks against the fixture account
     const checkConfig = {
       assetCode: 'USDC',
-      assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      assetIssuer: TEST_HORIZON_ASSET_ISSUER,
       minXlmReserve: 1.5,
       horizonUrl: 'https://horizon.stellar.org',
     };
@@ -270,7 +289,7 @@ describe('Issue #304 — offline workflow integration pattern', () => {
 
     const checkConfig = {
       assetCode: 'USDC',
-      assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      assetIssuer: TEST_HORIZON_ASSET_ISSUER,
       minXlmReserve: 1.5,
       horizonUrl: 'https://horizon.stellar.org',
     };

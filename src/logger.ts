@@ -27,6 +27,13 @@ const ADDRESS_CONTEXT_KEYS = new Set<string>([
   'accountId',
   'account_id',
   'contractAddress',
+  // Issue #730 — Soroban SAC issuers are contract ids (C-addresses). Any log
+  // context key that carries one must be redacted exactly like a G-address so
+  // debug output never leaks a full contract id.
+  'contractId',
+  'contract_id',
+  'sacContractId',
+  'issuerContractId',
 ]);
 
 /**
@@ -132,6 +139,29 @@ export function redactStellarAddress(address: string): string {
   }
 
   return address;
+}
+
+/**
+ * Redact a Soroban contract id (C-address) for log output (Issue #730).
+ *
+ * SAC issuers are contract ids, not accounts, but they carry exactly the same
+ * redaction requirement: a debug log line must never contain the full
+ * contract id. Delegates to {@link redactStellarAddress} so the C-address and
+ * G-address policies can never drift apart, and returns the input unchanged
+ * when it is not a well-formed C-address so a non-address value is never
+ * mangled.
+ *
+ * Examples:
+ *   redactContractAddress('CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM')
+ *     => 'CAAA...D2KM'
+ */
+export function redactContractAddress(contractId: string): string {
+  if (!contractId) return contractId;
+  const trimmed = contractId.trim();
+  if (!/^C[A-Z2-7]{55}$/.test(trimmed)) {
+    return contractId;
+  }
+  return redactStellarAddress(trimmed);
 }
 
 /**
