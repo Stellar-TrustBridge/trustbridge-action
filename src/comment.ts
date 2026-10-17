@@ -1618,7 +1618,7 @@ export async function postDiscussionComment(
   body: string,
   options: UpsertDiscussionCommentOptions = {},
 ): Promise<string | undefined> {
-  const sticky = options.sticky ?? true;
+  const sticky = resolveCommentMode(options.commentMode, options.sticky) === 'sticky';
   const forceComment = options.forceComment ?? false;
   const snoozeWindowMs = options.snoozeWindowMs ?? 0;
   const context = github.context;

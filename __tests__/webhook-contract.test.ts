@@ -12,6 +12,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import Ajv, { ValidateFunction } from 'ajv';
 import {
   buildWebhookPayload,
   deliverWebhook,
@@ -29,11 +30,24 @@ import {
 // ---------------------------------------------------------------------------
 
 const SCHEMA_PATH = path.resolve(__dirname, '../schemas/webhook-payload.schema.json');
+const GOLDEN_EXAMPLE_PATHS = [
+  path.resolve(__dirname, 'fixtures/webhook-payload-example-1.json'),
+];
 let schema: Record<string, unknown>;
+let goldenExamples: unknown[];
+let validateWithAjv: ValidateFunction;
 
 beforeAll(() => {
   const raw = fs.readFileSync(SCHEMA_PATH, 'utf8');
   schema = JSON.parse(raw) as Record<string, unknown>;
+  goldenExamples = GOLDEN_EXAMPLE_PATHS.map(
+    (fixturePath) => JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as unknown,
+  );
+  validateWithAjv = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false,
+  }).compile(schema);
 });
 
 // ---------------------------------------------------------------------------
@@ -469,6 +483,20 @@ describe('validateWebhookPayload stays in sync with the schema file', () => {
       expect(validateWebhookPayload(example)).toEqual([]);
     }
   });
+
+  it('keeps committed golden fixtures synchronized with schema examples', () => {
+    expect(goldenExamples).toEqual(schema['examples']);
+  });
+
+  it.each(GOLDEN_EXAMPLE_PATHS.map((fixturePath, index) => [index + 1, fixturePath]))(
+    'validates golden example %i against the webhook schema with Ajv (%s)',
+    (exampleNumber, fixturePath) => {
+      const example = JSON.parse(fs.readFileSync(fixturePath as string, 'utf8')) as unknown;
+      expect(validateWithAjv(example)).toBe(true);
+      expect(validateWithAjv.errors).toBeNull();
+      expect(goldenExamples[Number(exampleNumber) - 1]).toEqual(example);
+    },
+  );
 
   it('accepts payloads built by buildWebhookPayload', () => {
     expect(validateWebhookPayload(buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1))).toEqual([]);

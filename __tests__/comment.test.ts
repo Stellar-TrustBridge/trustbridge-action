@@ -646,6 +646,7 @@ describe('findFirstTrustBridgeComment (Issue #419)', () => {
 describe('postIssueComment', () => {
   const mockedGithub = github as unknown as {
     context: {
+      eventName: string;
       payload: { issue?: { number: number } };
       repo: { owner: string; repo: string };
       apiUrl: string;
@@ -654,6 +655,7 @@ describe('postIssueComment', () => {
   };
 
   beforeEach(() => {
+    mockedGithub.context.eventName = 'issues';
     mockedGithub.context.payload = { issue: { number: 7 } };
     mockedGithub.context.apiUrl = 'https://api.github.com';
   });
@@ -683,6 +685,7 @@ describe('postIssueComment', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ issue_number: 7, body: 'new body' }),
     );
+    expect(octokit.graphql).not.toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(mockedGithub.getOctokit).toHaveBeenCalledWith('token', {
       baseUrl: 'https://api.github.com',
@@ -1016,6 +1019,7 @@ describe('findStickyDiscussionComment', () => {
 describe('postDiscussionComment', () => {
   const mockedGithub = github as unknown as {
     context: {
+      eventName: string;
       payload: { discussion?: { node_id?: string }; issue?: { number: number } };
       repo: { owner: string; repo: string };
       apiUrl: string;
@@ -1026,6 +1030,7 @@ describe('postDiscussionComment', () => {
   const DISCUSSION_NODE_ID = 'DIC_kwDOABCD';
 
   beforeEach(() => {
+    mockedGithub.context.eventName = 'discussion';
     mockedGithub.context.payload = { discussion: { node_id: DISCUSSION_NODE_ID } };
     mockedGithub.context.apiUrl = 'https://api.github.com';
   });
@@ -1085,7 +1090,7 @@ describe('postDiscussionComment', () => {
       });
     mockedGithub.getOctokit.mockReturnValue(octokit);
 
-    const url = await postDiscussionComment('token', 'updated body', { sticky: true });
+    const url = await postDiscussionComment('token', 'updated body', { commentMode: 'sticky' });
 
     expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-99');
     expect(octokit.graphql).toHaveBeenCalledTimes(2);

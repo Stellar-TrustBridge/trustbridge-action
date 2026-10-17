@@ -132,7 +132,7 @@ describe('resolveDiscussionCommentTarget', () => {
 
 describe('postDiscussionComment threading', () => {
   const mockedGithub = github as unknown as {
-    context: { payload: Record<string, unknown> };
+    context: { eventName: string; payload: Record<string, unknown> };
     getOctokit: jest.Mock;
   };
   const DISCUSSION_ID = 'D_kwDOdiscussion';
@@ -156,6 +156,7 @@ describe('postDiscussionComment threading', () => {
   });
 
   it('posts a top-level comment for discussion events (no replyToId)', async () => {
+    mockedGithub.context.eventName = 'discussion';
     mockedGithub.context.payload = { discussion: { node_id: DISCUSSION_ID } };
     const graphql = mockOctokit(emptyPage, added);
 
@@ -165,6 +166,7 @@ describe('postDiscussionComment threading', () => {
   });
 
   it('replies under the triggering top-level comment for discussion_comment events', async () => {
+    mockedGithub.context.eventName = 'discussion_comment';
     mockedGithub.context.payload = {
       discussion: { node_id: DISCUSSION_ID },
       comment: { node_id: 'DC_top', parent_id: null },
@@ -181,6 +183,7 @@ describe('postDiscussionComment threading', () => {
   });
 
   it('replies under the parent thread when the triggering comment is itself a reply', async () => {
+    mockedGithub.context.eventName = 'discussion_comment';
     mockedGithub.context.payload = {
       discussion: { node_id: DISCUSSION_ID },
       comment: { node_id: 'DC_child', parent_id: 7 },
@@ -194,6 +197,7 @@ describe('postDiscussionComment threading', () => {
   });
 
   it('updates the existing TrustBridge reply in the same thread when sticky', async () => {
+    mockedGithub.context.eventName = 'discussion_comment';
     mockedGithub.context.payload = {
       discussion: { node_id: DISCUSSION_ID },
       comment: { node_id: 'DC_top', parent_id: null },
@@ -204,7 +208,7 @@ describe('postDiscussionComment threading', () => {
       { updateDiscussionComment: { comment: { url: 'https://github.com/o/r/discussions/1#discussioncomment-8' } } },
     );
 
-    const url = await postDiscussionComment('token', 'new body', { sticky: true });
+    const url = await postDiscussionComment('token', 'new body', { commentMode: 'sticky' });
 
     expect(url).toBe('https://github.com/o/r/discussions/1#discussioncomment-8');
     expect(graphql.mock.calls[1][1]).toEqual({ commentId: 'DC_bot_reply', body: 'new body' });
@@ -218,6 +222,35 @@ describe('postDiscussionComment threading', () => {
     await postDiscussionComment('token', 'body', { replyToId: 'DC_explicit' });
 
     expect(addMutationVariables(graphql)).toMatchObject({ replyToId: 'DC_explicit' });
+  });
+
+  it.each([
+    {
+      eventName: 'discussion',
+      payload: { discussion: { node_id: DISCUSSION_ID } },
+      replyToId: null,
+    },
+    {
+      eventName: 'discussion_comment',
+      payload: {
+        discussion: { node_id: DISCUSSION_ID },
+        comment: { node_id: 'DC_top', parent_id: null },
+      },
+      replyToId: 'DC_top',
+    },
+  ])('creates a new GraphQL comment for $eventName in new mode', async ({ eventName, payload, replyToId }) => {
+    mockedGithub.context.eventName = eventName;
+    mockedGithub.context.payload = payload;
+    const graphql = mockOctokit(added);
+
+    await postDiscussionComment('token', 'new body', { commentMode: 'new' });
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(addMutationVariables(graphql)).toEqual({
+      discussionId: DISCUSSION_ID,
+      body: 'new body',
+      replyToId,
+    });
   });
 
   it('falls back to a top-level comment with a warning when the parent lookup fails', async () => {
