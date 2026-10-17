@@ -55,7 +55,7 @@ export declare function shouldBypassProxy(hostname: string, noProxyHosts: string
  * The returned agent is an `https-proxy-agent` instance that can be passed
  * as the `agent` option to `node-fetch` or Octokit's `httpAgent`.
  */
-export declare function createProxyAgent(targetUrl: string, config?: ProxyConfig): HttpsProxyAgent<string> | undefined;
+export declare function createProxyAgent(targetUrl: string, config?: ProxyConfig): HttpsProxyAgent | undefined;
 /**
  * Wrap a `node-fetch`-like function to route requests through an HTTPS proxy.
  *
@@ -75,6 +75,6 @@ export declare function createProxiedFetch(config?: ProxyConfig): ((url: string 
 export declare function getOctokitProxyOptions(baseUrl?: string): {
     baseUrl?: string;
     request?: {
-        agent?: HttpsProxyAgent<string>;
+        agent?: HttpsProxyAgent;
     };
 };

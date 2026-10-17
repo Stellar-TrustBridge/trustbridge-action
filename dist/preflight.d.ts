@@ -3,7 +3,6 @@
  *
  * #145 — issues:write preflight check
  * #220 — extended to `pull_request` / `pull_request_target` events
- * #443 — optional Horizon fallback health probe
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
  * issue/PR comments **before** any expensive Horizon calls are made.  Failing
@@ -28,11 +27,6 @@
  *    `GITHUB_TOKEN` by default, so the probe can pass here and the later
  *    `createComment`/`updateComment` call can still 403. That failure is
  *    caught separately and logged as a non-fatal warning by the caller.
- * 3. **Optional Horizon health probe** (#443) — when enabled, HEAD (falling
- *    back to GET) the Horizon root on both the primary and fallback URLs so
- *    operators discover a bad secondary before a run fails mid-flight.
- *    Soft-warns by default; `horizon_probe_hard_fail: true` turns a failed
- *    probe into a hard failure.
  *
  * ## Failure modes
  *
@@ -52,10 +46,6 @@
  * - `preflight_only` input: when `true`, the action runs the preflight and
  *   exits immediately without calling Horizon.  Useful for diagnosing
  *   permission issues in new repositories without spending API quota.
- * - The Horizon health probe is opt-in (`horizon_probe: true`) and bounded by
- *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
- *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
- *   workflows.
  */
 export interface PreflightResult {
     /**
@@ -76,26 +66,6 @@ export interface PreflightOptions {
      * issue/PR context), return `{ skip: true }` immediately.
      */
     requireIssueContext?: boolean;
-    /**
-     * #443 — when `true`, run the optional Horizon health probe against the
-     * primary and fallback URLs.  Defaults to `false` (opt-in).
-     */
-    horizonProbe?: boolean;
-    /** Primary Horizon URL to probe (e.g. `horizon_url`). */
-    horizonUrl?: string;
-    /** Optional fallback Horizon URL to probe (e.g. `horizon_url_fallback`). */
-    horizonUrlFallback?: string;
-    /**
-     * #443 — when `true`, a failed Horizon probe throws instead of warning.
-     * Defaults to `false` (soft-warn).
-     */
-    horizonProbeHardFail?: boolean;
-    /** Per-URL probe timeout in milliseconds.  Defaults to 5000. */
-    horizonProbeTimeoutMs?: number;
-    /** Injectable fetch for tests.  Defaults to the global `fetch`. */
-    fetchImpl?: typeof fetch;
-    /** Injectable logger for tests.  Defaults to `console.warn`. */
-    warn?: (message: string) => void;
 }
 /**
  * Run the issues:write preflight sequence.
@@ -110,17 +80,6 @@ export interface PreflightOptions {
  *         to `core.setFailed`.
  */
 export declare function runIssuesPreflight(token: string, options?: PreflightOptions): Promise<PreflightResult>;
-/**
- * Probe the Horizon root on the primary and (when set) fallback URLs.
- *
- * Uses `HEAD` first and falls back to `GET` when the server rejects HEAD
- * (some Horizon deployments return 405).  A probe is considered healthy when
- * the response status is `< 400`.
- *
- * By default a failed probe only emits a warning; set
- * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
- */
-export declare function runHorizonHealthProbe(options: PreflightOptions): Promise<void>;
 /**
  * Thrown by `runIssuesPreflight` when the token is missing permission or the
  * issue context is invalid.  Callers should surface this via `core.setFailed`.

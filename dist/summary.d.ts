@@ -33,12 +33,6 @@ export interface DigestReport {
     readyCount: number;
     /** Number of issues where at least one check failed. */
     blockedCount: number;
-    /**
-     * Number of issues blocked specifically by `clawback_strict_mode`
-     * (Issue #725). Counted separately from warn-mode clawback warnings so the
-     * digest can distinguish a policy block from an informational warning.
-     */
-    clawbackStrictFailureCount: number;
     /** Ready rate as a percentage string (e.g. "66.7%"). */
     readyRate: string;
     /** Entries that are fully ready (all checks pass). */
@@ -50,18 +44,6 @@ export interface DigestReport {
     /** Whether address redaction is active. */
     privacyMode: boolean;
 }
-/**
- * Detect a clawback strict-mode failure in a `ValidationResult`
- * (Issue #725).
- *
- * `checks.ts` emits a dedicated `"<ASSET> clawback safety"` check that only
- * fails when the matched trustline has clawback enabled *and*
- * `clawback_strict_mode` is on — so a failed clawback check is by definition a
- * strict-mode block, never a warn-mode advisory.
- */
-export declare function isClawbackStrictFailure(result: ValidationResult): boolean;
-/** Count how many of `results` failed because of `clawback_strict_mode`. */
-export declare function countClawbackStrictFailures(results: ValidationResult[]): number;
 /**
  * Maximum number of entries listed per section in the Markdown digest.
  * Caps the comment size on large Wave issues (e.g. 200+ contributors).

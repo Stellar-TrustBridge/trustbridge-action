@@ -7,17 +7,10 @@ export interface ActionTimings {
     comment_post_ms?: number;
     total_ms?: number;
 }
-export interface AssetTrustlineStatus {
-    assetCode: string;
-    assetIssuer: string;
-    trustlineExists: boolean;
-    balance: string;
-}
 export interface ActionOutputExtras {
     horizonUrl?: string;
     assetCode?: string;
     assetIssuer?: string;
-    assetsTrustlineStatus?: AssetTrustlineStatus[];
     timings?: ActionTimings;
     validatedAt?: string;
     assigneeLogin?: string;
@@ -31,15 +24,6 @@ export interface ActionOutputExtras {
     friendbotCalled?: boolean;
     friendbotSuccess?: boolean;
     friendbotTransactionHash?: string;
-    /**
-     * #550 — GitHub Check Run outputs. When `use_check_runs` is enabled,
-     * index.ts passes the created run's id and conclusion here so
-     * `setValidationOutputs` stays the single publisher of every action.yml
-     * output. Absent values publish as empty strings, matching the
-     * "empty otherwise" contract documented in action.yml.
-     */
-    checkRunId?: string;
-    checkRunConclusion?: string;
 }
 /**
  * A single source that provided a value for a given field.
@@ -134,18 +118,9 @@ export interface ActionOutputs {
     actual_network_passphrase: string;
     assignee_results_json: string;
     matrix_ready_map: string;
-    /**
-     * GitHub Checks API integration (Wave #26 / Issue #421). ID of the created
-     * Check Run when `use_check_runs` is true, empty otherwise.
-     */
-    check_run_id: string;
-    /** Conclusion of the created Check Run (success/failure), empty when skipped. */
-    check_run_conclusion: string;
     friendbot_called: string;
     friendbot_success: string;
     friendbot_transaction_hash: string;
-    assets_trustline_status: string;
-    trustlines_summary: string;
 }
 export declare function toActionOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): ActionOutputs;
 export declare function setValidationOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): void;
