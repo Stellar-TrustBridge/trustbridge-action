@@ -243,6 +243,183 @@ outputs:
     description: 'Whether all validation checks passed (true/false)'
     value: ${{ steps.run-trustbridge.outputs.ready }}
 
+  reason_code:
+    description: >-
+      Machine-readable failure reason code (e.g. SUCCESS, ACCOUNT_NOT_FUNDED,
+      TRUSTLINE_MISSING, TRUSTLINE_UNAUTHORIZED, CLAWBACK_BLOCKED). Empty when
+      the gate was skipped. See docs/ERROR_HANDLING.md for the full catalog.
+    value: ${{ steps.run-trustbridge.outputs.reason_code }}
+
+  checks_json:
+    description: 'JSON string array of individual check results and pass/fail statuses'
+    value: ${{ steps.run-trustbridge.outputs.checks_json }}
+
+  # ── Audit & provenance ────────────────────────────────────────────────
+
+  validated_at:
+    description: 'ISO-8601 timestamp when the validation checks were performed'
+    value: ${{ steps.run-trustbridge.outputs.validated_at }}
+
+  horizon_url:
+    description: 'Horizon API base URL used for validation'
+    value: ${{ steps.run-trustbridge.outputs.horizon_url }}
+
+  asset_code:
+    description: 'Asset code validated by the action'
+    value: ${{ steps.run-trustbridge.outputs.asset_code }}
+
+  asset_issuer:
+    description: 'Asset issuer address validated by the action'
+    value: ${{ steps.run-trustbridge.outputs.asset_issuer }}
+
+  full_report_path:
+    description: >-
+      Absolute path of the full validation report written to the workspace when
+      the comment body exceeded GitHub's size limit. Empty otherwise.
+    value: ${{ steps.run-trustbridge.outputs.full_report_path }}
+
+  native_balance:
+    description: 'Native XLM balance alias of xlm_balance (7-decimal Horizon string)'
+    value: ${{ steps.run-trustbridge.outputs.native_balance }}
+
+  # ── Badges ─────────────────────────────────────────────────────────────
+
+  badge_markdown:
+    description: 'Markdown-formatted badge snippet linking to the TrustBridge repo'
+    value: ${{ steps.run-trustbridge.outputs.badge_markdown }}
+
+  badge_url:
+    description: 'Shields.io badge URL reflecting validation state (pass/fail/pending)'
+    value: ${{ steps.run-trustbridge.outputs.badge_url }}
+
+  # ── Timing breakdown ──────────────────────────────────────────────────
+
+  timings_json:
+    description: 'JSON string containing millisecond execution timings for all major phases'
+    value: ${{ steps.run-trustbridge.outputs.timings_json }}
+
+  timing_input_parse_ms:
+    description: 'Execution duration of input parsing phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_input_parse_ms }}
+
+  timing_horizon_fetch_ms:
+    description: 'Execution duration of Horizon API fetch phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_horizon_fetch_ms }}
+
+  timing_checks_ms:
+    description: 'Execution duration of validation checks phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_checks_ms }}
+
+  timing_comment_post_ms:
+    description: 'Execution duration of comment posting phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_comment_post_ms }}
+
+  timing_total_ms:
+    description: 'Total execution duration in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_total_ms }}
+
+  # ── Sponsorship ───────────────────────────────────────────────────────
+
+  num_sponsoring:
+    description: 'Number of accounts this account is sponsoring (numeric string)'
+    value: ${{ steps.run-trustbridge.outputs.num_sponsoring }}
+
+  num_sponsored:
+    description: 'Number of accounts sponsoring this account (numeric string)'
+    value: ${{ steps.run-trustbridge.outputs.num_sponsored }}
+
+  # ── Network passphrase diagnostics ────────────────────────────────────
+
+  network_passphrase_mismatch:
+    description: 'Whether the configured and Horizon network passphrases differ'
+    value: ${{ steps.run-trustbridge.outputs.network_passphrase_mismatch }}
+
+  expected_network_passphrase:
+    description: 'Configured or inferred network passphrase'
+    value: ${{ steps.run-trustbridge.outputs.expected_network_passphrase }}
+
+  actual_network_passphrase:
+    description: 'Network passphrase reported by Horizon'
+    value: ${{ steps.run-trustbridge.outputs.actual_network_passphrase }}
+
+  # ── Assignee matrix ───────────────────────────────────────────────────
+
+  assignee_results_json:
+    description: 'JSON result for the validated assignee, when an assignee is available'
+    value: ${{ steps.run-trustbridge.outputs.assignee_results_json }}
+
+  matrix_ready_map:
+    description: 'JSON map of assignee login to validation readiness'
+    value: ${{ steps.run-trustbridge.outputs.matrix_ready_map }}
+
+  # ── Friendbot (testnet funding) ───────────────────────────────────────
+
+  friendbot_called:
+    description: 'Whether Friendbot was called to fund the testnet account (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_called }}
+
+  friendbot_success:
+    description: 'Whether Friendbot funding succeeded (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_success }}
+
+  friendbot_transaction_hash:
+    description: 'Transaction hash from successful Friendbot funding, if called'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_transaction_hash }}
+
+  # ── Check Runs ────────────────────────────────────────────────────────
+
+  check_run_id:
+    description: 'ID of the created GitHub Check Run when use_check_runs is true, empty otherwise'
+    value: ${{ steps.run-trustbridge.outputs.check_run_id }}
+
+  check_run_conclusion:
+    description: 'Conclusion of the created Check Run (success/failure), empty when skipped'
+    value: ${{ steps.run-trustbridge.outputs.check_run_conclusion }}
+
+  # ── Conflict report ───────────────────────────────────────────────────
+
+  conflict_report:
+    description: 'JSON string of the merge-resolution conflict report (empty object when no conflicts)'
+    value: ${{ steps.run-trustbridge.outputs.conflict_report }}
+
+  has_conflicts:
+    description: 'Whether any input conflicts were detected (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.has_conflicts }}
+
+  # ── Multi-asset (assets_json) ─────────────────────────────────────────
+
+  assets_trustline_status:
+    description: >-
+      JSON array of additional assets from assets_json with asset_code,
+      asset_issuer, trustline_exists, and balance fields
+    value: ${{ steps.run-trustbridge.outputs.assets_trustline_status }}
+
+  trustlines_summary:
+    description: >-
+      Human-readable count of additional assets with trustlines, formatted as
+      "N of M additional trustlines present"
+    value: ${{ steps.run-trustbridge.outputs.trustlines_summary }}
+
+  # ── Batch mode (stellar_addresses) ────────────────────────────────────
+
+  batch_summary_json:
+    description: >-
+      JSON summary of a batch run (total/passed/failed/failures/failureTaxonomy).
+      Empty unless the action ran in batch mode over multiple addresses.
+    value: ${{ steps.run-trustbridge.outputs.batch_summary_json }}
+
+  batch_passed_count:
+    description: >-
+      Number of addresses that passed every validation check (numeric string).
+      Empty unless the action ran in batch mode.
+    value: ${{ steps.run-trustbridge.outputs.batch_passed_count }}
+
+  batch_failed_count:
+    description: >-
+      Number of addresses that failed at least one validation check (numeric
+      string). Empty unless the action ran in batch mode.
+    value: ${{ steps.run-trustbridge.outputs.batch_failed_count }}
+
 runs:
   using: 'composite'
   steps:

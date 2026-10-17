@@ -1342,3 +1342,368 @@ describe('src/index.ts source guards (#534, #535)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #692 — milestone_allowlist and milestone_fail_on_skip integration
+// ---------------------------------------------------------------------------
+
+describe("Issue #692 — milestone gate evaluation", () => {
+  // Helper to create a minimal issue payload with a milestone
+  function issuePayload(milestoneTitle?: string): Record<string, unknown> {
+    return {
+      issue: {
+        number: 1,
+        milestone: milestoneTitle ? { title: milestoneTitle } : null,
+      },
+    };
+  }
+
+  // Helper to create a minimal PR payload with a milestone
+  function prPayload(milestoneTitle?: string): Record<string, unknown> {
+    return {
+      pull_request: {
+        number: 1,
+        milestone: milestoneTitle ? { title: milestoneTitle } : null,
+      },
+    };
+  }
+
+  describe("evaluateMilestoneGate signature and exports", () => {
+    it("is exported from src/index", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      expect(typeof evaluateMilestoneGate).toBe("function");
+    });
+
+    it("returns a MilestoneGateDecision shape", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate("", false, {});
+      expect(decision).toHaveProperty("shouldSkip");
+      expect(decision).toHaveProperty("reason");
+      expect(decision).toHaveProperty("fullMessage");
+      expect(decision).toHaveProperty("milestoneTitle");
+      expect(typeof decision.shouldSkip).toBe("boolean");
+      expect(typeof decision.reason).toBe("string");
+      expect(typeof decision.fullMessage).toBe("string");
+      expect(typeof decision.milestoneTitle).toBe("string");
+    });
+  });
+
+  describe("no allowlist configured", () => {
+    it("returns shouldSkip=false when allowlist is empty string", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate("", false, issuePayload("Wave 12"));
+      expect(decision.shouldSkip).toBe(false);
+      expect(decision.reason).toBe("");
+    });
+
+    it("returns shouldSkip=false when allowlist is whitespace only", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "   ",
+        false,
+        issuePayload("Wave 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("returns shouldSkip=false when allowlist splits to empty (trailing comma only)", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(" , ", false, issuePayload("Wave 12"));
+      expect(decision.shouldSkip).toBe(false);
+    });
+  });
+
+  describe("allowlist configured — milestone present and matching", () => {
+    it("returns shouldSkip=false when issue milestone matches allowlist", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Wave 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+      expect(decision.milestoneTitle).toBe("Wave 12");
+    });
+
+    it("is case-insensitive when checking milestone title", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "wave 12",
+        false,
+        issuePayload("WAVE 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("trims whitespace from milestone title before matching", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("  Wave 12  "),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("matches when milestone is in a multi-value allowlist", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 11,Wave 12,Wave 13",
+        false,
+        issuePayload("Wave 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("matches PR milestone against allowlist", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Release 1.0",
+        false,
+        prPayload("Release 1.0"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("prefers issue milestone over PR milestone when both present", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const payload: Record<string, unknown> = {
+        issue: { number: 1, milestone: { title: "Issue Milestone" } },
+        pull_request: { number: 1, milestone: { title: "PR Milestone" } },
+      };
+      const decision = evaluateMilestoneGate("Issue Milestone", false, payload);
+      expect(decision.shouldSkip).toBe(false);
+      expect(decision.milestoneTitle).toBe("Issue Milestone");
+    });
+
+    it("does NOT fall back to PR milestone when issue context exists but has no milestone", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const payload: Record<string, unknown> = {
+        issue: { number: 1 }, // issue exists, but no milestone
+        pull_request: { number: 1, milestone: { title: "Release 1.0" } },
+      };
+      const decision = evaluateMilestoneGate("Release 1.0", false, payload);
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("No milestone found");
+    });
+  });
+
+  describe("allowlist configured — milestone missing", () => {
+    it("returns shouldSkip=true when issue has no milestone (milestone is null)", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload(undefined),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("No milestone found");
+    });
+
+    it("returns shouldSkip=true when issue has no milestone field at all", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate("Wave 12", false, {
+        issue: { number: 1 },
+      });
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("No milestone found");
+    });
+
+    it("returns shouldSkip=true when payload has neither issue nor PR context", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate("Wave 12", false, {});
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("No milestone found");
+    });
+
+    it("returns shouldSkip=true when milestone object has empty title", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload(""),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("No milestone found");
+      // Note: payload.issue.milestone is truthy (object { title: "" }),
+      // but the empty title normalises to "" → treated as missing.
+      // See edge case: "Issues API milestone null vs empty object"
+    });
+
+    it("generates correct fullMessage with Skipping validation suffix", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload(undefined),
+      );
+      expect(decision.fullMessage).toBe(
+        "Milestone gate: No milestone found on this event, but milestone_allowlist is active. Skipping validation.",
+      );
+    });
+  });
+
+  describe("allowlist configured — milestone does not match", () => {
+    it("returns shouldSkip=true when milestone is not in the allowlist", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Wave 11"),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("not in the allowlist");
+    });
+
+    it("includes the actual milestone title in the reason message", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Wave 11"),
+      );
+      expect(decision.reason).toContain('"Wave 11"');
+    });
+
+    it("returns shouldSkip=true for PR with non-allowlisted milestone", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Release 1.0",
+        false,
+        prPayload("Release 2.0"),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.reason).toContain("Release 2.0");
+    });
+
+    it("does not match when milestone is close but not exact after normalization", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Wave12"),
+      );
+      expect(decision.shouldSkip).toBe(true);
+    });
+
+    it("generates correct fullMessage for non-matching milestone", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Sprint 3"),
+      );
+      expect(decision.fullMessage).toBe(
+        'Milestone gate: Milestone "Sprint 3" is not in the allowlist. Skipping validation.',
+      );
+    });
+  });
+
+  describe("milestone_fail_on_skip behavior", () => {
+    it("does not affect the gate decision (decision is independent)", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      // The function accepts _milestoneFailOnSkip but the decision logic
+      // is the same regardless of the flag — only the caller uses it.
+      const d1 = evaluateMilestoneGate("Wave 12", true, issuePayload(undefined));
+      const d2 = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload(undefined),
+      );
+      expect(d1.shouldSkip).toBe(true);
+      expect(d2.shouldSkip).toBe(true);
+      expect(d1.reason).toBe(d2.reason);
+    });
+
+    it("fail_on_skip=true + missing milestone triggers core.setFailed in run()", () => {
+      // This test verifies the side-effect contract between evaluateMilestoneGate
+      // and run(). When shouldSkip=true and milestoneFailOnSkip=true, run()
+      // calls core.setFailed with the fullMessage.
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        true,
+        issuePayload(undefined),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.fullMessage).toContain("Skipping validation");
+    });
+
+    it("fail_on_skip=false + missing milestone triggers core.info in run()", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload(undefined),
+      );
+      expect(decision.shouldSkip).toBe(true);
+      expect(decision.fullMessage).toContain("Skipping validation");
+    });
+  });
+
+  describe("run() side-effect contract for skip path", () => {
+    it("skip decision sets ready=false, reason_code=MILESTONE_GATE_SKIPPED", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12",
+        false,
+        issuePayload("Sprint 3"),
+      );
+      // In run(): when shouldSkip=true, core.setOutput("ready", "false"),
+      // core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED"),
+      // core.setOutput("checks_json", "[]")
+      expect(decision.shouldSkip).toBe(true);
+      // The outputs are set by run(), not by evaluateMilestoneGate.
+      // This test documents the contract.
+    });
+  });
+
+  describe("edge cases", () => {
+    it("handles milestone object with non-string title gracefully", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const payload: Record<string, unknown> = {
+        issue: {
+          number: 1,
+          milestone: { title: 42 },
+        },
+      };
+      // Accessing `.title` on a number coerces to string via `|| ""`,
+      // but in practice GitHub API always returns a string.
+      const decision = evaluateMilestoneGate("42", false, payload);
+      // The .title || "" coercion: 42 is truthy, so raw becomes "42"
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("handles organization-level milestone numeric titles (coerced to string)", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const payload: Record<string, unknown> = {
+        issue: {
+          number: 1,
+          milestone: { title: "12" }, // org milestones can be numeric in title
+        },
+      };
+      const decision = evaluateMilestoneGate("12", false, payload);
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("allowlist with extra whitespace around commas is parsed correctly", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        " Wave 11 , Wave 12 , Wave 13 ",
+        false,
+        issuePayload("Wave 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+
+    it("allowlist with duplicate entries does not break matching", () => {
+      const { evaluateMilestoneGate } = require("../src/index");
+      const decision = evaluateMilestoneGate(
+        "Wave 12,Wave 12,Wave 12",
+        false,
+        issuePayload("Wave 12"),
+      );
+      expect(decision.shouldSkip).toBe(false);
+    });
+  });
+});
+

@@ -1352,7 +1352,10 @@ describe('Issue #248: unauthorized trustlines', () => {
     expect(result.checks[1].detail).not.toMatch(/not authorized/i);
   });
 
-  it('policy=fail: unauthorized trustline sets reasonCode=TRUSTLINE_MISSING', async () => {
+  // Issue #666: docs/USAGE.md documents `reason_code = TRUSTLINE_UNAUTHORIZED`
+  // for this policy. The trustline exists, it is simply not issuer-authorized,
+  // so TRUSTLINE_MISSING was the wrong code for payout gates to branch on.
+  it('policy=fail: unauthorized trustline sets reasonCode=TRUSTLINE_UNAUTHORIZED', async () => {
     const account = makeAccount({
       balances: [
         { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
@@ -1364,7 +1367,57 @@ describe('Issue #248: unauthorized trustlines', () => {
     });
     const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
 
-    expect(result.reasonCode).toBe('TRUSTLINE_MISSING');
+    expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
+  });
+
+  it('policy=warn: unauthorized trustline does not hard-fail with TRUSTLINE_UNAUTHORIZED', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, defaultConfig);
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+
+  it('policy=ignore: unauthorized trustline stays SUCCESS', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'ignore' });
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+
+  it('policy=fail plus low reserve: TRUSTLINE_UNAUTHORIZED wins over RESERVE_TOO_LOW', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '0.5000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_authorized: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, unauthorizedTrustlinePolicy: 'fail' });
+
+    expect(result.valid).toBe(false);
+    // The authorization block is the more specific failure class, so it takes
+    // precedence over the generic reserve failure in the same result.
+    expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
   });
 
   it('policy=warn: unauthorized trustline with auth_revocable issuer mentions revocation', async () => {
@@ -1421,6 +1474,101 @@ describe('Issue #248: unauthorized trustlines', () => {
     expect(result.clawbackEnabled).toBe(true);
     expect(result.checks[1].passed).toBe(true);
     expect(result.checks[1].detail).toMatch(/clawback is enabled/i);
+  });
+
+  // ── Issue #665 — CLAWBACK_BLOCKED reason code ──────────────────────────
+  //
+  // docs/USAGE.md documents `reason_code = CLAWBACK_BLOCKED` when
+  // `clawback_strict_mode: true` blocks a clawback-enabled trustline, but the
+  // runtime only produced the generic FAILED code. Dashboard automations gate
+  // payouts on the specific code, so the catalog entry and the runtime must agree.
+
+  it('strict mode: clawback-enabled trustline fails with reasonCode=CLAWBACK_BLOCKED (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe('CLAWBACK_BLOCKED');
+    expect(result.clawbackEnabled).toBe(true);
+  });
+
+  it('strict mode: ready is false and remediation mentions clawback_strict_mode (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    const clawbackCheck = result.checks.find((c) => /clawback safety/i.test(c.label));
+    expect(clawbackCheck).toBeDefined();
+    expect(clawbackCheck?.passed).toBe(false);
+    expect(clawbackCheck?.detail).toMatch(/clawback_strict_mode: true/i);
+    expect(result.remediation).toMatch(/clawback/i);
+    expect(result.remediation).toMatch(/clawback_strict_mode/i);
+    expect(result.failedCheckLabels).toContain('usdc_clawback_safety');
+  });
+
+  it('strict mode: toActionOutputs propagates CLAWBACK_BLOCKED unchanged (Issue #665)', async () => {
+    const { toActionOutputs } = await import('../src/outputs');
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+    const outputs = toActionOutputs(result);
+
+    expect(outputs.reason_code).toBe('CLAWBACK_BLOCKED');
+    expect(outputs.ready).toBe('false');
+  });
+
+  it('non-strict mode: clawback does NOT emit CLAWBACK_BLOCKED (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: false });
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+
+  it('strict mode: trustline without clawback is unaffected (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
   });
 });
 

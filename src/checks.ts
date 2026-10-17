@@ -1115,8 +1115,18 @@ export function runAccountChecks(
       remediation,
       claimableBalanceCount,
       hasClaimableBalances: hasClaimables,
+      // Issue #666: an unauthorized trustline blocked by
+      // `unauthorized_trustline_policy: fail` must surface the documented
+      // TRUSTLINE_UNAUTHORIZED code instead of the generic TRUSTLINE_MISSING
+      // that `authorizationBlocks` would otherwise fall through to.
+      // Issue #665: `clawback_strict_mode: true` blocking a clawback-enabled
+      // trustline must surface CLAWBACK_BLOCKED, also documented in USAGE.md.
+      // Both codes are part of the public catalog (schemas/reason-codes.json),
+      // so downstream payout gates can switch on them directly.
       reasonCode: (() => {
         if (valid) return "SUCCESS";
+        if (authorizationBlocks) return "TRUSTLINE_UNAUTHORIZED";
+        if (clawbackBlocks) return "CLAWBACK_BLOCKED";
         if (!trustlineExists) return "TRUSTLINE_MISSING";
         if (!xlmReserveMet) return "RESERVE_TOO_LOW";
         if (config.minTrustlineLimit && !trustlineLimitMet)
