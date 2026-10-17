@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate action input schema
+        run: npx jest __tests__/action-schema-sync.test.ts --runInBand --no-coverage
+
       - name: Typecheck
         run: npx tsc --noEmit || true
 

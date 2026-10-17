@@ -96,8 +96,8 @@ export declare function oppositeNetwork(network: StellarNetwork): StellarNetwork
  * Useful when suggesting "switch to the correct Horizon" in error messages.
  */
 export declare function canonicalHorizonUrl(network: StellarNetwork): string;
-export declare function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork): string;
-export declare function buildChangeTrustLink(network: StellarNetwork): string;
+export declare function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork, dashboardUrl?: string): string;
+export declare function buildChangeTrustLink(network: StellarNetwork, dashboardUrl?: string): string;
 export declare function buildLobstrLink(): string;
 /**
  * Options for building a SEP-0007 `tx` deep link.
