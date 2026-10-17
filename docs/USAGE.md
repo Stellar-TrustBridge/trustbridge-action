@@ -351,6 +351,53 @@ Stellar assets can have issuer and trustline flags that affect whether a payment
 | `false` (default) | Surfaces an informational status note (`USDC clawback status`) in the comment indicating clawback is enabled (CAP-0035). |
 | `true` | Fails the run with `reason_code = CLAWBACK_BLOCKED` and remediation steps if clawback is enabled. |
 
+#### Clawback enforcement in batch mode (`stellar_addresses`)
+
+Batch mode (`stellar_addresses` set) honours `clawback_strict_mode` exactly like the single-address flow (Issue #725):
+
+- **Per-asset attribution** — the primary asset *and* every entry in `assets_json` are evaluated independently, so the same asset code under two different issuers is checked twice with its own verdict.
+- **Row failure** — a batch row fails as soon as *any* evaluated asset has clawback enabled and `clawback_strict_mode: true`. The row's `reason_code` is `CLAWBACK_STRICT_MODE`.
+- **Strict vs warn** — with `clawback_strict_mode: false` a clawback-enabled trustline never fails a row; it only adds the informational "Clawback is enabled" note to the trustline detail.
+
+`batch_summary_json` carries the attribution for every row:
+
+```json
+{
+  "total": 2,
+  "passed": 1,
+  "failed": 1,
+  "clawbackStrictFailures": 1,
+  "clawbackStrictMode": true,
+  "failures": [
+    {
+      "address": "G…",
+      "reason": "clawback strict mode: EURC",
+      "reasonCode": "CLAWBACK_STRICT_MODE",
+      "clawbackStrict": true
+    }
+  ],
+  "failureTaxonomy": {
+    "accountNotFunded": 0,
+    "trustlineMissing": 0,
+    "reserveInsufficient": 0,
+    "horizonError": 0,
+    "invalidAddress": 0,
+    "clawbackStrict": 1
+  }
+}
+```
+
+Switch on it in a downstream job:
+
+```yaml
+- name: Reject clawback-blocked contributors
+  run: |
+    echo '${{ steps.tb.outputs.batch_summary_json }}' \
+      | jq -r '.failures[] | select(.clawbackStrict) | .address'
+```
+
+When at least one row is clawback-blocked, the batch comment also grows a `Clawback` column and reports `**Clawback strict failures:** N` so a policy block is never mistaken for a missing trustline. The weekly digest counts the same blocks separately in its `🚫 Clawback strict blocks` row.
+
 > **Vanilla USDC:** Standard mainnet USDC does not require authorization or enable clawback on normal trustlines, so it passes cleanly without false failures. Older Horizon versions without flag fields safely default to authorized.
 
 ```yaml
@@ -1605,6 +1652,9 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `HORIZON_TIMEOUT` | Horizon API request timed out before returning a response. |
 | `HORIZON_ERROR` | Horizon API returned an HTTP error (5xx or non-404 4xx). |
 | `TLS_ERROR` | Transport-layer TLS/certificate verification failed connecting to Horizon. |
+| `CIRCUIT_OPEN` | The Horizon circuit breaker tripped after repeated consecutive failures, so the run failed closed without issuing further requests. Resolve the underlying Horizon outage and re-run. |
+| `RATE_BUDGET_EXHAUSTED` | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before validation completed. Raise the budget or retry. |
+| `MILESTONE_GATE_SKIPPED` | The milestone gate skipped validation because the issue milestone was not in `milestone_allowlist`. No account checks were performed. |
 | `INVALID_ADDRESS` | Provided Stellar address failed StrKey format/checksum validation. |
 | `MAINTAINER_SKIPPED` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
 

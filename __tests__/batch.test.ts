@@ -4,6 +4,7 @@ import {
   runBatchValidation,
   buildBatchSummary,
   formatBatchSummaryMarkdown,
+  CLAWBACK_STRICT_REASON_CODE,
   BatchAddressResult,
 } from '../src/batch';
 import { CheckConfig } from '../src/checks';
@@ -41,6 +42,9 @@ const VALID_ADDR_3 = 'GCRJWJZ4YJHZ27K5VYXMNQCM5JFY5PN5TKKJ2YGA6SSRUMR7F2W4I62C';
 // Passes StrKey checksum validation (VALID_ADDR_2/3 do not) — needed by the
 // run()-level batch tests below, which go through isValidStellarAddress.
 const VALID_ADDR_UNFUNDED = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+// Also checksum-valid: a syntactically valid address that reaches Horizon and
+// is expected to 404 (so it is classified as unfunded, not malformed).
+const VALID_ADDR_MISSING_ON_HORIZON = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGO6V';
 
 const FUNDED_ACCOUNT = {
   id: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
@@ -145,6 +149,13 @@ describe('buildBatchSummary', () => {
     expect(summary.failureTaxonomy.accountNotFunded).toBe(1);
     expect(summary.failureTaxonomy.trustlineMissing).toBe(1);
   });
+
+  it('defaults the clawback buckets to zero for non-clawback runs (#725)', () => {
+    const summary = buildBatchSummary(results);
+    expect(summary.failureTaxonomy.clawbackStrict).toBe(0);
+    expect(summary.clawbackStrictFailures).toBe(0);
+    expect(summary.clawbackStrictMode).toBe(false);
+  });
 });
 
 describe('formatBatchSummaryMarkdown', () => {
@@ -160,7 +171,10 @@ describe('formatBatchSummaryMarkdown', () => {
         reserveInsufficient: 0,
         horizonError: 0,
         invalidAddress: 0,
+        clawbackStrict: 0,
       },
+      clawbackStrictFailures: 0,
+      clawbackStrictMode: false,
     };
     const md = formatBatchSummaryMarkdown(summary, 'USDC');
     expect(md).toContain('All addresses passed');
@@ -172,8 +186,8 @@ describe('formatBatchSummaryMarkdown', () => {
       passed: 1,
       failed: 2,
       failures: [
-        { address: VALID_ADDR_1, reason: 'account not funded' },
-        { address: VALID_ADDR_2, reason: 'trustline missing' },
+        { address: VALID_ADDR_1, reason: 'account not funded', reasonCode: 'ACCOUNT_NOT_FUNDED', clawbackStrict: false },
+        { address: VALID_ADDR_2, reason: 'trustline missing', reasonCode: 'TRUSTLINE_MISSING', clawbackStrict: false },
       ],
       failureTaxonomy: {
         accountNotFunded: 1,
@@ -181,7 +195,10 @@ describe('formatBatchSummaryMarkdown', () => {
         reserveInsufficient: 0,
         horizonError: 0,
         invalidAddress: 0,
+        clawbackStrict: 0,
       },
+      clawbackStrictFailures: 0,
+      clawbackStrictMode: false,
     };
     const md = formatBatchSummaryMarkdown(summary, 'USDC');
     expect(md).toContain('2 of 3 addresses failed');
@@ -191,6 +208,9 @@ describe('formatBatchSummaryMarkdown', () => {
     // Check that per-address outcomes are listed (shortened addresses)
     expect(md).toContain('GA5ZSE…KZVN'); // VALID_ADDR_1
     expect(md).toContain('GBBD47…HEX2'); // VALID_ADDR_2
+    // No clawback column when nothing tripped the strict policy (#725).
+    expect(md).not.toContain('| Clawback |');
+    expect(md).not.toContain('clawback_strict_mode');
   });
 });
 
@@ -281,7 +301,7 @@ describe('runBatchValidation', () => {
     });
 
     const results = await runBatchValidation(
-      [VALID_ADDR_1, 'INVALID_FORMAT', VALID_ADDR_3],
+      [VALID_ADDR_1, 'INVALID_FORMAT', VALID_ADDR_MISSING_ON_HORIZON],
       DEFAULT_CONFIG,
       'https://horizon.stellar.org',
       { requestDelayMs: 0 },
@@ -298,8 +318,8 @@ describe('runBatchValidation', () => {
     expect(results[1].valid).toBe(false);
     expect(results[1].failureReason).toContain('Invalid Stellar address format');
 
-    // Third address fails at Horizon (404)
-    expect(results[2].address).toBe(VALID_ADDR_3);
+    // Third address is checksum-valid but missing on Horizon (404)
+    expect(results[2].address).toBe(VALID_ADDR_MISSING_ON_HORIZON);
     expect(results[2].valid).toBe(false);
     expect(results[2].failureReason).toContain('not funded');
   });
@@ -407,6 +427,9 @@ describe('batch mode comment posting (Issue #537)', () => {
           xlmBalance: '10.0',
           xlmReserveMet: true,
           failureReason: null,
+          reasonCode: 'SUCCESS',
+          clawbackStrictFailure: false,
+          clawbackStrictAssets: [],
         },
         {
           address: VALID_ADDR_UNFUNDED,
@@ -416,6 +439,9 @@ describe('batch mode comment posting (Issue #537)', () => {
           xlmBalance: '0',
           xlmReserveMet: false,
           failureReason: 'account not funded',
+          reasonCode: 'ACCOUNT_NOT_FUNDED',
+          clawbackStrictFailure: false,
+          clawbackStrictAssets: [],
         },
       ]),
       'USDC',
@@ -486,5 +512,236 @@ describe('batch mode comment posting (Issue #537)', () => {
     expect(core.warning).toHaveBeenCalledWith(
       expect.stringContaining('Failed to post batch comment (non-fatal): boom'),
     );
+  });
+});
+
+/**
+ * Issue #725 — `clawback_strict_mode` in multi-asset batch summaries.
+ *
+ * `checks.ts` blocks a clawback-enabled trustline in single-address flows, but
+ * batch mode used to drop the policy entirely: the row was only ever derived
+ * from `trustlineExists` / `xlmReserveMet`, so a clawback block produced either
+ * no failure reason at all or an unattributable one. These fixtures cover the
+ * mixed strict-success / strict-failure batch, per-asset attribution through
+ * `assets_json`, and the warn-mode non-regression.
+ */
+describe('clawback_strict_mode in batch summaries (Issue #725)', () => {
+  const ISSUER_A = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+  const ISSUER_B = 'GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2';
+  const ISSUER_C = 'GCRJWJZ4YJHZ27K5VYXMNQCM5JFY5PN5TKKJ2YGA6SSRUMR7F2W4I62C';
+
+  // Checksum-valid addresses — `runBatchValidation` rejects a malformed
+  // address before any Horizon query, so these must pass StrKey validation.
+  const ADDR_CLAWBACK = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC6PV';
+  const ADDR_CLEAN = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEGWF';
+
+  const STRICT_CONFIG: CheckConfig = {
+    assetCode: 'USDC',
+    assetIssuer: ISSUER_A,
+    minXlmReserve: 1.5,
+    horizonUrl: 'https://horizon.stellar.org',
+    clawbackStrictMode: true,
+  };
+
+  /** Account holding one primary USDC trustline plus optional extra assets. */
+  function accountWithBalances(
+    address: string,
+    creditBalances: Array<Record<string, unknown>>,
+  ): HorizonAccount {
+    return {
+      id: address,
+      account_id: address,
+      sequence: '1',
+      subentry_count: 2,
+      num_sponsoring: 0,
+      num_sponsored: 0,
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        ...creditBalances,
+      ],
+    } as unknown as HorizonAccount;
+  }
+
+  function creditBalance(
+    code: string,
+    issuer: string,
+    isClawbackEnabled: boolean,
+  ): Record<string, unknown> {
+    return {
+      balance: '100.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: code,
+      asset_issuer: issuer,
+      limit: '1000000',
+      is_authorized: true,
+      is_clawback_enabled: isClawbackEnabled,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+    };
+  }
+
+  beforeEach(() => {
+    mockFetchAccount.mockReset();
+  });
+
+  it('fails the row and reports CLAWBACK_STRICT_MODE for the primary asset', async () => {
+    mockFetchAccount.mockResolvedValue(
+      accountWithBalances(ADDR_CLAWBACK, [creditBalance('USDC', ISSUER_A, true)]) as any,
+    );
+
+    const results = await runBatchValidation(
+      [ADDR_CLAWBACK],
+      STRICT_CONFIG,
+      'https://horizon.stellar.org',
+      { requestDelayMs: 0 },
+    );
+
+    expect(results).toHaveLength(1);
+    const row = results[0];
+    expect(row.valid).toBe(false);
+    expect(row.clawbackStrictFailure).toBe(true);
+    expect(row.reasonCode).toBe(CLAWBACK_STRICT_REASON_CODE);
+    // The trustline itself exists — the row failed on policy, not on state.
+    expect(row.trustlineExists).toBe(true);
+    expect(row.failureReason).toContain('clawback strict mode: USDC');
+    expect(row.clawbackStrictAssets).toEqual([
+      expect.objectContaining({
+        assetCode: 'USDC',
+        assetIssuer: ISSUER_A,
+        reasonCode: CLAWBACK_STRICT_REASON_CODE,
+      }),
+    ]);
+  });
+
+  it('does not fail the row in warn mode (clawback_strict_mode: false)', async () => {
+    mockFetchAccount.mockResolvedValue(
+      accountWithBalances(ADDR_CLAWBACK, [creditBalance('USDC', ISSUER_A, true)]) as any,
+    );
+
+    const results = await runBatchValidation(
+      [ADDR_CLAWBACK],
+      { ...STRICT_CONFIG, clawbackStrictMode: false },
+      'https://horizon.stellar.org',
+      { requestDelayMs: 0 },
+    );
+
+    expect(results[0].valid).toBe(true);
+    expect(results[0].clawbackStrictFailure).toBe(false);
+    expect(results[0].clawbackStrictAssets).toEqual([]);
+    expect(results[0].reasonCode).toBe('SUCCESS');
+  });
+
+  it('covers mixed strict success and strict failure addresses in one batch', async () => {
+    mockFetchAccount.mockImplementation(
+      async (_url: string, address: string) => {
+        if (address === ADDR_CLAWBACK) {
+          // Primary USDC clawback-free, but the extra EURC asset is clawback
+          // enabled — the row must still fail and be attributed to EURC.
+          return accountWithBalances(address, [
+            creditBalance('USDC', ISSUER_A, false),
+            creditBalance('EURC', ISSUER_B, true),
+          ]) as any;
+        }
+        if (address === ADDR_CLEAN) {
+          return accountWithBalances(address, [
+            creditBalance('USDC', ISSUER_A, false),
+          ]) as any;
+        }
+        throw new horizon.HorizonError('Not found', 404);
+      },
+    );
+
+    const results = await runBatchValidation(
+      [ADDR_CLAWBACK, ADDR_CLEAN, VALID_ADDR_UNFUNDED],
+      STRICT_CONFIG,
+      'https://horizon.stellar.org',
+      {
+        requestDelayMs: 0,
+        extraAssets: [{ assetCode: 'EURC', assetIssuer: ISSUER_B }],
+      },
+    );
+
+    expect(results.map((r) => r.valid)).toEqual([false, true, false]);
+    expect(results[0].clawbackStrictAssets?.[0]).toMatchObject({
+      assetCode: 'EURC',
+      assetIssuer: ISSUER_B,
+    });
+    expect(results[0].reasonCode).toBe(CLAWBACK_STRICT_REASON_CODE);
+    // An unfunded address is attributed to funding, never to clawback.
+    expect(results[2].clawbackStrictFailure).toBe(false);
+    expect(results[2].reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+
+    const summary = buildBatchSummary(results, { clawbackStrictMode: true });
+    expect(summary.clawbackStrictFailures).toBe(1);
+    expect(summary.failureTaxonomy.clawbackStrict).toBe(1);
+    expect(summary.failureTaxonomy.trustlineMissing).toBe(0);
+    expect(summary.failureTaxonomy.accountNotFunded).toBe(1);
+    expect(summary.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          address: ADDR_CLAWBACK,
+          reasonCode: CLAWBACK_STRICT_REASON_CODE,
+          clawbackStrict: true,
+        }),
+        expect.objectContaining({
+          address: VALID_ADDR_UNFUNDED,
+          reasonCode: 'ACCOUNT_NOT_FUNDED',
+          clawbackStrict: false,
+        }),
+      ]),
+    );
+
+    const md = formatBatchSummaryMarkdown(summary, 'USDC');
+    expect(md).toContain('| Address | Funded | Trustline | Reserve | Clawback | Status |');
+    expect(md).toContain('**Clawback strict failures:** 1');
+    expect(md).toContain('clawback_strict_mode: true');
+    expect(md).toContain('(`CLAWBACK_STRICT_MODE`)');
+    expect(md).toContain('- Clawback strict mode (USDC): **1**');
+  });
+
+  it('evaluates the same asset code under different issuers independently', async () => {
+    mockFetchAccount.mockResolvedValue(
+      accountWithBalances(ADDR_CLAWBACK, [
+        creditBalance('USDC', ISSUER_B, false),
+        creditBalance('USDC', ISSUER_C, true),
+      ]) as any,
+    );
+
+    const results = await runBatchValidation(
+      [ADDR_CLAWBACK],
+      STRICT_CONFIG,
+      'https://horizon.stellar.org',
+      {
+        requestDelayMs: 0,
+        extraAssets: [
+          { assetCode: 'USDC', assetIssuer: ISSUER_B },
+          { assetCode: 'USDC', assetIssuer: ISSUER_C },
+        ],
+      },
+    );
+
+    expect(results[0].clawbackStrictFailure).toBe(true);
+    // Only the clawback-enabled issuer is attributed.
+    expect(results[0].clawbackStrictAssets).toEqual([
+      expect.objectContaining({ assetCode: 'USDC', assetIssuer: ISSUER_C }),
+    ]);
+  });
+
+  it('never attributes an invalid address to the clawback policy', async () => {
+    const results = await runBatchValidation(
+      ['NOT_AN_ADDRESS'],
+      STRICT_CONFIG,
+      'https://horizon.stellar.org',
+      { requestDelayMs: 0 },
+    );
+
+    expect(results[0].clawbackStrictFailure).toBe(false);
+    expect(results[0].reasonCode).toBe('INVALID_ADDRESS');
+    expect(mockFetchAccount).not.toHaveBeenCalled();
   });
 });

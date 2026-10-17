@@ -78,6 +78,12 @@ export interface RetryPolicy {
 }
 /**
  * Default retry policy for API calls.
+ * - maxRetries: 3 attempts
+ * - initialDelayMs: 1000ms (1 second)
+ * - maxDelayMs: 30000ms (30 seconds)
+ * - backoffMultiplier: 2x exponential backoff
+ * - timeoutMs: 15000ms (15 seconds) request timeout
+ * - maxTotalWaitMs: 120000ms (2 minutes) total wait budget
  */
 export declare const DEFAULT_RETRY_POLICY: RetryPolicy;
 /**
@@ -86,8 +92,9 @@ export declare const DEFAULT_RETRY_POLICY: RetryPolicy;
 export declare function calculateBackoffDelay(attempt: number, policy: RetryPolicy): number;
 /**
  * Add random jitter to a delay to prevent thundering herd.
+ * Ensures the result is >= 0 and optionally respects a maximum cap.
  */
-export declare function addJitter(delayMs: number, jitterPercent?: number): number;
+export declare function addJitter(delayMs: number, jitterPercent?: number, maxDelayMs?: number): number;
 /**
  * Sleep for a given duration.
  */

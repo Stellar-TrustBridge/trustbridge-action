@@ -10,11 +10,14 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { EventEmitter } from 'events';
+import { createServer } from 'http';
 import {
   computeWebhookSignature,
   verifyWebhookSignature,
   buildWebhookPayload,
   deliverWebhook,
+  listenForRunnerCancellation,
   sendWebhookNotification,
   WebhookConfig,
   WebhookPayload,
@@ -59,6 +62,38 @@ const CONFIG: WebhookConfig = {
 };
 
 const ADDRESS = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+async function startDelayedWebhookServer(): Promise<{
+  url: string;
+  requestReceived: Promise<void>;
+  close: () => Promise<void>;
+}> {
+  let resolveRequestReceived!: () => void;
+  const requestReceived = new Promise<void>((resolve) => {
+    resolveRequestReceived = resolve;
+  });
+  const server = createServer(() => resolveRequestReceived());
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to start delayed webhook test server');
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/webhook`,
+    requestReceived,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // computeWebhookSignature
@@ -232,6 +267,65 @@ describe('deliverWebhook', () => {
     );
     const result = await deliverWebhook(makePayload(), { ...CONFIG, timeoutMs: 1 }, mockFetch as any);
     expect(result.sent).toBe(false);
+  });
+
+  it('aborts a delayed HTTP response when the configured timeout elapses', async () => {
+    const server = await startDelayedWebhookServer();
+    try {
+      const deliveryPromise = deliverWebhook(
+        makePayload(),
+        { ...CONFIG, webhookUrl: server.url, timeoutMs: 250 },
+      );
+      await server.requestReceived;
+      const result = await deliveryPromise;
+
+      expect(result.sent).toBe(false);
+      expect(result.error).toBeDefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('aborts an in-flight delayed HTTP response when its parent signal fires', async () => {
+    const server = await startDelayedWebhookServer();
+    const controller = new AbortController();
+    try {
+      const deliveryPromise = deliverWebhook(
+        makePayload(),
+        {
+          ...CONFIG,
+          webhookUrl: server.url,
+          timeoutMs: 5_000,
+          signal: controller.signal,
+        },
+      );
+      await server.requestReceived;
+      controller.abort(new Error('job cancelled'));
+      const result = await deliveryPromise;
+
+      expect(result.sent).toBe(false);
+      expect(result.error).toContain('job cancelled');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('bridges runner SIGINT and SIGTERM into an abort signal and unregisters listeners', () => {
+    const signalSource = Object.assign(new EventEmitter(), {
+      exitCode: undefined as number | undefined,
+    });
+    const controller = new AbortController();
+    const removeListeners = listenForRunnerCancellation(controller, signalSource as any);
+
+    signalSource.emit('SIGTERM');
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason.message).toContain('SIGTERM');
+    expect(signalSource.exitCode).toBe(143);
+
+    removeListeners();
+    expect(signalSource.listenerCount('SIGINT')).toBe(0);
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
   });
 
   it('sends to the correct URL', async () => {

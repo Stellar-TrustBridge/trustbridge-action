@@ -184,6 +184,49 @@ describe('formatDigestComment', () => {
     expect(md).toContain('Privacy mode: off');
   });
 
+  /**
+   * Issue #725 — the digest must count `clawback_strict_mode` blocks
+   * separately from other blocked contributors so triage can tell a policy
+   * block apart from a missing trustline.
+   */
+  it('counts and labels clawback strict blocks separately (#725)', () => {
+    const clawbackResult: ValidationResult = {
+      ...makeResult(false),
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: true, label: 'USDC trustline', detail: 'ok' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+        {
+          passed: false,
+          label: 'USDC clawback safety',
+          detail: '**USDC** has clawback enabled — blocked by `clawback_strict_mode: true`.',
+        },
+      ],
+      trustlineExists: true,
+      clawbackEnabled: true,
+    };
+
+    const report = aggregateDigest([
+      { issueNumber: 7, stellarAddress: ADDR_A, result: clawbackResult },
+      { issueNumber: 8, stellarAddress: ADDR_B, result: makeResult(false, ['USDC trustline']) },
+    ]);
+
+    expect(report.blockedCount).toBe(2);
+    expect(report.clawbackStrictFailureCount).toBe(1);
+
+    const md = formatDigestComment(report);
+    expect(md).toContain('| 🚫 Clawback strict blocks | **1** |');
+    expect(md).toContain('USDC clawback safety (`CLAWBACK_STRICT_MODE`)');
+  });
+
+  it('omits the clawback row when no strict blocks occurred (#725)', () => {
+    const report = aggregateDigest(baseEntries);
+    expect(report.clawbackStrictFailureCount).toBe(0);
+    const md = formatDigestComment(report);
+    expect(md).not.toContain('Clawback strict blocks');
+    expect(md).not.toContain('CLAWBACK_STRICT_MODE');
+  });
+
   it('includes the TrustBridge footer', () => {
     const report = aggregateDigest(baseEntries);
     const md = formatDigestComment(report);

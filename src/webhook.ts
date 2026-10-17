@@ -62,6 +62,8 @@ export interface WebhookConfig {
   webhookSecret?: string;
   /** Request timeout in milliseconds. Default 5 000. */
   timeoutMs?: number;
+  /** Parent cancellation signal, such as an Actions runner job-abort signal. */
+  signal?: AbortSignal;
   /**
    * Authentication mode: 'hmac' (default) or 'oidc'.
    */
@@ -74,6 +76,33 @@ export interface WebhookConfig {
    * Pre-minted OIDC token if already obtained, or passed for testing.
    */
   oidcToken?: string;
+}
+
+type RunnerSignalSource = Pick<NodeJS.Process, 'on' | 'removeListener'> & {
+  exitCode?: number | string | null;
+};
+
+/** Bridge Actions runner termination signals to the in-flight webhook request. */
+export function listenForRunnerCancellation(
+  controller: AbortController,
+  signalSource: RunnerSignalSource = process,
+): () => void {
+  const onSigint = (): void => {
+    signalSource.exitCode = 130;
+    controller.abort(new Error('Actions runner cancelled the job (SIGINT).'));
+  };
+  const onSigterm = (): void => {
+    signalSource.exitCode = 143;
+    controller.abort(new Error('Actions runner cancelled the job (SIGTERM).'));
+  };
+
+  signalSource.on('SIGINT', onSigint);
+  signalSource.on('SIGTERM', onSigterm);
+
+  return () => {
+    signalSource.removeListener('SIGINT', onSigint);
+    signalSource.removeListener('SIGTERM', onSigterm);
+  };
 }
 
 export interface WebhookPayload {
@@ -329,6 +358,12 @@ export async function deliverWebhook(
   }
 
   const controller = new AbortController();
+  const abortFromParent = (): void => controller.abort(config.signal?.reason);
+  if (config.signal?.aborted) {
+    abortFromParent();
+  } else {
+    config.signal?.addEventListener('abort', abortFromParent, { once: true });
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -345,6 +380,7 @@ export async function deliverWebhook(
     return { sent: false, error: msg };
   } finally {
     clearTimeout(timer);
+    config.signal?.removeEventListener('abort', abortFromParent);
   }
 }
 

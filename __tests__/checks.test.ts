@@ -1254,6 +1254,9 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(resultWith.hasClaimableBalances).toBe(true);
     expect(resultWith.claimableBalanceCount).toBe(2);
     expect(resultWith.accountFunded).toBe(false); // still unfunded
+    expect(resultWith.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(resultWith.failedCheckLabels).toEqual(['account_funded', 'trustline', 'xlm_reserve']);
+    expect(resultWith.checks.find((c) => c.label === 'Claimable balances')?.passed).toBe(true);
 
     const resultEmpty = unfundedAccountResult(TEST_ADDRESS, configCount, undefined, 0);
     expect(resultEmpty.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
@@ -1261,11 +1264,56 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(resultEmpty.hasClaimableBalances).toBe(false);
   });
 
+  it('count policy carries claimant endpoint results into comment and action outputs', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ _embedded: { records: [{ id: 'cb-1' }, { id: 'cb-2' }] } }),
+    });
+    const claimableCount = await fetchClaimableBalanceCount(
+      'https://horizon.stellar.org',
+      TEST_ADDRESS,
+      fetchFn as any,
+    );
+    const config = {
+      ...defaultConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      claimableBalancePolicy: 'count' as const,
+    };
+    const result = unfundedAccountResult(TEST_ADDRESS, config, undefined, claimableCount);
+    const comment = formatCommentBody(result, {
+      ...config,
+      stellarAddress: TEST_ADDRESS,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      validatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(claimableCount).toBe(2);
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(comment).toContain('2 claimable balance(s)');
+    expect(comment).toContain('Reason code: `ACCOUNT_NOT_FUNDED`');
+    expect(outputs.ready).toBe('false');
+    expect(outputs.reason_code).toBe('ACCOUNT_NOT_FUNDED');
+    expect(JSON.parse(outputs.checks_json)).toContainEqual(
+      expect.objectContaining({ label: 'Claimable balances', passed: true }),
+    );
+  });
+
   it('ignore policy: unfunded with claimables still no hint (default behavior preserved)', async () => {
     const configIgnore = { ...defaultConfig, claimableBalancePolicy: 'ignore' as const };
     const result = unfundedAccountResult(TEST_ADDRESS, configIgnore, undefined, 5);
     expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
     expect(result.checks.find((c) => c.label === 'Account funded')!.detail).not.toContain('claimable');
+    expect(result.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(result.failedCheckLabels).toEqual(['account_funded', 'trustline', 'xlm_reserve']);
+    const comment = formatCommentBody(result, {
+      ...configIgnore,
+      stellarAddress: TEST_ADDRESS,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(comment).not.toContain('claimable balance');
   });
 
   it('count policy: funded account with claimables adds informational claimable check but valid unchanged', async () => {
@@ -1432,6 +1480,321 @@ describe('Issue #248: unauthorized trustlines', () => {
     expect(result.clawbackEnabled).toBe(true);
     expect(result.checks[1].passed).toBe(true);
     expect(result.checks[1].detail).toMatch(/clawback is enabled/i);
+  });
+
+  // ── Issue #665 — CLAWBACK_BLOCKED reason code ──────────────────────────
+  //
+  // docs/USAGE.md documents `reason_code = CLAWBACK_BLOCKED` when
+  // `clawback_strict_mode: true` blocks a clawback-enabled trustline, but the
+  // runtime only produced the generic FAILED code. Dashboard automations gate
+  // payouts on the specific code, so the catalog entry and the runtime must agree.
+
+  it('strict mode: clawback-enabled trustline fails with reasonCode=CLAWBACK_BLOCKED (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe('CLAWBACK_BLOCKED');
+    expect(result.clawbackEnabled).toBe(true);
+  });
+
+  it('strict mode: ready is false and remediation mentions clawback_strict_mode (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    const clawbackCheck = result.checks.find((c) => /clawback safety/i.test(c.label));
+    expect(clawbackCheck).toBeDefined();
+    expect(clawbackCheck?.passed).toBe(false);
+    expect(clawbackCheck?.detail).toMatch(/clawback_strict_mode: true/i);
+    expect(result.remediation).toMatch(/clawback/i);
+    expect(result.remediation).toMatch(/clawback_strict_mode/i);
+    expect(result.failedCheckLabels).toContain('usdc_clawback_safety');
+  });
+
+  it('strict mode: toActionOutputs propagates CLAWBACK_BLOCKED unchanged (Issue #665)', async () => {
+    const { toActionOutputs } = await import('../src/outputs');
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+    const outputs = toActionOutputs(result);
+
+    expect(outputs.reason_code).toBe('CLAWBACK_BLOCKED');
+    expect(outputs.ready).toBe('false');
+  });
+
+  it('non-strict mode: clawback does NOT emit CLAWBACK_BLOCKED (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: false });
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+
+  it('strict mode: trustline without clawback is unaffected (Issue #665)', async () => {
+    const account = makeAccount({
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0.0000000', selling_liabilities: '0.0000000' },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000', is_clawback_enabled: false,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, { ...defaultConfig, clawbackStrictMode: true });
+
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #729 — unauthorized_trustline_policy: warn vs fail comment wording
+//
+// Triage teams rely on the *wording* of the comment to tell a blocking policy
+// failure apart from an informational warning, so these tests lock the exact
+// headings, glyphs, remediation link and `reason_code` for both policies in
+// the default (`en`) locale.
+// ---------------------------------------------------------------------------
+
+describe('Issue #729: unauthorized_trustline_policy warn vs fail', () => {
+  const unauthorizedAccount = () =>
+    makeAccount({
+      balances: [
+        {
+          balance: '10.0000000', asset_type: 'native',
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000', selling_liabilities: '0.0000000',
+          is_authorized: false,
+        },
+      ],
+      flags: { auth_required: true },
+    });
+
+  const commentConfig = (
+    overrides: Partial<CommentConfig> = {},
+  ): CommentConfig => ({
+    ...defaultConfig,
+    stellarAddress: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    horizonUrl: 'https://horizon.stellar.org',
+    onboardingChecklist: false,
+    ...overrides,
+  } as CommentConfig);
+
+  describe('warn mode (default)', () => {
+    it('does not fail the run and reports reason_code SUCCESS', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), defaultConfig);
+
+      expect(result.valid).toBe(true);
+      expect(result.reasonCode).toBe('SUCCESS');
+      expect(result.trustlineAuthorized).toBe(false);
+      // The effective policy is echoed so renderers never re-derive it.
+      expect(result.unauthorizedTrustlinePolicy).toBe('warn');
+    });
+
+    it('renders the ⚠️ warning heading without a fail verdict', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), defaultConfig);
+      const md = formatCommentBody(result, commentConfig());
+
+      expect(md).toContain('> ⚠️ **Issuer authorization required**');
+      expect(md).toContain('does **not** fail the run');
+      expect(md).toContain('`unauthorized_trustline_policy: warn`');
+      expect(md).not.toContain('🚫');
+      expect(md).not.toContain('TRUSTLINE_UNAUTHORIZED');
+      // The trustline bullet still reads as a pass — warn never blocks.
+      expect(md).toContain('- ✅ **USDC trustline**');
+    });
+  });
+
+  describe('fail mode', () => {
+    it('fails the run with reason_code TRUSTLINE_UNAUTHORIZED', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'fail',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
+      expect(result.unauthorizedTrustlinePolicy).toBe('fail');
+      // The remediation must point at the issuer, not at adding a trustline.
+      expect(result.remediation).toMatch(/SetTrustLineFlags/i);
+      expect(result.remediation).not.toMatch(/Add a \*\*USDC\*\* trustline/i);
+    });
+
+    it('renders the 🚫 blocking heading and the matching reason code', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'fail',
+      });
+      const md = formatCommentBody(result, commentConfig());
+
+      expect(md).toContain('> 🚫 **Issuer authorization required**');
+      expect(md).toContain('`unauthorized_trustline_policy: fail`');
+      expect(md).toContain('Reason code: `TRUSTLINE_UNAUTHORIZED`');
+      expect(md).not.toContain('⚠️ **Issuer authorization required**');
+    });
+
+    it('links to the issuer-authorization remediation (FAQ anchor)', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'fail',
+      });
+      const md = formatCommentBody(result, commentConfig());
+
+      const faqLinks = md
+        .split('\n')
+        .filter((line) => line.includes('[→ FAQ]'));
+      expect(faqLinks.length).toBeGreaterThan(0);
+      expect(faqLinks.every((line) => line.includes('trustline-missing'))).toBe(true);
+      // The remediation text itself names the SetTrustLineFlags operation.
+      expect(md).toContain('SetTrustLineFlags');
+    });
+  });
+
+  describe('ignore mode', () => {
+    it('renders no authorization banner at all', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'ignore',
+      });
+      const md = formatCommentBody(result, commentConfig());
+
+      expect(result.valid).toBe(true);
+      expect(md).not.toContain('Issuer authorization required');
+      expect(md).not.toContain('AUTHORIZATION_REQUIRED');
+    });
+  });
+
+  describe('authorized trustline', () => {
+    it('never renders the banner when the issuer already authorized it', async () => {
+      const account = makeAccount({
+        balances: [
+          {
+            balance: '10.0000000', asset_type: 'native',
+            buying_liabilities: '0.0000000', selling_liabilities: '0.0000000',
+          },
+          {
+            balance: '100.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC',
+            asset_issuer: USDC_ISSUER,
+            buying_liabilities: '0.0000000', selling_liabilities: '0.0000000',
+            is_authorized: true,
+          },
+        ],
+      });
+      const result = await runAccountChecks(account, {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'fail',
+      });
+      const md = formatCommentBody(result, commentConfig());
+
+      expect(result.valid).toBe(true);
+      expect(md).not.toContain('Issuer authorization required');
+    });
+  });
+
+  describe('SARIF severity follows the policy', () => {
+    it('warn mode keeps the trustline finding at note severity', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), defaultConfig);
+      const sarif = buildSarifOutput(
+        result,
+        'USDC',
+        'https://horizon.stellar.org',
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      );
+      const trustline = (sarif.runs[0] as any).results.find(
+        (r: any) => r.properties.checkLabel.includes('trustline'),
+      );
+
+      expect(trustline.level).toBe('note');
+      expect(trustline.ruleId).toBe(TRUSTLINE_RULE_ID);
+    });
+
+    it('fail mode promotes the finding to an error under TB006', async () => {
+      const result = await runAccountChecks(unauthorizedAccount(), {
+        ...defaultConfig,
+        unauthorizedTrustlinePolicy: 'fail',
+      });
+      const sarif = buildSarifOutput(
+        result,
+        'USDC',
+        'https://horizon.stellar.org',
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      );
+      const trustline = (sarif.runs[0] as any).results.find(
+        (r: any) => r.properties.checkLabel.includes('trustline'),
+      );
+
+      expect(trustline.level).toBe('error');
+      expect(trustline.ruleId).toBe(UNAUTHORIZED_TRUSTLINE_RULE_ID);
+      // The dedicated rule must be declared in the tool driver.
+      const rules = (sarif.runs[0] as any).tool.driver.rules.map((r: any) => r.id);
+      expect(rules).toContain(UNAUTHORIZED_TRUSTLINE_RULE_ID);
+    });
+
+    it('ignore mode omits the authorization severity entirely', () => {
+      expect(
+        unauthorizedTrustlineSarifSeverity({
+          trustlineAuthorized: false,
+          unauthorizedTrustlinePolicy: 'ignore',
+        }),
+      ).toBeUndefined();
+      expect(
+        unauthorizedTrustlineSarifSeverity({
+          trustlineAuthorized: true,
+          unauthorizedTrustlinePolicy: 'fail',
+        }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('input parsing defaults', () => {
+    it('defaults to warn for empty, whitespace and mixed-case input', () => {
+      expect(parseUnauthorizedTrustlinePolicy('')).toBe('warn');
+      expect(parseUnauthorizedTrustlinePolicy('   ')).toBe('warn');
+      expect(parseUnauthorizedTrustlinePolicy(' WARN ')).toBe('warn');
+      expect(parseUnauthorizedTrustlinePolicy('Fail')).toBe('fail');
+      expect(parseUnauthorizedTrustlinePolicy('ignore')).toBe('ignore');
+    });
+
+    it('rejects an unknown policy with an actionable message', () => {
+      expect(() => parseUnauthorizedTrustlinePolicy('block')).toThrow(
+        /unauthorized_trustline_policy must be one of "fail", "warn", or "ignore"/,
+      );
+    });
   });
 });
 

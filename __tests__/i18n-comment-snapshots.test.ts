@@ -9,6 +9,7 @@
 import { formatCommentBody } from '../src/comment';
 import { getStrings, CommentStrings, Locale } from '../src/i18n';
 import { ValidationResult } from '../src/checks';
+import { parseAssetsJson } from '../src/assets';
 
 jest.mock('@actions/github', () => ({
   context: {
@@ -88,6 +89,42 @@ const unfundedResult: ValidationResult = {
   remediation: 'Send at least 1 XLM to activate the account.',
 };
 
+const multiAssetFailureResult: ValidationResult = {
+  valid: false,
+  accountFunded: true,
+  trustlineExists: false,
+  xlmBalance: '0.8',
+  xlmReserveMet: false,
+  assetBalance: '0',
+  assetBalanceMet: false,
+  checks: [
+    { passed: true, label: 'Account funded', detail: 'Account is active on the Stellar network.' },
+    {
+      passed: false,
+      label: 'USDC trustline',
+      detail: 'Account has trustlines, but not for USDC issued by the configured issuer.',
+    },
+    {
+      passed: false,
+      label: 'XLM reserve',
+      detail: 'Balance 0.8 XLM is below the required 1.5 XLM.',
+    },
+  ],
+  remediation: 'Add missing trustlines and fund the account with XLM.',
+};
+
+const multiAssetRows = parseAssetsJson(
+  JSON.stringify([
+    { code: 'EURC', issuer: USDC_ISSUER },
+    { code: 'PYUSD', issuer: 'GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2' },
+  ]),
+).map((asset, index) => ({
+  assetCode: asset.assetCode,
+  assetIssuer: asset.assetIssuer,
+  trustlineExists: index === 1,
+  balance: index === 1 ? '18.7500000' : '0',
+}));
+
 const LOCALES: Locale[] = ['en', 'es', 'pt'];
 
 // ---------------------------------------------------------------------------
@@ -114,6 +151,15 @@ describe('i18n comment golden snapshots (issue #291)', () => {
 
       it(`unfunded failure path renders correctly for locale "${locale}"`, () => {
         const body = formatCommentBody(unfundedResult, { ...baseConfig, locale });
+        expect(body).toMatchSnapshot();
+      });
+
+      it(`multi-asset failure path renders correctly for locale "${locale}"`, () => {
+        const body = formatCommentBody(multiAssetFailureResult, {
+          ...baseConfig,
+          locale,
+          assets: multiAssetRows,
+        });
         expect(body).toMatchSnapshot();
       });
 

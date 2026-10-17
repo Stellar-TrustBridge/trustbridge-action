@@ -19,18 +19,34 @@ const fs = require('fs');
 const path = require('path');
 
 // ── Reason codes that must appear in the catalog ────────────────────────────
-// Derived from src/checks.ts (validAccountResult, unfundedAccountResult,
-// horizonFailureResult, tlsFailureResult) and src/outputs.ts.
+// Derived from src/checks.ts (runAccountChecks, unfundedAccountResult,
+// horizonFailureResult, tlsFailureResult, circuitOpenFailureResult,
+// rateBudgetExhaustedResult) and src/index.ts (milestone gate, maintainer
+// skip, C-address destination check) and src/outputs.ts.
+//
+// Issue #668: this list had drifted — the resilience and gating codes were
+// being emitted at runtime while remaining absent from the doc. The list below
+// is now the explicit contract, and __tests__/error-catalog.test.ts
+// additionally derives the expected set from the source files so future drift
+// fails CI without anyone editing this file.
 const EXPECTED_REASON_CODES = [
   'SUCCESS',
   'ACCOUNT_NOT_FUNDED',
   'TRUSTLINE_MISSING',
   'RESERVE_TOO_LOW',
+  'TRUSTLINE_LIMIT_TOO_LOW',
+  'TRUSTLINE_UNAUTHORIZED',
+  'CLAWBACK_BLOCKED',
   'FAILED',
   'HORIZON_ERROR',
   'HORIZON_TIMEOUT',
   'TLS_ERROR',
-  'TRUSTLINE_LIMIT_TOO_LOW',
+  'CIRCUIT_OPEN',
+  'RATE_BUDGET_EXHAUSTED',
+  'MILESTONE_GATE_SKIPPED',
+  'MAINTAINER_SKIPPED',
+  'CONTRACT_DESTINATION_OK',
+  'CONTRACT_NOT_FOUND',
   'RATE_LIMIT_EXHAUSTED',
 ];
 

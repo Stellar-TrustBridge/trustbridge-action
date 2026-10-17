@@ -271,6 +271,48 @@ describe('toActionOutputs', () => {
     expect(missingFromAction).toEqual([]);
     expect(actionOnly).toEqual([]);
   });
+
+  // ── Batch-mode outputs (Issue #670) ───────────────────────────────────────
+
+  describe('batch-mode outputs', () => {
+    const BATCH_OUTPUTS = ['batch_summary_json', 'batch_passed_count', 'batch_failed_count'] as const;
+
+    it('declares every batch output in action.yml', () => {
+      const actionText = fs.readFileSync(path.resolve(__dirname, '../action.yml'), 'utf8');
+      const declared = parseActionYmlOutputs(actionText);
+      for (const name of BATCH_OUTPUTS) {
+        expect(declared).toContain(name);
+      }
+    });
+
+    it('publishes every batch output through toActionOutputs', () => {
+      const outputs = toActionOutputs(result);
+      for (const name of BATCH_OUTPUTS) {
+        expect(outputs).toHaveProperty(name);
+      }
+    });
+
+    it('publishes empty strings in single-address mode, not undefined', () => {
+      // A workflow expression cannot distinguish an unset output from an empty
+      // one, so the single-address path must publish empty strings rather than
+      // leaving the key absent. See action.yml for the batch-mode contract.
+      const outputs = toActionOutputs(result) as unknown as Record<string, unknown>;
+      for (const name of BATCH_OUTPUTS) {
+        expect(outputs[name]).toBe('');
+      }
+    });
+
+    it('documents the batch-mode JSON shape on batch_summary_json', () => {
+      const actionText = fs.readFileSync(path.resolve(__dirname, '../action.yml'), 'utf8');
+      const block = / {2}batch_summary_json:\n(?: {4}.*\n)+/.exec(actionText);
+      expect(block).not.toBeNull();
+      // Each field the runtime actually emits must be named in the description,
+      // so a consumer can parse the output without reading src/batch.ts.
+      for (const field of ['total', 'passed', 'failed', 'failures', 'failureTaxonomy']) {
+        expect(block![0]).toContain(field);
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

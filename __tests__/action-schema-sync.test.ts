@@ -6,10 +6,12 @@
  *  2. A property in the schema has no matching input in action.yml.
  *  3. A `required: true` action.yml input is absent from schema `required[]`.
  *  4. A `required: false` action.yml input is incorrectly in schema `required[]`.
- *  5. The schema itself is not valid parseable JSON.
+ *  5. An action.yml default is missing from or differs from the schema.
+ *  6. Schema input types/defaults are not strings.
+ *  7. The schema itself is not valid parseable JSON.
  *
  * The tests use Node's built-in `fs` module and a lightweight hand-rolled
- * YAML key extractor — no yaml-parser runtime dependency needed because
+ * YAML input extractor — no yaml-parser runtime dependency needed because
  * action.yml has a predictable, stable structure (top-level `inputs:` map
  * with string-keyed entries).
  *
@@ -29,6 +31,12 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const ACTION_YML_PATH = path.join(REPO_ROOT, 'action.yml');
 const SCHEMA_PATH = path.join(REPO_ROOT, 'schemas', 'action-inputs.schema.json');
 
+interface ActionInputMetadata {
+  required: boolean;
+  hasDefault: boolean;
+  default?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -46,15 +54,27 @@ const SCHEMA_PATH = path.join(REPO_ROOT, 'schemas', 'action-inputs.schema.json')
  *       required: false    ← optional; absence means false
  *       default: '...'
  *
- * Returns a map of inputName → { required: boolean }.
+ * Returns a map of input names with their required flags and defaults.
  */
-function parseActionYmlInputs(yamlText: string): Map<string, { required: boolean }> {
-  const inputs = new Map<string, { required: boolean }>();
+function parseActionYmlInputs(yamlText: string): Map<string, ActionInputMetadata> {
+  const inputs = new Map<string, ActionInputMetadata>();
   const lines = yamlText.split('\n');
 
   let inInputsSection = false;
   let currentInputName: string | null = null;
   let currentRequired = false;
+  let currentHasDefault = false;
+  let currentDefault: string | undefined;
+
+  const saveCurrentInput = (): void => {
+    if (currentInputName !== null) {
+      inputs.set(currentInputName, {
+        required: currentRequired,
+        hasDefault: currentHasDefault,
+        ...(currentHasDefault ? { default: currentDefault } : {}),
+      });
+    }
+  };
 
   for (const raw of lines) {
     const line = raw.trimEnd();
@@ -67,9 +87,7 @@ function parseActionYmlInputs(yamlText: string): Map<string, { required: boolean
 
     // A new top-level section (no indent) ends the inputs block
     if (inInputsSection && /^[a-zA-Z_]/.test(line) && !/^\s/.test(line)) {
-      if (currentInputName !== null) {
-        inputs.set(currentInputName, { required: currentRequired });
-      }
+      saveCurrentInput();
       inInputsSection = false;
       currentInputName = null;
       continue;
@@ -83,11 +101,11 @@ function parseActionYmlInputs(yamlText: string): Map<string, { required: boolean
     // 2-space indented key directly under `inputs:` → input name
     const inputMatch = line.match(/^  ([a-zA-Z_][a-zA-Z0-9_]*):\s*$/);
     if (inputMatch) {
-      if (currentInputName !== null) {
-        inputs.set(currentInputName, { required: currentRequired });
-      }
+      saveCurrentInput();
       currentInputName = inputMatch[1]!;
       currentRequired = false; // default: not required
+      currentHasDefault = false;
+      currentDefault = undefined;
       continue;
     }
 
@@ -97,14 +115,28 @@ function parseActionYmlInputs(yamlText: string): Map<string, { required: boolean
       currentRequired = requiredMatch[1] === 'true';
       continue;
     }
+
+    const defaultMatch = line.match(/^    default:\s*(.*?)\s*$/);
+    if (defaultMatch && currentInputName !== null) {
+      currentHasDefault = true;
+      currentDefault = parseYamlString(defaultMatch[1]!);
+    }
   }
 
   // Flush last input
-  if (currentInputName !== null) {
-    inputs.set(currentInputName, { required: currentRequired });
-  }
+  saveCurrentInput();
 
   return inputs;
+}
+
+function parseYamlString(value: string): string {
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return JSON.parse(value) as string;
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
 }
 
 /**
@@ -112,7 +144,7 @@ function parseActionYmlInputs(yamlText: string): Map<string, { required: boolean
  * invalid JSON.
  */
 function loadSchema(schemaPath: string): {
-  properties: Record<string, { type: string; description?: string }>;
+  properties: Record<string, { type: string; description?: string; default?: unknown }>;
   required?: string[];
   additionalProperties?: boolean;
 } {
@@ -128,7 +160,7 @@ function loadSchema(schemaPath: string): {
  * Find inputs present in action.yml but missing from schema properties.
  */
 function findInputsMissingFromSchema(
-  actionInputs: Map<string, { required: boolean }>,
+  actionInputs: Map<string, ActionInputMetadata>,
   schemaProperties: Record<string, unknown>,
 ): string[] {
   const missing: string[] = [];
@@ -145,7 +177,7 @@ function findInputsMissingFromSchema(
  * (Schema drift — property added to schema but not to action.yml.)
  */
 function findSchemaPropertiesNotInAction(
-  actionInputs: Map<string, { required: boolean }>,
+  actionInputs: Map<string, ActionInputMetadata>,
   schemaProperties: Record<string, unknown>,
 ): string[] {
   const orphaned: string[] = [];
@@ -161,7 +193,7 @@ function findSchemaPropertiesNotInAction(
  * Find action.yml `required: true` inputs absent from schema `required[]`.
  */
 function findRequiredInputsMissingFromSchemaRequired(
-  actionInputs: Map<string, { required: boolean }>,
+  actionInputs: Map<string, ActionInputMetadata>,
   schemaRequired: string[],
 ): string[] {
   const missing: string[] = [];
@@ -177,7 +209,7 @@ function findRequiredInputsMissingFromSchemaRequired(
  * Find schema `required[]` entries that are NOT `required: true` in action.yml.
  */
 function findSchemaRequiredNotRequiredInAction(
-  actionInputs: Map<string, { required: boolean }>,
+  actionInputs: Map<string, ActionInputMetadata>,
   schemaRequired: string[],
 ): string[] {
   return schemaRequired.filter((name) => {
@@ -186,13 +218,29 @@ function findSchemaRequiredNotRequiredInAction(
   });
 }
 
+function findDefaultMismatches(
+  actionInputs: Map<string, ActionInputMetadata>,
+  schemaProperties: Record<string, { default?: unknown }>,
+): string[] {
+  return [...actionInputs.entries()]
+    .filter(([name, input]) => {
+      const schemaProperty = schemaProperties[name];
+      if (!schemaProperty) return false;
+
+      const schemaHasDefault = Object.prototype.hasOwnProperty.call(schemaProperty, 'default');
+      return input.hasDefault !== schemaHasDefault ||
+        (input.hasDefault && schemaProperty.default !== input.default);
+    })
+    .map(([name]) => name);
+}
+
 // ---------------------------------------------------------------------------
 // Main test suite
 // ---------------------------------------------------------------------------
 
 describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
 
-  let actionInputs: Map<string, { required: boolean }>;
+  let actionInputs: Map<string, ActionInputMetadata>;
   let schema: ReturnType<typeof loadSchema>;
 
   beforeAll(() => {
@@ -319,6 +367,19 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
     expect(nonString).toEqual([]);
   });
 
+  it('all schema defaults are strings', () => {
+    const nonStringDefaults = Object.entries(schema.properties)
+      .filter(([, prop]) => Object.prototype.hasOwnProperty.call(prop, 'default') &&
+        typeof prop.default !== 'string')
+      .map(([name]) => name);
+    expect(nonStringDefaults).toEqual([]);
+  });
+
+  it('every action.yml default matches the schema default', () => {
+    const mismatches = findDefaultMismatches(actionInputs, schema.properties);
+    expect(mismatches).toEqual([]);
+  });
+
   // ── 7. Well-known inputs have correct defaults ────────────────────────────
 
   it('github_token has no default (required input)', () => {
@@ -360,7 +421,7 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
 
     it('detects an input in action.yml missing from schema', () => {
       const fakeInputs = new Map(actionInputs);
-      fakeInputs.set('new_undocumented_input', { required: false });
+      fakeInputs.set('new_undocumented_input', { required: false, hasDefault: false });
 
       const missing = findInputsMissingFromSchema(fakeInputs, schema.properties);
       expect(missing).toContain('new_undocumented_input');
@@ -392,10 +453,19 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
       expect(wronglyRequired).toContain('fail_on_missing');
     });
 
+    it('detects a schema default that differs from action.yml', () => {
+      const fakeProperties = {
+        ...schema.properties,
+        horizon_url: { ...schema.properties.horizon_url!, default: 'https://example.com' },
+      };
+
+      expect(findDefaultMismatches(actionInputs, fakeProperties)).toContain('horizon_url');
+    });
+
     it('detects multiple simultaneous drifts', () => {
       const fakeInputs = new Map(actionInputs);
-      fakeInputs.set('input_a', { required: false });
-      fakeInputs.set('input_b', { required: true });
+      fakeInputs.set('input_a', { required: false, hasDefault: false });
+      fakeInputs.set('input_b', { required: true, hasDefault: false });
 
       const fakeProperties = { ...schema.properties };
       // input_a and input_b are missing from schema
@@ -472,7 +542,7 @@ describe('Issue #306 — Ghost-input detection: every core.getInput key must be 
   const INDEX_TS_PATH = path.join(REPO_ROOT, 'src', 'index.ts');
 
   let indexInputKeys: Set<string>;
-  let actionInputsForGhost: Map<string, { required: boolean }>;
+  let actionInputsForGhost: Map<string, ActionInputMetadata>;
 
   beforeAll(() => {
     const indexSource = fs.readFileSync(INDEX_TS_PATH, 'utf8');

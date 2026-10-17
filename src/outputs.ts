@@ -236,6 +236,18 @@ export interface ActionOutputs {
   friendbot_transaction_hash: string;
   assets_trustline_status: string;
   trustlines_summary: string;
+  /**
+   * Batch-mode outputs (Issue #670).
+   *
+   * Published on the batch code path in index.ts, which returns before
+   * `setValidationOutputs` runs. Single-address runs publish empty strings here
+   * so the action.yml output contract stays total: every declared output has a
+   * value in every mode, and a consumer never has to distinguish "unset" from
+   * "empty string".
+   */
+  batch_summary_json: string;
+  batch_passed_count: string;
+  batch_failed_count: string;
 }
 
 export function toActionOutputs(
@@ -340,6 +352,11 @@ export function toActionOutputs(
     friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
     assets_trustline_status: JSON.stringify(assetsTrustlineStatus),
     trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
+    // Batch-mode outputs. Empty in single-address mode; index.ts overwrites
+    // these on the batch path before returning. (Issue #670)
+    batch_summary_json: '',
+    batch_passed_count: '',
+    batch_failed_count: '',
   };
 }
 

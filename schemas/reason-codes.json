@@ -106,6 +106,46 @@
       "since": "v1"
     },
     {
+      "code": "CLAWBACK_BLOCKED",
+      "description": "The configured asset has clawback enabled (`is_clawback_enabled: true`) for this trustline and validation was blocked by `clawback_strict_mode: true`. The issuer can reclaim the held assets at any time.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when clawbackStrictMode is true and the matched trustline has clawback enabled)",
+      "since": "v1"
+    },
+    {
+      "code": "CIRCUIT_OPEN",
+      "description": "The Horizon circuit breaker tripped after repeated consecutive failures, so the run was failed closed without further Horizon requests. Distinct from HORIZON_ERROR: the account state was never determined because no request was attempted. Clear the circuit by resolving the underlying Horizon outage and re-running.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (circuit-breaker failure path, after max_consecutive_failures is exceeded)",
+      "since": "v1"
+    },
+    {
+      "code": "RATE_BUDGET_EXHAUSTED",
+      "description": "The per-run Horizon request budget (`horizon_max_requests`) was exhausted before the account could be validated. The run fails closed by design rather than issuing unbounded requests. Distinct from HORIZON_ERROR: no failing request occurred, the budget was deliberately exhausted. Raise `horizon_max_requests` (batch mode) or retry.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (rateBudgetExhaustedResult, used in single-address and batch validation paths)",
+      "since": "v1"
+    },
+    {
+      "code": "MILESTONE_GATE_SKIPPED",
+      "description": "The milestone gate skipped validation because the issue or pull request's milestone was not in `milestone_allowlist` (or no milestone was set while the allowlist was active). No account checks were performed, so this is a skip rather than a validation failure. Set `milestone_fail_on_skip: true` to hard-fail instead of warn.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/index.ts (milestone gate, before any Horizon request)",
+      "since": "v1"
+    },
+    {
       "code": "MAINTAINER_SKIPPED",
       "description": "Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`).",
       "accountFunded": true,
