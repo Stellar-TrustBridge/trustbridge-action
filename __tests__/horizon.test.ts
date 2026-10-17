@@ -1,9 +1,10 @@
-﻿import { HorizonError, HorizonRateLimitError, isCreditBalance,
+import { HorizonError, HorizonRateLimitError, isCreditBalance,
   isRetryableStatus,
   parseRetryAfterMs,
   fetchNetworkPassphrase, FetchLike,
   parseHorizonBalance, normalizeHorizonUrl, getAssetBalance } from '../src/horizon';
 import { fetchAccount, HorizonAccount, waitForFundedAccount, getNativeBalance, hasTrustline, fetchClaimableBalanceCount } from '../src/horizon';
+import { applyWalletLabels, applyReadyLabels } from '../src/horizon';
 import { HorizonCircuitOpenError, isCircuitOpenError } from '../src/horizon';
 import { CircuitBreaker, CircuitOpenError } from '../src/resilience';
 import * as loggerModule from '../src/logger';
@@ -1276,5 +1277,210 @@ describe('circuit-open propagation (Issue #434)', () => {
     expect(isCircuitOpenError(new HorizonError('x', 500))).toBe(false);
     expect(isCircuitOpenError(new Error('x'))).toBe(false);
     expect(isCircuitOpenError(undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #694 — paginate applyWalletLabels beyond the 100-label-per-page cap
+// ---------------------------------------------------------------------------
+
+/** Build an octokit mock that serves `listLabelsOnIssue` page by page. */
+function makeLabelOctokit(pages: Array<Array<{ name: string }>>) {
+  const listLabelsOnIssue = jest.fn((params: { page?: number }) => {
+    const page = params.page ?? 1;
+    return Promise.resolve({ data: pages[page - 1] ?? [] });
+  });
+  const addLabels = jest.fn().mockResolvedValue({});
+  const removeLabel = jest.fn().mockResolvedValue({});
+  return {
+    octokit: { rest: { issues: { listLabelsOnIssue, addLabels, removeLabel } } },
+    listLabelsOnIssue,
+    addLabels,
+    removeLabel,
+  };
+}
+
+/** Build a paginated label fixture of `total` labels, overriding given slots. */
+function buildPagedLabels(
+  total: number,
+  overrides: Array<{ slot: number; name: string }>,
+  perPage = 100,
+): Array<Array<{ name: string }>> {
+  const names = Array.from({ length: total }, (_, i) => `label: ${i + 1}`);
+  for (const { slot, name } of overrides) {
+    names[slot] = name;
+  }
+  const pages: Array<Array<{ name: string }>> = [];
+  for (let i = 0; i < names.length; i += perPage) {
+    pages.push(names.slice(i, i + perPage).map((name) => ({ name })));
+  }
+  return pages;
+}
+
+describe('applyWalletLabels pagination (Issue #694)', () => {
+  const OWNER = 'trustbridge';
+  const REPO = 'wallet-repo';
+  const ISSUE = 1337;
+
+  it('applies the wallet label when it only exists on page 2 of a >100-label issue', async () => {
+    // 250 labels: pages [100, 100, 50]. Target label sits on page 2.
+    const pages = buildPagedLabels(250, [{ slot: 150, name: 'wallet: funded' }]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result).toEqual({ applied: 'wallet: funded', removed: [] });
+    // The loop walked pages 1, 2 and stopped on the short page 3.
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+    expect(listLabelsOnIssue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 3, per_page: 100 }),
+    );
+    // Label already present → no duplicate create attempt.
+    expect(addLabels).not.toHaveBeenCalled();
+    expect(removeLabel).not.toHaveBeenCalled();
+  });
+
+  it('removes a stale wallet label found on page 3 and adds the missing target', async () => {
+    const pages = buildPagedLabels(250, [{ slot: 220, name: 'wallet: unfunded' }]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result).toEqual({
+      applied: 'wallet: funded',
+      removed: ['wallet: unfunded'],
+    });
+    expect(removeLabel).toHaveBeenCalledTimes(1);
+    expect(removeLabel).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      name: 'wallet: unfunded',
+    });
+    // Target not present anywhere → added exactly once.
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(addLabels).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      labels: ['wallet: funded'],
+    });
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not re-add the target when removeStale=false and the target is on page 2', async () => {
+    const pages = buildPagedLabels(250, [
+      { slot: 150, name: 'wallet: trustline-missing' },
+    ]);
+    const { octokit, addLabels, removeLabel } = makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(
+      octokit as any,
+      OWNER,
+      REPO,
+      ISSUE,
+      { accountFunded: true, trustlineExists: false, xlmReserveMet: false },
+      { removeStale: false },
+    );
+
+    expect(result).toEqual({ applied: 'wallet: trustline-missing', removed: [] });
+    expect(addLabels).not.toHaveBeenCalled();
+    expect(removeLabel).not.toHaveBeenCalled();
+  });
+
+  it('terminates the loop with one empty page when the label count is an exact multiple of 100', async () => {
+    // 300 labels = three full 100-label pages; page 4 is empty and ends the loop.
+    const pages = buildPagedLabels(300, []);
+    const { octokit, listLabelsOnIssue, addLabels } = makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(4);
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(addLabels).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      labels: ['wallet: funded'],
+    });
+    expect(result.applied).toBe('wallet: funded');
+  });
+
+  it('attempts to add a missing label and surfaces add failures as an error', async () => {
+    const pages = buildPagedLabels(250, []);
+    const { octokit, addLabels, removeLabel } = makeLabelOctokit(pages);
+    addLabels.mockRejectedValue(new Error('add label failed'));
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(removeLabel).not.toHaveBeenCalled();
+    expect(result.applied).toBe('wallet: funded');
+    expect(result.removed).toEqual([]);
+    expect(result.error).toContain('add label failed');
+  });
+
+  it('surfaces listing errors instead of swallowing them', async () => {
+    const { octokit, addLabels, listLabelsOnIssue } = makeLabelOctokit([]);
+    listLabelsOnIssue.mockRejectedValue(new Error('list labels failed'));
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result.applied).toBe('wallet: funded');
+    expect(result.error).toContain('list labels failed');
+    expect(addLabels).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyReadyLabels pagination (Issue #694)', () => {
+  it('sees stale labels on later pages and does not duplicate the target', async () => {
+    const pages = buildPagedLabels(250, [
+      { slot: 120, name: 'trustbridge: fail' },
+      { slot: 125, name: 'trustbridge: pass' },
+    ]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyReadyLabels(octokit as any, 'owner', 'repo', 42, {
+      ready: true,
+      passLabel: 'trustbridge: pass',
+      failLabel: 'trustbridge: fail',
+    });
+
+    expect(result).toEqual({
+      applied: 'trustbridge: pass',
+      removed: ['trustbridge: fail'],
+    });
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+    expect(removeLabel).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      issue_number: 42,
+      name: 'trustbridge: fail',
+    });
+    // Target already on page 2 → no duplicate add attempt.
+    expect(addLabels).not.toHaveBeenCalled();
   });
 });

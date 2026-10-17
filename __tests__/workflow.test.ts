@@ -17,6 +17,30 @@ describe('.github/workflows/ci.yml', () => {
     expect(content).toContain('npm run lint');
   });
 
+  it('runs npm run typecheck:tests on PRs without || true (Issue #664)', () => {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+
+    expect(content).toContain('run: npm run typecheck:tests');
+
+    // The test tsconfig is a real npm script, so the CI step must invoke the
+    // script rather than a hand-rolled tsc invocation that can drift.
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts['typecheck:tests']).toContain('tsconfig.test.json');
+
+    // No `|| true` may suppress the test-project typecheck.
+    const typecheckTestsStep = content
+      .split('- name:')
+      .find((section) => section.includes('npm run typecheck:tests'));
+    expect(typecheckTestsStep).toBeDefined();
+    expect(typecheckTestsStep).not.toContain('|| true');
+
+    // Both projects must be typechecked on the pull_request trigger.
+    expect(content).toContain('pull_request:');
+    expect(content).toContain('npm run typecheck:tests');
+  });
+
   it('runs a dedicated coverage job enforcing the jest.config.js thresholds', () => {
     const content = fs.readFileSync(workflowPath, 'utf8');
 

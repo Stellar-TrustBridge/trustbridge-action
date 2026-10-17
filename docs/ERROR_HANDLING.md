@@ -50,6 +50,14 @@ code here will fail the build.
 | `HORIZON_ERROR` | `horizonFailureResult` · `src/checks.ts` | Yes (≤ 3 retries) | Horizon returned a non-404 HTTP error (502, 503, 504, etc.) or an unclassified failure. |
 | `HORIZON_TIMEOUT` | `horizonFailureResult` · `src/checks.ts` | Yes (≤ 3 retries) | Horizon request timed out (AbortController fired after `horizon_timeout_ms`). |
 | `TLS_ERROR` | `tlsFailureResult` · `src/checks.ts` | No | TLS handshake or certificate verification failed for `horizon_url`; connection was never established. |
+| `TRUSTLINE_UNAUTHORIZED` | `runAccountChecks` · `src/checks.ts` | No | Trustline exists but the issuer has not authorized it (`is_authorized: false`). Only emitted when `unauthorized_trustline_policy: fail`; under `warn` (default) or `ignore` the run does not fail on this. |
+| `CLAWBACK_BLOCKED` | `runAccountChecks` · `src/checks.ts` | No | The trustline has clawback enabled (`is_clawback_enabled: true`) and `clawback_strict_mode: true` blocked validation. The issuer can reclaim the held assets at any time. |
+| `CIRCUIT_OPEN` | `circuitOpenFailureResult` · `src/checks.ts` | Yes (after the breaker resets) | The Horizon circuit breaker tripped after repeated consecutive failures, so the run failed closed without issuing further requests. Distinct from `HORIZON_ERROR`: no request was attempted, so the account state is unknown. Resolve the underlying Horizon outage and re-run. |
+| `RATE_BUDGET_EXHAUSTED` | `rateBudgetExhaustedResult` · `src/checks.ts` | Yes (raise the budget) | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before validation completed. The run fails closed by design rather than issuing unbounded requests. Distinct from `HORIZON_ERROR`: no request failed, the budget was deliberately consumed. Raise `horizon_max_requests` (most relevant in batch mode) or retry. |
+| `MILESTONE_GATE_SKIPPED` | milestone gate · `src/index.ts` | n/a (skip, not failure) | `milestone_allowlist` is active and the issue's milestone was absent or not in the allowlist, so validation was skipped before any Horizon request. No account state was determined. Set `milestone_fail_on_skip: true` to hard-fail instead of warn. |
+| `MAINTAINER_SKIPPED` | maintainer skip · `src/index.ts` | n/a (skip, not failure) | The actor matched CODEOWNERS or `maintainers_allowlist` and `skip_for_maintainers: true`, so checks were skipped. `ready` is `true` because nothing was found to be wrong. |
+| `CONTRACT_DESTINATION_OK` | C-address destination check · `src/index.ts` | n/a | The Soroban C-address payout destination was confirmed on-chain. Horizon account/trustline checks are intentionally skipped for contract destinations. |
+| `CONTRACT_NOT_FOUND` | C-address destination check · `src/index.ts` | No | The Soroban C-address payout destination was not found on the configured Soroban RPC. The contract must exist on-chain before it is eligible for payout. |
 | `RATE_LIMIT_EXHAUSTED` | `HorizonRateLimitError` · `src/horizon.ts` | No (budget exhausted) | Horizon returned HTTP 429 and all retry attempts were exhausted (or `retry_max_total_wait_ms` budget was exceeded). |
 | `PIN_MISMATCH` | `HorizonPinMismatchError` · `src/horizon.ts` | No | The Horizon TLS certificate fingerprint did not match `horizon_pin_fingerprint`. Not retried — a fingerprint mismatch means the certificate has changed or a MITM is present. Update `horizon_pin_fingerprint` or investigate the endpoint. (Issue #303) |
 
@@ -59,6 +67,9 @@ code here will fail the build.
 - Downstream steps can branch on `steps.<id>.outputs.reason_code` to implement custom logic per failure mode.
 - Codes in the `HORIZON_*` and `TLS_ERROR` family indicate infrastructure problems, not wallet configuration issues — contributors should not be asked to take action on these.
 - `RATE_LIMIT_EXHAUSTED` is distinct from `HORIZON_ERROR`: it specifically indicates the 429-retry budget was consumed, which may indicate high org-wide concurrency. Consider `rpc_fallback_url` or a self-hosted Horizon node.
+- `CIRCUIT_OPEN`, `RATE_BUDGET_EXHAUSTED`, and the `HORIZON_*` / `TLS_ERROR` family all report **infrastructure** conditions where the account state is genuinely *unknown* — not known-bad. Do not ask the wallet owner to fix their account in response to these; re-run once the endpoint or budget recovers.
+- `RATE_BUDGET_EXHAUSTED` is distinct from `RATE_LIMIT_EXHAUSTED`: the former is our own request budget (`horizon_max_requests`) being consumed, the latter is Horizon returning HTTP 429 after retries.
+- Skip codes (`MILESTONE_GATE_SKIPPED`, `MAINTAINER_SKIPPED`) mean no checks ran. They are not validation failures, and `ready` differs between them (`false` for the milestone gate, `true` for the maintainer skip). Branch on the code itself rather than assuming a skip implies failure.
 
 <!-- ERROR_CATALOG_END -->
 

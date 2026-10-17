@@ -50,3 +50,23 @@ jobs:
               sys.exit(1)
           print(f"Validated {len(list(pathlib.Path('.github/workflows').glob('*.yml')))} workflow files")
           PY
+
+  # #661 / #555 – zizmor static analysis for workflow security findings.
+  # .github/zizmor.yml holds narrowly-scoped suppressions with justification
+  # comments; see that file before adding new ignores.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        run: |
+          pip install --quiet zizmor
+
+      - name: Run zizmor
+        run: |
+          zizmor --config .github/zizmor.yml .github/workflows/

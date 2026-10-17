@@ -572,6 +572,66 @@ describe('label-gate composite action wiring (#538)', () => {
     expect(undeclared).toEqual(KNOWN_UNDECLARED_FORWARDED_OUTPUTS);
   });
 
+  // ── Output surface parity (Issue #671) ───────────────────────────────────
+  //
+  // The composite forwards a subset of trustbridge-action's outputs. That is
+  // a deliberate choice, but the subset had drifted: 32 outputs declared in
+  // action.yml — including `reason_code`, which gate consumers branch on — were
+  // never forwarded, so referencing them yielded an "Output not found"
+  // warning and an empty string.
+  //
+  // Parity is asserted in both directions: nothing forwarded may be undeclared
+  // upstream (above), and nothing declared upstream may go unforwarded (below).
+  // Together these make the composite's output surface track action.yml
+  // automatically instead of by hand.
+
+  it('forwards every output that trustbridge-action declares', () => {
+    const forwarded = new Set(
+      [...composite.outputs.entries()]
+        .filter(([, value]) => value.includes('steps.run-trustbridge.outputs.'))
+        .map(([name]) => name),
+    );
+
+    const notForwarded = [...actionOutputs].filter((name) => !forwarded.has(name)).sort();
+    expect(notForwarded).toEqual([]);
+  });
+
+  it('forwards the gate-critical reason_code and checks_json outputs', () => {
+    // These are what a gate consumer branches on after the gate opens; if they
+    // are ever dropped again the workflow silently sees an empty string and
+    // treats a failed validation as unclassified.
+    expect(composite.outputs.get('reason_code')).toContain(
+      'steps.run-trustbridge.outputs.reason_code',
+    );
+    expect(composite.outputs.get('checks_json')).toContain(
+      'steps.run-trustbridge.outputs.checks_json',
+    );
+    expect(composite.outputs.get('ready')).toContain('steps.run-trustbridge.outputs.ready');
+  });
+
+  it('keeps every forwarded output expression pointing at the run-trustbridge step', () => {
+    const misrouted = [...composite.outputs.entries()]
+      .filter(([name]) => !name.startsWith('gate_'))
+      .filter(([, value]) => {
+        const ref = /^steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\./.exec(
+          value.replace(/^\$\{\{\s*/, '').trim(),
+        );
+        return ref !== null && ref[1] !== 'run-trustbridge';
+      })
+      .map(([name]) => name);
+    expect(misrouted).toEqual([]);
+  });
+
+  it('documents the empty-when-skipped semantics for the forwarded outputs', () => {
+    // `run-trustbridge` is conditional on gate_skipped != 'true', so every
+    // forwarded output resolves to an empty string when the gate is closed.
+    // The header comment must state this so consumers do not treat empty as a
+    // validation result.
+    const raw = fs.readFileSync(LABEL_GATE_PATH, 'utf8');
+    expect(raw).toContain('forwarded when gate is open, empty when');
+    expect(raw).toContain('gate is skipped');
+  });
+
   it('declares a description for every composite input and output', () => {
     const raw = fs.readFileSync(LABEL_GATE_PATH, 'utf8');
     for (const name of [...composite.inputs.keys(), ...composite.outputs.keys()]) {

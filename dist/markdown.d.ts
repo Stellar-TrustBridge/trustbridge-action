@@ -3,6 +3,48 @@ import { Locale } from './i18n';
 export declare function escapeMarkdownInline(value: string): string;
 export declare function inlineCode(value: string): string;
 /**
+ * A single per-asset row for {@link buildAssetTrustlineTable} (Issue #552).
+ *
+ * Mirrors the per-asset trustline status computed for the `assets_json`
+ * input (see `MultiAssetResult` in `src/index.ts` and
+ * `AssetTrustlineResult` in `src/checks.ts`).
+ */
+export interface AssetTrustlineRow {
+    /** Asset code, e.g. `USDC` (already validated by `parseAssetsJson`). */
+    assetCode: string;
+    /** Issuer account address (G… public key or C… contract ID). */
+    assetIssuer: string;
+    /** Whether the account holds a trustline for this asset. */
+    trustlineExists: boolean;
+    /**
+     * Asset balance as reported by Horizon (7-decimal string) or `"0"` when
+     * no trustline exists. `"unknown"` renders as an informational placeholder.
+     */
+    balance: string;
+}
+/**
+ * Render the per-asset trustline status table for the `assets_json` input
+ * (Issue #552).
+ *
+ * The table is appended to the TrustBridge comment as its own `###` section
+ * so maintainers can see, at a glance, the trustline state of every
+ * additional asset — instead of having to dig through workflow logs.
+ *
+ * All dynamic values are escaped through `escapeMarkdownInline` / `inlineCode`
+ * so an asset code or issuer can never inject Markdown structure. The issuer
+ * is truncated for readability while remaining unambiguous (first 4 + last 4
+ * characters); the full issuer is not rendered to keep the table compact —
+ * Horizon/stellar.explore can resolve it from the asset code if needed.
+ *
+ * @param rows Per-asset results. When empty, returns `''` so callers can
+ *             skip the section entirely (no empty headings in comments).
+ * @param options.heading Section heading (defaults to "Asset trustlines").
+ * @returns Markdown section (heading + table), or `''` when `rows` is empty.
+ */
+export declare function buildAssetTrustlineTable(rows: AssetTrustlineRow[], options?: {
+    heading?: string;
+}): string;
+/**
  * Canonical (locale-independent) keys used in the Map returned by
  * `extractChecklistState` and accepted by `buildOnboardingChecklist` via
  * `options.previousChecks`.

@@ -1704,6 +1704,76 @@ export interface ApplyWalletLabelsOptions {
 }
 
 /**
+ * Minimal structural Octokit surface used by the wallet/ready label helpers.
+ * Kept structural so unit tests can pass a plain-object mock.
+ */
+interface IssueLabelOctokit {
+  rest: {
+    issues: {
+      addLabels: (params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        labels: string[];
+      }) => Promise<unknown>;
+      removeLabel: (params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        name: string;
+      }) => Promise<unknown>;
+      listLabelsOnIssue: (params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        per_page: number;
+        page?: number;
+      }) => Promise<{ data: Array<{ name: string }> }>;
+    };
+  };
+}
+
+/** Maximum labels per page the GitHub REST API returns from `listLabelsOnIssue`. */
+const LABELS_PAGE_SIZE = 100;
+
+/**
+ * Fetch every label currently applied to an issue, following paginated
+ * `listLabelsOnIssue` responses until a short (or empty) page signals the end.
+ *
+ * GitHub caps `per_page` at 100, so issues carrying more than 100 labels can
+ * only be listed by looping pages. A short page always appears on the final
+ * page unless the label count is an exact multiple of `LABELS_PAGE_SIZE`; in
+ * that case one extra empty page terminates the loop.
+ *
+ * @returns The collected label names and the number of pages fetched.
+ */
+async function listAllLabelsOnIssue(
+  octokit: IssueLabelOctokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<{ labels: string[]; pages: number }> {
+  const labels: string[] = [];
+  let page = 1;
+  for (;;) {
+    const response = await octokit.rest.issues.listLabelsOnIssue({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: LABELS_PAGE_SIZE,
+      page,
+    });
+    const pageNames = response.data.map((label) => label.name);
+    labels.push(...pageNames);
+    if (pageNames.length < LABELS_PAGE_SIZE) {
+      break;
+    }
+    page += 1;
+  }
+  return { labels, pages: page };
+}
+
+/**
  * Apply the appropriate wallet label to a GitHub issue via Octokit,
  * optionally removing stale wallet labels first.
  *
@@ -1720,30 +1790,7 @@ export interface ApplyWalletLabelsOptions {
  * @returns             The label that was applied, or an error string.
  */
 export async function applyWalletLabels(
-  octokit: {
-    rest: {
-      issues: {
-        addLabels: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          labels: string[];
-        }) => Promise<unknown>;
-        removeLabel: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          name: string;
-        }) => Promise<unknown>;
-        listLabelsOnIssue: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          per_page: number;
-        }) => Promise<{ data: Array<{ name: string }> }>;
-      };
-    };
-  },
+  octokit: IssueLabelOctokit,
   owner: string,
   repo: string,
   issueNumber: number,
@@ -1753,22 +1800,25 @@ export async function applyWalletLabels(
   const removeStale = options.removeStale ?? true;
   const targetLabel = deriveWalletLabel(input);
   const removed: string[] = [];
+  let pages = 0;
 
   try {
-    if (removeStale) {
-      // Fetch current labels to avoid 404s on removeLabel for non-present labels.
-      const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue(
-        {
-          owner,
-          repo,
-          issue_number: issueNumber,
-          per_page: 100,
-        },
-      );
-      const currentNames = currentLabelsResponse.data.map((l) => l.name);
+    // List every current label (paginated) so labels on pages after the first
+    // 100 are never missed on heavily-labelled issues (Issue #694).
+    const currentLabels = await listAllLabelsOnIssue(
+      octokit,
+      owner,
+      repo,
+      issueNumber,
+    );
+    pages = currentLabels.pages;
+    const currentNames = new Set(currentLabels.labels);
 
+    if (removeStale) {
+      // Only remove stale wallet labels that are actually present — avoids
+      // 404s on removeLabel for labels that don't exist on the issue.
       const stale = ALL_WALLET_LABELS.filter(
-        (l) => l !== targetLabel && currentNames.includes(l),
+        (l) => l !== targetLabel && currentNames.has(l),
       );
 
       for (const label of stale) {
@@ -1786,16 +1836,35 @@ export async function applyWalletLabels(
       }
     }
 
-    await octokit.rest.issues.addLabels({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      labels: [targetLabel],
+    // Skip re-adding an already-applied label so the operation stays
+    // idempotent and never issues a duplicate label attempt for a label that
+    // already exists on the issue (Issue #694).
+    if (!currentNames.has(targetLabel)) {
+      await octokit.rest.issues.addLabels({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: [targetLabel],
+      });
+    }
+
+    logger.info("Wallet label state synced", {
+      component: "labels",
+      applied: targetLabel,
+      removed,
+      pages,
     });
 
     return { applied: targetLabel, removed };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    logger.warn("Wallet label update failed", {
+      component: "labels",
+      applied: targetLabel,
+      removed,
+      pages,
+      error: message,
+    });
     return { applied: targetLabel, removed, error: message };
   }
 }
@@ -1807,30 +1876,7 @@ export interface ReadyLabelInput {
 }
 
 export async function applyReadyLabels(
-  octokit: {
-    rest: {
-      issues: {
-        addLabels: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          labels: string[];
-        }) => Promise<unknown>;
-        removeLabel: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          name: string;
-        }) => Promise<unknown>;
-        listLabelsOnIssue: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          per_page: number;
-        }) => Promise<{ data: Array<{ name: string }> }>;
-      };
-    };
-  },
+  octokit: IssueLabelOctokit,
   owner: string,
   repo: string,
   issueNumber: number,
@@ -1841,19 +1887,21 @@ export async function applyReadyLabels(
   const targetLabel = input.ready ? passLabel : failLabel;
   const staleLabel = input.ready ? failLabel : passLabel;
   const removed: string[] = [];
+  let pages = 0;
 
   if (!targetLabel && !staleLabel) {
     return { removed: [] };
   }
 
   try {
-    const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
+    const currentLabels = await listAllLabelsOnIssue(
+      octokit,
       owner,
       repo,
-      issue_number: issueNumber,
-      per_page: 100,
-    });
-    const currentNames = new Set(currentLabelsResponse.data.map((l) => l.name));
+      issueNumber,
+    );
+    pages = currentLabels.pages;
+    const currentNames = new Set(currentLabels.labels);
 
     if (
       staleLabel &&
@@ -1874,6 +1922,11 @@ export async function applyReadyLabels(
     }
 
     if (!targetLabel) {
+      logger.debug("Ready label sync finished without a target label", {
+        component: "labels",
+        removed,
+        pages,
+      });
       return { applied: undefined, removed };
     }
 
@@ -1886,9 +1939,23 @@ export async function applyReadyLabels(
       });
     }
 
+    logger.debug("Ready label state synced", {
+      component: "labels",
+      applied: targetLabel,
+      removed,
+      pages,
+    });
+
     return { applied: targetLabel, removed };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    logger.warn("Ready label update failed", {
+      component: "labels",
+      applied: targetLabel || undefined,
+      removed,
+      pages,
+      error: message,
+    });
     return { applied: targetLabel || undefined, removed, error: message };
   }
 }

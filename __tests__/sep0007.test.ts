@@ -104,11 +104,30 @@ describe('buildSep0007PayLink', () => {
     expect(uri).toContain('amount=1.5');
   });
 
-  it('appends asset_code and asset_issuer when provided', () => {
+  it('encodes asset_code, asset_issuer, and custom network passphrase correctly', () => {
     const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
-    const uri = buildSep0007PayLink({ destination: DEST, assetCode: 'USDC', assetIssuer: issuer });
+    const customPassphrase = 'My Custom Network ; 2024';
+    const uri = buildSep0007PayLink({
+      destination: DEST,
+      assetCode: 'USDC',
+      assetIssuer: issuer,
+      networkPassphrase: customPassphrase,
+    });
+
     expect(uri).toContain('asset_code=USDC');
     expect(uri).toContain(`asset_issuer=${issuer}`);
+    expect(decode(uri)).toContain(customPassphrase);
+  });
+
+  it('requires both assetCode and assetIssuer to be valid when either is provided', () => {
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'USDC' })).toThrow(/asset_issuer/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' })).toThrow(/asset_code/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'usdc!', assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' })).toThrow(/asset_code/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'USDC', assetIssuer: 'not-a-stellar-address' })).toThrow(/asset_issuer/i);
+  });
+
+  it('rejects blank custom network passphrases before building the URI', () => {
+    expect(() => buildSep0007PayLink({ destination: DEST, networkPassphrase: '   ' })).toThrow(/network passphrase/i);
   });
 
   it('appends memo and memo_type when provided', () => {

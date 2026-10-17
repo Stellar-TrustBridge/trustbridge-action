@@ -26,6 +26,7 @@
       "type": "string",
       "description": "Stellar account address (G-address, 56 characters) to validate. Required unless assignee_address_map is set.",
       "pattern": "^G[A-Z2-7]{55}$",
+      "default": "",
       "examples": [
         "GABC...XYZ"
       ]
@@ -363,7 +364,7 @@
     "network_passphrase": {
       "type": "string",
       "description": "Expected Stellar network passphrase for network identity verification.",
-      "default": "Public Global Stellar Network ; September 2015",
+      "default": "",
       "examples": [
         "Public Global Stellar Network ; September 2015",
         "Test SDF Network ; September 2015"

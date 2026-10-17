@@ -11,13 +11,14 @@ permissions:
 
 jobs:
   check:
+    name: Typecheck & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 20
           cache: npm
@@ -25,8 +26,102 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate action input schema
+        run: npx jest __tests__/action-schema-sync.test.ts --runInBand --no-coverage
+
       - name: Typecheck
         run: npx tsc --noEmit || true
 
       - name: Test
-        run: npx jest --maxWorkers=1 --no-coverage --forceExit || true
+        run: npm test -- --maxWorkers=1 --no-coverage --forceExit
+
+  verify-dist:
+    # #657 – verify dist/index.js matches dist-manifest.json on every PR
+    name: Verify dist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify dist manifest
+        run: npm run verify:dist
+
+  lint:
+    # #658 – dedicated ESLint job so lint failures are reported separately
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+  license-check:
+    # #663 – gate on GPL-incompatible licenses via check-licenses.js
+    name: License check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check licenses
+        run: npm run license:check
+
+  error-catalog:
+    # #533 – verify error catalog is consistent with source
+    name: Error catalog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check error catalog
+        run: node scripts/check-error-catalog.js
+
+  check-unpinned-actions:
+    # #662 – enforce all action refs are pinned to a full commit SHA
+    name: Check unpinned actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for unpinned action refs
+        run: bash scripts/check-unpinned-actions.sh
