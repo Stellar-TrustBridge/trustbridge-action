@@ -2215,3 +2215,249 @@ describe('Issue #730: SAC (C-address) asset issuer trustline validation', () => 
     expect(result.reasonCode).toBe('TRUSTLINE_MISSING');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #536 — assets_json extra trustlines gate the ready / valid output
+//
+// The fix lives in src/index.ts: after runAccountChecks the action calls
+// runMultiAssetChecks for every asset in assets_json, appends a failing
+// check item for each missing trustline, and recomputes result.valid so
+// that `ready` reflects the full set of required trustlines.
+//
+// These tests verify the underlying primitive (runMultiAssetChecks) returns
+// the data that the index-level gating logic depends on, and that the check
+// items produced by the gating logic match the expected shape.
+// ---------------------------------------------------------------------------
+
+describe('Issue #536: assets_json extra trustline gating', () => {
+  const EURC_ISSUER = 'GCQTGZQQ5G4PTM2RNQRAXRJJEL5CQ5Z2OY5SUJRE763CPEKE6EJUMCU';
+  const YXLM_ISSUER = 'GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55';
+
+  function accountWithUsdcOnly(): HorizonAccount {
+    return makeAccount(); // default makeAccount has XLM + USDC trustline
+  }
+
+  function accountWithUsdcAndEurc(): HorizonAccount {
+    return makeAccount({
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '100.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '25.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'EURC',
+          asset_issuer: EURC_ISSUER,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+      ],
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // runMultiAssetChecks — the primitive used by the index-level gating
+  // -------------------------------------------------------------------------
+
+  it('allTrustlinesExist is true when every extra asset has a trustline', () => {
+    const { allTrustlinesExist, results } = runMultiAssetChecks(
+      accountWithUsdcAndEurc(),
+      [
+        { assetCode: 'USDC', assetIssuer: USDC_ISSUER },
+        { assetCode: 'EURC', assetIssuer: EURC_ISSUER },
+      ],
+    );
+    expect(allTrustlinesExist).toBe(true);
+    expect(results.every((r) => r.trustlineExists)).toBe(true);
+  });
+
+  it('allTrustlinesExist is false when one extra trustline is missing', () => {
+    // Account only has USDC; EURC trustline is absent
+    const { allTrustlinesExist, results } = runMultiAssetChecks(
+      accountWithUsdcOnly(),
+      [
+        { assetCode: 'USDC', assetIssuer: USDC_ISSUER },
+        { assetCode: 'EURC', assetIssuer: EURC_ISSUER },
+      ],
+    );
+    expect(allTrustlinesExist).toBe(false);
+    expect(results.find((r) => r.assetCode === 'EURC')?.trustlineExists).toBe(false);
+    expect(results.find((r) => r.assetCode === 'USDC')?.trustlineExists).toBe(true);
+  });
+
+  it('allTrustlinesExist is false when ALL extra trustlines are missing', () => {
+    const { allTrustlinesExist } = runMultiAssetChecks(
+      accountWithUsdcOnly(),
+      [
+        { assetCode: 'EURC', assetIssuer: EURC_ISSUER },
+        { assetCode: 'yXLM', assetIssuer: YXLM_ISSUER },
+      ],
+    );
+    expect(allTrustlinesExist).toBe(false);
+  });
+
+  it('allTrustlinesExist is true for an empty extra-asset list (vacuous)', () => {
+    const { allTrustlinesExist, results } = runMultiAssetChecks(accountWithUsdcOnly(), []);
+    expect(allTrustlinesExist).toBe(true);
+    expect(results).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Index-level gating logic — simulated directly against runAccountChecks +
+  // the appending / recompute pattern that index.ts applies after the call.
+  //
+  // We replicate the index.ts gating loop here so this test file verifies the
+  // contract independently of the action runner environment.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mirrors the gating block in src/index.ts (Issue #536):
+   *   1. run primary checks
+   *   2. for each missing extra trustline append a failing check item
+   *   3. recompute valid
+   *   4. set EXTRA_TRUSTLINE_MISSING reason code when it was SUCCESS
+   */
+  function applyExtraTrustlineGating(
+    account: HorizonAccount,
+    primaryConfig: typeof defaultConfig,
+    extraAssets: Array<{ assetCode: string; assetIssuer: string }>,
+  ) {
+    const result = runAccountChecks(account, primaryConfig);
+    if (extraAssets.length > 0) {
+      const { results: extraResults } = runMultiAssetChecks(account, extraAssets);
+      for (const assetResult of extraResults) {
+        if (!assetResult.trustlineExists) {
+          result.checks.push({
+            passed: false,
+            label: `${assetResult.assetCode} trustline (extra)`,
+            detail: `Extra trustline for **${assetResult.assetCode}** (issuer: \`${assetResult.assetIssuer}\`) is missing — add it before this account can receive the asset.`,
+          });
+        }
+      }
+      result.valid = result.checks.every((c) => c.passed);
+      if (!result.valid && result.reasonCode === 'SUCCESS') {
+        result.reasonCode = 'EXTRA_TRUSTLINE_MISSING';
+      }
+    }
+    return result;
+  }
+
+  it('valid stays true when primary passes and all extra trustlines exist', () => {
+    const result = applyExtraTrustlineGating(
+      accountWithUsdcAndEurc(),
+      defaultConfig,
+      [{ assetCode: 'EURC', assetIssuer: EURC_ISSUER }],
+    );
+    expect(result.valid).toBe(true);
+    expect(result.reasonCode).toBe('SUCCESS');
+    // no extra check items were appended
+    expect(result.checks.some((c) => c.label.includes('(extra)'))).toBe(false);
+  });
+
+  it('valid becomes false when a required extra trustline is missing', () => {
+    const result = applyExtraTrustlineGating(
+      accountWithUsdcOnly(), // EURC trustline absent
+      defaultConfig,
+      [{ assetCode: 'EURC', assetIssuer: EURC_ISSUER }],
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe('EXTRA_TRUSTLINE_MISSING');
+  });
+
+  it('appends a labelled failing check item for each missing extra trustline', () => {
+    const result = applyExtraTrustlineGating(
+      accountWithUsdcOnly(),
+      defaultConfig,
+      [
+        { assetCode: 'EURC', assetIssuer: EURC_ISSUER },
+        { assetCode: 'yXLM', assetIssuer: YXLM_ISSUER },
+      ],
+    );
+    const extraChecks = result.checks.filter((c) => c.label.includes('(extra)'));
+    expect(extraChecks).toHaveLength(2);
+    expect(extraChecks[0]).toMatchObject({ passed: false, label: 'EURC trustline (extra)' });
+    expect(extraChecks[1]).toMatchObject({ passed: false, label: 'yXLM trustline (extra)' });
+    expect(extraChecks[0].detail).toContain(EURC_ISSUER);
+    expect(extraChecks[1].detail).toContain(YXLM_ISSUER);
+  });
+
+  it('does not append check items for extra trustlines that do exist', () => {
+    const result = applyExtraTrustlineGating(
+      accountWithUsdcAndEurc(),
+      defaultConfig,
+      [
+        { assetCode: 'EURC', assetIssuer: EURC_ISSUER }, // present
+        { assetCode: 'yXLM', assetIssuer: YXLM_ISSUER }, // absent
+      ],
+    );
+    const extraChecks = result.checks.filter((c) => c.label.includes('(extra)'));
+    // Only yXLM is missing
+    expect(extraChecks).toHaveLength(1);
+    expect(extraChecks[0].label).toBe('yXLM trustline (extra)');
+  });
+
+  it('primary check failure is preserved alongside extra trustline failures', () => {
+    // Account has no USDC trustline (primary fails) and no EURC trustline (extra fails)
+    const accountNoTrustlines = makeAccount({
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+      ],
+    });
+    const result = applyExtraTrustlineGating(
+      accountNoTrustlines,
+      defaultConfig,
+      [{ assetCode: 'EURC', assetIssuer: EURC_ISSUER }],
+    );
+    expect(result.valid).toBe(false);
+    // Primary trustline check failed too
+    expect(result.trustlineExists).toBe(false);
+    // Extra check item appended
+    expect(result.checks.some((c) => c.label === 'EURC trustline (extra)' && !c.passed)).toBe(true);
+  });
+
+  it('does not change reasonCode away from a primary failure code', () => {
+    // When the primary check already failed (reasonCode !== SUCCESS), the
+    // gating block must not overwrite it with EXTRA_TRUSTLINE_MISSING.
+    const accountNoTrustlines = makeAccount({
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+      ],
+    });
+    const result = applyExtraTrustlineGating(
+      accountNoTrustlines,
+      defaultConfig,
+      [{ assetCode: 'EURC', assetIssuer: EURC_ISSUER }],
+    );
+    // Primary failed with TRUSTLINE_MISSING; that must be preserved
+    expect(result.reasonCode).toBe('TRUSTLINE_MISSING');
+    expect(result.reasonCode).not.toBe('EXTRA_TRUSTLINE_MISSING');
+  });
+
+  it('valid is unaffected when no extra assets are provided (empty list)', () => {
+    // Passing an empty extraAssets list must be a no-op
+    const result = applyExtraTrustlineGating(accountWithUsdcOnly(), defaultConfig, []);
+    expect(result.valid).toBe(true);
+    expect(result.checks.some((c) => c.label.includes('(extra)'))).toBe(false);
+  });
+});

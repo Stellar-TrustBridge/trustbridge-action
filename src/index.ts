@@ -4,15 +4,16 @@ import {
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
+  runMultiAssetChecks,
   unfundedAccountResult,
   validateStellarAddress,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
+import { fetchAccount, getAssetBalance, HorizonError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
-import { normalizeAssetConfig } from './assets';
+import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
-import { setValidationOutputs } from './outputs';
+import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { globalMetrics } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
@@ -63,6 +64,19 @@ async function run(): Promise<void> {
   // SEP-0007 wallet deep links (Issue #44)
   const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
   const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+
+  // Extra trustlines from assets_json (Issue #536).
+  // Parse up front so a malformed JSON string fails fast before hitting Horizon.
+  const assetsJsonRaw = core.getInput('assets_json') || '';
+  let extraAssets: ReturnType<typeof parseAssetsJson> = [];
+  if (assetsJsonRaw.trim()) {
+    try {
+      extraAssets = dedupeAssets(parseAssetsJson(assetsJsonRaw));
+    } catch (parseErr) {
+      core.setFailed(`assets_json parse error: ${getErrorMessage(parseErr)}`);
+      return;
+    }
+  }
 
   // Clear validation spans from any prior run in the same process (safety).
   clearSpans();
@@ -159,6 +173,9 @@ async function run(): Promise<void> {
 
   let result;
 
+  // Populated inside the try block when assets_json is provided (Issue #536).
+  let assetsTrustlineStatusExtras: AssetTrustlineStatus[] = [];
+
   const horizonOptions = {
     timeoutMs: horizonTimeoutMs,
     horizonUrlFallback: horizonUrlFallback || undefined,
@@ -187,6 +204,41 @@ async function run(): Promise<void> {
         )
       : await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
     result = runAccountChecks(account, checkConfig);
+
+    // Issue #536 — extra trustlines from assets_json gate the ready output.
+    // runAccountChecks only validates the single primary asset_code/asset_issuer
+    // pair. When assets_json is provided we run a multi-asset trustline check
+    // and append a failing check item for every extra asset whose trustline is
+    // absent. The combined valid flag is then re-derived so `ready` reflects
+    // all required trustlines, not just the primary one.
+    if (extraAssets.length > 0) {
+      const { results: extraResults } = runMultiAssetChecks(account, extraAssets);
+      for (const assetResult of extraResults) {
+        if (!assetResult.trustlineExists) {
+          result.checks.push({
+            passed: false,
+            label: `${assetResult.assetCode} trustline (extra)`,
+            detail: `Extra trustline for **${assetResult.assetCode}** (issuer: \`${assetResult.assetIssuer}\`) is missing — add it before this account can receive the asset.`,
+          });
+        }
+      }
+      // Recompute valid from the full (now-extended) checks array so every
+      // caller that reads result.valid (outputs, comment, fail_on_missing) sees
+      // the correct gated value without needing to know about assets_json.
+      result.valid = result.checks.every((c) => c.passed);
+      if (!result.valid && result.reasonCode === 'SUCCESS') {
+        result.reasonCode = 'EXTRA_TRUSTLINE_MISSING';
+      }
+
+      // Populate the assetsTrustlineStatus extras so the assets_trustline_status
+      // and trustlines_summary outputs are set correctly.
+      assetsTrustlineStatusExtras = extraResults.map((r) => ({
+        assetCode: r.assetCode,
+        assetIssuer: r.assetIssuer,
+        trustlineExists: r.trustlineExists,
+        balance: getAssetBalance(account, r.assetCode, r.assetIssuer),
+      }));
+    }
   } catch (error) {
     if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
@@ -200,7 +252,12 @@ async function run(): Promise<void> {
     }
   }
 
-  setValidationOutputs(result);
+  setValidationOutputs(result, undefined, undefined, {
+    horizonUrl,
+    assetCode: normalizedAsset.assetCode,
+    assetIssuer: normalizedAsset.assetIssuer,
+    assetsTrustlineStatus: assetsTrustlineStatusExtras,
+  });
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
@@ -213,6 +270,7 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     sep0007DeepLinks,
     sep0007OriginDomain,
+    assets: assetsTrustlineStatusExtras,
   });
 
   let commentUrl: string | undefined;
@@ -226,7 +284,12 @@ async function run(): Promise<void> {
     core.warning(`Failed to post issue comment: ${message}`);
   }
 
-  setValidationOutputs(result, commentUrl);
+  setValidationOutputs(result, commentUrl, undefined, {
+    horizonUrl,
+    assetCode: normalizedAsset.assetCode,
+    assetIssuer: normalizedAsset.assetIssuer,
+    assetsTrustlineStatus: assetsTrustlineStatusExtras,
+  });
 
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
