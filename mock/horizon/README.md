@@ -181,4 +181,45 @@ docker compose -f mock/horizon/docker-compose.yml restart
 
 ---
 
+## TLS pin fingerprint integration tests
+
+The file `__tests__/horizon-pin-integration.test.ts` contains integration
+tests for the `horizon_pin_fingerprint` input.  These tests spin up a
+local TLS server with a self-signed certificate (generated via `openssl`
+at test time) and validate that `checkCertificatePin` behaves correctly:
+
+| Scenario | Expected result |
+|---|---|
+| Fingerprint matches server cert | Probe succeeds (resolves) |
+| Fingerprint does not match | `HorizonPinMismatchError` thrown |
+| Empty fingerprint (`''`) | Probe is skipped, resolves immediately |
+| HTTP (non-HTTPS) URL | Probe is skipped regardless of fingerprint |
+
+### Running the TLS pin integration tests
+
+```bash
+# Run only the TLS pin integration tests
+npx jest --testPathPattern horizon-pin-integration
+```
+
+No external infrastructure is required — the tests generate their own
+self-signed certificate and start a local TLS server on a random port.
+The `openssl` CLI must be available (it is on all CI runners and
+developer machines).
+
+### How the fingerprint is computed
+
+The test connects to the local TLS server once during `beforeAll`,
+retrieves the peer certificate via `socket.getPeerCertificate().raw`,
+and computes the SHA-256 fingerprint:
+
+```
+SHA-256(raw_der_cert).toUpperCase().colon_separated
+```
+
+This matches the format produced by `checkCertificatePin` in
+`src/horizon.ts`.
+
+---
+
 [← Back to CONTRIBUTING.md](../../CONTRIBUTING.md) · [← Back to README](../../README.md)

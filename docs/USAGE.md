@@ -351,53 +351,6 @@ Stellar assets can have issuer and trustline flags that affect whether a payment
 | `false` (default) | Surfaces an informational status note (`USDC clawback status`) in the comment indicating clawback is enabled (CAP-0035). |
 | `true` | Fails the run with `reason_code = CLAWBACK_BLOCKED` and remediation steps if clawback is enabled. |
 
-#### Clawback enforcement in batch mode (`stellar_addresses`)
-
-Batch mode (`stellar_addresses` set) honours `clawback_strict_mode` exactly like the single-address flow (Issue #725):
-
-- **Per-asset attribution** — the primary asset *and* every entry in `assets_json` are evaluated independently, so the same asset code under two different issuers is checked twice with its own verdict.
-- **Row failure** — a batch row fails as soon as *any* evaluated asset has clawback enabled and `clawback_strict_mode: true`. The row's `reason_code` is `CLAWBACK_STRICT_MODE`.
-- **Strict vs warn** — with `clawback_strict_mode: false` a clawback-enabled trustline never fails a row; it only adds the informational "Clawback is enabled" note to the trustline detail.
-
-`batch_summary_json` carries the attribution for every row:
-
-```json
-{
-  "total": 2,
-  "passed": 1,
-  "failed": 1,
-  "clawbackStrictFailures": 1,
-  "clawbackStrictMode": true,
-  "failures": [
-    {
-      "address": "G…",
-      "reason": "clawback strict mode: EURC",
-      "reasonCode": "CLAWBACK_STRICT_MODE",
-      "clawbackStrict": true
-    }
-  ],
-  "failureTaxonomy": {
-    "accountNotFunded": 0,
-    "trustlineMissing": 0,
-    "reserveInsufficient": 0,
-    "horizonError": 0,
-    "invalidAddress": 0,
-    "clawbackStrict": 1
-  }
-}
-```
-
-Switch on it in a downstream job:
-
-```yaml
-- name: Reject clawback-blocked contributors
-  run: |
-    echo '${{ steps.tb.outputs.batch_summary_json }}' \
-      | jq -r '.failures[] | select(.clawbackStrict) | .address'
-```
-
-When at least one row is clawback-blocked, the batch comment also grows a `Clawback` column and reports `**Clawback strict failures:** N` so a policy block is never mistaken for a missing trustline. The weekly digest counts the same blocks separately in its `🚫 Clawback strict blocks` row.
-
 > **Vanilla USDC:** Standard mainnet USDC does not require authorization or enable clawback on normal trustlines, so it passes cleanly without false failures. Older Horizon versions without flag fields safely default to authorized.
 
 ```yaml
@@ -1652,9 +1605,6 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `HORIZON_TIMEOUT` | Horizon API request timed out before returning a response. |
 | `HORIZON_ERROR` | Horizon API returned an HTTP error (5xx or non-404 4xx). |
 | `TLS_ERROR` | Transport-layer TLS/certificate verification failed connecting to Horizon. |
-| `CIRCUIT_OPEN` | The Horizon circuit breaker tripped after repeated consecutive failures, so the run failed closed without issuing further requests. Resolve the underlying Horizon outage and re-run. |
-| `RATE_BUDGET_EXHAUSTED` | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before validation completed. Raise the budget or retry. |
-| `MILESTONE_GATE_SKIPPED` | The milestone gate skipped validation because the issue milestone was not in `milestone_allowlist`. No account checks were performed. |
 | `INVALID_ADDRESS` | Provided Stellar address failed StrKey format/checksum validation. |
 | `MAINTAINER_SKIPPED` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
 
@@ -1772,36 +1722,8 @@ This C-address support is intentionally narrow: it verifies that a contract dest
 
 ---
 
-## Soroban SAC (contract) asset issuers — Issue #730
-
-An asset issued by a Stellar Asset Contract has a **C-address issuer**, not a
-G-account. A Horizon account's `balances` array only ever names G-account
-issuers, so a SAC balance can be neither confirmed nor denied through the
-classic trustline path. TrustBridge therefore classifies the issuer before the
-trustline check runs.
-
-| Issuer | Classification | Trustline check | `reason_code` |
-| --- | --- | --- | --- |
-| `GA…` G-account | `classic` | classic trustline validation | `TRUSTLINE_MISSING` |
-| `CA…` SAC contract | `soroban-contract` | cannot confirm — says so explicitly and points at the Stellar Lab contract page / Soroban RPC `getContractData` | `SAC_ISSUER_NOT_VERIFIABLE` |
-
-Notes:
-
-- A C-address is a **valid** `asset_issuer`; it is never rejected as a malformed G-address. The failure is always about the unverifiable balance, never about parsing the issuer.
-- The verdict stays conservative (fail-closed): TrustBridge does not mark a SAC asset ready on the strength of an unverified balance. Use `fail_on_missing: false` plus the reason code if a warning is acceptable in your workflow.
-- `ValidationResult.assetIssuerKind` (`classic` / `soroban-contract`) lets mixed classic/Soroban batches label each row's issuer type.
-- `fetchSacContractMetadata()` in `src/soroban.ts` reads the SAC `name()` / `symbol()` / `decimals()` reporting fields from `GET {horizon_url}/contracts/{contract_id}`, and `verifySacIssuerAssetCode()` compares `symbol()` against `asset_code`. A **mismatch is a real misconfiguration** and fails the asset-code check; an **absent** reporting field is inconclusive and never fails.
-- C-addresses are redacted in every log line exactly like G-addresses (`CA AA...` → `CAAA...D2KM`), including the `contractId`, `contract_id`, `sacContractId` and `issuerContractId` context keys.
-
-### Limitations
-
-- Older testnet nodes do not expose `/contracts/{id}` and answer `404`. TrustBridge treats that as "reporting fields unavailable" — `exists: false`, `symbolVerified: false` — instead of failing the run, so a stale node cannot break a batch.
-- Offline mode (no `horizon_url`) skips the live contract fetch entirely and reports `source: 'skipped'`.
-- TrustBridge does not read a SAC balance entry. Verifying the balance remains a Soroban RPC (`getContractData`) or Stellar Lab job.
-
----
-
 ## Address resolution precedence (Issue #219)
+
 TrustBridge resolves the Stellar G-address to validate using the following precedence order. The **first** source that yields a non-empty address wins; all later sources are skipped.
 
 | Priority    | Source                        | When used                                                                                        | Conflict handling                                                                            |
@@ -2212,113 +2134,64 @@ Key recommendations for cron runs:
 
 ---
 
-## OIDC federation (keyless Horizon authentication)
+## TLS certificate pinning (`horizon_pin_fingerprint`)
 
-Some Horizon providers and enterprise deployments accept a GitHub Actions
-[OIDC token](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect)
-in place of a static API key. This lets workflows authenticate with a
-provider-issued short-lived token without storing long-lived secrets.
-
-### How it works
-
-1. GitHub mints a JWT for the job that contains the repository, branch, and
-   workflow claims.
-2. The Horizon provider (or an API gateway in front of it) validates the JWT
-   against GitHub's OIDC discovery document
-   (`https://token.actions.githubusercontent.com/.well-known/openid-configuration`).
-3. The provider exchanges the JWT for a scoped, time-limited credential that
-   grants read access to the Horizon `/accounts` endpoint.
-4. TrustBridge sends the credential in the `Authorization` header of each
-   Horizon request.
-
-### Required workflow permissions
-
-Add `id-token: write` alongside the standard `issues: write` permission so
-GitHub Actions can mint the OIDC token for the job:
+TrustBridge supports optional TLS certificate pinning for the Horizon endpoint.
+When `horizon_pin_fingerprint` is set to the SHA-256 fingerprint of the Horizon
+server's TLS certificate, TrustBridge performs a pre-flight TLS probe before
+each Horizon fetch. If the certificate fingerprint does not match, the action
+fails immediately with reason code `TLS_ERROR`.
 
 ```yaml
-permissions:
-  issues: write        # post issue comments
-  contents: read       # standard for checkout-less actions
-  id-token: write      # mint OIDC token for Horizon provider authentication
+steps:
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.addr.outputs.value }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      horizon_pin_fingerprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
 ```
 
-### Copy-paste example
+### Fingerprint format
 
-```yaml
-name: TrustBridge — OIDC Horizon auth
+The fingerprint must be the SHA-256 hash of the server's DER-encoded
+certificate, formatted as colon-separated uppercase hex:
 
-on:
-  issues:
-    types: [assigned]
-  workflow_dispatch:
-    inputs:
-      stellar_address:
-        description: 'Stellar G-address to validate'
-        required: true
-
-jobs:
-  verify-stellar-account:
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      contents: read
-      id-token: write   # required to request the JWT from GitHub's OIDC provider
-
-    steps:
-      # Step 1: obtain the OIDC token and exchange it for a provider credential.
-      # The exact exchange mechanism depends on your Horizon provider — replace
-      # the script below with your provider's token-exchange command or action.
-      - name: Exchange OIDC token for Horizon credential
-        id: oidc
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // Request an OIDC token scoped to your Horizon provider's audience.
-            // Replace 'https://horizon-provider.example.com' with the actual
-            // audience string registered with your provider.
-            const token = await core.getIDToken('https://horizon-provider.example.com');
-            core.setSecret(token);
-            core.setOutput('token', token);
-
-      # Step 2: Resolve the Stellar address from the event.
-      - name: Resolve Stellar address
-        id: address
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "address=${{ github.event.inputs.stellar_address }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "address=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Step 3: Run TrustBridge with the OIDC-issued Horizon endpoint.
-      # The provider validates the bearer token and forwards the Horizon request.
-      - name: TrustBridge check
-        uses: Stellar-TrustBridge/trustbridge-action@v1
-        with:
-          stellar_address_input: ${{ steps.address.outputs.address }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Point at the OIDC-protected Horizon gateway for your provider.
-          # The provider must accept 'Authorization: Bearer <oidc_token>' and
-          # proxy requests to a real Stellar Horizon node.
-          horizon_url: https://horizon-provider.example.com
-          # Use the fallback public Horizon in case the OIDC gateway is unavailable.
-          horizon_url_fallback: https://horizon.stellar.org
-          fail_on_missing: true
+```
+AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99
 ```
 
-### Input reference for OIDC setups
+- Case-insensitive: lowercase hex is accepted and normalized.
+- Whitespace-tolerant: spaces between colon pairs are stripped before comparison.
+- Empty string (default): pinning is disabled; standard WebPKI certificate
+  validation is used instead.
 
-| Input | Notes |
-|-------|-------|
-| `horizon_url` | Set to your OIDC-protected Horizon gateway URL. |
-| `horizon_url_fallback` | Optional public Horizon fallback if the gateway is unreachable. |
-| `fail_on_missing` | Keep `true` in production to block merges on unfunded accounts. |
-| `debug_mode` | Set `true` to log Horizon request details (addresses are redacted). |
+### Computing the fingerprint
 
-> **Security note:** The OIDC token is scoped to the audience you specify and
-> expires after a few minutes. Never log the raw token value — use
-> `core.setSecret(token)` to mask it in Actions log output, as shown above.
+```bash
+# Connect to your Horizon endpoint and extract the certificate fingerprint
+openssl s_client -connect horizon.example.com:443 -servername horizon.example.com < /dev/null 2>/dev/null \
+  | openssl x509 -outform DER \
+  | openssl dgst -sha256 -hex \
+  | awk '{print $2}' \
+  | sed 's/../&:/g; s/:$//' \
+  | tr 'a-f' 'A-F'
+```
+
+### Rotating certificates
+
+When the Horizon endpoint's certificate rotates, update `horizon_pin_fingerprint`
+in your workflow before the old certificate expires. A mismatch fails the
+workflow immediately with `TLS_ERROR`, so plan the fingerprint update ahead of
+the certificate rotation.
+
+### Testing with a local TLS server
+
+Integration tests for TLS pinning are in `__tests__/horizon-pin-integration.test.ts`.
+These tests spin up a local TLS server with a self-signed certificate and validate
+that `checkCertificatePin` correctly handles matching fingerprints, mismatched
+fingerprints, and empty fingerprints. No external infrastructure is required.
+
+See `mock/horizon/README.md` for details on the test setup.
 
 ---
 
@@ -3631,28 +3504,20 @@ Dashboard receivers **MUST NOT**:
 
 The `reason_code` output is a machine-readable string that identifies why a validation run produced its result. Dashboard automations and workflow gates that switch on this value are protected by the catalog at [`schemas/reason-codes.json`](../schemas/reason-codes.json) — any rename or removal of a code is a breaking change detected by CI.
 
-### Catalog
-
-<!-- BEGIN GENERATED: reason-codes (source: schemas/reason-codes.json) -->
-<!-- AUTOGENERATED — do not edit by hand. Run `npm run reason-codes:doc`. -->
-<!-- 12 codes from schemas/reason-codes.json (catalog version 1). -->
+### Catalog (v1)
 
 | `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
-| --- | --- | --- | --- | --- | --- |
-| `SUCCESS` | ✅ `true` | ✅ `true` | ✅ `true` | ✅ `true` | All checks passed — the account is funded, holds the required asset trustline, and meets the minimum XLM reserve. |
-| `TRUSTLINE_MISSING` | ❌ `false` | ✅ `true` | ❌ `false` | ✅ `true` | The account is funded and meets the XLM reserve, but the required asset trustline is not present. |
-| `RESERVE_TOO_LOW` | ❌ `false` | ✅ `true` | ✅ `true` | ❌ `false` | The account is funded and has a trustline, but the native XLM balance is below the required minimum reserve. |
-| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The account is funded and has a trustline, but the trustline limit is below the configured minimum (`min_trustline_limit`). |
-| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon returned 404 for the account — the account does not exist on the Stellar network (not yet funded). |
-| `HORIZON_TIMEOUT` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The Horizon request timed out or was aborted. The account state could not be determined. |
-| `HORIZON_ERROR` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon returned a non-404 non-timeout error (e.g. 429, 502, 503, 504, or a non-retryable HTTP error). The account state could not be determined. |
-| `TLS_ERROR` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | TLS/certificate verification failed for the configured Horizon endpoint. The account state could not be determined. Most common with private/enterprise Horizon mirrors using self-signed certificates. |
-| `FAILED` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | A generic failure catch-all: the account was funded and the trustline exists and the reserve was met, but some other check (e.g. asset balance minimum) caused the validation to fail. |
-| `TRUSTLINE_UNAUTHORIZED` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | Trustline exists but is not authorized by the issuer. |
-| `MAINTAINER_SKIPPED` | ✅ `true` | ✅ `true` | ✅ `true` | ✅ `true` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
-| `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed. |
-
-<!-- END GENERATED: reason-codes -->
+|---------------|---------|-----------------|-------------------|-------------------|-------------|
+| `SUCCESS` | ✅ `true` | ✅ | ✅ | ✅ | All checks passed — the account is ready for payout. |
+| `TRUSTLINE_MISSING` | ❌ `false` | ✅ | ❌ | ✅ | Account is funded and meets the reserve, but the required asset trustline is missing. |
+| `RESERVE_TOO_LOW` | ❌ `false` | ✅ | ✅ | ❌ | Account is funded and has a trustline, but the native XLM balance is below the minimum reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ | ✅ | ✅ | Account has the trustline but its limit is below `min_trustline_limit`. Only emitted when `min_trustline_limit` is set. |
+| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned 404 — account does not exist on the network yet. |
+| `HORIZON_TIMEOUT` | ❌ `false` | ❌ | ❌ | ❌ | The Horizon request timed out. Account state could not be determined. |
+| `HORIZON_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned a non-404, non-timeout error (429, 502, 503, 504, etc.). |
+| `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
+| `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
+| `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ | ❌ | ❌ | Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed. |
 
 ### Switching on reason_code in downstream jobs
 
