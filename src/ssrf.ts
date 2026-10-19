@@ -515,41 +515,48 @@ export async function fetchSSRFSafe(
         continue;
       }
 
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) {
-        const bytes = parseInt(contentLength, 10);
-        if (bytes > maxBodyBytes) {
-          return {
-            ok: false,
-            error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
-            status: response.status,
-          };
-        }
-      }
-
       if (!response.ok) {
         return { ok: false, error: `HTTP ${response.status}`, status: response.status };
       }
 
-      const textData = await response.text();
-      if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
-        return {
-          ok: false,
-          error: `Response body exceeds limit after decompression`,
-          status: response.status,
-        };
+      const reader = response.body?.getReader();
+      if (!reader) {
+        return { ok: false, error: 'Response body is not readable', status: response.status };
       }
+
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBodyBytes) {
+          await reader.cancel();
+          return {
+            ok: false,
+            error: `Response body exceeds limit of ${maxBodyBytes} bytes`,
+            status: response.status,
+          };
+        }
+
+        chunks.push(value);
+      }
+
+      const decoder = new TextDecoder();
+      const text = chunks.map((chunk) => decoder.decode(chunk, { stream: true })).join('') + decoder.decode();
 
       return {
         ok: true,
         status: response.status,
-        text: async () => textData,
         headers: response.headers,
+        text: async () => text,
       };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isTimeout = message.includes('signal') || message.includes('timeout');
-      return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: `Fetch failed: ${message}` };
     }
   }
 }

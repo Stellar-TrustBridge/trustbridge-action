@@ -87,6 +87,17 @@ Do not import `@actions/github` outside `comment.ts` / `index.ts`.
 
 ---
 
+## Debug logging and address redaction
+
+When troubleshooting in a fork or a throwaway repo, you may temporarily raise the Actions log verbosity (`ACTIONS_STEP_DEBUG`). Before doing so, understand what `src/logger.ts` masks:
+
+- **Redacted in `core.info` / `core.debug` output:** Stellar `G…` account addresses, `C…` contract addresses, and `M…` muxed addresses (matched by `STELLAR_ADDRESS_REGEX` and `MUXED_ADDRESS_REGEX`).
+- **Not redacted:** PR comment bodies and webhook payloads may still contain full addresses by design — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+Do **not** disable or bypass redaction in production workflows. If you need to inspect a real address, reproduce with a test fixture instead of live logs. The behavioral contract lives in `__tests__/logger.test.ts` — run `npm test -- logger` after touching redaction helpers.
+
+---
+
 ## Pull request process
 
 1. **Fork** the repository and create a feature branch from `main`

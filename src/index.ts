@@ -10,7 +10,7 @@ import {
   rateBudgetExhaustedResult,
 } from './checks';
 import { fetchAccount, getAssetBalance, HorizonError, waitForFundedAccount } from './horizon';
-import { formatCommentBody, postIssueComment } from './comment';
+import { formatCommentBody, resolvePostingMode, upsertIssueComment } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
@@ -43,6 +43,10 @@ async function run(): Promise<void> {
     max: 60000,
   });
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
+  const postingMode = resolvePostingMode(
+    core.getInput('posting_mode'),
+    core.getInput('comment_mode'),
+  );
   const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
     core.getInput('wait_until_funded_timeout_ms'),
@@ -101,6 +105,7 @@ async function run(): Promise<void> {
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Create RateBudgetTracker if horizon_max_requests > 0
   const rateBudgetTracker = horizonMaxRequests > 0 ? new RateBudgetTracker(horizonMaxRequests) : undefined;
@@ -379,15 +384,25 @@ async function run(): Promise<void> {
     assets: assetsTrustlineStatusExtras,
   });
 
+  // Issue #696 — comment_id is only published from a successful
+  // createComment/updateComment response. dry-run, off, a missing issue
+  // context, or a failed post all leave it (and comment_url) empty.
   let commentUrl: string | undefined;
-  try {
-    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
-    if (commentUrl) {
-      logger.info('Issue comment created', { component: 'index', commentUrl });
+  let commentId: string | undefined;
+  if (postingMode === 'post') {
+    try {
+      const posted = await upsertIssueComment(githubToken, commentBody, { sticky: stickyComment });
+      if (posted) {
+        commentUrl = posted.url;
+        commentId = posted.id !== undefined ? String(posted.id) : undefined;
+        logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
+      }
+    } catch (commentError) {
+      const message = getErrorMessage(commentError);
+      core.warning(`Failed to post issue comment: ${message}`);
     }
-  } catch (commentError) {
-    const message = getErrorMessage(commentError);
-    core.warning(`Failed to post issue comment: ${message}`);
+  } else {
+    core.info(`posting_mode is "${postingMode}" — skipping issue comment.`);
   }
 
   setValidationOutputs(result, commentUrl, undefined, {
@@ -395,7 +410,35 @@ async function run(): Promise<void> {
     assetCode: normalizedAsset.assetCode,
     assetIssuer: normalizedAsset.assetIssuer,
     assetsTrustlineStatus: assetsTrustlineStatusExtras,
+    commentId,
   });
+
+  // Issue #679 — SARIF output for GitHub Advanced Security. The document is
+  // validated against the vendored SARIF 2.1.0 schema before it is written,
+  // so a malformed file never reaches upload-sarif and the failure is
+  // attributed to TrustBridge rather than to the code scanning platform.
+  if (sarifOutputPath) {
+    try {
+      const sarif = buildSarifOutput(
+        result,
+        normalizedAsset.assetCode,
+        horizonUrl,
+        stellarAddress,
+      );
+      const sarifFile = writeSarifFile(sarif, sarifOutputPath);
+      core.info(`SARIF report written to ${sarifFile}`);
+    } catch (sarifError) {
+      if (sarifError instanceof SarifValidationError) {
+        core.error(
+          `TrustBridge generated SARIF that does not conform to the SARIF 2.1.0 schema, so ${sarifOutputPath} was not written. ` +
+            `This is a TrustBridge bug, not a problem with the checked account. Violations:\n  ${sarifError.violations.join('\n  ')}`,
+        );
+        core.setFailed('SARIF output failed SARIF 2.1.0 schema validation — see the error above.');
+      } else {
+        core.setFailed(`Failed to write SARIF output to ${sarifOutputPath}: ${getErrorMessage(sarifError)}`);
+      }
+    }
+  }
 
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });

@@ -55,6 +55,144 @@ export function normalizeOwnerHandle(handle: string): string {
   return trimmed.replace(/^@/, '');
 }
 
+export interface CodeownersRule {
+  /** Raw pattern token from the CODEOWNERS line (e.g. `src/payments/**`). */
+  pattern: string;
+  /** Normalized owner handles for this rule. */
+  owners: string[];
+}
+
+/**
+ * Parse CODEOWNERS content into ordered rules (pattern + owners).
+ * Comments and empty lines are ignored. Rules with no owners are skipped.
+ */
+export function parseCodeownersRules(content: string): CodeownersRule[] {
+  const rules: CodeownersRule[] = [];
+  const lines = content.split(/\r?\n/);
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const tokens = trimmed.split(/\s+/);
+    const pattern = tokens[0];
+    const owners: string[] = [];
+
+    for (const token of tokens.slice(1)) {
+      if (token.startsWith('#')) {
+        break;
+      }
+      const normalized = normalizeOwnerHandle(token);
+      if (normalized) {
+        owners.push(normalized);
+      }
+    }
+
+    if (pattern && owners.length > 0) {
+      rules.push({ pattern, owners });
+    }
+  }
+
+  return rules;
+}
+
+/**
+ * Convert a CODEOWNERS glob pattern into a RegExp anchored to the repo root.
+ * Supports `*`, `**`, `?`, and character classes via a conservative translation.
+ */
+function codeownersPatternToRegExp(pattern: string): RegExp {
+  let normalized = pattern.trim();
+  // Patterns without a leading slash are treated as root-relative.
+  if (normalized.startsWith('/')) {
+    normalized = normalized.slice(1);
+  }
+
+  let regex = '';
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '*') {
+      if (normalized[i + 1] === '*') {
+        // `**` matches across path separators
+        regex += '.*';
+        i++;
+        // Collapse an optional following slash so `**/foo` matches `foo`
+        if (normalized[i + 1] === '/') {
+          i++;
+        }
+      } else {
+        // `*` matches within a single path segment
+        regex += '[^/]*';
+      }
+    } else if (ch === '?') {
+      regex += '[^/]';
+    } else if ('\\^$.|+()[]{}'.includes(ch)) {
+      regex += `\\${ch}`;
+    } else {
+      regex += ch;
+    }
+  }
+
+  return new RegExp(`^${regex}(/.*)?$`);
+}
+
+/**
+ * Determine whether a given file path is covered by any CODEOWNERS rule.
+ * Returns the matching rule (last match wins, per GitHub semantics) or null.
+ */
+export function findCoveringRule(
+  filePath: string,
+  rules: CodeownersRule[],
+): CodeownersRule | null {
+  const normalizedPath = filePath.replace(/^\.?\//, '');
+  let match: CodeownersRule | null = null;
+
+  for (const rule of rules) {
+    if (codeownersPatternToRegExp(rule.pattern).test(normalizedPath)) {
+      match = rule;
+    }
+  }
+
+  return match;
+}
+
+export interface CodeownersCoverageResult {
+  /** Paths that have at least one owner. */
+  covered: string[];
+  /** Paths with no matching CODEOWNERS rule (or a rule with no owners). */
+  uncovered: string[];
+  /** True when no CODEOWNERS rules were loaded at all. */
+  missingCodeowners: boolean;
+}
+
+/**
+ * Check reviewer coverage for a set of TrustBridge-touched paths against parsed
+ * CODEOWNERS rules. Used by preflight to surface missing reviewer coverage.
+ */
+export function checkCodeownersCoverage(
+  touchedPaths: string[],
+  rules: CodeownersRule[],
+): CodeownersCoverageResult {
+  const covered: string[] = [];
+  const uncovered: string[] = [];
+
+  for (const filePath of touchedPaths) {
+    const rule = findCoveringRule(filePath, rules);
+    if (rule && rule.owners.length > 0) {
+      covered.push(filePath);
+    } else {
+      uncovered.push(filePath);
+    }
+  }
+
+  return {
+    covered,
+    uncovered,
+    missingCodeowners: rules.length === 0,
+  };
+}
+
 export interface LoadCodeownersOptions {
   workspaceRoot?: string;
   customPath?: string;
@@ -155,6 +293,82 @@ export async function loadCodeowners(options: LoadCodeownersOptions = {}): Promi
   }
 
   return new Set();
+}
+
+/**
+ * Load CODEOWNERS rules (pattern + owners) using the same branch-safety guarantees
+ * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found.
+ */
+export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): Promise<CodeownersRule[]> {
+  const workspaceRoot = options.workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
+  const customPath = options.customPath?.trim();
+
+  const payload = github.context.payload;
+  const isPullRequest = github.context.eventName === 'pull_request' || payload.pull_request !== undefined;
+  const isFork =
+    options.isForkPr ??
+    (isPullRequest && payload.pull_request?.head?.repo?.full_name !== payload.repository?.full_name);
+
+  if (isFork) {
+    const token = options.githubToken || process.env.GITHUB_TOKEN;
+    if (!token) {
+      logger.warn('Branch safety: Fork PR detected but no GitHub token available to fetch trusted CODEOWNERS rules.', {
+        component: 'codeowners',
+      });
+      return [];
+    }
+
+    try {
+      const octokit = options.octokit || github.getOctokit(token);
+      const owner = options.owner || github.context.repo.owner;
+      const repo = options.repo || github.context.repo.repo;
+      const ref = options.baseRef || payload.pull_request?.base?.ref || payload.repository?.default_branch || 'main';
+
+      const pathsToTry = customPath ? [customPath] : CODEOWNERS_STANDARD_PATHS;
+      for (const filePath of pathsToTry) {
+        try {
+          const response = await octokit.rest.repos.getContent({ owner, repo, path: filePath, ref });
+          if ('content' in response.data && typeof response.data.content === 'string') {
+            const content = Buffer.from(response.data.content, 'base64').toString('utf8');
+            return parseCodeownersRules(content);
+          }
+        } catch (err: unknown) {
+          const status = (err as { status?: number })?.status;
+          if (status !== 404) {
+            logger.warn(`Failed to fetch CODEOWNERS rules from ${filePath}: ${err instanceof Error ? err.message : String(err)}`, {
+              component: 'codeowners',
+            });
+          }
+        }
+      }
+    } catch (apiError) {
+      logger.warn(`API error while fetching trusted CODEOWNERS rules: ${apiError instanceof Error ? apiError.message : String(apiError)}`, {
+        component: 'codeowners',
+      });
+    }
+
+    return [];
+  }
+
+  const candidatePaths = customPath ? [customPath] : CODEOWNERS_STANDARD_PATHS;
+  for (const relativePath of candidatePaths) {
+    const fullPath = path.isAbsolute(relativePath)
+      ? relativePath
+      : path.join(workspaceRoot, relativePath);
+
+    if (fs.existsSync(fullPath)) {
+      try {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        return parseCodeownersRules(content);
+      } catch (err) {
+        logger.warn(`Failed to read CODEOWNERS rules from ${relativePath}: ${err instanceof Error ? err.message : String(err)}`, {
+          component: 'codeowners',
+        });
+      }
+    }
+  }
+
+  return [];
 }
 
 /**

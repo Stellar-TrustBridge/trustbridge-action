@@ -755,6 +755,35 @@ describe('setValidationOutputs (Issue #535)', () => {
     expect(written.get('check_run_id')).toBe('');
     expect(written.get('check_run_conclusion')).toBe('');
   });
+
+  // Issue #696 — comment_id is published next to comment_url so downstream
+  // steps can chain issues.updateComment without parsing the URL.
+  it('publishes comment_id alongside comment_url when a comment was posted', () => {
+    setValidationOutputs(result, 'https://github.com/o/r/issues/1#issuecomment-987654321', undefined, {
+      commentId: '987654321',
+    });
+
+    const written = outputsByName();
+    expect(written.get('comment_url')).toBe('https://github.com/o/r/issues/1#issuecomment-987654321');
+    expect(written.get('comment_id')).toBe('987654321');
+    expect(written.get('comment_id')).toMatch(/^\d+$/);
+  });
+
+  it('publishes comment_id as an empty string when no comment was posted (dry-run / off)', () => {
+    setValidationOutputs(result);
+
+    const written = outputsByName();
+    expect(written.has('comment_id')).toBe(true);
+    expect(written.get('comment_id')).toBe('');
+    expect(written.get('comment_url')).toBe('');
+  });
+
+  it('declares comment_id in action.yml', () => {
+    const declared = parseActionYmlOutputs(
+      fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'action.yml'), 'utf8'),
+    );
+    expect(declared.has('comment_id')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
