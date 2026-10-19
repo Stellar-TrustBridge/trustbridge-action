@@ -68,6 +68,58 @@ import { traceWebhookDeliver } from './tracing';
 
 export type WebhookAuthMode = 'hmac' | 'oidc';
 
+// ---------------------------------------------------------------------------
+// OIDC constants (Issue #677)
+//
+// docs/GHES_COMPATIBILITY.md renders these values in its OIDC webhook matrix,
+// and __tests__/ghes-oidc-matrix.test.ts locks the doc against them, so a
+// change here fails CI until the documentation is updated too.
+// ---------------------------------------------------------------------------
+
+/** Default `webhook_oidc_audience` (the `aud` claim of the minted token). */
+export const DEFAULT_OIDC_AUDIENCE = 'trustbridge-dashboard';
+/** Workflow permission required for `core.getIDToken`. */
+export const OIDC_REQUIRED_PERMISSION = 'id-token: write';
+/** `iss` claim of Actions OIDC tokens minted on github.com. */
+export const GITHUB_COM_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
+/** Path appended to the GHES host to form its OIDC issuer (`https://HOSTNAME/_services/token`). */
+export const GHES_OIDC_ISSUER_PATH = '/_services/token';
+/** Oldest GHES release TrustBridge documents as supporting `webhook_auth_mode: oidc`. */
+export const OIDC_MIN_GHES_VERSION = '3.8';
+/**
+ * Runner environment variables `core.getIDToken` reads. They are only present
+ * when the job has `id-token: write`; their absence is what produces the
+ * "OIDC token minting failed" warning.
+ */
+export const OIDC_RUNTIME_ENV_VARS = [
+  'ACTIONS_ID_TOKEN_REQUEST_URL',
+  'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+] as const;
+
+/**
+ * Resolve the `iss` claim a receiver must trust for tokens minted by this
+ * workflow run.
+ *
+ * `serverUrl` is `GITHUB_SERVER_URL` (`https://github.com` on github.com,
+ * `https://HOSTNAME` on GHES). GHES instances issue tokens from
+ * `https://HOSTNAME/_services/token` instead of the github.com issuer.
+ */
+export function resolveOidcIssuer(
+  serverUrl: string = process.env.GITHUB_SERVER_URL || 'https://github.com',
+): string {
+  const trimmed = serverUrl.trim().replace(/\/+$/, '');
+  let host = '';
+  try {
+    host = new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    return GITHUB_COM_OIDC_ISSUER;
+  }
+  if (host === 'github.com' || host === 'www.github.com') {
+    return GITHUB_COM_OIDC_ISSUER;
+  }
+  return `${trimmed}${GHES_OIDC_ISSUER_PATH}`;
+}
+
 export interface WebhookConfig {
   /** Full HTTPS URL of the receiver endpoint. */
   webhookUrl: string;

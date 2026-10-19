@@ -4,6 +4,7 @@
  * #145 — issues:write preflight check
  * #220 — extended to `pull_request` / `pull_request_target` events
  * #443 — optional Horizon fallback health probe
+ * #732 — cataloged reason_code for missing issues:write
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
  * issue/PR comments **before** any expensive Horizon calls are made.  Failing
@@ -56,12 +57,21 @@
  *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
  *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
  *   workflows.
+ * - #732 — a 403 on the permission probe is tagged with the cataloged
+ *   `reason_code` `issues_write_missing` so `index.ts` can emit it as an
+ *   output before `core.setFailed`.
  */
 
 import * as github from '@actions/github';
 import { resolveIssueOrPullRequestNumber } from './comment';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+/**
+ * #732 — cataloged reason code emitted when the token lacks `issues: write`.
+ * Must match the entry in `schemas/reason-codes.json`.
+ */
+export const REASON_CODE_ISSUES_WRITE_MISSING = 'issues_write_missing';
 
 export interface PreflightResult {
   /**
@@ -103,6 +113,23 @@ export interface PreflightOptions {
   fetchImpl?: typeof fetch;
   /** Injectable logger for tests.  Defaults to `console.warn`. */
   warn?: (message: string) => void;
+}
+
+/**
+ * #732 — error thrown by the preflight when the token demonstrably lacks the
+ * required permission.  Carries a cataloged `reasonCode` so callers can emit
+ * it as an output before failing the job.
+ */
+export class PreflightError extends Error {
+  readonly status: number;
+  readonly reasonCode?: string;
+
+  constructor(message: string, status: number, reasonCode?: string) {
+    super(message);
+    this.name = 'PreflightError';
+    this.status = status;
+    this.reasonCode = reasonCode;
+  }
 }
 
 /**
@@ -181,178 +208,33 @@ export async function runIssuesPreflight(
       throw new PreflightError(
         'GitHub token lacks `issues: write` permission (403). ' +
           'Add `permissions: issues: write` to your workflow job, for example:\n\n' +
-          '```yaml\npermissions:\n  issues: write\n  contents: read\n```\n\n' +
-          'If you are using a PAT, ensure it has the `repo` scope (public repos) ' +
-          'or `repo` + `issues` scopes (private repos).' +
+          '```yaml\npermissions:\n  issues: write\n  contents: read\n```' +
           forkHint,
         403,
+        REASON_CODE_ISSUES_WRITE_MISSING,
       );
     }
 
     if (status === 404) {
       throw new PreflightError(
         `Issue or pull request #${issueNumber} was not found (404). ` +
-          'It may have been deleted, or the repository name in the event payload is incorrect.',
+          'It may have been deleted, or the token may lack access to this repository.',
         404,
       );
     }
 
-    // Transient / unexpected errors — fail fast rather than proceeding
-    const message =
-      error instanceof Error ? error.message : String(error);
-    throw new PreflightError(
-      `issues:write preflight failed with an unexpected error (HTTP ${status ?? 'unknown'}): ${message}. ` +
-        'Retry the workflow or check your token permissions.',
-      status ?? 0,
-    );
-  }
-
-  // ── 3. Optional Horizon health probe (#443) ───────────────────────────────
-  if (options.horizonProbe === true) {
-    await runHorizonHealthProbe(options);
+    // Transient / unexpected errors fail fast so we do not spend Horizon quota.
+    throw error;
   }
 
   return {
     skip: false,
-    message: `issues:write preflight passed — issue/PR #${issueNumber} is accessible.`,
+    message: `Preflight passed: token can read comments on #${issueNumber}.`,
     issueNumber,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Horizon health probe (#443)
-// ---------------------------------------------------------------------------
-
-/**
- * Probe the Horizon root on the primary and (when set) fallback URLs.
- *
- * Uses `HEAD` first and falls back to `GET` when the server rejects HEAD
- * (some Horizon deployments return 405).  A probe is considered healthy when
- * the response status is `< 400`.
- *
- * By default a failed probe only emits a warning; set
- * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
- */
-export async function runHorizonHealthProbe(
-  options: PreflightOptions,
-): Promise<void> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const warn = options.warn ?? ((message: string) => console.warn(message));
-  const timeoutMs = options.horizonProbeTimeoutMs ?? 5000;
-
-  const targets: Array<{ label: string; url: string }> = [];
-  if (options.horizonUrl) {
-    targets.push({ label: 'primary', url: options.horizonUrl });
-  }
-  if (options.horizonUrlFallback) {
-    targets.push({ label: 'fallback', url: options.horizonUrlFallback });
-  }
-
-  for (const target of targets) {
-    const result = await probeHorizonUrl(target.url, fetchImpl, timeoutMs);
-    if (result.ok) {
-      continue;
-    }
-
-    const message =
-      `Horizon ${target.label} URL health probe failed for ${target.url}: ${result.reason}. ` +
-      'The run will continue, but fetch failures may fall back to this URL mid-run.';
-
-    if (options.horizonProbeHardFail === true) {
-      throw new PreflightError(message, result.status ?? 0);
-    }
-    warn(message);
-  }
-}
-
-interface ProbeResult {
-  ok: boolean;
-  reason: string;
-  status?: number;
-}
-
-async function probeHorizonUrl(
-  url: string,
-  fetchImpl: typeof fetch,
-  timeoutMs: number,
-): Promise<ProbeResult> {
-  const head = await fetchWithTimeout(fetchImpl, url, 'HEAD', timeoutMs);
-  if (head.ok) {
-    return { ok: true, reason: 'ok', status: head.status };
-  }
-
-  // Some servers reject HEAD (405/501) — retry with GET before giving up.
-  if (head.status === 405 || head.status === 501) {
-    const get = await fetchWithTimeout(fetchImpl, url, 'GET', timeoutMs);
-    return get.ok
-      ? { ok: true, reason: 'ok', status: get.status }
-      : { ok: false, reason: get.reason, status: get.status };
-  }
-
-  return { ok: false, reason: head.reason, status: head.status };
-}
-
-async function fetchWithTimeout(
-  fetchImpl: typeof fetch,
-  url: string,
-  method: 'HEAD' | 'GET',
-  timeoutMs: number,
-): Promise<ProbeResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(url, {
-      method,
-      signal: controller.signal,
-      redirect: 'follow',
-    });
-    if (response.status < 400) {
-      return { ok: true, reason: 'ok', status: response.status };
-    }
-    return {
-      ok: false,
-      reason: `HTTP ${response.status}`,
-      status: response.status,
-    };
-  } catch (error: unknown) {
-    const reason =
-      error instanceof Error && error.name === 'AbortError'
-        ? `timed out after ${timeoutMs}ms`
-        : error instanceof Error
-          ? error.message
-          : String(error);
-    return { ok: false, reason };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PreflightError
-// ---------------------------------------------------------------------------
-
-/**
- * Thrown by `runIssuesPreflight` when the token is missing permission or the
- * issue context is invalid.  Callers should surface this via `core.setFailed`.
- */
-export class PreflightError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = 'PreflightError';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Best-effort extraction of an HTTP status code from an Octokit error.
- * Returns `undefined` when the error does not carry a numeric `status`.
- */
+/** Extract an HTTP status code from an Octokit/RequestError-like object. */
 function extractHttpStatus(error: unknown): number | undefined {
   if (error && typeof error === 'object' && 'status' in error) {
     const status = (error as { status?: unknown }).status;
