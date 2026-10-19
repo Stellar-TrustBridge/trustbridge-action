@@ -40,7 +40,7 @@ the compiled `dist/` bundle (when not preparing a release artifact).
 | Integrations | `roster.ts`, `codeowners.ts`, `soroban.ts`, `webhook.ts`, `federation.ts`, `projects.ts` | Resolve identities and connect optional GitHub, Stellar, and dashboard services |
 | Extensibility | `plugin.ts`, `pluginLoader.ts`, `pluginRunner.ts`, `corePlugins.ts`, `template.ts` | Load plugins and safe comment partials; see [plugin docs](PLUGIN_ARCHITECTURE.md) |
 | Observability | `logger.ts`, `metrics.ts`, `diagnostics.ts`, `tracing.ts`, `checks-run.ts` | Redacted logs, metrics, diagnostics, traces, and check-run annotations |
-| Supporting logic | `batch.ts`, `cache.ts`, `configReader.ts`, `delta.ts`, `preflight.ts`, `sarif.ts` | Shared caching, configuration, batch, artifact, and reporting behavior |
+| Supporting logic | `batch.ts`, `cache.ts`, `configReader.ts`, `delta.ts`, `preflight.ts`, `sarif.ts`, `sarifSchema.ts` | Shared caching, configuration, batch, artifact, and reporting behavior |
 
 ## Tests and fixtures
 

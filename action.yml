@@ -850,6 +850,12 @@ outputs:
     description: "Whether the account exists and is activated on the Stellar network"
   comment_url:
     description: "URL of the created or updated issue comment, when run in an issue context"
+  comment_id:
+    description: >-
+      Numeric REST id (as a string) of the issue comment TrustBridge created or
+      updated this run. Pass it to issues.updateComment in a later step to edit
+      the same comment. Empty string when no comment was posted (posting_mode
+      dry-run or off, no issue/PR context, or the post failed). (Issue #696)
   full_report_path:
     description: >-
       Absolute path of the full validation report file written to the workflow
