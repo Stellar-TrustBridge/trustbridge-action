@@ -92,23 +92,6 @@ floats:
 | `1.00000001` | `1.0000000` | fail |
 | `1.00000001` | `1.0000001` | pass |
 
-### Asset exponents and Wave payout assets
-
-Every Stellar asset — native XLM, USDC, and other Wave payout assets — is
-represented on-ledger in **stroops (7 decimal places)**, regardless of the
-asset's display precision. The action therefore applies the *same* stroop
-comparison to all assets; there is no per-asset exponent table to keep in
-sync. This is what prevents false passes/fails when comparing a USDC balance
-against a `min_asset_balance` written with fewer decimals (e.g. `100` vs
-`100.0000000`).
-
-| Asset | `min_asset_balance` | Balance | Result |
-|-------|---------------------|---------|--------|
-| USDC | `100` | `100.0000000` | pass |
-| USDC | `100` | `99.9999999` | fail, deficit `0.0000001` |
-| USDC | `100.5` | `100.4999999` | fail, deficit `0.0000001` |
-| USDC | `100.5` | `100.5000000` | pass |
-
 ---
 
 ## `min_xlm_reserve` parsing rules
@@ -237,18 +220,41 @@ The comment now renders both balances:
 ```md
 ### Balances
 - **Native XLM balance:** `10.0000000 XLM`
-- **Minimum required XLM reserve:** `1.5000000 XLM`
-- **USDC balance:** `100.0000000 USDC`
-- **Minimum required USDC balance:** `100.0000000 USDC`
+- **Minimum required (XLM reserve):** `1.5 XLM` (...)
+- **USDC trustline balance:** `100.0000000 USDC` (limit `1000.0000000 USDC`)
 ```
+
+This split is covered by snapshot tests (`__tests__/comment.test.ts`) and output tests (`__tests__/outputs.test.ts`). Rounding is never changed — Horizon strings are preserved verbatim (7 decimals).
 
 ---
 
-## Fixture tests
+## Notes for release scripts
 
-`__tests__/decimal-precision.test.ts` pins the rules above with fixtures for
-native XLM and USDC amounts, covering both the happy path (balance meets or
-exceeds the threshold) and the failure path (balance one stroop short). The
-fixtures exercise `toStroops`, `formatStroops`, and
-`buildAssetBalanceRequirement` from `src/checks.ts` so any drift between this
-document and the implementation fails CI.
+- Always treat `xlm_balance` as a **string** until you have explicitly parsed
+  it. Do not assume it is a `number` or integer.
+- `"unknown"` is a valid value (Horizon unreachable). Guard against it:
+  ```js
+  const raw = process.env.XLM_BALANCE;
+  if (raw === 'unknown' || raw === undefined) { throw new Error('balance unavailable'); }
+  ```
+- `"0"` means the account was not funded; it does not mean the account has
+  exactly zero balance (a funded account with an exact zero native balance
+  cannot exist on Stellar because the minimum reserve is 1 XLM).
+- When comparing to `min_xlm_reserve`, use the same value the action used —
+  read it from the action inputs or `.trustbridge.yml` rather than hard-coding
+  it in the release script, so the two values stay in sync.
+
+---
+
+## Cross-references
+
+- `src/horizon.ts` — `parseHorizonBalance`, `getNativeBalance`, `HorizonBalance` types
+- `src/checks.ts` — `parseMinXlmReserve`, `buildReserveRequirement`, `formatXlmDeficit`, `toStroops`, `formatStroops`, `buildAssetBalanceRequirement`
+- [USAGE.md — Outputs in downstream jobs](USAGE.md#outputs-in-downstream-jobs)
+- [ERROR_HANDLING.md — Validation failures (200 OK)](ERROR_HANDLING.md#validation-failures-200-ok)
+- [Stellar documentation — Lumens](https://developers.stellar.org/docs/learn/fundamentals/lumens)
+- [Horizon docs — Account balances](https://developers.stellar.org/docs/data/apis/horizon/resources/accounts)
+
+---
+
+[← Back to README](../README.md)

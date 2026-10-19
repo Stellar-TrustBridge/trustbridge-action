@@ -211,42 +211,79 @@ export function interpolateTemplate(template: string, ctx: TemplateContext): str
 /**
  * Load, validate, and interpolate a custom comment template partial.
  *
- * Returns the rendered partial string on success, or `undefined` when the
- * template path is not configured.  Throws on validation failures so the
- * caller can surface a clear, stable error message.
+ * Returns the rendered partial string on success, or `undefined` when:
+ * - `templatePath` is empty or undefined (feature disabled).
+ * - The file does not exist at the resolved path (non-fatal, emits a warning).
  *
- * @param templatePath  Raw path from action input (may be empty/undefined).
- * @param workspaceRoot Absolute workspace root directory.
- * @param ctx           Interpolation context.
- * @returns             Rendered partial, or `undefined` when not configured.
+ * Throws `Error` for all hard validation failures (path traversal, size
+ * exceeded, forbidden content) so the action can surface them clearly.
+ *
+ * @param templatePath  Workspace-relative or absolute path to the `.md` file.
+ * @param ctx           Interpolation context for variable substitution.
+ * @param workspaceRoot Workspace root directory.  Defaults to
+ *                      `GITHUB_WORKSPACE` env variable or `process.cwd()`.
  */
-export function loadCustomTemplate(
-  templatePath: string | undefined,
-  workspaceRoot: string,
+export function loadCommentTemplate(
+  templatePath: string | undefined | null,
   ctx: TemplateContext,
+  workspaceRoot?: string,
 ): string | undefined {
   if (!templatePath || templatePath.trim() === '') {
     return undefined;
   }
 
-  const resolved = validateTemplatePath(templatePath, workspaceRoot);
+  const root = workspaceRoot ?? process.env['GITHUB_WORKSPACE'] ?? process.cwd();
 
-  let raw: string;
-  try {
-    raw = fs.readFileSync(resolved, 'utf8');
-  } catch (err) {
+  // 1. Path validation — must stay inside workspace.
+  const resolvedPath = validateTemplatePath(templatePath.trim(), root);
+
+  // 2. File existence — non-fatal, warn-only.
+  if (!fs.existsSync(resolvedPath)) {
+    // Caller is responsible for surfacing this as a core.warning.
+    return undefined;
+  }
+
+  // 3. Size check — reject oversized files before reading content.
+  const stat = fs.statSync(resolvedPath);
+  if (stat.size > MAX_TEMPLATE_BYTES) {
     throw new Error(
-      `custom_comment_template could not be read at "${templatePath}": ${(err as Error).message}`,
+      `custom_comment_template_path "${templatePath}" exceeds the maximum allowed size of ` +
+        `${MAX_TEMPLATE_BYTES} bytes (file is ${stat.size} bytes). ` +
+        'Keep template partials small to avoid hitting GitHub comment size limits.',
     );
   }
 
-  if (Buffer.byteLength(raw, 'utf8') > MAX_TEMPLATE_BYTES) {
-    throw new Error(
-      `custom_comment_template exceeds the maximum size of ${MAX_TEMPLATE_BYTES} bytes.`,
-    );
-  }
+  const raw = fs.readFileSync(resolvedPath, 'utf8');
 
+  // 4. Content security validation.
   validateTemplateContent(raw);
 
+  // 5. Interpolate placeholders.
   return interpolateTemplate(raw, ctx);
+}
+
+/**
+ * Build a `TemplateContext` from comment-level values.
+ *
+ * Centralises the context construction so callers do not need to know
+ * the full shape of `TemplateContext`.
+ */
+export function buildTemplateContext(params: {
+  stellarAddress: string;
+  assetCode: string;
+  assetIssuer: string;
+  horizonUrl: string;
+  network: string;
+  valid: boolean;
+  locale: Locale | string;
+}): TemplateContext {
+  return {
+    account: params.stellarAddress,
+    asset: params.assetCode,
+    issuer: params.assetIssuer,
+    horizon: params.horizonUrl,
+    network: params.network,
+    status: params.valid ? '✅ ready' : '❌ blocked',
+    locale: params.locale,
+  };
 }

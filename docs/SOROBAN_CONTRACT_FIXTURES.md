@@ -4,30 +4,6 @@ This document explains the checked-in fixtures for Soroban contract compatibilit
 
 - `__tests__/fixtures/soroban/get_address_simulate_result.json` — registry lookup, introduced in issue #294.
 - `__tests__/fixtures/soroban/sac_contract_metadata.json` — SAC (C-address) issuer metadata, introduced in issue #730.
-- `SOROBAN_CONTRACT_FIXTURES` in `src/soroban.ts` — canonical C-address and SAC examples shared by docs and tests, introduced in issue #767.
-
----
-
-## Canonical fixtures (`SOROBAN_CONTRACT_FIXTURES`, issue #767)
-
-Contributors must not invent C-addresses or SAC examples. `src/soroban.ts` exports a
-frozen `SOROBAN_CONTRACT_FIXTURES` object that is the single source of truth for the
-canonical examples used by both this document and `__tests__/soroban.test.ts`.
-
-| Key | Value | Purpose |
-|-----|-------|---------|
-| `validContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM` | Canonical valid C-address (all-zero payload, valid checksum) |
-| `validContractIdAlt` | `CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE` | Second valid C-address for alt-path tests |
-| `sacAssetCode` | `USDC` | Asset code reported by the canonical SAC |
-| `sacSymbol` | `USDC` | `symbol()` reported by the canonical SAC |
-| `sacDecimals` | `7` | `decimals()` reported by the canonical SAC |
-| `sacContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM` | C-address of the canonical SAC |
-| `malformedContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2K` | Truncated C-address — must fail validation with a stable error |
-| `invalidContractId` | `GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF` | Valid G-address, not a C-address — must be rejected |
-
-`isValidContractId` in `src/soroban.ts` validates C-addresses against these fixtures.
-Malformed or non-C-address inputs fail with the stable error
-`Invalid Soroban contract ID: expected a C-address`.
 
 ---
 
@@ -107,7 +83,7 @@ The script documents the exact `curl` / `stellar` CLI commands needed to capture
 1. Identify the deployed testnet contract ID from the `trustbridge-contract` repo.
 2. Capture a `simulateTransaction` response for a **registered** username (found).
 3. Capture a response for an **unregistered** username (not_found / void retval).
-4. Merge into the fixture JSON, redacting real addresses (use `SOROBAN_CONTRACT_FIXTURES.validContractId`).
+4. Merge into the fixture JSON, redacting real addresses (use the canonical test address).
 5. Bump `_fixture_version`.
 6. Run `npm test -- --testPathPattern 'soroban' --no-coverage` to verify.
 7. Commit the updated fixture alongside any `parseAddressFromSimulateResult` changes.
@@ -139,5 +115,4 @@ fixture shapes. When the `trustbridge-contract` changes its ABI:
 
 The fixture is intentionally separate from self-made test objects in
 `__tests__/soroban.test.ts` so that contract-representative payloads are clearly
-distinguished from synthetic test data. Canonical C-address and SAC examples come from
-`SOROBAN_CONTRACT_FIXTURES` so docs and tests never drift.
+distinguished from synthetic test data.

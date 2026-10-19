@@ -51,6 +51,8 @@ export interface WebhookConfig {
     webhookSecret?: string;
     /** Request timeout in milliseconds. Default 5 000. */
     timeoutMs?: number;
+    /** Parent cancellation signal, such as an Actions runner job-abort signal. */
+    signal?: AbortSignal;
     /**
      * Authentication mode: 'hmac' (default) or 'oidc'.
      */
@@ -64,6 +66,11 @@ export interface WebhookConfig {
      */
     oidcToken?: string;
 }
+type RunnerSignalSource = Pick<NodeJS.Process, 'on' | 'removeListener'> & {
+    exitCode?: number | string | null;
+};
+/** Bridge Actions runner termination signals to the in-flight webhook request. */
+export declare function listenForRunnerCancellation(controller: AbortController, signalSource?: RunnerSignalSource): () => void;
 export interface WebhookPayload {
     schema_version: '1';
     event: 'validation_complete';
@@ -153,3 +160,4 @@ export declare function deliverWebhook(payload: WebhookPayload, config: WebhookC
  * @param issueNumber   Current issue number, or `null` when not in an issue context.
  */
 export declare function sendWebhookNotification(result: ValidationResult, stellarAddress: string, config: WebhookConfig, repository: string, issueNumber: number | null): Promise<void>;
+export {};

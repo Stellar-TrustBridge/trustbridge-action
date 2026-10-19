@@ -1,4 +1,4 @@
-import { HorizonAccount, HorizonBalanceCredit, findTrustlineBalance } from './horizon';
+import { HorizonBalanceCredit } from './horizon';
 
 const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
 const STELLAR_ISSUER_G_REGEX = /^G[A-Z2-7]{55}$/;
@@ -6,22 +6,6 @@ const STELLAR_ISSUER_C_REGEX = /^C[A-Z2-7]{55}$/;
 
 export const MAINNET_USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 export const TESTNET_USDC_ISSUER = 'GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2';
-
-/**
- * Stellar assets carry a 7-decimal exponent on the ledger, but the human
- * amount an operator writes (e.g. `1.5`, `10`, `0.0000001`) is a decimal
- * string. Comparisons between a trustline balance and a minimum requirement
- * must therefore be done on exact decimal values, never on floats.
- *
- * See `docs/DECIMAL_PRECISION.md` for the full rules. The helpers below are
- * the single source of truth used by `src/checks.ts`.
- */
-export const DECIMAL_PRECISION = 7;
-
-/** Maximum number of fractional digits a Stellar amount can represent. */
-export const MAX_DECIMAL_PLACES = DECIMAL_PRECISION;
-
-const DECIMAL_AMOUNT_REGEX = /^-?\d+(\.\d+)?$/;
 
 export interface CampaignPreset {
   id: string;
@@ -249,139 +233,21 @@ export function assertValidSacAssetCode(assetIssuer: string, assetCode: string):
     assertValidAssetCode(assetCode);
   } catch {
     throw new Error(
-      `asset_code "${assetCode}" is invalid for Soroban contract issuer ${assetIssuer}: asset codes must be 1-12 uppercase alphanumeric characters.`,
+      `asset_code must be 1-12 uppercase alphanumeric characters to match the Soroban SAC contract issuer ${assetIssuer}. Received: "${assetCode}"`,
     );
   }
 }
 
-/**
- * Parse a decimal amount string into a scaled integer of stroops
- * (1 unit = 10^DECIMAL_PRECISION).
- *
- * Rules (see `docs/DECIMAL_PRECISION.md`):
- * - Accepts an optional leading `-`, digits, and an optional fractional part.
- * - Rejects empty/whitespace-only input, non-numeric input, and more than
- *   `MAX_DECIMAL_PLACES` fractional digits (which cannot be represented on
- *   the Stellar ledger).
- * - Never uses floating point, so `0.1 + 0.2` style drift cannot occur.
- */
-export function parseDecimalAmount(amount: string): bigint {
-  const trimmed = (amount ?? '').trim();
-  if (!trimmed) {
-    throw new Error('amount must be a non-empty decimal string.');
-  }
-  if (!DECIMAL_AMOUNT_REGEX.test(trimmed)) {
-    throw new Error(`amount must be a decimal number. Received: "${amount}"`);
-  }
-
-  const negative = trimmed.startsWith('-');
-  const unsigned = negative ? trimmed.slice(1) : trimmed;
-  const [wholePart, fracPart = ''] = unsigned.split('.');
-
-  if (fracPart.length > MAX_DECIMAL_PLACES) {
-    throw new Error(
-      `amount "${amount}" has ${fracPart.length} fractional digits; Stellar assets support at most ${MAX_DECIMAL_PLACES}.`,
-    );
-  }
-
-  const paddedFrac = fracPart.padEnd(MAX_DECIMAL_PLACES, '0');
-  const scaled = BigInt(wholePart) * 10n ** BigInt(MAX_DECIMAL_PLACES) + BigInt(paddedFrac || '0');
-  return negative ? -scaled : scaled;
-}
-
-/**
- * Compare two decimal amount strings exactly.
- * Returns -1 when `a < b`, 0 when equal, 1 when `a > b`.
- * Throws on malformed input via `parseDecimalAmount`.
- */
-export function compareDecimalAmounts(a: string, b: string): -1 | 0 | 1 {
-  const left = parseDecimalAmount(a);
-  const right = parseDecimalAmount(b);
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
-
-/**
- * True when `balance` meets or exceeds `minimum` using exact decimal
- * comparison. Used by `src/checks.ts` for trustline balance checks so that
- * assets with different exponents (USDC, XLM, custom tokens) are compared
- * consistently.
- */
-export function meetsMinimumBalance(balance: string, minimum: string): boolean {
-  return compareDecimalAmounts(balance, minimum) >= 0;
-}
-
-// ---------------------------------------------------------------------------
-// Issue #676 — per-asset clawback reason codes for webhook consumers.
-// ---------------------------------------------------------------------------
-
-/**
- * Per-asset `reason_code` values. They reuse the public catalog codes in
- * `schemas/reason-codes.json` so webhook receivers can switch on the same
- * strings as the top-level `reason_code` output.
- */
-export type AssetReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'CLAWBACK_BLOCKED';
-
-/** Evaluated trustline/clawback state for one asset (primary or `assets_json`). */
-export interface AssetReasonEvaluation {
-  assetCode: string;
-  assetIssuer: string;
-  /** True for the primary `asset_code` / `asset_issuer` pair. */
-  primary: boolean;
-  trustlineExists: boolean;
+export interface AssetClawbackStatus {
   clawbackEnabled: boolean;
-  reasonCode: AssetReasonCode;
 }
 
 /**
- * Derive the reason code for a single asset.
- *
- * Precedence: a missing trustline outranks clawback (a clawback flag can only
- * exist on a trustline that is present). A clawback-enabled trustline only
- * yields `CLAWBACK_BLOCKED` under `clawback_strict_mode: true`; in warn mode
- * it stays `SUCCESS` and the receiver reads `clawback_enabled` instead.
+ * Read the per-trustline clawback flag from a Horizon credit balance entry.
+ * Absent / undefined is treated as clawback disabled.
  */
-export function deriveAssetReasonCode(
-  trustlineExists: boolean,
-  clawbackEnabled: boolean,
-  clawbackStrictMode: boolean,
-): AssetReasonCode {
-  if (!trustlineExists) return 'TRUSTLINE_MISSING';
-  if (clawbackEnabled && clawbackStrictMode) return 'CLAWBACK_BLOCKED';
-  return 'SUCCESS';
-}
-
-/**
- * Evaluate every configured asset against a Horizon account. The primary
- * asset is always first; `assets_json` entries follow in input order with
- * duplicates of the primary `code:issuer` pair skipped.
- */
-export function evaluateAssetReasonCodes(
-  account: HorizonAccount,
-  primary: AssetConfigInput,
-  extraAssets: AssetConfigInput[],
-  clawbackStrictMode: boolean,
-): AssetReasonEvaluation[] {
-  const evaluate = (asset: AssetConfigInput, isPrimary: boolean): AssetReasonEvaluation => {
-    const balance = findTrustlineBalance(account, asset.assetCode, asset.assetIssuer);
-    const trustlineExists = balance !== undefined;
-    const clawbackEnabled = trustlineExists && getAssetClawbackStatus(balance).clawbackEnabled;
-    return {
-      assetCode: asset.assetCode,
-      assetIssuer: asset.assetIssuer,
-      primary: isPrimary,
-      trustlineExists,
-      clawbackEnabled,
-      reasonCode: deriveAssetReasonCode(trustlineExists, clawbackEnabled, clawbackStrictMode),
-    };
-  };
-
-  const primaryKey = `${primary.assetCode}:${primary.assetIssuer}`;
-  return [
-    evaluate(primary, true),
-    ...extraAssets
-      .filter((asset) => `${asset.assetCode}:${asset.assetIssuer}` !== primaryKey)
-      .map((asset) => evaluate(asset, false)),
-  ];
+export function getAssetClawbackStatus(
+  balance: HorizonBalanceCredit | undefined,
+): AssetClawbackStatus {
+  return { clawbackEnabled: balance?.is_clawback_enabled === true };
 }

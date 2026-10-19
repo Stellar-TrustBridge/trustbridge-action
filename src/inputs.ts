@@ -17,21 +17,6 @@ export function parseBooleanInput(value: string, defaultValue: boolean): boolean
 }
 
 /**
- * Canonical list of input names declared in `action.yml`.
- *
- * Kept in sync with `action.yml` by the schema parity test
- * (`__tests__/inputs-schema-parity.test.ts`), which fails CI when an input is
- * added to one side only (Issue #769).
- */
-export const DECLARED_INPUTS = [
-  'skip_for_maintainers',
-  'skip_if_maintainer',
-  'assignee_address_map',
-] as const;
-
-export type DeclaredInput = (typeof DECLARED_INPUTS)[number];
-
-/**
  * Result of {@link resolveMaintainerSkipInput}, carrying the resolved value
  * plus provenance so the action can emit a precise warning instead of
  * guessing which input the user meant.
@@ -256,6 +241,201 @@ export function resolveAddressFromAssigneeMap(
     throw new Error(
       'assignee_address_map was provided but no assignee login was found in the GitHub event context. ' +
         'Use this input with `on: issues: types: [assigned]` (payload.assignee), ' +
-        'or ensure the issue has at lea
+        'or ensure the issue has at least one assignee.',
+    );
+  }
 
-/* … truncated 6851 chars — edit only what you need near the top … */
+  const address = map[login.toLowerCase()];
+  if (!address) {
+    throw new Error(
+      `Assignee "${login}" is not present in assignee_address_map. ` +
+        'Add an entry for this GitHub username mapping to their Stellar G-address, ' +
+        'or pass stellar_address_input explicitly instead of using the roster map.',
+    );
+  }
+
+  return address;
+}
+
+export type UnauthorizedTrustlinePolicy = 'fail' | 'warn' | 'ignore';
+
+/**
+ * Parses the `unauthorized_trustline_policy` input, which controls how a
+ * trustline that exists but is not yet authorized by the issuer
+ * (AUTHORIZATION_REQUIRED) is treated:
+ *   - "fail"   — the trustline check does not pass; readiness outputs
+ *                reflect the stricter meaning.
+ *   - "warn"   — the trustline check still passes, but a warning is added
+ *                to the comment. This is the safe default: it surfaces the
+ *                risk without breaking existing green workflows.
+ *   - "ignore" — no additional check or warning (pre-#72 behavior).
+ */
+export function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTrustlinePolicy {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return 'warn';
+  }
+  if (normalized === 'fail' || normalized === 'warn' || normalized === 'ignore') {
+    return normalized;
+  }
+  throw new Error(
+    `unauthorized_trustline_policy must be one of "fail", "warn", or "ignore". Received: "${value}"`,
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// #147 — TRUSTBRIDGE_* environment variable support
+// ---------------------------------------------------------------------------
+
+/**
+ * Mapping of TRUSTBRIDGE_* environment variable names to action input names.
+ * Explicit `with:` values always win; env is only used when with: is empty.
+ */
+export const TRUSTBRIDGE_ENV_MAP: Record<string, string> = {
+  TRUSTBRIDGE_HORIZON_URL: 'horizon_url',
+  TRUSTBRIDGE_HORIZON_URL_FALLBACK: 'horizon_url_fallback',
+  TRUSTBRIDGE_RPC_FALLBACK_URL: 'rpc_fallback_url',
+  TRUSTBRIDGE_ASSET_CODE: 'asset_code',
+  TRUSTBRIDGE_ASSET_ISSUER: 'asset_issuer',
+  TRUSTBRIDGE_MIN_XLM_RESERVE: 'min_xlm_reserve',
+  TRUSTBRIDGE_FAIL_ON_MISSING: 'fail_on_missing',
+  TRUSTBRIDGE_DEBUG_MODE: 'debug_mode',
+  TRUSTBRIDGE_HORIZON_TIMEOUT_MS: 'horizon_timeout_ms',
+  TRUSTBRIDGE_STICKY_COMMENT: 'sticky_comment',
+  TRUSTBRIDGE_WAIT_UNTIL_FUNDED: 'wait_until_funded',
+  TRUSTBRIDGE_WAIT_UNTIL_FUNDED_TIMEOUT_MS: 'wait_until_funded_timeout_ms',
+  TRUSTBRIDGE_WAIT_UNTIL_FUNDED_INTERVAL_MS: 'wait_until_funded_interval_ms',
+  TRUSTBRIDGE_HORIZON_CACHE_TTL_MS: 'horizon_cache_ttl_ms',
+  TRUSTBRIDGE_USE_CACHE: 'use_cache',
+  TRUSTBRIDGE_LOG_INPUTS: 'log_inputs',
+  TRUSTBRIDGE_PREFLIGHT_ONLY: 'preflight_only',
+  TRUSTBRIDGE_UNASSIGN_ON_NOT_READY: 'unassign_on_not_ready',
+};
+
+/**
+ * Resolve an action input with TRUSTBRIDGE_* env fallback.
+ */
+export function resolveInput(
+  inputName: string,
+  withValue: string,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): string {
+  if (withValue !== '') {
+    return withValue;
+  }
+
+  const envKey = Object.entries(TRUSTBRIDGE_ENV_MAP).find(
+    ([, mapped]) => mapped === inputName,
+  )?.[0];
+
+  if (envKey) {
+    const envValue = env[envKey];
+    if (envValue !== undefined && envValue !== '') {
+      return envValue;
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Resolve campaign preset name from network/preset inputs.
+ * Empty string means "no preset".
+ */
+export function parsePresetInput(networkInput?: string, presetInput?: string): string {
+  const preset = (presetInput ?? '').trim().toLowerCase();
+  if (preset) return preset;
+  const network = (networkInput ?? '').trim().toLowerCase();
+  if (network === 'testnet' || network === 'public' || network === 'mainnet') {
+    return network === 'mainnet' ? 'public' : network;
+  }
+  return '';
+}
+
+export interface GitHubAuthTokenOptions {
+  githubToken?: string;
+  githubAppToken?: string;
+}
+
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+export function resolveGitHubAuthToken(options: GitHubAuthTokenOptions): string {
+  const appToken = options.githubAppToken?.trim();
+  if (appToken && appToken.length > 0) {
+    return appToken;
+  }
+  const token = options.githubToken?.trim();
+  if (token && token.length > 0) {
+    return token;
+  }
+  throw new Error(
+    'Missing GitHub authentication token. Please provide either `github_token` or `github_app_token`.',
+  );
+}
+
+/** Raw (untrimmed) values for the ready-label input alias chains. */
+export interface ReadyLabelInputOptions {
+  passLabel?: string;
+  readyPassLabel?: string;
+  readyLabelPass?: string;
+  failLabel?: string;
+  readyFailLabel?: string;
+  readyLabelFail?: string;
+}
+
+export interface ResolvedReadyLabels {
+  passLabel: string;
+  failLabel: string;
+  /** True when either chain resolved from a deprecated alias. */
+  usedDeprecatedAlias: boolean;
+}
+
+/**
+ * Resolve the ready-state label pair from the documented alias chains.
+ *
+ * action.yml declares four deprecated aliases alongside the canonical
+ * `pass_label` / `fail_label`:
+ *
+ *   pass_label → ready_pass_label → ready_label_pass
+ *   fail_label → ready_fail_label → ready_label_fail
+ *
+ * Only the canonical names were read at runtime, so a workflow still using a
+ * deprecated name silently lost its label automation after upgrading instead
+ * of erroring. (Issue #669)
+ *
+ * A whitespace-only value counts as unset, matching `core.getInput` semantics
+ * where an omitted input yields ''. Trimming means a value such as
+ * `' wallet-ready '` resolves to `'wallet-ready'` rather than creating a
+ * differently-spaced label that GitHub would treat as distinct.
+ *
+ * Both chains resolve independently: a workflow may set a pass label through
+ * the canonical name and a fail label through a deprecated one.
+ */
+export function resolveReadyLabelInputs(
+  options: ReadyLabelInputOptions,
+): ResolvedReadyLabels {
+  const pick = (...candidates: Array<string | undefined>): { value: string; deprecated: boolean } => {
+    for (let i = 0; i < candidates.length; i += 1) {
+      const value = (candidates[i] ?? '').trim();
+      if (value) return { value, deprecated: i > 0 };
+    }
+    return { value: '', deprecated: false };
+  };
+
+  const pass = pick(options.passLabel, options.readyPassLabel, options.readyLabelPass);
+  const fail = pick(options.failLabel, options.readyFailLabel, options.readyLabelFail);
+
+  return {
+    passLabel: pass.value,
+    failLabel: fail.value,
+    usedDeprecatedAlias: pass.deprecated || fail.deprecated,
+  };
+}
+

@@ -1,0 +1,74 @@
+# Example: Upload TrustBridge findings to GitHub code scanning (Issue #680)
+#
+# TrustBridge can write a SARIF 2.1.0 report describing every wallet check.
+# Uploading it makes failures visible in the repository's Security > Code
+# scanning tab and annotates the pull request that introduced them.
+#
+# Required repository setting:
+#   Settings -> Code security and analysis -> Code scanning -> Set up
+#
+# Notes:
+#   - `security-events: write` is required by upload-sarif. It is granted at
+#     the job level so the rest of the workflow stays read-only.
+#   - Every third-party action is pinned to a commit SHA (supply-chain safety).
+#   - Both the single-address and batch modes set `sarif_output_path`, so the
+#     same workflow works for either. In batch mode the SARIF document contains
+#     one artifact per address (`stellar-address/<address>`).
+#   - Findings are still produced when validation fails, hence `always()`.
+
+name: Wallet TrustBridge SARIF
+
+on:
+  issues:
+    types: [assigned, edited]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate manually'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  trustbridge:
+    name: Validate wallet and upload SARIF
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      # Required by github/codeql-action/upload-sarif.
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run TrustBridge
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+          # Batch mode alternative: replace the line above with
+          #   stellar_addresses: |
+          #     G...
+          #     G...
+          sarif_output_path: trustbridge-results.sarif
+          fail_on_missing: false
+
+      - name: Upload SARIF to code scanning
+        if: always() && steps.trustbridge.outputs.sarif_output_path != ''
+        uses: github/codeql-action/upload-sarif@d0bae162f31f17dd92c46ccdc4dfee5710f8dc67 # v3
+        with:
+          sarif_file: ${{ steps.trustbridge.outputs.sarif_output_path }}
+          category: trustbridge
+
+      - name: Keep the SARIF report as an artifact
+        if: always() && steps.trustbridge.outputs.sarif_output_path != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trustbridge-sarif
+          path: ${{ steps.trustbridge.outputs.sarif_output_path }}
+          if-no-files-found: ignore

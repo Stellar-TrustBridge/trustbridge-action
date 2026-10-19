@@ -15,17 +15,6 @@ Related docs: [Breaking Changes](BREAKING_CHANGES.md) · [License Report](LICENS
 - Keep an eye on XLM fee buffer guidance in the docs if the validation defaults change; the release checklist should point maintainers back to the current remediation copy.
 - **License report**: verify the release workflow attached `licenses-report.json` and `licenses-report.md` to the GitHub Release assets. If a new runtime dependency was added since the last release, check its SPDX identifier against the compatibility table in [docs/LICENSE_REPORT.md](LICENSE_REPORT.md) before publishing.
 
-## Breaking changes gate
-
-Before tagging, decide whether the release is a **major** bump (for example `v1.x.y` → `v2.0.0`) and whether any action input was renamed, removed, or had its default changed.
-
-- [ ] If any action input was renamed, removed, or had its default changed, add a checklist entry to [BREAKING_CHANGES.md](BREAKING_CHANGES.md#breaking-action-input-renames) describing the old and new names and the migration path.
-- [ ] If this is a **major** bump, add a `BREAKING:` note to the release notes and to [BREAKING_CHANGES.md](BREAKING_CHANGES.md) before tagging. The release workflow posts a CI reminder on major bumps; do not merge the release PR until the reminder is resolved.
-- [ ] Confirm `package.json` `version` matches the tag you are about to create (the release guard rejects a tag that disagrees with `package.json`).
-- [ ] Confirm the `BREAKING:` note and the `package.json` version agree with the tag's major component.
-
-See [BREAKING_CHANGES.md](BREAKING_CHANGES.md#major-release-breaking-note-gate) for the full process and the CI reminder behavior.
-
 ## Verify build provenance
 
 The tag-triggered release workflow publishes signed SLSA provenance attestations for the freshly built `dist/index.js` and `dist/licenses.txt` to GitHub's attestations API. It also generates a SHA-256 checksum manifest (`trustbridge-checksums.txt`) uploaded as a release asset.

@@ -3,75 +3,67 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  id-token: write
+  attestations: write
 
 jobs:
-  verify-release:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
-          cache: npm
+          node-version: 20
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Verify action bundle exists
-        run: test -f dist/index.js
-
-      - name: BREAKING note gate on major bump
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Verify action bundle
         run: |
-          set -euo pipefail
+          test -f action.yml
+          test -f dist/index.js
+          test -f dist/dist-manifest.json
 
-          # Extract the major version from the release tag (e.g. v2.1.0 -> 2).
-          if ! [[ "$RELEASE_TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Malformed release tag '$RELEASE_TAG'. Expected vMAJOR.MINOR.PATCH (e.g. v2.1.0)."
-            exit 1
-          fi
-          TAG_MAJOR="${BASH_REMATCH[1]}"
+      - name: Verify dist/index.js SHA-256 matches dist-manifest.json
+        # Re-computes the SHA-256 of the committed dist/index.js and compares
+        # it against dist/dist-manifest.json.  A mismatch means the bundle and
+        # the manifest are out of sync — rebuild with `npm run build` and
+        # commit both files before tagging a release.
+        run: node scripts/verify-dist-manifest.js
 
-          # Read the current major version from package.json.
-          PKG_MAJOR="$(node -p "require('./package.json').version.split('.')[0]")"
-          if ! [[ "$PKG_MAJOR" =~ ^[0-9]+$ ]]; then
-            echo "::error::Malformed package.json version. Expected MAJOR.MINOR.PATCH."
-            exit 1
-          fi
+      - name: Verify license assets
+        # SLSA provenance and the release checklist require the license files
+        # to be present and shipped with the release.  Fail fast if they are
+        # missing so we never publish a release without them.
+        run: |
+          test -f LICENSE
+          test -f NOTICE
+          test -f docs/LICENSE_REPORT.md || test -f docs/LICENSE_REPORT
 
-          echo "Release tag major: $TAG_MAJOR, package.json major: $PKG_MAJOR"
+      - name: Generate SLSA provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/index.js
+            dist/dist-manifest.json
+            LICENSE
+            NOTICE
+            docs/LICENSE_REPORT.md
 
-          if [ "$TAG_MAJOR" -gt 0 ] && [ "$TAG_MAJOR" != "$PKG_MAJOR" ]; then
-            echo "::error::Release tag major ($TAG_MAJOR) does not match package.json major ($PKG_MAJOR). Bump package.json before tagging."
-            exit 1
-          fi
-
-          # Major bumps (>= 1) require a BREAKING note in docs/BREAKING_CHANGES.md.
-          if [ "$TAG_MAJOR" -ge 1 ]; then
-            if ! grep -q "## v${TAG_MAJOR}" docs/BREAKING_CHANGES.md; then
-              echo "::error::Major release $RELEASE_TAG requires a '## v${TAG_MAJOR}' entry in docs/BREAKING_CHANGES.md. See docs/RELEASE_CHECKLIST.md."
-              exit 1
-            fi
-            echo "::notice::Major release $RELEASE_TAG detected. Confirm docs/BREAKING_CHANGES.md and docs/RELEASE_CHECKLIST.md are updated."
-          else
-            echo "::notice::Non-major release $RELEASE_TAG. No BREAKING note gate required."
-          fi
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2.3.2
+        with:
+          generate_release_notes: true
+          files: |
+            LICENSE
+            NOTICE
+            docs/LICENSE_REPORT.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

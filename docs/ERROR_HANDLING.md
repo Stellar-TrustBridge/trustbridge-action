@@ -52,8 +52,6 @@ code here will fail the build.
 | `TLS_ERROR` | `tlsFailureResult` · `src/checks.ts` | No | TLS handshake or certificate verification failed for `horizon_url`; connection was never established. |
 | `TRUSTLINE_UNAUTHORIZED` | `runAccountChecks` · `src/checks.ts` | No | Trustline exists but the issuer has not authorized it (`is_authorized: false`). Only emitted when `unauthorized_trustline_policy: fail`; under `warn` (default) or `ignore` the run does not fail on this. |
 | `CLAWBACK_BLOCKED` | `runAccountChecks` · `src/checks.ts` | No | The trustline has clawback enabled (`is_clawback_enabled: true`) and `clawback_strict_mode: true` blocked validation. The issuer can reclaim the held assets at any time. |
-| `HOME_DOMAIN_MISMATCH` | `runAccountChecks` · `src/checks.ts` | No | `home_domain_check_enabled: true` with `home_domain_check_mode: strict`, and the asset issuer's on-chain `home_domain` differs from `expected_home_domain`. In `warn` mode the mismatch is only shown in the comment. See [SEP0001_HOME_DOMAIN.md](SEP0001_HOME_DOMAIN.md). |
-| `HOME_DOMAIN_MISSING` | `runAccountChecks` · `src/checks.ts` | No | `home_domain_check_enabled: true` with `home_domain_check_mode: strict`, and the asset issuer has no `home_domain` set on-chain (or the issuer account could not be fetched). |
 | `CIRCUIT_OPEN` | `circuitOpenFailureResult` · `src/checks.ts` | Yes (after the breaker resets) | The Horizon circuit breaker tripped after repeated consecutive failures, so the run failed closed without issuing further requests. Distinct from `HORIZON_ERROR`: no request was attempted, so the account state is unknown. Resolve the underlying Horizon outage and re-run. |
 | `RATE_BUDGET_EXHAUSTED` | `rateBudgetExhaustedResult` · `src/checks.ts` | Yes (raise the budget) | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before validation completed. The run fails closed by design rather than issuing unbounded requests. Distinct from `HORIZON_ERROR`: no request failed, the budget was deliberately consumed. Raise `horizon_max_requests` (most relevant in batch mode) or retry. |
 | `MILESTONE_GATE_SKIPPED` | milestone gate · `src/index.ts` | n/a (skip, not failure) | `milestone_allowlist` is active and the issue's milestone was absent or not in the allowlist, so validation was skipped before any Horizon request. No account state was determined. Set `milestone_fail_on_skip: true` to hard-fail instead of warn. |
@@ -62,6 +60,8 @@ code here will fail the build.
 | `CONTRACT_NOT_FOUND` | C-address destination check · `src/index.ts` | No | The Soroban C-address payout destination was not found on the configured Soroban RPC. The contract must exist on-chain before it is eligible for payout. |
 | `RATE_LIMIT_EXHAUSTED` | `HorizonRateLimitError` · `src/horizon.ts` | No (budget exhausted) | Horizon returned HTTP 429 and all retry attempts were exhausted (or `retry_max_total_wait_ms` budget was exceeded). |
 | `PIN_MISMATCH` | `HorizonPinMismatchError` · `src/horizon.ts` | No | The Horizon TLS certificate fingerprint did not match `horizon_pin_fingerprint`. Not retried — a fingerprint mismatch means the certificate has changed or a MITM is present. Update `horizon_pin_fingerprint` or investigate the endpoint. (Issue #303) |
+| `SAC_ISSUER_NOT_VERIFIABLE` | `runAccountChecks` · `src/checks.ts` | No | The asset issuer is a Soroban Stellar Asset Contract (C-address). SAC issuers never appear in a Horizon account `balances` array, so trustline presence cannot be verified from Horizon. Not a contributor error — verify the SAC issuer on-chain instead of asking the wallet owner to add a trustline. (Issue #730) |
+| `JOB_CANCELLED` | `cancelledResult` · `src/checks.ts`, `src/index.ts` | Yes (re-run the workflow) | The Actions runner cancelled the job (SIGINT/SIGTERM). Validation stopped before a Horizon result was produced; no account state was determined, no comment or SARIF file was written, and the step exits 0. Deliberately distinct from `HORIZON_ERROR`: the run never completed, so there is no outage to investigate. (Issues #682 / #683) |
 
 ### Notes
 
@@ -131,52 +131,10 @@ Stellar accounts must receive a minimum XLM funding transaction before they exis
 
 Horizon may return `Retry-After`. The client:
 
-1. Waits for `Retry-After` (seconds or HTTP-date) when present, otherwise exponential backoff `retry_base_delay_ms × 2^attempt` (1s, 2s, 4s with defaults).
-2. Caps every individual sleep at `retry_max_delay_ms`, whatever the server asked for.
-3. Tracks the cumulative sleep per endpoint and stops retrying when the next sleep would push it past `retry_max_total_wait_ms`, throwing `HorizonRateLimitError` (`RATE_LIMIT_EXHAUSTED`) immediately instead of sleeping.
-4. Retries up to `max_retries` times (default **3**).
-5. If still failing → `horizonFailureResult`
-
-#### Retry-After cap inputs (Issue #705)
-
-| Input | Default | Bounds (parsed in `src/index.ts`) | Effect |
-|-------|---------|------------------------------------|--------|
-| `max_retries` | `3` | 0 – 10 | Retry attempts after the first request, per endpoint. |
-| `retry_base_delay_ms` | `1000` | 0 – 60000 | Base for exponential backoff when `Retry-After` is missing or invalid. |
-| `retry_max_delay_ms` | `30000` | 0 – 300000 | Hard cap on **any single** sleep (Retry-After *and* backoff). `0` disables sleeping but `max_retries` still applies. |
-| `retry_max_total_wait_ms` | `120000` | 0 – 600000 | Budget for the **sum** of sleeps on one endpoint. Exceeding it aborts with `RATE_LIMIT_EXHAUSTED`. |
-
-These inputs are mirrored in `schemas/action-inputs.schema.json`.
-
-**How the cap is applied** (`fetchAccountOnce` in `src/horizon.ts`):
-
-```text
-sleep_n   = min(RetryAfter_n ?? retry_base_delay_ms × 2^n, retry_max_delay_ms)
-if total + sleep_n > retry_max_total_wait_ms → throw RATE_LIMIT_EXHAUSTED (no sleep)
-total    += sleep_n
-```
-
-- A `Retry-After` value that is negative, non-numeric and not an HTTP-date, or non-finite (e.g. `1e400`) is treated as missing, so backoff applies.
-- When a `Retry-After` value is capped, an info line is logged with the parsed millisecond values only (`requested 86400000ms exceeds retry_max_delay_ms (30000ms)`); the raw header string is never logged.
-- Workflow cancellation (`SIGINT`/`SIGTERM` → `AbortSignal`) wakes a pending sleep at once and the loop exits before the next request.
-
-**Worst-case wait per endpoint:**
-
-```text
-min(max_retries × retry_max_delay_ms, retry_max_total_wait_ms)
-```
-
-The primary and the fallback endpoint (`horizon_url_fallback` / `rpc_fallback_url`) each have their own budget, so the worst case for a run with a fallback is twice that value, plus request time (`horizon_timeout_ms` × attempts).
-
-**Example timeline:** `max_retries: 3`, `retry_max_delay_ms: 30000`, `retry_max_total_wait_ms: 45000`. Horizon answers every request with `429` and `Retry-After: 3600`:
-
-| t (s) | Event | Sleep | Cumulative |
-|-------|-------|-------|------------|
-| 0 | Attempt 1 → 429, `Retry-After: 3600` (3,600,000 ms) | capped to 30,000 ms (logged) | 30,000 |
-| 30 | Attempt 2 → 429, `Retry-After: 3600` | next sleep would be 30,000 → total 60,000 > 45,000 | — |
-| 30 | `HorizonRateLimitError`: *Horizon retry wait budget exhausted (total wait 60000ms exceeds cap of 45000ms)* → `RATE_LIMIT_EXHAUSTED` | | |
-
-Without the cap, the same response would have stalled the job for an hour per retry.
+1. Waits for `Retry-After` or exponential backoff (1s, 2s, 4s) with a ±10% random jitter to prevent thundering herds.
+2. Enforces a sleep cap: `retry_max_delay_ms` (per retry) and `retry_max_total_wait_ms` (total across retries). If exceeded, throws a distinct rate limit error immediately.
+3. Retries up to **3** times
+4. If still failing → `horizonFailureResult`
 
 **Operator tip:** For high-volume orgs or mass assignments (Waves), consider configuring `horizon_max_requests` to cap the total requests per run. Once this budget is exhausted, the action will fail fast with a `RATE_BUDGET_EXHAUSTED` reason code (distinct from `ACCOUNT_NOT_FUNDED` and `HORIZON_ERROR`) rather than stampeding the public Horizon API. Consider self-hosted Horizon or caching for extremely high concurrency workflows.
 
@@ -389,6 +347,7 @@ When a GitHub Actions workflow is cancelled (e.g. by clicking **Cancel** in the 
 | **In-flight Horizon request** | The per-request `AbortController` is chained to the job signal. The current HTTP request is aborted; no retry is attempted. |
 | **Retry backoff sleep** | Not aborted (short, ≤ 30 s max). The signal is checked again at the top of the next attempt loop before issuing another request. |
 | **`wait_until_funded` polling loop** | Signal checked before each poll and also during the inter-poll sleep. Polling stops as soon as the signal fires. |
+| **Batch mode** (`stellar_addresses`) | The signal is checked before every address. Cancellation aborts the batch rather than recording a per-address `HORIZON_ERROR`, and no partial SARIF file or summary comment is written. |
 | **Comment posting** | If cancellation is detected before results are produced, no issue comment is posted. If a result was already produced before cancellation was detected, comment posting proceeds normally. |
 
 ### Error classification
@@ -397,8 +356,9 @@ A job-cancellation abort is intentionally classified as a **non-retryable error 
 
 - Emitting a misleading "account not funded" comment when the run was only stopped by the runner.
 - Treating a cancelled run as a check failure that blocks the contributor.
+- Reporting cancellation as a Horizon outage (`reason_code: HORIZON_ERROR`).
 
-A `core.warning` is emitted noting that the run was cancelled, and the action exits with code 0 (no `setFailed`).
+Cancelled runs set `reason_code` to `JOB_CANCELLED` (see [`schemas/reason-codes.json`](../schemas/reason-codes.json)). A `core.warning` is emitted noting that the run was cancelled, and the action exits with code 0 (no `setFailed`).
 
 ---
 

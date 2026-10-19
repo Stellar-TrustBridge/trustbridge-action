@@ -4,42 +4,6 @@ import { validateSsrfSafeUrl } from './validation';
 
 const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
 
-export interface RosterFilterOptions {
-  allowlist?: string[];
-  denylist?: string[];
-}
-
-function normalizeRosterAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-/**
- * Filter a batch assignee address map against roster allowlist/denylist entries.
- *
- * - Allowlist: when non-empty, only entries whose address is in the allowlist are kept.
- * - Denylist: entries whose address is in the denylist are always removed.
- * - Denylist takes precedence over allowlist.
- * - Empty allowlist means "allow all" (subject to denylist).
- * - Empty map returns an empty map.
- * - Matching is case-insensitive and whitespace-trimmed.
- */
-export function filterRosterAddressMap(
-  addressMap: AssigneeAddressMap,
-  options: RosterFilterOptions = {}
-): AssigneeAddressMap {
-  const allowlist = new Set((options.allowlist ?? []).map(normalizeRosterAddress).filter(Boolean));
-  const denylist = new Set((options.denylist ?? []).map(normalizeRosterAddress).filter(Boolean));
-
-  const result: AssigneeAddressMap = {};
-  for (const [key, value] of Object.entries(addressMap)) {
-    const normalized = normalizeRosterAddress(value);
-    if (denylist.has(normalized)) continue;
-    if (allowlist.size > 0 && !allowlist.has(normalized)) continue;
-    result[key] = value;
-  }
-  return result;
-}
-
 export async function fetchDashboardRoster(
   url: string,
   secret: string,

@@ -37,6 +37,34 @@ export declare function parseAssetsJson(raw: string): AssetConfigInput[];
  * Preserves first-occurrence order.
  */
 export declare function dedupeAssets(assets: AssetConfigInput[]): AssetConfigInput[];
+/**
+ * Issuer flavour of an asset (Issue #730).
+ *
+ * Classic Stellar assets are issued by a G-account; Stellar Asset Contracts
+ * (SAC) are issued by a Soroban contract id (C-address). The two need
+ * different validation: a Horizon account balance entry always names a
+ * G-account issuer, so a C-address issuer can never be confirmed through the
+ * classic trustline path and must be resolved contract-aware instead.
+ */
+export type AssetIssuerKind = 'classic' | 'soroban-contract';
+/**
+ * Classify an asset issuer as a classic G-account or a Soroban contract id.
+ *
+ * The value is **not** validated here — use `assertValidAssetIssuer` first.
+ * Anything that is not a well-formed C-address is treated as classic so
+ * existing G-address callers keep their exact behaviour.
+ */
+export declare function classifyAssetIssuer(assetIssuer: string): AssetIssuerKind;
+/** True when `assetIssuer` is a well-formed Soroban contract id (C-address). */
+export declare function isSorobanContractIssuer(assetIssuer: string): boolean;
+/**
+ * Validate an asset code supplied for a Soroban SAC issuer.
+ *
+ * SAC contracts enforce the same 1–12 uppercase alphanumeric rule as classic
+ * assets, so this is `assertValidAssetCode` with a contract-specific error
+ * message that tells the operator the mismatch is on the *issuer* side.
+ */
+export declare function assertValidSacAssetCode(assetIssuer: string, assetCode: string): void;
 export interface AssetClawbackStatus {
     clawbackEnabled: boolean;
 }

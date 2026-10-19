@@ -54,12 +54,10 @@ export interface ActionOutputExtras {
   checkRunId?: string;
   checkRunConclusion?: string;
   /**
-   * #696 — Numeric REST id of the issue comment TrustBridge created or
-   * updated this run, as a string. Absent when no comment was posted
-   * (`posting_mode: dry-run` / `off`, no issue context, or a failed post),
-   * which publishes `comment_id` as an empty string.
+   * Workspace-relative path of the SARIF file written this run (Issues #681 /
+   * #680). Empty when `sarif_output_path` was unset or the write was skipped.
    */
-  commentId?: string;
+  sarifOutputPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +186,6 @@ export interface ActionOutputs {
   xlm_balance: string;
   account_funded: string;
   comment_url: string;
-  /**
-   * #696 — Numeric REST id of the created or updated issue comment, as a
-   * string. Empty when no comment was posted.
-   */
-  comment_id: string;
   full_report_path: string;
   // Extended audit / timing outputs
   ready: string;
@@ -260,6 +253,11 @@ export interface ActionOutputs {
   batch_summary_json: string;
   batch_passed_count: string;
   batch_failed_count: string;
+  /**
+   * Workspace-relative path of the SARIF 2.1.0 file written when the
+   * `sarif_output_path` input is set (Issues #681 / #680). Empty otherwise.
+   */
+  sarif_output_path: string;
 }
 
 export function toActionOutputs(
@@ -312,7 +310,6 @@ export function toActionOutputs(
     xlm_balance: result.xlmBalance,
     account_funded: String(result.accountFunded),
     comment_url: commentUrl ?? '',
-    comment_id: extras.commentId ?? '',
     full_report_path: fullReportPath ?? '',
     ready: String(result.valid),
     validated_at: validatedAt,
@@ -370,6 +367,8 @@ export function toActionOutputs(
     batch_summary_json: '',
     batch_passed_count: '',
     batch_failed_count: '',
+    // Issues #681 / #680 — path of the SARIF file written this run.
+    sarif_output_path: extras.sarifOutputPath ?? '',
   };
 }
 

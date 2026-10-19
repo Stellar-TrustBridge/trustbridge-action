@@ -13,21 +13,44 @@ export interface LogContext {
     horizonUrl?: string;
     [key: string]: unknown;
 }
+export declare function isSensitiveSecretKey(key: string): boolean;
 /**
- * Redacts a single Stellar address (G- or C-address) to its first 4 and
- * last 4 characters, separated by `...`. Non-address strings are returned
- * unchanged so non-address log values never collide with the redaction
- * pass.
+ * Redacts a single Stellar address to its first 4 and last 4 characters,
+ * separated by `...`. Handles:
+ *   - G-addresses and C-addresses (Soroban contracts): exactly 56 characters.
+ *   - Muxed M-addresses: exactly 69 characters (M + 68 base32 chars).
+ * Non-address strings are returned unchanged so non-address log values
+ * never collide with the redaction pass.
  *
  * Examples:
  *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
  *     => 'GA5Z...KZVN'
+ *   redactStellarAddress('MA7QYNF7SOWQ3GLR2BGMZEHXR8' + 'A'.repeat(43))
+ *     => 'MA7Q...AAAA'
  */
 export declare function redactStellarAddress(address: string): string;
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
- * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
+ * Redact a Soroban contract id (C-address) for log output (Issue #730).
+ *
+ * SAC issuers are contract ids, not accounts, but they carry exactly the same
+ * redaction requirement: a debug log line must never contain the full
+ * contract id. Delegates to {@link redactStellarAddress} so the C-address and
+ * G-address policies can never drift apart, and returns the input unchanged
+ * when it is not a well-formed C-address so a non-address value is never
+ * mangled.
+ *
+ * Examples:
+ *   redactContractAddress('CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM')
+ *     => 'CAAA...D2KM'
+ */
+export declare function redactContractAddress(contractId: string): string;
+/**
+ * Redacts every Stellar address (G-, C-, and muxed M-addresses) and PEM
+ * private key embedded in an arbitrary free-form string — error messages,
+ * Horizon URLs, JSON snippets, stack traces, etc.
+ *
+ * Muxed M-addresses (69 chars) are scanned first so their longer pattern
+ * cannot be partially matched by the 56-char G/C regex.
  */
 export declare function redactString(value: string): string;
 /**
@@ -36,21 +59,22 @@ export declare function redactString(value: string): string;
  * matching an address shape are masked before the URL reaches a log line.
  * The base hostname / protocol is preserved so operators can still verify
  * which Horizon instance was called.
+ *
+ * Handles all three Stellar address forms:
+ *   - G-addresses and C-addresses (56 chars)
+ *   - Muxed M-addresses (69 chars)
  */
 export declare function redactHorizonUrl(url: string): string;
 /**
  * Redacts a `LogContext` record in place (returns a new object, no
  * mutation) for safe logging. Policy per key type:
  *
+ * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
  * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
  *   raw string value.
  * - Key == `horizonUrl`             → run `redactHorizonUrl`.
  * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ *   and PEM keys via `redactString`.
  */
 export declare function redactContext(context: LogContext | undefined): LogContext | undefined;
 declare class StructuredLogger {
@@ -125,6 +149,7 @@ export interface ActionInputsLogRecord {
     assetCode: string;
     assetIssuer: string;
     minXlmReserve: string;
+    minTrustlineLimit: string;
     stellarAddress: string;
     failOnMissing: boolean;
     debugMode: boolean;
@@ -135,7 +160,12 @@ export interface ActionInputsLogRecord {
     waitUntilFundedIntervalMs: number;
     horizonCacheTtlMs: number;
     useCache: boolean;
+    horizonMaxRequests: number;
+    maxRetries?: number;
+    retryBaseDelayMs?: number;
+    retryMaxDelayMs: number;
     logInputs: boolean;
+    allowCrossNetworkFallback?: boolean;
 }
 /**
  * Build a redacted copy of the resolved action inputs suitable for writing

@@ -106,3 +106,40 @@ export interface GitHubAuthTokenOptions {
  * (Issue #225)
  */
 export declare function resolveGitHubAuthToken(options: GitHubAuthTokenOptions): string;
+/** Raw (untrimmed) values for the ready-label input alias chains. */
+export interface ReadyLabelInputOptions {
+    passLabel?: string;
+    readyPassLabel?: string;
+    readyLabelPass?: string;
+    failLabel?: string;
+    readyFailLabel?: string;
+    readyLabelFail?: string;
+}
+export interface ResolvedReadyLabels {
+    passLabel: string;
+    failLabel: string;
+    /** True when either chain resolved from a deprecated alias. */
+    usedDeprecatedAlias: boolean;
+}
+/**
+ * Resolve the ready-state label pair from the documented alias chains.
+ *
+ * action.yml declares four deprecated aliases alongside the canonical
+ * `pass_label` / `fail_label`:
+ *
+ *   pass_label → ready_pass_label → ready_label_pass
+ *   fail_label → ready_fail_label → ready_label_fail
+ *
+ * Only the canonical names were read at runtime, so a workflow still using a
+ * deprecated name silently lost its label automation after upgrading instead
+ * of erroring. (Issue #669)
+ *
+ * A whitespace-only value counts as unset, matching `core.getInput` semantics
+ * where an omitted input yields ''. Trimming means a value such as
+ * `' wallet-ready '` resolves to `'wallet-ready'` rather than creating a
+ * differently-spaced label that GitHub would treat as distinct.
+ *
+ * Both chains resolve independently: a workflow may set a pass label through
+ * the canonical name and a fail label through a deprecated one.
+ */
+export declare function resolveReadyLabelInputs(options: ReadyLabelInputOptions): ResolvedReadyLabels;

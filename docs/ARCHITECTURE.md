@@ -1,54 +1,119 @@
 # Architecture
 
-This document describes the internal structure of the TrustBridge Action and how its components interact. For operational guidance and FAQs, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+This document describes the internal design of **trustbridge-action**: how data flows from a GitHub event through Horizon to an issue comment and workflow outcome.
 
-## Logging and Stellar address masking
+Related docs: [README](../README.md) · [Structure](STRUCTURE.md) · [Usage](USAGE.md) · [Error handling](ERROR_HANDLING.md)
 
-The action emits diagnostics through `src/logger.ts`. Before any line reaches the Actions log, the logger runs a redaction pass so that Stellar addresses are not leaked into CI logs, which may be retained and shared by reviewers.
+---
 
-### Redacted patterns
+## Goals and constraints
 
-Redaction is driven by two regular expressions in `src/logger.ts`:
+1. **Deterministic checks** — Given a Stellar address and asset configuration, produce a repeatable pass/fail result from Horizon state.
+2. **Actionable feedback** — Every failure path should yield human-readable remediation in the issue comment.
+3. **GitHub Actions idioms** — Use `@actions/core` for inputs/outputs/failure and `@actions/github` for REST API access.
+4. **Resilience** — Transient Horizon errors (timeouts, 503, rate limits) are retried; permanent errors (404, invalid address) fail fast.
+5. **Testability** — Pure validation logic lives in `checks.ts`, isolated from I/O for unit testing.
 
-- `STELLAR_ADDRESS_REGEX` — matches standard Stellar account (`G...`) and contract (`C...`) addresses (56-character StrKey encodings).
-- `MUXED_ADDRESS_REGEX` — matches muxed account (`M...`) addresses, which embed a 64-bit memo ID alongside the underlying `G` address.
+---
 
-When a match is found, the address is replaced with a masked placeholder (e.g. `GABC...WXYZ` style truncation) so operators can still correlate log lines without exposing the full value. The redaction helpers are applied to every `core.info`, `core.debug`, `core.warning`, and `core.error` call routed through the logger.
+## High-level components
 
-### Context key allowlist
+```mermaid
+graph LR
+  subgraph GitHub
+    EV[issues.assigned / workflow_dispatch]
+    ISS[Issue comment API]
+  end
 
-The logger accepts a structured context object. Only keys on an explicit allowlist (e.g. `operation`, `status`, `count`, `durationMs`) are serialized verbatim. Unknown keys are dropped rather than stringified, preventing accidental leakage of raw payload fields that may contain addresses.
+  subgraph Action["trustbridge-action (Node 20)"]
+    IDX[index.ts]
+    CHK[checks.ts]
+    HOR[horizon.ts]
+    CMT[comment.ts]
+  end
 
-### Exceptions
+  subgraph External
+    HZ[Stellar Horizon]
+  end
 
-- **Comment bodies** posted to GitHub are *not* passed through the logger redactor. Comments are user-facing output and may legitimately contain full addresses (for example, a confirmation of the account that was funded). Review comment templates before enabling them in public repos.
-- **Webhook payloads** received from GitHub are logged only after passing through the same redaction helpers; raw payloads are never emitted directly.
-- **Federation responses** may contain addresses in free-form fields. These are redacted when logged, but partial addresses embedded in error messages are only masked if they match the regexes above — malformed or truncated addresses may slip through, so avoid logging raw error strings from federation calls.
-
-### Example
-
-Before redaction:
-
+  EV --> IDX
+  IDX --> CHK
+  IDX --> HOR
+  HOR --> HZ
+  IDX --> CMT
+  CMT --> ISS
+  CHK --> CMT
 ```
-Funding account GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
+
+| Module | Responsibility |
+|--------|----------------|
+| `index.ts` | Read inputs, orchestrate fetch → validate → comment → fail/warn, set outputs |
+| `horizon.ts` | HTTP client, response typing, retries, `HorizonError` |
+| `checks.ts` | Address validation, trustline/XLM rules, result aggregation, validation-gate summary |
+| `comment.ts` | Markdown rendering, Octokit `issues.createComment`, sticky comment upsert |
+
+---
+
+## Execution sequence
+
+```mermaid
+sequenceDiagram
+  participant GH as GitHub Runner
+  participant IDX as index.ts
+  participant HOR as horizon.ts
+  participant CHK as checks.ts
+  participant CMT as comment.ts
+  participant HZ as Horizon API
+
+  GH->>IDX: Run action (inputs)
+  IDX->>CHK: validateStellarAddress()
+  alt invalid address
+    CHK-->>IDX: throw
+    IDX-->>GH: setFailed
+  end
+  IDX->>HOR: fetchAccount(url, address)
+  loop up to 3 retries
+    HOR->>HZ: GET /accounts/{id}
+    HZ-->>HOR: 200 | 404 | 429 | 503 | timeout
+  end
+  alt 404 and wait_until_funded
+    loop until funded or timeout budget exhausted
+      HOR->>HZ: GET /accounts/{id}
+    end
+    HOR-->>IDX: HorizonAccount | HorizonError(404) on timeout
+  else 404
+    HOR-->>IDX: HorizonError(404)
+    IDX->>CHK: unfundedAccountResult()
+  else 200
+    HOR-->>IDX: HorizonAccount
+    IDX->>CHK: runAccountChecks()
+  else other error
+    HOR-->>IDX: HorizonError / throw
+    IDX->>CHK: horizonFailureResult()
+  end
+  IDX->>IDX: setOutput(trustline_exists, xlm_balance, account_funded)
+  IDX->>CMT: formatCommentBody() + postIssueComment()
+  CMT->>GH: REST POST /issues/{n}/comments
+  alt checks failed && fail_on_missing
+    IDX-->>GH: setFailed
+  else checks failed && !fail_on_missing
+    IDX-->>GH: warning
+  else
+    IDX-->>GH: success
+  end
 ```
 
-After redaction:
+---
 
-```
-Funding account GABC...STUV
-```
+## Data model
 
-### Behavioral contract
+### HorizonAccount
 
-`__tests__/logger.test.ts` is the authoritative specification for redaction behavior. It covers `G`, `C`, and `M` address masking, context allowlist enforcement, and the comment-body exception. Any change to `src/logger.ts` must keep these tests green; treat them as the source of truth when in doubt.
+Parsed from `GET /accounts/{account_id}`. The action primarily uses:
 
-### privacy_mode
-
-`privacy_mode` is a separate control from log redaction and affects *outputs* (comments and webhook responses) rather than the Actions log itself:
-
-- When `privacy_mode` is enabled, generated comment bodies omit full addresses and use masked forms, and webhook responses redact address fields.
-- When disabled, comments and webhook responses may include full addresses, while the Actions log remains redacted regardless.
+- `account_id` — canonical address
+- `balances[]` — native XLM and credit assets
+- `subentry_count`, `num_sponsoring`, `num_sponsored` — used to compute the sponsor-aware protocol minimum reserve (see [Check rules § 3](#3-xlm-reserve)). `num_sponsoring`/`num_sponsored` are optional — older Horizon snapshots omit them and they are treated as `0`.
 
 ### ValidationResult
 
@@ -105,7 +170,6 @@ Each `CheckResultItem` maps to one ✅/❌ line in the issue comment.
 | URL normalization | Strips trailing slashes from `horizon_url` |
 | Cache | Optional in-memory TTL cache (`use_cache` + `horizon_cache_ttl_ms`, default disabled), keyed on `(horizon_url, stellar_address)`. 404s are never cached as funded. |
 | RPC fallback | On retry exhaustion, fails over to `horizon_url_fallback`/`rpc_fallback_url`. Refused by default when the fallback resolves to a different Stellar network than the primary — see `allow_cross_network_fallback`. |
-| Latency histogram | Every fetch attempt (success, 404, exhausted-retries) records its wall-clock latency into `globalHorizonHistogram` (`HorizonLatencyHistogram` in `metrics.ts`), bucketed by `[50, 100, 250, 500, 1000, 2500, 5000, +Inf]` ms and labelled `primary` or `fallback`. The snapshot is included in the Job Summary JSON artifact under `horizonFetchLatencyHistogram`. No raw addresses or URLs are stored — only the endpoint kind tag and the numeric value. |
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
 

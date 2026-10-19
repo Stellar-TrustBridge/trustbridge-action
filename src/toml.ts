@@ -1,8 +1,7 @@
 import * as crypto from 'crypto';
-import { fetchSSRFSafe, SSRFFetchOptions } from './ssrf';
+import { fetchSSRFSafe } from './ssrf';
 import { defaultCache } from './cache';
 import { logger } from './logger';
-import { escapeMarkdownInline } from './markdown';
 
 export type HashPin = string;
 
@@ -66,85 +65,29 @@ interface CachedTomlEntry {
   hash?: string;
 }
 
-/** Default stellar.toml cache TTL (1 hour), mirrors action.yml. */
-export const DEFAULT_STELLAR_TOML_CACHE_TTL_MS = 3_600_000;
-
-/**
- * Upper bound on the stellar.toml cache TTL (24 hours). Larger values are
- * clamped so a typo cannot keep a poisoned entry alive indefinitely.
- */
-export const MAX_STELLAR_TOML_CACHE_TTL_MS = 86_400_000;
-
-export interface TomlFetchOptions {
-  /** Cache TTL in milliseconds (`stellar_toml_cache_ttl_ms`). 0 disables caching. */
-  cacheTtlMs?: number;
-  /** `algorithm:hex` integrity pin (`stellar_toml_hash_pin`). */
-  hashPin?: string;
-  /** Download cap passed to the SSRF-guarded fetch. Default 256 KB. */
-  maxBodyBytes?: number;
-  /** Resolver for the DNS-rebinding guard (injectable for tests). */
-  dnsLookup?: SSRFFetchOptions['dnsLookup'];
-}
-
-function clampTomlTtl(ttl: number | undefined): number {
-  if (ttl === undefined || !Number.isFinite(ttl)) return DEFAULT_STELLAR_TOML_CACHE_TTL_MS;
-  return Math.min(Math.max(0, Math.floor(ttl)), MAX_STELLAR_TOML_CACHE_TTL_MS);
-}
-
-/**
- * Fetch `https://{domain}/.well-known/stellar.toml` through the shared SSRF
- * gate, with TTL caching and optional hash pinning.
- *
- * - Cache hits are only served while `now - fetchedAt` is within the TTL.
- *   Entries dated in the future (clock skew) are treated as expired, so a
- *   skewed clock can never extend the TTL.
- * - A pinned hash is verified on every read, including cache hits. A cached
- *   body that no longer matches the pin (e.g. after pin rotation) is evicted
- *   and re-fetched; a fetched body that does not match fails closed and is
- *   never cached.
- * - Redirects are refused (`followRedirects: false`), so a 3xx to another
- *   host can never bypass the SSRF policy.
- */
 export async function fetchTomlWithCache(
   domain: string,
-  options: TomlFetchOptions = {},
+  options: { cacheTtlMs?: number; hashPin?: string; maxBodyBytes?: number } = {},
 ): Promise<TomlFetchOutcome> {
   const startTime = Date.now();
-  const cacheTtlMs = clampTomlTtl(options.cacheTtlMs);
+  const cacheTtlMs = options.cacheTtlMs ?? 3600000;
   const domainNorm = domain.trim().toLowerCase();
   if (!domainNorm) return { ok: false, error: 'Domain is empty', cachedAt: startTime };
 
-  if (options.hashPin && !parseHashPin(options.hashPin)) {
-    return {
-      ok: false,
-      error: 'Invalid stellar_toml_hash_pin format. Expected "sha256:<64 hex>" or "sha512:<128 hex>".',
-      cachedAt: startTime,
-    };
-  }
-
   const cacheKey = buildTomlCacheKey(domainNorm);
-  const cached = cacheTtlMs > 0 ? defaultCache.get<CachedTomlEntry>(cacheKey) : null;
-  if (cached) {
-    const age = startTime - cached.fetchedAt;
-    const fresh = age >= 0 && age < cacheTtlMs;
-    const pinOk = !options.hashPin || validateTomlHash(cached.content, options.hashPin).valid;
-    if (fresh && pinOk) {
-      return { ok: true, content: cached.content, hash: cached.hash, cachedAt: cached.fetchedAt, fetched: false };
+  const cached = defaultCache.get<CachedTomlEntry>(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < cacheTtlMs) {
+    if (options.hashPin) {
+      const validation = validateTomlHash(cached.content, options.hashPin);
+      if (!validation.valid) return { ok: false, error: 'error' in validation ? validation.error : 'Invalid TOML hash', cachedAt: cached.fetchedAt };
     }
-    defaultCache.delete(cacheKey);
-    if (fresh && !pinOk) {
-      logger.warn(`Cached stellar.toml for ${domainNorm} no longer matches stellar_toml_hash_pin; re-fetching`, {
-        component: 'toml',
-        domain: domainNorm,
-      });
-    }
+    return { ok: true, content: cached.content, hash: cached.hash, cachedAt: cached.fetchedAt, fetched: false };
   }
 
   const fetchResult = await fetchSSRFSafe(`https://${domainNorm}/.well-known/stellar.toml`, {
     maxBodyBytes: options.maxBodyBytes ?? 256 * 1024,
     timeoutMs: 10000,
     followRedirects: false,
-    dnsLookup: options.dnsLookup,
   });
   if (!fetchResult.ok) {
     const error = 'error' in fetchResult ? fetchResult.error : 'Unknown TOML fetch error';
@@ -154,62 +97,8 @@ export async function fetchTomlWithCache(
 
   const content = await fetchResult.text();
   const validation = validateTomlHash(content, options.hashPin);
-  if (!validation.valid) {
-    const error = 'error' in validation ? validation.error : 'Invalid TOML hash';
-    logger.warn(`stellar.toml from ${domainNorm} failed hash pin verification`, { component: 'toml', domain: domainNorm });
-    return { ok: false, error: `stellar.toml from ${domainNorm} rejected: ${error}`, cachedAt: startTime };
-  }
+  if (!validation.valid) return { ok: false, error: 'error' in validation ? validation.error : 'Invalid TOML hash', cachedAt: startTime };
   const hash = validation.hash || computeHash(content, 'sha256');
-  if (cacheTtlMs > 0) {
-    defaultCache.set<CachedTomlEntry>(cacheKey, { content, fetchedAt: startTime, hash }, cacheTtlMs);
-  }
+  defaultCache.set<CachedTomlEntry>(cacheKey, { content, fetchedAt: startTime, hash }, cacheTtlMs);
   return { ok: true, content, hash, cachedAt: startTime, fetched: true };
-}
-
-export interface StellarTomlCheckOptions extends TomlFetchOptions {
-  /** `stellar_toml_fetch_enabled`. When false the network is never touched. */
-  enabled: boolean;
-}
-
-export type StellarTomlCheckOutcome =
-  | { status: 'skipped'; detail: string }
-  | { status: 'ok'; detail: string; hash?: string; fetched: boolean }
-  | { status: 'failed'; detail: string };
-
-/**
- * Run the optional SEP-0001 stellar.toml fetch for `domain`.
- *
- * Returns `skipped` without calling the SSRF-guarded HTTP client when fetch
- * is disabled or no domain is known — the on-chain `home_domain` check is
- * evaluated independently and is unaffected.
- */
-export async function runStellarTomlCheck(
-  domain: string | undefined,
-  options: StellarTomlCheckOptions,
-): Promise<StellarTomlCheckOutcome> {
-  if (!options.enabled) {
-    return { status: 'skipped', detail: 'stellar.toml fetch disabled (stellar_toml_fetch_enabled: false).' };
-  }
-  const target = domain?.trim();
-  if (!target) {
-    return { status: 'skipped', detail: 'stellar.toml fetch skipped: no home domain to fetch from.' };
-  }
-
-  const result = await fetchTomlWithCache(target, options);
-  if (!result.ok) {
-    // Escaped: the domain may come from the on-chain home_domain and the
-    // detail is rendered into the issue comment.
-    return {
-      status: 'failed',
-      detail: escapeMarkdownInline('error' in result ? result.error : 'stellar.toml fetch failed'),
-    };
-  }
-  return {
-    status: 'ok',
-    detail: options.hashPin
-      ? `stellar.toml for \`${escapeMarkdownInline(target)}\` matches the pinned hash ✓`
-      : `stellar.toml for \`${escapeMarkdownInline(target)}\` fetched ✓`,
-    hash: result.hash,
-    fetched: result.fetched,
-  };
 }

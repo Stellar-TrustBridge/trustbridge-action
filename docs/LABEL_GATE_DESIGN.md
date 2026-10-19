@@ -466,32 +466,6 @@ Programs should define their own labels and document them in their contributing 
 
 ---
 
-## auto_wallet_labels: Conflict Resolution and Pagination (Issue #711)
-
-When `auto_wallet_labels: true` is set, TrustBridge calls `applyWalletLabels` in `src/horizon.ts` to apply a single wallet state label. Two correctness guarantees are enforced:
-
-### Deterministic conflict resolution
-
-If a previous interrupted run left multiple wallet state labels on the issue (e.g. both `wallet: unfunded` and `wallet: trustline-missing`), `applyWalletLabels` removes **all** stale labels before applying the new one. The target label is always derived by `deriveWalletLabel` using a fixed priority order:
-
-1. `wallet: horizon-error` — any Horizon error takes precedence
-2. `wallet: unfunded` — account not found (404)
-3. `wallet: trustline-missing` — funded but trustline absent
-4. `wallet: reserve-low` — funded + trustline but XLM below reserve
-5. `wallet: funded` — all checks passed
-
-This means concurrent runs always converge to the same label regardless of which stale labels were present. When multiple stale labels are detected, a `debug`-level log line is emitted listing them so operators can diagnose interrupted prior runs without the run failing.
-
-### Pagination
-
-`listLabelsOnIssue` is called in pages of 100 (GitHub's maximum) until a page returns fewer than 100 items. This ensures issues with more than 100 labels are handled correctly — stale wallet labels on page 2+ are found and removed.
-
-### Individual removal failures are non-fatal
-
-If a `removeLabel` call fails for a specific stale label (e.g. the label was already removed by a concurrent run), the failure is logged at `debug` level and the loop continues. The `addLabels` call for the target label always proceeds regardless of removal failures.
-
----
-
 ## Acceptance Criteria
 
 ✅ Design doc created with clear behavior definition for all edge cases.

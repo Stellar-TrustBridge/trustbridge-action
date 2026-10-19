@@ -165,29 +165,6 @@ For Wave-based projects, trigger the sweep 24 hours before the Wave payout deadl
 
 ---
 
-## Issue template format
-
-The extraction step parses a `Stellar address: G…` line from each open, assigned bounty issue. Keep the line stable and on its own line so the jq regex matches reliably:
-
-```markdown
-Stellar address: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
-```
-
-Issues without a parseable address are skipped and counted in the `parseable` summary output. If `parseable=0` on a run where you expect matches, see [Troubleshooting](#troubleshooting).
-
----
-
-## Sample workflow
-
-The full copy-paste workflow lives at [`docs/examples/cron-revalidation.yml`](examples/cron-revalidation.yml). It:
-
-1. Lists open, assigned issues carrying `BOUNTY_LABEL` (batched via `REVALIDATION_BATCH_SIZE`).
-2. Extracts each `Stellar address: G…` line and skips issues without one.
-3. Dispatches the per-issue revalidation workflow (`REVALIDATION_WORKFLOW_FILE`) with `stellar_address` and `issue_number`.
-4. Emits `::warning::` annotations and an optional maintainer alert when dispatch fails.
-
----
-
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -198,4 +175,50 @@ The full copy-paste workflow lives at [`docs/examples/cron-revalidation.yml`](ex
 | `::warning:: rate limit` on `gh issue list` | Too many issues or too-frequent schedule | Reduce `REVALIDATION_BATCH_SIZE` or switch to a PAT / GitHub App token |
 | Comments not updated | `sticky_comment: false` in target workflow | Set `sticky_comment: true` in the per-issue revalidation workflow |
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and [ERROR_HANDLING.md](ERROR_HANDLING.md) for deeper diagnostic guidance.
+
+---
+
+[← Back to USAGE](USAGE.md) · [← Back to README](../README.md)
+
+---
+
+## Weekly digest mode (#324)
+
+Per-run comments on every CRON re-validation create noise. The digest mode aggregates all re-validation results into a single summary comment posted to a designated tracking issue once per week (or on any schedule you choose).
+
+### What the digest does
+
+- Runs TrustBridge for every open bounty issue.
+- Collects each result in memory (no per-issue comments posted).
+- Posts **one** summary comment to a tracking issue listing:
+  - Total issues validated, ready count, blocked count, and ready rate.
+  - A per-contributor breakdown (issue number, address, failed checks).
+  - Redacted addresses when `privacy_mode: true` (SHA-256 hashes).
+  - Capped at 50 entries per section to respect GitHub comment size limits.
+
+### Example workflow
+
+See [`docs/examples/weekly-digest.yml`](examples/weekly-digest.yml) for a copy-paste ready workflow.
+
+Key inputs for digest mode:
+
+| Input | Recommended value | Reason |
+|-------|-------------------|--------|
+| `fail_on_missing` | `false` | Keep the digest job green |
+| `posting_mode` | `dry-run` | Per-issue runs collect results only — no comment is posted to individual issues |
+| `comment_mode` | `new` | Threading strategy for the weekly summary comment posted to the tracking issue |
+
+### Size limits and PII
+
+- The digest is capped at `DIGEST_MAX_LISTED_ISSUES = 50` entries per section.
+  When there are more contributors, the comment includes a `… and N more` note.
+- Set `privacy_mode: true` on the TrustBridge runs to hash all addresses before
+  they enter the digest. Hashed addresses cannot be reversed but remain
+  correlatable across digest runs (same address → same hash).
+
+### Validate
+
+```bash
+npm test -- --testPathPattern 'summary'
+```

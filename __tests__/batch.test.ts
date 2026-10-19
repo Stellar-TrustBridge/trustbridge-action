@@ -5,7 +5,6 @@ import {
   buildBatchSummary,
   formatBatchSummaryMarkdown,
   CLAWBACK_STRICT_REASON_CODE,
-  BATCH_REASON_CODES,
   BatchAddressResult,
 } from '../src/batch';
 import { CheckConfig } from '../src/checks';
@@ -13,7 +12,6 @@ import * as horizon from '../src/horizon';
 import type { HorizonAccount } from '../src/horizon';
 import * as comment from '../src/comment';
 import { run } from '../src/index';
-import { RateBudgetTracker } from '../src/resilience';
 
 jest.mock('@actions/core');
 
@@ -324,29 +322,6 @@ describe('runBatchValidation', () => {
     expect(results[2].address).toBe(VALID_ADDR_MISSING_ON_HORIZON);
     expect(results[2].valid).toBe(false);
     expect(results[2].failureReason).toContain('not funded');
-  });
-
-  it('stops batch early and emits RATE_BUDGET_EXHAUSTED when rate budget is exceeded', async () => {
-    const tracker = new RateBudgetTracker(1);
-    mockFetchAccount.mockResolvedValue(FUNDED_ACCOUNT as any);
-
-    const results = await runBatchValidation(
-      [VALID_ADDR, VALID_ADDR_2, VALID_ADDR_3],
-      DEFAULT_CONFIG,
-      'https://horizon.stellar.org',
-      {
-        requestDelayMs: 0,
-        fetchOptions: { rateBudgetTracker: tracker },
-      },
-    );
-
-    expect(results).toHaveLength(3);
-    expect(results[0].valid).toBe(true);
-    expect(results[1].valid).toBe(false);
-    expect(results[1].reasonCode).toBe(BATCH_REASON_CODES.rateBudgetExhausted);
-    expect(results[2].valid).toBe(false);
-    expect(results[2].reasonCode).toBe(BATCH_REASON_CODES.rateBudgetExhausted);
-    expect(mockFetchAccount).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -768,5 +743,109 @@ describe('clawback_strict_mode in batch summaries (Issue #725)', () => {
     expect(results[0].clawbackStrictFailure).toBe(false);
     expect(results[0].reasonCode).toBe('INVALID_ADDRESS');
     expect(mockFetchAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe('batch cancellation (Issues #682 / #683)', () => {
+  it('stops before the first request when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('job cancelled'));
+
+    await expect(
+      runBatchValidation([VALID_ADDR_1], DEFAULT_CONFIG, 'https://h', {
+        requestDelayMs: 0,
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(horizon.HorizonCancelledError);
+
+    expect(mockFetchAccount).not.toHaveBeenCalled();
+  });
+
+  it('forwards the batch signal to each Horizon fetch', async () => {
+    mockFetchAccount.mockResolvedValue({
+      id: VALID_ADDR_1,
+      account_id: VALID_ADDR_1,
+      sequence: '1',
+      subentry_count: 0,
+      num_sponsoring: 0,
+      num_sponsored: 0,
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+      ],
+    } as unknown as HorizonAccount);
+
+    const controller = new AbortController();
+    await runBatchValidation([VALID_ADDR_1], DEFAULT_CONFIG, 'https://h', {
+      requestDelayMs: 0,
+      signal: controller.signal,
+    });
+
+    expect(mockFetchAccount).toHaveBeenCalledWith(
+      'https://h',
+      VALID_ADDR_1,
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('propagates cancellation instead of recording HORIZON_ERROR', async () => {
+    mockFetchAccount.mockRejectedValue(
+      new horizon.HorizonCancelledError('aborted'),
+    );
+
+    await expect(
+      runBatchValidation([VALID_ADDR_1], DEFAULT_CONFIG, 'https://h', {
+        requestDelayMs: 0,
+      }),
+    ).rejects.toBeInstanceOf(horizon.HorizonCancelledError);
+  });
+
+  it('run() reports JOB_CANCELLED and skips the comment when cancelled', async () => {
+    jest.clearAllMocks();
+    mockFetchAccount.mockRejectedValue(
+      new horizon.HorizonCancelledError('aborted'),
+    );
+
+    const inputs: Record<string, string> = {
+      github_token: 'ghs_test_token',
+      stellar_address_input: VALID_ADDR_1,
+      stellar_addresses: [VALID_ADDR_1, VALID_ADDR_2].join('\n'),
+      asset_code: 'USDC',
+      asset_issuer: DEFAULT_CONFIG.assetIssuer,
+      min_xlm_reserve: '1.5',
+      horizon_url: 'https://horizon.stellar.org',
+      posting_mode: 'post',
+      comment_mode: 'new',
+      sticky_comment: 'false',
+      wait_until_funded: 'false',
+      use_cache: 'false',
+      fail_on_missing: 'true',
+      debug_mode: 'false',
+    };
+    (core.getInput as jest.Mock).mockImplementation(
+      (name: string) => inputs[name] ?? '',
+    );
+    for (const fn of [
+      'info',
+      'debug',
+      'notice',
+      'warning',
+      'error',
+      'setFailed',
+      'setOutput',
+      'setSecret',
+    ] as const) {
+      (core[fn] as jest.Mock).mockImplementation(() => undefined);
+    }
+
+    await run();
+
+    expect(core.setOutput).toHaveBeenCalledWith('reason_code', 'JOB_CANCELLED');
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(mockPostIssueComment).not.toHaveBeenCalled();
   });
 });

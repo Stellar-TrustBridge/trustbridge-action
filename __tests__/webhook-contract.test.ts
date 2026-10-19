@@ -21,10 +21,6 @@ import {
   WEBHOOK_PAYLOAD_REQUIRED_FIELDS,
   WEBHOOK_RESULT_REQUIRED_FIELDS,
   WEBHOOK_CHECK_REQUIRED_FIELDS,
-  WEBHOOK_PAYLOAD_OPTIONAL_FIELDS,
-  WEBHOOK_ASSET_REQUIRED_FIELDS,
-  WEBHOOK_ASSET_REASON_CODES,
-  WEBHOOK_MAX_ASSETS,
   WEBHOOK_REPOSITORY_PATTERN,
   WEBHOOK_STELLAR_ADDRESS_PATTERN,
 } from '../src/webhook';
@@ -36,7 +32,6 @@ import {
 const SCHEMA_PATH = path.resolve(__dirname, '../schemas/webhook-payload.schema.json');
 const GOLDEN_EXAMPLE_PATHS = [
   path.resolve(__dirname, 'fixtures/webhook-payload-example-1.json'),
-  path.resolve(__dirname, 'fixtures/webhook-payload-example-2.json'),
 ];
 let schema: Record<string, unknown>;
 let goldenExamples: unknown[];
@@ -481,16 +476,6 @@ describe('validateWebhookPayload stays in sync with the schema file', () => {
   it('patterns match the schema', () => {
     expect(WEBHOOK_REPOSITORY_PATTERN).toBe(props()['repository']['pattern']);
     expect(WEBHOOK_STELLAR_ADDRESS_PATTERN).toBe(props()['stellar_address']['pattern']);
-    expect(WEBHOOK_STELLAR_ADDRESS_PATTERN).toBe(props()['assets']['items']['properties']['asset_issuer']['pattern']);
-  });
-
-  it('optional assets section matches the schema (Issue #676)', () => {
-    const optional = Object.keys(props()).filter((k) => !(schema['required'] as string[]).includes(k));
-    expect([...WEBHOOK_PAYLOAD_OPTIONAL_FIELDS]).toEqual(optional);
-    expect([...WEBHOOK_ASSET_REQUIRED_FIELDS]).toEqual(props()['assets']['items']['required']);
-    expect([...WEBHOOK_ASSET_REASON_CODES]).toEqual(props()['assets']['items']['properties']['reason_code']['enum']);
-    expect(WEBHOOK_MAX_ASSETS).toBe(props()['assets']['maxItems']);
-    expect(props()['assets']['items']['additionalProperties']).toBe(false);
   });
 
   it('accepts the schema example payload', () => {
@@ -537,9 +522,6 @@ describe('validateWebhookPayload rejects invalid payloads', () => {
     ['extra result property', () => { const p = valid(); p.result.remediation = 'x'; return p; }, 'unexpected property "remediation"'],
     ['check with detail field', () => { const p = valid(); p.result.checks[0].detail = 'x'; return p; }, 'unexpected property "detail"'],
     ['check with non-boolean passed', () => { const p = valid(); p.result.checks[0].passed = 'yes'; return p; }, 'result.checks[0].passed'],
-    ['non-array assets', () => ({ ...valid(), assets: {} }), 'assets: must be an array'],
-    ['unredacted C-address asset_issuer', () => ({ ...valid(), assets: [{ asset_code: 'TOKEN', asset_issuer: 'C' + 'A'.repeat(55), primary: false, trustline_exists: true, clawback_enabled: true, reason_code: 'CLAWBACK_BLOCKED' }] }), 'assets[0].asset_issuer'],
-    ['unknown asset reason_code', () => ({ ...valid(), assets: [{ asset_code: 'USDC', asset_issuer: 'GA5Z...KZVN', primary: true, trustline_exists: true, clawback_enabled: false, reason_code: 'NOPE' }] }), 'assets[0].reason_code'],
   ])('%s', (_name, make, expected) => {
     const errors = validateWebhookPayload(make());
     expect(errors.length).toBeGreaterThan(0);

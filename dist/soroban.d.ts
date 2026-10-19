@@ -8,6 +8,7 @@
  * fall back to the directly-supplied `stellar_address_input` when the
  * registry is unavailable or the username is not registered.
  */
+import { classifyAssetIssuer, isSorobanContractIssuer, type AssetIssuerKind } from './assets';
 /** Errors thrown by the contract registry client. */
 export declare class ContractLookupError extends Error {
     readonly retryable: boolean;
@@ -77,3 +78,71 @@ export declare function parseAddressFromSimulateResult(json: unknown): string | 
  */
 export declare function contractExistsOnChain(contractAddress: string, config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>): Promise<boolean>;
 export declare function parseContractExistsResult(json: unknown): boolean;
+/**
+ * True when `value` is a well-formed Soroban contract id (C-address).
+ * Exported so callers can gate the SAC path without importing `assets.ts`.
+ */
+export declare function isSorobanContractId(value: string): boolean;
+/** Re-exported so a single import covers both classic and contract issuers. */
+export { classifyAssetIssuer, isSorobanContractIssuer };
+export type { AssetIssuerKind };
+/** SAC contract reporting fields TrustBridge is able to read. */
+export interface SacContractMetadata {
+    /** Contract id the metadata was read from (redact before logging). */
+    contractId: string;
+    /** Issuer flavour implied by a C-address contract id. */
+    issuerKind: AssetIssuerKind;
+    /** Whether the contract exists on the queried endpoint. */
+    exists: boolean;
+    /** SAC `name()` return value, when the endpoint reports it. */
+    name?: string;
+    /** SAC `symbol()` return value, when the endpoint reports it. */
+    symbol?: string;
+    /** SAC `decimals()` return value, when the endpoint reports it. */
+    decimals?: number;
+    /**
+     * True when `symbol` was present **and** matched the configured asset code.
+     * `false` means either "no reporting field available" or "mismatch" — use
+     * {@link verifySacIssuerAssetCode} to tell the two apart.
+     */
+    symbolVerified: boolean;
+    /** Where the metadata came from, for logs and offline-mode messaging. */
+    source: 'horizon' | 'skipped' | 'invalid-contract-id';
+}
+export interface FetchSacMetadataOptions {
+    /** Horizon base URL, e.g. `https://horizon-testnet.stellar.org`. */
+    horizonUrl?: string;
+    /** Request timeout in milliseconds (default: 15000). */
+    timeoutMs?: number;
+}
+/**
+ * Parse a Horizon `/contracts/{id}` (or Soroban RPC ledger-entry) response
+ * into {@link SacContractMetadata} reporting fields.
+ *
+ * Different node versions expose the SAC fields under different keys, so every
+ * documented shape is probed: top level, under `result`, and under a nested
+ * `sac` object. A node that exposes none of them still yields a usable
+ * `exists` answer — the asset code is simply reported as unverified.
+ */
+export declare function parseSacContractMetadata(json: unknown, contractId: string): SacContractMetadata;
+/**
+ * Compare the SAC `symbol()` reporting field against the configured
+ * `asset_code`.
+ *
+ * - `null`  → no reporting field available; the check is inconclusive and the
+ *             caller must not fail on it (older nodes).
+ * - `true`  → the contract reports exactly this asset code.
+ * - `false` → the contract reports a *different* symbol: a real
+ *             misconfiguration that must be surfaced.
+ */
+export declare function verifySacIssuerAssetCode(metadata: SacContractMetadata, assetCode: string): boolean | null;
+/**
+ * Resolve SAC reporting fields for a C-address asset issuer.
+ *
+ * Uses the Horizon `/contracts/{id}` endpoint when a `horizonUrl` is supplied.
+ * A 404 (older testnet nodes do not expose the endpoint) resolves to
+ * `exists: false` instead of throwing, so a batch keeps running. When no
+ * Horizon URL is configured — offline mode — the live fetch is skipped and the
+ * result carries `source: 'skipped'` so callers can log a clear message.
+ */
+export declare function fetchSacContractMetadata(contractId: string, options?: FetchSacMetadataOptions): Promise<SacContractMetadata>;

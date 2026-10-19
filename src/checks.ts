@@ -16,9 +16,7 @@ import {
   buildLobstrLink,
   canonicalHorizonUrl,
   inferStellarNetwork,
-  inferStellarNetworkPreset,
   oppositeNetwork,
-  STELLAR_NETWORK_PRESETS,
   StellarNetwork,
 } from './links';
 import { globalMetrics } from './metrics';
@@ -74,16 +72,7 @@ export interface CheckConfig {
   /** Optional minimum balance for the configured asset (Issue #112). */
   minAssetBalance?: string | number;
   horizonUrl?: string;
-  /**
-   * `stellar_toml_fetch_enabled`: fetch https://{home_domain}/.well-known/stellar.toml
-   * through the SSRF gate after the on-chain home_domain check. The on-chain
-   * check runs regardless of this flag.
-   */
   stellarTomlFetchEnabled?: boolean;
-  /** `stellar_toml_cache_ttl_ms`: TTL for cached stellar.toml bodies. */
-  stellarTomlCacheTtlMs?: number;
-  /** `stellar_toml_hash_pin`: `algorithm:hex` pin for the stellar.toml body. */
-  stellarTomlHashPin?: string;
   /** How to treat a trustline that exists but is not yet authorized by the issuer. Default: "warn". */
   unauthorizedTrustlinePolicy?: UnauthorizedTrustlinePolicy;
   /** When true, a clawback-enabled trustline fails the check instead of only warning. Default: false. */
@@ -366,7 +355,9 @@ export async function detectPassphraseMismatch(
   fetchPassphrase: () => Promise<string>,
 ): Promise<NetworkPassphraseMismatch | undefined> {
   const expected = configuredPassphrase.trim() ||
-    STELLAR_NETWORK_PRESETS[inferStellarNetworkPreset(horizonUrl)].networkPassphrase;
+    (inferStellarNetwork(horizonUrl) === 'testnet'
+      ? 'Test SDF Network ; September 2015'
+      : 'Public Global Stellar Network ; September 2015');
   try {
     const actual = (await fetchPassphrase()).trim();
     if (actual === expected) return undefined;
@@ -491,31 +482,6 @@ export function evaluateHomeDomain(
     detail: `Issuer \`home_domain\` is \`${escapeMarkdownInline(rawDomain)}\` ✓`,
     blocksValid: false,
   };
-}
-
-/**
- * Remediation step for a blocking (strict-mode) home domain failure (Issue
- * #708). Missing and mismatched domains need different fixes, so the text
- * distinguishes them. All dynamic values are escaped for Markdown.
- */
-export function homeDomainRemediation(
-  check: HomeDomainCheckResult,
-  config: CheckConfig,
-): string {
-  const issuer = inlineCode(config.assetIssuer);
-  if (check.outcome === "mismatch") {
-    return (
-      `The asset issuer ${issuer} has on-chain \`home_domain\` \`${escapeMarkdownInline(check.actualHomeDomain ?? "")}\`, ` +
-      `but \`expected_home_domain\` is \`${escapeMarkdownInline(check.expectedHomeDomain ?? "")}\` ` +
-      `(\`home_domain_check_mode: strict\`). Confirm you are paying out the intended asset, ask the issuer to correct ` +
-      `its home domain with a Set Options operation, or update \`expected_home_domain\`.`
-    );
-  }
-  return (
-    `The asset issuer ${issuer} has no verifiable on-chain \`home_domain\` (\`home_domain_check_mode: strict\`). ` +
-    `Ask the issuer to set its home domain with a Set Options operation, or set \`home_domain_check_mode: warn\` ` +
-    `to report this without failing.`
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -917,12 +883,6 @@ function explainReserveRequirement(reserve: ReserveRequirement): string {
 export function runAccountChecks(
   account: HorizonAccount,
   config: CheckConfig,
-  /**
-   * Asset issuer account used for the SEP-0001 home domain check (Issue
-   * #708). `null` means the issuer could not be fetched. When omitted, the
-   * checked account itself is inspected (legacy behaviour).
-   */
-  issuerAccount?: HorizonAccount | null,
 ): ValidationResult {
   const xlmBalance = getNativeBalance(account);
   const xlmNumeric = parseHorizonBalance(xlmBalance);
@@ -1085,22 +1045,15 @@ export function runAccountChecks(
 
   let homeDomainCheck: HomeDomainCheckResult | undefined;
   if (config.homeDomainCheckEnabled) {
-    homeDomainCheck = evaluateHomeDomain(
-      issuerAccount === undefined ? account : issuerAccount,
-      config,
-    );
+    homeDomainCheck = evaluateHomeDomain(account, config);
   }
-  // The home domain row only gates `valid` when it is actually emitted below.
-  const homeDomainBlocks =
-    Boolean(config.homeDomainCheckEnabled) &&
-    !config.stellarTomlFetchEnabled &&
-    homeDomainCheck?.blocksValid === true;
 
   const buildResult = (): ValidationResult => {
-    // The on-chain home_domain check always runs when enabled; the optional
-    // stellar.toml fetch (stellar_toml_fetch_enabled) is layered on top by
-    // the caller and never replaces it (Issue #709).
-    if (config.homeDomainCheckEnabled && homeDomainCheck) {
+    if (
+      config.homeDomainCheckEnabled &&
+      homeDomainCheck &&
+      !config.stellarTomlFetchEnabled
+    ) {
       globalMetrics.incrementCounter(`home_domain_${homeDomainCheck.outcome}`);
       globalMetrics.recordMetric("home_domain_check", 1, "count", {
         outcome: homeDomainCheck.outcome,
@@ -1109,15 +1062,10 @@ export function runAccountChecks(
 
       const homeDomainPassed =
         !homeDomainCheck.blocksValid || homeDomainCheck.outcome === "valid";
-      // Issue #708: in warn mode a missing/mismatched domain keeps the row
-      // passing, so flag it visibly instead of rendering a plain success.
-      const homeDomainWarnOnly = homeDomainPassed && homeDomainCheck.outcome !== "valid";
       checks.push({
         passed: homeDomainPassed,
         label: "SEP-0001 home domain",
-        detail: homeDomainWarnOnly
-          ? `⚠️ ${homeDomainCheck.detail} Warning only (\`home_domain_check_mode: warn\`).`
-          : homeDomainCheck.detail,
+        detail: homeDomainCheck.detail,
       });
     }
     const valid = checks.every((c) => c.passed);
@@ -1154,9 +1102,6 @@ export function runAccountChecks(
         steps.push(
           `This asset has clawback enabled, which is blocked by \`clawback_strict_mode: true\`. Choose a different asset, or set \`clawback_strict_mode: false\` to proceed with a warning instead.`,
         );
-      }
-      if (homeDomainBlocks && homeDomainCheck) {
-        steps.push(homeDomainRemediation(homeDomainCheck, config));
       }
       remediation = steps.join("\n\n");
     }
@@ -1227,11 +1172,6 @@ export function runAccountChecks(
         if (!xlmReserveMet) return "RESERVE_TOO_LOW";
         if (config.minTrustlineLimit && !trustlineLimitMet)
           return "TRUSTLINE_LIMIT_TOO_LOW";
-        // Issue #708: a strict-mode home domain failure gets its own code so
-        // payout gates and SARIF consumers can tell it apart from FAILED.
-        if (homeDomainBlocks && homeDomainCheck?.outcome === "mismatch")
-          return "HOME_DOMAIN_MISMATCH";
-        if (homeDomainBlocks) return "HOME_DOMAIN_MISSING";
         return "FAILED";
       })(),
       failedCheckLabels: toFailedCheckCodes(checks),
@@ -1519,6 +1459,65 @@ export function horizonFailureResult(
     sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
     homeDomainCheck: config.homeDomainCheckEnabled
       ? { outcome: 'skipped', detail: 'Cannot verify — Horizon unreachable.', blocksValid: false }
+      : undefined,
+  };
+}
+
+/**
+ * Builds a result for a run stopped by GitHub Actions cancellation (Issues #682
+ * / #683).
+ *
+ * This is deliberately NOT `horizonFailureResult`: a user cancellation is not a
+ * Horizon outage. The result carries `reasonCode: JOB_CANCELLED` so dashboards,
+ * gating, and on-call triage never mistake a cancelled run for `HORIZON_ERROR`.
+ * No account state was determined, so `valid` is false and the caller must stop
+ * before posting a comment or writing SARIF.
+ */
+export function cancelledResult(
+  message: string,
+  config: CheckConfig,
+): ValidationResult {
+  const safeMessage = escapeMarkdownInline(
+    sanitizeErrorMessageForComment(message),
+  );
+  const checks: CheckResultItem[] = [
+    {
+      passed: false,
+      label: "Horizon availability",
+      detail: `Check aborted — the workflow run was cancelled (${safeMessage}).`,
+    },
+    {
+      passed: false,
+      label: `${escapeMarkdownInline(config.assetCode)} trustline`,
+      detail: "Check not completed because the run was cancelled.",
+    },
+    {
+      passed: false,
+      label: "XLM reserve",
+      detail: "Check not completed because the run was cancelled.",
+    },
+  ];
+
+  return {
+    valid: false,
+    reasonCode: "JOB_CANCELLED",
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: "unknown",
+    xlmReserveMet: false,
+    assetBalance: "unknown",
+    assetBalanceMet: false,
+    checks,
+    remediation:
+      "The workflow run was cancelled before validation finished. No account state was determined and no comment was posted. Re-run the workflow to complete validation.",
+    failedCheckLabels: toFailedCheckCodes(checks),
+    sponsorshipInfo: { numSponsoring: 0, numSponsored: 0 },
+    homeDomainCheck: config.homeDomainCheckEnabled
+      ? {
+          outcome: 'skipped',
+          detail: 'Cannot verify — run cancelled.',
+          blocksValid: false,
+        }
       : undefined,
   };
 }

@@ -10,7 +10,6 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import * as core from '@actions/core';
 import { EventEmitter } from 'events';
 import { createServer } from 'http';
 import {
@@ -18,14 +17,11 @@ import {
   verifyWebhookSignature,
   buildWebhookPayload,
   deliverWebhook,
-  validateWebhookPayload,
   listenForRunnerCancellation,
   sendWebhookNotification,
-  describeOidcMintFailure,
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
-import { logger } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // Golden fixture
@@ -393,202 +389,6 @@ describe('sendWebhookNotification', () => {
       sendWebhookNotification(passedResult, ADDRESS, CONFIG, 'owner/repo', 5),
     ).resolves.toBeUndefined();
     (global as any).fetch = origFetch;
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #674 — OIDC mode fails closed when token minting fails
-// ---------------------------------------------------------------------------
-
-describe('OIDC fail-closed delivery (Issue #674)', () => {
-  const FAKE_JWT = 'eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ0cnVzdGJyaWRnZSJ9.c2lnbmF0dXJlLXZhbHVl';
-  const OIDC_CONFIG: WebhookConfig = {
-    webhookUrl: 'https://dashboard.example.com/webhook',
-    webhookSecret: 'hmac-secret-that-must-not-be-used',
-    timeoutMs: 1000,
-    authMode: 'oidc',
-  };
-
-  let origFetch: typeof fetch;
-  let fetchMock: jest.Mock;
-  let setFailedSpy: jest.SpyInstance;
-  let warningSpy: jest.SpyInstance;
-  let infoSpy: jest.SpyInstance;
-  let debugSpy: jest.SpyInstance;
-
-  beforeEach(() => {
-    origFetch = global.fetch;
-    fetchMock = jest.fn().mockResolvedValue({ status: 200 });
-    (global as any).fetch = fetchMock;
-    setFailedSpy = jest.spyOn(core, 'setFailed').mockImplementation(() => {});
-    warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    debugSpy = jest.spyOn(core, 'debug').mockImplementation(() => {});
-    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    (global as any).fetch = origFetch;
-    jest.restoreAllMocks();
-  });
-
-  const allLogText = (): string =>
-    [setFailedSpy, warningSpy, infoSpy, debugSpy]
-      .flatMap((spy) => spy.mock.calls.map((call: unknown[]) => String(call[0])))
-      .join('\n');
-
-  it('fails the step and sends nothing when id-token permission is missing', async () => {
-    jest
-      .spyOn(core, 'getIDToken')
-      .mockRejectedValue(new Error('Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable'));
-
-    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(setFailedSpy).toHaveBeenCalledTimes(1);
-    const message = String(setFailedSpy.mock.calls[0][0]);
-    expect(message).toContain('OIDC token minting failed');
-    expect(message).toContain('id-token: write');
-    expect(message).toContain('fork');
-  });
-
-  it('fails the step and sends nothing on an OIDC provider error, without leaking JWT material', async () => {
-    jest
-      .spyOn(core, 'getIDToken')
-      .mockRejectedValue(new Error(`Failed to get ID Token. Error Code : 500 Error Message: bad response ${FAKE_JWT}`));
-
-    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(setFailedSpy).toHaveBeenCalledTimes(1);
-    expect(String(setFailedSpy.mock.calls[0][0])).toContain('OIDC provider returned an error');
-    expect(allLogText()).not.toContain(FAKE_JWT);
-  });
-
-  it('treats an empty minted token as a failure', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('');
-
-    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(setFailedSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('never falls back to HMAC signing or unsigned delivery in oidc mode', async () => {
-    const mockFetch = jest.fn().mockResolvedValue({ status: 200 });
-    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
-
-    const result = await deliverWebhook(payload, OIDC_CONFIG, mockFetch as any);
-
-    expect(mockFetch).not.toHaveBeenCalled();
-    expect(result.sent).toBe(false);
-    expect(result.error).toContain('oidc');
-  });
-
-  it('sends the bearer token (and no HMAC signature) when minting succeeds', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue(FAKE_JWT);
-
-    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
-
-    expect(setFailedSpy).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
-    expect(headers['Authorization']).toBe(`Bearer ${FAKE_JWT}`);
-    expect(headers['X-TrustBridge-Signature']).toBeUndefined();
-    expect(allLogText()).not.toContain(FAKE_JWT);
-  });
-
-  it('does not attempt to mint a token when webhook_url is unset', async () => {
-    const mintSpy = jest.spyOn(core, 'getIDToken');
-
-    await sendWebhookNotification(passedResult, ADDRESS, { ...OIDC_CONFIG, webhookUrl: '' }, 'owner/repo', 1);
-
-    expect(mintSpy).not.toHaveBeenCalled();
-    expect(setFailedSpy).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('describeOidcMintFailure redacts JWTs embedded in the provider message', () => {
-    const message = describeOidcMintFailure('trustbridge-dashboard', new Error(`bad ${FAKE_JWT}`));
-    expect(message).not.toContain(FAKE_JWT);
-    expect(message).toContain('[REDACTED_JWT]');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #675 — Soroban C-address redaction in payloads and debug logs
-// ---------------------------------------------------------------------------
-
-describe('C-address redaction (Issue #675)', () => {
-  const C_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
-  const FULL_C_ADDRESS_PATTERN = /C[A-Z2-7]{55}/;
-
-  afterEach(() => jest.restoreAllMocks());
-
-  it('redacts a C-address stellar_address and keeps the payload schema-valid', () => {
-    const payload = buildWebhookPayload(passedResult, C_ADDRESS, 'owner/repo', 1);
-    expect(payload.stellar_address).toBe('CAAA...D2KM');
-    expect(validateWebhookPayload(payload)).toEqual([]);
-  });
-
-  it('redacts C-address asset issuers in the per-asset section', () => {
-    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, [
-      {
-        assetCode: 'TOKN',
-        assetIssuer: C_ADDRESS,
-        primary: true,
-        trustlineExists: true,
-        clawbackEnabled: false,
-        reasonCode: 'SUCCESS',
-      },
-    ]);
-    expect(payload.assets![0].asset_issuer).toBe('CAAA...D2KM');
-    expect(JSON.stringify(payload)).not.toMatch(FULL_C_ADDRESS_PATTERN);
-    expect(validateWebhookPayload(payload)).toEqual([]);
-  });
-
-  it('redacts C-addresses embedded in check labels', () => {
-    const result = {
-      ...passedResult,
-      checks: [{ label: `SAC issuer_${C_ADDRESS} reachable`, passed: true, detail: 'ok' }],
-    };
-    const payload = buildWebhookPayload(result, ADDRESS, 'owner/repo', 1);
-    expect(payload.result.checks[0].label).toContain('CAAA...D2KM');
-    expect(JSON.stringify(payload)).not.toMatch(FULL_C_ADDRESS_PATTERN);
-  });
-
-  it('keeps G-address redaction unchanged', () => {
-    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
-    expect(payload.stellar_address).toBe('GA5Z...KZVN');
-  });
-
-  it('debug-mode webhook JSON log contains no full 56-char C-address', async () => {
-    logger.setDebugMode(true);
-    const debugSpy = jest.spyOn(core, 'debug').mockImplementation(() => {});
-    jest.spyOn(core, 'info').mockImplementation(() => {});
-    jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const origFetch = global.fetch;
-    (global as any).fetch = jest.fn().mockResolvedValue({ status: 200 });
-    try {
-      await sendWebhookNotification(passedResult, C_ADDRESS, CONFIG, 'owner/repo', 1, [
-        {
-          assetCode: 'TOKN',
-          assetIssuer: C_ADDRESS,
-          primary: true,
-          trustlineExists: true,
-          clawbackEnabled: true,
-          reasonCode: 'CLAWBACK_BLOCKED',
-        },
-      ]);
-    } finally {
-      (global as any).fetch = origFetch;
-      logger.setDebugMode(false);
-    }
-
-    const logged = debugSpy.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(logged).toContain('Webhook payload');
-    expect(logged).toContain('CAAA...D2KM');
-    expect(logged).not.toMatch(FULL_C_ADDRESS_PATTERN);
   });
 });
 

@@ -260,10 +260,6 @@ Initial public release. No breaking changes from a prior major.
 
 **Outputs (v1):** `trustline_exists`, `xlm_balance`, `account_funded`, `comment_url`.
 
-**Outputs added additively in v1.x (MINOR, non-breaking):** `full_report_path`; the audit outputs `ready`, `validated_at`, `horizon_url`, `asset_code`, `asset_issuer`, `reason_code`, `checks_json`; `badge_markdown` and `badge_url`; `asset_balance` and `native_balance`; the timing outputs `timings_json` and `timing_*_ms`; `num_sponsoring` and `num_sponsored`; the network passphrase outputs; `assignee_results_json` and `matrix_ready_map`; the `friendbot_*` outputs; `check_run_id` and `check_run_conclusion`; `conflict_report` and `has_conflicts`; `assets_trustline_status` and `trustlines_summary`; and the `batch_*` outputs. The full typed list is in the [README Outputs section](../README.md#outputs) and must stay in sync with `action.yml` and `__tests__/action-output-golden.json`.
-
-**Documentation-only correction:** `check_account_funded`, `check_trustline`, `check_xlm_reserve` and `asset_balance_met` were listed in the README outputs table but were never declared in `action.yml` or emitted by the action. Removing those rows does not remove a shipped output, so it is not a breaking change. The README lists their replacements.
-
 ### v1 → v2 (placeholder)
 
 > _These breaking changes will take effect in the upcoming v2 release._

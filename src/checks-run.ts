@@ -19,9 +19,6 @@ import { ValidationResult } from './checks';
 import { logger } from './logger';
 import { getOctokitProxyOptions } from './proxy';
 
-/** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
-export const HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
-
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 
 /**
@@ -81,20 +78,9 @@ export function buildCheckAnnotations(
   message: string;
 }> {
   const annotations = [];
-  // Issue #708: a warn-mode home domain problem keeps its row passing, but it
-  // should still stand out in the Check Run instead of rendering as a notice.
-  const homeDomainWarning =
-    result.homeDomainCheck !== undefined &&
-    result.homeDomainCheck.outcome !== 'valid' &&
-    result.homeDomainCheck.outcome !== 'skipped' &&
-    !result.homeDomainCheck.blocksValid;
 
   for (const check of result.checks) {
-    const level: 'notice' | 'warning' | 'failure' = !check.passed
-      ? 'failure'
-      : homeDomainWarning && check.label === HOME_DOMAIN_CHECK_LABEL
-        ? 'warning'
-        : 'notice';
+    const level: 'notice' | 'warning' | 'failure' = check.passed ? 'notice' : 'failure';
     annotations.push({
       path: 'trustbridge-validation',
       start_line: 1,
@@ -106,19 +92,6 @@ export function buildCheckAnnotations(
   }
 
   return annotations;
-}
-
-/**
- * Summary text for the Check Run. Failing runs include the `reason_code` so
- * the Checks UI matches the action output (e.g. `HOME_DOMAIN_MISMATCH`).
- */
-export function buildCheckRunSummary(result: ValidationResult): string {
-  if (result.valid) {
-    return 'All TrustBridge validation checks passed.';
-  }
-  const failed = result.checks.filter((c) => !c.passed).length;
-  const reason = result.reasonCode ? ` reason_code: ${result.reasonCode}.` : '';
-  return `TrustBridge validation failed. ${failed} of ${result.checks.length} checks did not pass.${reason}`;
 }
 
 /**
@@ -167,7 +140,9 @@ export async function createCheckRun(
       conclusion,
       output: {
         title: 'Stellar Account Validation',
-        summary: buildCheckRunSummary(result),
+        summary: result.valid
+          ? 'All TrustBridge validation checks passed.'
+          : `TrustBridge validation failed. ${result.checks.filter((c) => !c.passed).length} of ${result.checks.length} checks did not pass.`,
         annotations: annotationsSlice,
       },
     });

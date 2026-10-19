@@ -91,94 +91,6 @@ export function buildAssetTrustlineTable(
   return lines.join('\n');
 }
 
-/**
- * A single per-asset checklist entry for {@link buildAssetChecklist}
- * (Issue #717).
- *
- * Extends {@link AssetTrustlineRow} with the optional per-asset hints that
- * the `assets_json` validation surfaces (clawback-enabled assets and
- * unauthorized trustlines).
- */
-export interface AssetChecklistRow extends AssetTrustlineRow {
-  /** Whether the asset issuer has clawback enabled. */
-  clawbackEnabled?: boolean;
-  /** Whether the trustline exists but is not authorized by the issuer. */
-  trustlineAuthorized?: boolean;
-  /** Optional deep link (e.g. stellar.expert) for the asset. */
-  deepLink?: string;
-}
-
-/**
- * Render a per-asset checklist for the `assets_json` input (Issue #717).
- *
- * Each asset becomes its own task-list line so assignees managing portfolios
- * can scan pass/fail state per asset instead of reading aggregate prose. The
- * ordering of `rows` is preserved verbatim (stable ordering) and duplicate
- * `assetCode`/`assetIssuer` pairs are deduped so a repeated entry never
- * produces a duplicate row.
- *
- * The layout follows the existing markdown conventions used elsewhere in
- * this module: a `###` heading, `- [x]`/`- [ ]` task items, `inlineCode` for
- * asset codes and issuers, and `escapeMarkdownInline` for free-form text.
- *
- * @param rows Per-asset results. When empty, returns `''` so callers can
- *             skip the section entirely (no empty headings in comments).
- * @param options.heading Section heading (defaults to "Asset checklist").
- * @returns Markdown section (heading + checklist), or `''` when `rows` is empty.
- */
-export function buildAssetChecklist(
-  rows: AssetChecklistRow[],
-  options: { heading?: string } = {},
-): string {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return '';
-  }
-
-  const heading = options.heading ?? 'Asset checklist';
-
-  const shortenIssuer = (issuer: string): string => {
-    if (issuer.length <= 12) return issuer;
-    return `${issuer.slice(0, 4)}…${issuer.slice(-4)}`;
-  };
-
-  const seen = new Set<string>();
-  const lines: string[] = [`### ${escapeMarkdownInline(heading)}`, ''];
-
-  for (const row of rows) {
-    const dedupeKey = `${row.assetCode}\u0000${row.assetIssuer}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
-    const passed = row.trustlineExists && row.trustlineAuthorized !== false;
-    const icon = passed ? '✅' : '❌';
-    const box = passed ? '[x]' : '[ ]';
-    const asset = inlineCode(row.assetCode);
-    const issuer = inlineCode(shortenIssuer(row.assetIssuer));
-    const trustline = row.trustlineExists
-      ? row.trustlineAuthorized === false
-        ? 'trustline unauthorized'
-        : 'trustline exists'
-      : 'trustline missing';
-
-    const hints: string[] = [];
-    if (row.clawbackEnabled) hints.push('clawback enabled');
-    if (row.trustlineExists && row.trustlineAuthorized === false) {
-      hints.push('unauthorized trustline');
-    }
-
-    let line = `- ${box} ${icon} ${asset} — issuer ${issuer} — ${trustline}`;
-    if (hints.length > 0) {
-      line += ` (${hints.map((hint) => escapeMarkdownInline(hint)).join(', ')})`;
-    }
-    if (!passed && row.deepLink) {
-      line += ` — [remediation](${row.deepLink})`;
-    }
-    lines.push(line);
-  }
-
-  return lines.join('\n');
-}
-
 
 
 /**
@@ -302,6 +214,191 @@ export interface OnboardingChecklistOptions {
    *
    * When provided, a box is rendered as checked (`[x]`) if EITHER the live
    * `ValidationResult` says the step passed OR this map records the box as
-   * previously checked.  This ensures manually-checked boxes
+   * previously checked.  This ensures manually-checked boxes survive sticky
+   * comment updates even when the live Horizon state has not yet caught up.
+   *
+   * Keys are the canonical label keys: `CHECKLIST_FUND_KEY`,
+   * `CHECKLIST_TRUSTLINE_KEY`, and `CHECKLIST_RESERVE_KEY` — they are
+   * locale-independent, so state survives a locale switch.
+   *
+   * Entries are only honoured for the three known canonical keys — any other
+   * keys in the map are silently ignored.
+   */
+  previousChecks?: Map<string, boolean>;
+}
 
-/* … truncated 7423 chars — edit only what you need near the top … */
+export interface ExtractChecklistOptions {
+  /**
+   * Restrict parsing to a single locale. When omitted (the default) every
+   * supported locale is accepted, so switching `locale` between runs does not
+   * lose manually-checked boxes (Issue #436).
+   */
+  locale?: Locale | string;
+}
+
+/**
+ * Parse an existing TrustBridge comment body and extract the checked/unchecked
+ * state of each onboarding checklist item (Issue #311).
+ *
+ * Only lines that match one of the known checklist label patterns are
+ * recognised — no user-controlled text is used as a map key, so a maliciously
+ * crafted comment body cannot inject unexpected state. Labels are matched
+ * against the built-in locale allowlist (or a single locale when
+ * `options.locale` is supplied).
+ *
+ * The function is intentionally permissive about whitespace and case so that
+ * minor formatting differences between action versions do not break persistence.
+ *
+ * @param body   Raw markdown body of an existing TrustBridge comment.
+ * @param options Optional locale restriction.
+ * @returns      A Map from canonical label key to checked boolean.
+ *               Keys: `CHECKLIST_FUND_KEY`, `CHECKLIST_TRUSTLINE_KEY`,
+ *               `CHECKLIST_RESERVE_KEY`.
+ *               Only items found in the body are included — callers should
+ *               treat a missing key as "no previous state".
+ */
+export function extractChecklistState(
+  body: string,
+  options: ExtractChecklistOptions = {},
+): Map<string, boolean> {
+  const state = new Map<string, boolean>();
+
+  if (!body || typeof body !== 'string') {
+    return state;
+  }
+
+  const labelSets = options.locale
+    ? [localeLabelSet(options.locale)]
+    : allLocaleLabelSets();
+
+  // Locate the onboarding checklist section so we only parse lines inside it.
+  // This prevents false positives from other task-list items in the comment.
+  // Every known locale heading is accepted so a locale switch does not hide
+  // the section (Issue #436).
+  const headingPattern = new RegExp(
+    `^###[ \\t]+(?:${labelSets
+      .map((set) => escapeRegExp(set.heading))
+      .join('|')})[ \\t]*$`,
+    'im',
+  );
+  const headerMatch = headingPattern.exec(body);
+  if (!headerMatch) {
+    return state;
+  }
+
+  // Take only the text after the header.  Stop at the next `###` heading so we
+  // never read checklist state from an unrelated section.
+  const afterHeader = body.slice(headerMatch.index + headerMatch[0].length);
+  const nextHeaderMatch = /^###\s+/m.exec(afterHeader);
+  const checklistSection = nextHeaderMatch
+    ? afterHeader.slice(0, nextHeaderMatch.index)
+    : afterHeader;
+
+  // Parse task-list lines: `- [x]` or `- [ ]` followed by `**<label>**`.
+  // The label text after `**` is matched against the known allowlist.
+  //
+  // Pattern breakdown:
+  //   ^                 — start of line
+  //   [ \t]*-[ \t]+     — list marker with optional indent
+  //   \[(x| )\]         — checkbox: `[x]` = checked, `[ ]` = unchecked
+  //   [ \t]+            — space after checkbox
+  //   \*\*([^*]+)\*\*   — bold label text (no asterisks inside)
+  const linePattern = /^[ \t]*-[ \t]+\[(x| )\][ \t]+\*\*([^*]+)\*\*/gim;
+  let match: RegExpExecArray | null;
+
+  const fundLabels = new Set(labelSets.map((set) => set.fund));
+  const reserveLabels = new Set(labelSets.map((set) => set.reserve));
+
+  while ((match = linePattern.exec(checklistSection)) !== null) {
+    const checked = match[1] === 'x';
+    const rawLabel = match[2].trim();
+
+    // Fund account — exact match against the locale allowlist
+    if (fundLabels.has(rawLabel)) {
+      state.set(CHECKLIST_FUND_KEY, checked);
+      continue;
+    }
+
+    // Verify XLM balance — exact match against the locale allowlist
+    if (reserveLabels.has(rawLabel)) {
+      state.set(CHECKLIST_RESERVE_KEY, checked);
+      continue;
+    }
+
+    // Trustline — dynamic label "<prefix><ASSET_CODE><suffix>"; match by affixes.
+    // Only ASCII printable characters are allowed in the asset code portion to
+    // prevent injection via embedded newlines or control characters.
+    for (const set of labelSets) {
+      const { prefix, suffix } = set.trustline;
+      if (!prefix && !suffix) continue;
+      if (!rawLabel.startsWith(prefix) || !rawLabel.endsWith(suffix)) continue;
+      const assetCode = rawLabel.slice(
+        prefix.length,
+        rawLabel.length - suffix.length,
+      );
+      if (assetCode.length === 0) continue;
+      if (!/^[\x20-\x7E]+$/.test(assetCode)) continue;
+      state.set(CHECKLIST_TRUSTLINE_KEY, checked);
+      break;
+    }
+    // Any other bold label text is silently ignored.
+  }
+
+  return state;
+}
+
+/**
+ * Escape a string for safe use inside a regular expression.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Render a GitHub Markdown task-list checklist whose boxes reflect live
+ * `ValidationResult` state (fund → trustline → verify balance).
+ *
+ * All headings and labels come from the locale string pack (Issue #436) so a
+ * non-`en` comment no longer mixes English checklist copy into a translated
+ * comment.
+ *
+ * When `options.previousChecks` is supplied (extracted from a prior sticky
+ * comment via `extractChecklistState`), a box is checked if EITHER the live
+ * result says it passed OR the previous comment had the box checked.  This
+ * preserves contributor-manually-checked boxes across sticky comment updates
+ * (Issue #311).
+ *
+ * Checkboxes are comment-only (no GitHub Projects task-list API sync).
+ */
+export function buildOnboardingChecklist(
+  result: ValidationResult,
+  options: OnboardingChecklistOptions,
+): string {
+  const strings = getStrings(options.locale ?? 'en');
+  const safeAsset = escapeMarkdownInline(options.assetCode);
+  const fundFaq = `${DEFAULT_FAQ_BASE_URL}#${FAQ_ANCHORS.ACCOUNT_NOT_FUNDED}`;
+  const trustFaq = `${DEFAULT_FAQ_BASE_URL}#${FAQ_ANCHORS.TRUSTLINE_MISSING}`;
+  const reserveFaq = `${DEFAULT_FAQ_BASE_URL}#${FAQ_ANCHORS.XLM_RESERVE_TOO_LOW}`;
+
+  const prev = options.previousChecks;
+
+  // Resolve each checkbox state: live result OR previously-checked.
+  const fundChecked =
+    result.accountFunded || (prev?.get(CHECKLIST_FUND_KEY) === true);
+  const trustChecked =
+    result.trustlineExists || (prev?.get(CHECKLIST_TRUSTLINE_KEY) === true);
+  const reserveChecked =
+    result.xlmReserveMet || (prev?.get(CHECKLIST_RESERVE_KEY) === true);
+
+  const lines = [
+    `### ${strings.checklistHeading}`,
+    '',
+    strings.checklistIntro,
+    '',
+    `- [${fundChecked ? 'x' : ' '}] **${strings.checklistFundAccountLabel}** — ${strings.checklistFundAccountDetail} ([FAQ](${fundFaq}))`,
+    `- [${trustChecked ? 'x' : ' '}] **${strings.checklistTrustlineLabel(safeAsset)}** — ${strings.checklistTrustlineDetail} ([FAQ](${trustFaq}))`,
+    `- [${reserveChecked ? 'x' : ' '}] **${strings.checklistReserveLabel}** — ${strings.checklistReserveDetail(String(options.minXlmReserve))} ([FAQ](${reserveFaq}))`,
+  ];
+
+  return lines.join('\n');
+}

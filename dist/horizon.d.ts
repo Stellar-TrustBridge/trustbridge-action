@@ -2,13 +2,13 @@ import { SimpleCache } from './cache';
 import { RateBudgetTracker, CircuitBreaker } from './resilience';
 export interface HorizonBalanceNative {
     balance: string;
-    asset_type: 'native';
+    asset_type: "native";
     buying_liabilities: string;
     selling_liabilities: string;
 }
 export interface HorizonBalanceCredit {
     balance: string;
-    asset_type: 'credit_alphanum4' | 'credit_alphanum12';
+    asset_type: "credit_alphanum4" | "credit_alphanum12";
     asset_code: string;
     asset_issuer: string;
     buying_liabilities: string;
@@ -29,7 +29,7 @@ export interface HorizonBalanceCredit {
 }
 export interface HorizonBalanceLiquidityPoolShares {
     balance: string;
-    asset_type: 'liquidity_pool_shares';
+    asset_type: "liquidity_pool_shares";
     liquidity_pool_id: string;
     buying_liabilities: string;
     selling_liabilities: string;
@@ -38,7 +38,7 @@ export interface HorizonBalanceLiquidityPoolShares {
     is_authorized_to_maintain_liabilities: boolean;
 }
 export interface HorizonBalanceClaimable {
-    asset_type: 'claimable_balance_id';
+    asset_type: "claimable_balance_id";
     balance: string;
     claimable_balance_id: string;
 }
@@ -83,6 +83,26 @@ export declare class HorizonError extends Error {
     readonly retryable: boolean;
     constructor(message: string, statusCode: number, retryable?: boolean);
 }
+/**
+ * Thrown when a Horizon request or polling loop is stopped because the
+ * GitHub Actions job was cancelled (SIGINT/SIGTERM).
+ *
+ * Extends `HorizonError` (status 0, non-retryable) so existing callers keep
+ * working, but carries a distinct type so `index.ts` can avoid classifying a
+ * user cancellation as a Horizon outage (`HORIZON_ERROR`).
+ */
+export declare class HorizonCancelledError extends HorizonError {
+    constructor(message?: string);
+}
+/**
+ * Is this error a job-cancellation abort?
+ *
+ * Accepts both the dedicated {@link HorizonCancelledError} and the legacy
+ * status-0 `HorizonError` whose message marks a cancellation, so older cached
+ * bundles and tests that construct a plain `HorizonError` still classify
+ * correctly.
+ */
+export declare function isCancellationError(error: unknown): error is HorizonError;
 export declare class HorizonRateLimitError extends HorizonError {
     readonly retryAfterMs?: number | undefined;
     constructor(message: string, retryAfterMs?: number | undefined);
@@ -91,7 +111,34 @@ export declare class HorizonTlsError extends HorizonError {
     readonly originalCode?: string | undefined;
     constructor(message: string, originalCode?: string | undefined);
 }
-export type FetchLike = (url: string | import('node-fetch').Request, init?: import('node-fetch').RequestInit) => Promise<import('node-fetch').Response>;
+/**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+export declare class HorizonPinMismatchError extends HorizonError {
+    readonly expectedFingerprint: string;
+    readonly actualFingerprint: string;
+    constructor(message: string, expectedFingerprint: string, actualFingerprint: string);
+}
+/**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+export declare class HorizonCircuitOpenError extends HorizonError {
+    constructor(message: string);
+}
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
+export type FetchLike = (url: string | import("node-fetch").Request, init?: import("node-fetch").RequestInit) => Promise<import("node-fetch").Response>;
 export interface FetchAccountOptions {
     timeoutMs?: number;
     maxRetries?: number;
@@ -135,6 +182,14 @@ export interface FetchAccountOptions {
     allowCrossNetworkFailover?: boolean;
     /** Optional secondary Horizon URL used for same-network failover. */
     secondaryHorizonUrl?: string;
+    /**
+     * Optional SHA-256 certificate fingerprint to pin the Horizon TLS cert.
+     * When set, a pre-flight TLS probe is performed before the first fetch.
+     * Mismatch throws HorizonPinMismatchError immediately (not retried).
+     * Leave empty (default) to use standard WebPKI certificate validation only.
+     * (Issue #303)
+     */
+    pinFingerprint?: string;
 }
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 /**
@@ -147,6 +202,17 @@ export declare function normalizeHorizonUrl(baseUrl: string): string;
  */
 export declare function displayHorizonUrl(url: string, revealHost: boolean): string;
 export declare function isRetryableStatus(status: number): boolean;
+/**
+ * Performs a TLS pre-flight check to verify the server certificate fingerprint.
+ * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...')
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ * (Issue #303)
+ */
+export declare function checkCertificatePin(horizonUrl: string, expectedFingerprint: string): Promise<void>;
 export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
 export interface WaitForFundedAccountOptions {
@@ -173,6 +239,43 @@ export interface WaitForFundedAccountOptions {
  * outages don't turn into a silent multi-minute hang.
  */
 export declare function waitForFundedAccount(horizonUrl: string, stellarAddress: string, options?: WaitForFundedAccountOptions, fetchAccountFn?: typeof fetchAccount): Promise<HorizonAccount>;
+export interface FriendbotOptions {
+    /** Friendbot URL. Must be HTTPS and on the allowlist. */
+    friendbotUrl: string;
+    /** Request timeout in milliseconds. */
+    timeoutMs?: number;
+    /** Override fetch function (for testing). */
+    fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+/**
+ * Check if a friendbot URL is on the allowlist and safe to use.
+ * Prevents SSRF attacks by only allowing known testnet friendbot endpoints.
+ */
+export declare function isFriendbotAllowed(friendbotUrl: string): boolean;
+/**
+ * Detect whether a Horizon URL points to testnet or mainnet.
+ * Used to enforce friendbot safety rules (never call friendbot on mainnet).
+ */
+export declare function isTestnetHorizon(horizonUrl: string): boolean;
+export interface FriendbotResult {
+    success: boolean;
+    message: string;
+    transactionHash?: string;
+}
+/**
+ * Call Stellar Friendbot to fund a testnet account.
+ *
+ * Safety rules:
+ * - Only works with allowlisted friendbot URLs (SSRF protection)
+ * - Only callable when Horizon URL indicates testnet
+ * - Fails fast with clear error on mainnet or unknown networks
+ *
+ * @param stellarAddress The G-address to fund
+ * @param options Friendbot configuration
+ * @param horizonUrl The Horizon URL (used for network safety check)
+ * @returns FriendbotResult with success status and transaction details
+ */
+export declare function callFriendbot(stellarAddress: string, options: FriendbotOptions, horizonUrl: string): Promise<FriendbotResult>;
 /**
  * Narrows to a credit trustline balance (`credit_alphanum4` /
  * `credit_alphanum12`) only. Checks the asset_type allowlist explicitly
@@ -241,7 +344,7 @@ export declare function fetchClaimableBalanceCount(horizonUrl: string, stellarAd
  * - `wallet: reserve-low`      — account funded + trustline present but XLM reserve not met.
  * - `wallet: horizon-error`    — Horizon returned a non-404 error; state unknown.
  */
-export type WalletLabel = 'wallet: funded' | 'wallet: unfunded' | 'wallet: trustline-missing' | 'wallet: reserve-low' | 'wallet: horizon-error';
+export type WalletLabel = "wallet: funded" | "wallet: unfunded" | "wallet: trustline-missing" | "wallet: reserve-low" | "wallet: horizon-error";
 /**
  * All wallet label strings — useful for bulk removal before re-applying
  * the current state so stale labels never linger on an issue.
@@ -279,32 +382,10 @@ export interface ApplyWalletLabelsOptions {
     removeStale?: boolean;
 }
 /**
- * Apply the appropriate wallet label to a GitHub issue via Octokit,
- * optionally removing stale wallet labels first.
- *
- * Conflict resolution: when multiple wallet state labels are present
- * (e.g. from a previous interrupted run), all stale labels are removed
- * before the new one is applied. The target label is derived
- * deterministically by `deriveWalletLabel` using a fixed priority order
- * (horizon-error > unfunded > trustline-missing > reserve-low > funded),
- * so concurrent runs always converge to the same label.
- *
- * Pagination: `listLabelsOnIssue` is paginated in 100-item pages so
- * issues with more than 100 labels are handled correctly.
- *
- * Errors are non-fatal: label failures are caught and returned as a
- * descriptive string so the main check result is never blocked by a
- * labelling permission issue.
- *
- * @param octokit       Authenticated Octokit instance.
- * @param owner         Repository owner.
- * @param repo          Repository name.
- * @param issueNumber   Issue to label.
- * @param input         Wallet state derived from the Horizon check.
- * @param options       Labelling behaviour options.
- * @returns             The label that was applied, or an error string.
+ * Minimal structural Octokit surface used by the wallet/ready label helpers.
+ * Kept structural so unit tests can pass a plain-object mock.
  */
-export declare function applyWalletLabels(octokit: {
+interface IssueLabelOctokit {
     rest: {
         issues: {
             addLabels: (params: {
@@ -324,7 +405,7 @@ export declare function applyWalletLabels(octokit: {
                 repo: string;
                 issue_number: number;
                 per_page: number;
-                page: number;
+                page?: number;
             }) => Promise<{
                 data: Array<{
                     name: string;
@@ -332,8 +413,35 @@ export declare function applyWalletLabels(octokit: {
             }>;
         };
     };
-}, owner: string, repo: string, issueNumber: number, input: WalletLabelInput, options?: ApplyWalletLabelsOptions): Promise<{
+}
+/**
+ * Apply the appropriate wallet label to a GitHub issue via Octokit,
+ * optionally removing stale wallet labels first.
+ *
+ * Errors are non-fatal: label failures are caught and returned as a
+ * descriptive string so the main check result is never blocked by a
+ * labelling permission issue.
+ *
+ * @param octokit       Authenticated Octokit instance.
+ * @param owner         Repository owner.
+ * @param repo          Repository name.
+ * @param issueNumber   Issue to label.
+ * @param input         Wallet state derived from the Horizon check.
+ * @param options       Labelling behaviour options.
+ * @returns             The label that was applied, or an error string.
+ */
+export declare function applyWalletLabels(octokit: IssueLabelOctokit, owner: string, repo: string, issueNumber: number, input: WalletLabelInput, options?: ApplyWalletLabelsOptions): Promise<{
     applied: WalletLabel;
+    removed: string[];
+    error?: string;
+}>;
+export interface ReadyLabelInput {
+    ready: boolean;
+    passLabel?: string;
+    failLabel?: string;
+}
+export declare function applyReadyLabels(octokit: IssueLabelOctokit, owner: string, repo: string, issueNumber: number, input: ReadyLabelInput): Promise<{
+    applied?: string;
     removed: string[];
     error?: string;
 }>;
@@ -341,3 +449,4 @@ export declare function applyWalletLabels(octokit: {
  * Fetch the Stellar network passphrase from a Horizon root endpoint.
  */
 export declare function fetchNetworkPassphrase(horizonUrl: string, options?: FetchAccountOptions): Promise<string>;
+export {};

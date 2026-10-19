@@ -302,15 +302,9 @@
     },
     "retry_max_delay_ms": {
       "type": "string",
-      "description": "Maximum delay in milliseconds for any single Horizon retry sleep. Caps both Retry-After values and exponential backoff. \"0\" disables sleeping between retries while still honoring max_retries.",
+      "description": "Maximum backoff delay in milliseconds for Horizon retries.",
       "pattern": "^[0-9]+$",
       "default": "30000"
-    },
-    "retry_max_total_wait_ms": {
-      "type": "string",
-      "description": "Total retry sleep budget in milliseconds per Horizon endpoint. Retries stop with RATE_LIMIT_EXHAUSTED when the next capped sleep would exceed it.",
-      "pattern": "^[0-9]+$",
-      "default": "120000"
     },
     "horizon_max_requests": {
       "type": "string",

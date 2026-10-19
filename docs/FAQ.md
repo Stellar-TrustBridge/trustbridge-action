@@ -253,11 +253,11 @@ function verifySignature(payload, secret, signatureHeader) {
 
 ## OIDC webhook authentication failures {#oidc-webhook-troubleshooting}
 
-These apply when `webhook_auth_mode: oidc` is set. A failed token mint **fails the step** and the webhook is not sent. There is no fallback to HMAC or unsigned delivery (Issue #674). Delivery errors after a successful mint stay non-fatal: validation and comment posting continue, but the dashboard rejects or never sees the webhook.
+These apply when `webhook_auth_mode: oidc` is set. OIDC failures are non-fatal: validation and comment posting continue, but the dashboard rejects or never sees the webhook.
 
 ### Token minting fails (missing `id-token: write`)
 
-**Symptom:** The step fails with `OIDC token minting failed for audience "trustbridge-dashboard": ... The job has no 'permissions: id-token: write'`. No webhook request is sent.
+**Symptom:** The Actions log shows `OIDC token minting failed for audience "trustbridge-dashboard": ... Ensure the workflow has 'permissions: id-token: write'`, and the receiver returns `401` because no `Authorization` header was sent.
 
 **Fix:** Grant the permission on the job (or workflow) that runs TrustBridge. Setting any `permissions:` block drops unlisted scopes, so list `id-token: write` explicitly alongside the others:
 
@@ -268,7 +268,7 @@ permissions:
   id-token: write
 ```
 
-GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect this failure there. Use HMAC mode for fork-triggered workflows or run TrustBridge from a trusted event (for example `issue_comment` or `issues`).
+GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect this warning there. Use HMAC mode for fork-triggered workflows or run TrustBridge from a trusted event (for example `issue_comment` or `issues`).
 
 ### Audience mismatch
 

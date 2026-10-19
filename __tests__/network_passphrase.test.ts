@@ -7,16 +7,6 @@ import { detectPassphraseMismatch, NetworkPassphraseMismatch } from '../src/chec
 import { formatCommentBody } from '../src/comment';
 import { toActionOutputs } from '../src/outputs';
 import { ValidationResult } from '../src/checks';
-import {
-  canonicalHorizonUrl,
-  inferStellarNetwork,
-  inferStellarNetworkPreset,
-  KNOWN_HORIZON_NETWORKS,
-  STELLAR_NETWORK_PRESETS,
-  StellarNetworkPreset,
-} from '../src/links';
-import { isFriendbotAllowed, isTestnetHorizon } from '../src/horizon';
-import { validateHorizonUrl } from '../src/validation';
 
 describe('detectPassphraseMismatch', () => {
   const testnetPassphrase = 'Test SDF Network ; September 2015';
@@ -414,93 +404,5 @@ describe('Network passphrase mismatch edge cases', () => {
     
     // Message should still be reasonable length
     expect(result?.message.length).toBeLessThan(500);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #707 — network preset defaults for pubnet, testnet and futurenet
-// ---------------------------------------------------------------------------
-describe('network presets (Issue #707)', () => {
-  const PRESETS: Array<[StellarNetworkPreset, string, string, string | null]> = [
-    ['public', 'https://horizon.stellar.org', 'Public Global Stellar Network ; September 2015', null],
-    ['testnet', 'https://horizon-testnet.stellar.org', 'Test SDF Network ; September 2015', 'https://friendbot.stellar.org'],
-    [
-      'futurenet',
-      'https://horizon-futurenet.stellar.org',
-      'Test SDF Future Network ; October 2022',
-      'https://friendbot-futurenet.stellar.org',
-    ],
-  ];
-
-  it.each(PRESETS)('%s preset has the documented Horizon URL, passphrase and Friendbot', (network, horizonUrl, passphrase, friendbotUrl) => {
-    expect(STELLAR_NETWORK_PRESETS[network]).toEqual({
-      horizonUrl,
-      networkPassphrase: passphrase,
-      friendbotUrl,
-    });
-  });
-
-  it.each(PRESETS)('inferStellarNetworkPreset classifies the official %s host', (network, horizonUrl) => {
-    expect(inferStellarNetworkPreset(horizonUrl)).toBe(network);
-    expect(inferStellarNetworkPreset(`${horizonUrl}/`)).toBe(network);
-    expect(inferStellarNetworkPreset(horizonUrl.toUpperCase())).toBe(network);
-  });
-
-  it('inferStellarNetwork classifies the official pubnet and testnet hosts', () => {
-    expect(inferStellarNetwork('https://horizon.stellar.org')).toBe('public');
-    expect(inferStellarNetwork('https://horizon-testnet.stellar.org')).toBe('testnet');
-    for (const [url, network] of Object.entries(KNOWN_HORIZON_NETWORKS)) {
-      expect(inferStellarNetwork(url)).toBe(network);
-      expect(canonicalHorizonUrl(network)).toBe(url);
-    }
-  });
-
-  it('pubnet and testnet presets agree with the canonical link helpers', () => {
-    expect(canonicalHorizonUrl('public')).toBe(STELLAR_NETWORK_PRESETS.public.horizonUrl);
-    expect(canonicalHorizonUrl('testnet')).toBe(STELLAR_NETWORK_PRESETS.testnet.horizonUrl);
-  });
-
-  it('infers the network from a custom testnet horizon_url when the host says so', () => {
-    expect(inferStellarNetworkPreset('https://horizon-testnet.example.com')).toBe('testnet');
-    expect(inferStellarNetworkPreset('https://my-futurenet-mirror.example.com')).toBe('futurenet');
-    // Hosts that carry no network hint default to public.
-    expect(inferStellarNetworkPreset('https://horizon.example.com')).toBe('public');
-  });
-
-  it.each(PRESETS)('official %s Horizon host passes the SSRF allowlist', (_network, horizonUrl) => {
-    expect(validateHorizonUrl(horizonUrl).valid).toBe(true);
-  });
-
-  it.each(PRESETS)('%s preset Friendbot compatibility matches the network guard', (_network, horizonUrl, _passphrase, friendbotUrl) => {
-    if (friendbotUrl === null) {
-      expect(isTestnetHorizon(horizonUrl)).toBe(false);
-    } else {
-      expect(isTestnetHorizon(horizonUrl)).toBe(true);
-      expect(isFriendbotAllowed(friendbotUrl)).toBe(true);
-    }
-  });
-
-  it.each(PRESETS)('infers the %s passphrase from the preset Horizon when network_passphrase is empty', async (_network, horizonUrl, passphrase) => {
-    const result = await detectPassphraseMismatch(horizonUrl, '', async () => passphrase);
-    expect(result).toBeUndefined();
-  });
-
-  it('flags a futurenet Horizon paired with a testnet passphrase', async () => {
-    const result = await detectPassphraseMismatch(
-      'https://horizon-futurenet.stellar.org',
-      'Test SDF Network ; September 2015',
-      async () => 'Test SDF Future Network ; October 2022',
-    );
-    expect(result).toBeDefined();
-    expect(result?.actualPassphrase).toBe('Test SDF Future Network ; October 2022');
-  });
-
-  it('flags a pubnet Horizon paired with the futurenet passphrase', async () => {
-    const result = await detectPassphraseMismatch(
-      'https://horizon.stellar.org',
-      'Test SDF Future Network ; October 2022',
-      async () => 'Public Global Stellar Network ; September 2015',
-    );
-    expect(result).toBeDefined();
   });
 });

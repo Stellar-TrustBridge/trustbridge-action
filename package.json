@@ -1,16 +1,71 @@
 {
   "name": "trustbridge-action",
   "version": "1.0.0",
-  "description": "TrustBridge GitHub Action",
+  "description": "GitHub Action to verify Stellar account trustlines and XLM reserve before issue assignment workflows",
   "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "test": "node --test",
-    "test:breaking": "node --test test/breaking-changes.test.js",
-    "check:breaking": "node scripts/check-breaking-changes.js"
-  },
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "scripts": {
+    "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt && node scripts/normalize-maps.js && node scripts/generate-dist-manifest.js",
+    "verify:dist": "node scripts/verify-dist-manifest.js",
+    "reason-codes:doc": "node scripts/generate-reason-codes-doc.js",
+    "reason-codes:check": "node scripts/generate-reason-codes-doc.js --check",
+    "preview-comment": "ts-node --transpile-only scripts/preview-comment.ts",
+    "test:map-paths": "node scripts/check-map-paths.js",
+    "bundle-size": "npm test -- --testPathPattern bundle-size --no-coverage",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --project tsconfig.test.json --noEmit",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:mock": "jest --testPathPatterns horizon-mock-smoke --forceExit",
+    "lint": "eslint src __tests__",
+    "prepare": "npm run build",
+    "mock:start": "docker compose -f mock/horizon/docker-compose.yml up -d --wait",
+    "mock:stop": "docker compose -f mock/horizon/docker-compose.yml down",
+    "license:check": "node scripts/check-licenses.js",
+    "license:report": "license-checker --production --json --out licenses-report.json --excludePrivatePackages",
+    "mutation": "stryker run",
+    "mutation:ci": "stryker run --reporters clear-text,progress,html,json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Stellar-TrustBridge/trustbridge-action.git"
+  },
+  "keywords": [
+    "github-action",
+    "stellar",
+    "trustline",
+    "horizon",
+    "usdc"
+  ],
+  "author": "Stellar-TrustBridge",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/cache": "^3.3.0",
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.1",
+    "https-proxy-agent": "^7.0.6",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^8.7.1",
+    "@stryker-mutator/jest-runner": "^8.7.1",
+    "@stryker-mutator/typescript-checker": "^8.7.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.19.19",
+    "@types/node-fetch": "^2.6.12",
+    "@typescript-eslint/eslint-plugin": "^8.70.1",
+    "@typescript-eslint/parser": "^8.70.0",
+    "@vercel/ncc": "^0.45.0",
+    "ajv": "^8.17.1",
+    "eslint": "^10.11.0",
+    "jest": "^30.5.0",
+    "license-checker": "^25.0.1",
+    "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.70.1"
+  }
 }

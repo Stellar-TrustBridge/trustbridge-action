@@ -104,16 +104,6 @@ export interface CheckPlugin {
   readonly label: string;
 
   /**
-   * Optional per-plugin timeout in milliseconds.
-   *
-   * When set, `runPlugins()` enforces this budget for the plugin's `run()`
-   * call. A plugin that exceeds its budget fails closed with a stable
-   * timeout error and does not affect unrelated plugins. When omitted, the
-   * runner's default timeout applies.
-   */
-  readonly timeoutMs?: number;
-
-  /**
    * Execute the check synchronously.
    *
    * Plugins are intentionally synchronous in v1 to keep composition

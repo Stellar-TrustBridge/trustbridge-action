@@ -6,10 +6,9 @@
  * on Horizon predictable and avoids triggering rate limits.
  */
 
-import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult, HomeDomainOutcome } from './checks';
-import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
+import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress } from './checks';
+import { fetchAccount, HorizonError, HorizonCancelledError, findTrustlineBalance, HorizonAccount, isCancellationError } from './horizon';
 import { FetchAccountOptions } from './horizon';
-import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 import { globalMetrics } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 
@@ -39,7 +38,6 @@ export const BATCH_REASON_CODES = {
   accountNotFunded: 'ACCOUNT_NOT_FUNDED',
   horizonError: 'HORIZON_ERROR',
   invalidAddress: 'INVALID_ADDRESS',
-  rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
   clawbackStrict: CLAWBACK_STRICT_REASON_CODE,
 } as const;
 
@@ -81,11 +79,6 @@ export interface BatchAddressResult {
    * Same asset code with different issuers is evaluated independently.
    */
   clawbackStrictAssets?: BatchAssetFailure[];
-  /**
-   * SEP-0001 home domain outcome for this row's asset issuer (Issue #708).
-   * Only set when `home_domain_check_enabled` is true.
-   */
-  homeDomainOutcome?: HomeDomainOutcome;
 }
 
 /** Aggregate summary across all addresses in a batch run. */
@@ -130,17 +123,18 @@ export interface BatchRunOptions {
   /** Horizon fetch options forwarded to each fetchAccount call. */
   fetchOptions?: FetchAccountOptions;
   /**
+   * Job-cancellation signal (Issues #682 / #683). When aborted, the batch loop
+   * stops before the next address and throws {@link HorizonCancelledError} so
+   * the caller can exit without writing partial SARIF or posting a comment.
+   * Falls back to `fetchOptions.signal` when omitted.
+   */
+  signal?: AbortSignal;
+  /**
    * Additional assets (typically from the `assets_json` input) whose clawback
    * flag is evaluated per address under `clawback_strict_mode` (Issue #725).
    * Same asset code with a different issuer is evaluated independently.
    */
   extraAssets?: AssetConfigInput[];
-  /**
-   * Asset issuer account for the SEP-0001 home domain check (Issue #708).
-   * When omitted and `config.homeDomainCheckEnabled` is true, the issuer is
-   * fetched once per batch. `null` means the issuer is unavailable.
-   */
-  issuerAccount?: HorizonAccount | null;
 }
 
 const DEFAULT_REQUEST_DELAY_MS = 200;
@@ -231,8 +225,6 @@ function deriveBatchReasonCode(
     horizonError?: boolean;
     trustlineExists?: boolean;
     xlmReserveMet?: boolean;
-    /** HOME_DOMAIN_* code from a strict-mode home domain failure (Issue #708). */
-    homeDomainReasonCode?: string;
   },
 ): string {
   if (valid) return BATCH_REASON_CODES.success;
@@ -242,7 +234,6 @@ function deriveBatchReasonCode(
   if (options.clawbackStrictFailure) return CLAWBACK_STRICT_REASON_CODE;
   if (options.trustlineExists === false) return BATCH_REASON_CODES.trustlineMissing;
   if (options.xlmReserveMet === false) return BATCH_REASON_CODES.reserveTooLow;
-  if (options.homeDomainReasonCode) return options.homeDomainReasonCode;
   return 'FAILED';
 }
 
@@ -298,7 +289,10 @@ export async function runBatchValidation(
   options: BatchRunOptions = {},
 ): Promise<BatchAddressResult[]> {
   const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
-  const fetchOptions = options.fetchOptions ?? {};
+  const signal = options.signal ?? options.fetchOptions?.signal;
+  const fetchOptions: FetchAccountOptions = signal
+    ? { ...options.fetchOptions, signal }
+    : { ...options.fetchOptions };
   const extraAssets = options.extraAssets ?? [];
   const clawbackStrictMode = config.clawbackStrictMode ?? false;
 
@@ -307,16 +301,17 @@ export async function runBatchValidation(
 
   const results: BatchAddressResult[] = [];
 
-  // Issue #708: every row shares the same configured issuer, so fetch it once
-  // and evaluate the home domain against it for each address.
-  const issuerAccount: HorizonAccount | null | undefined = !config.homeDomainCheckEnabled
-    ? undefined
-    : options.issuerAccount !== undefined
-      ? options.issuerAccount
-      : await fetchHomeDomainIssuerAccount(horizonUrl, config.assetIssuer, fetchOptions);
-
   for (let i = 0; i < addresses.length; i++) {
     const address = addresses[i];
+
+    // Issue #682: stop before the next address when the job is cancelled.
+    // Throwing (rather than returning partial results) keeps the caller from
+    // silently writing SARIF or posting a comment for an incomplete batch.
+    if (signal?.aborted) {
+      throw new HorizonCancelledError(
+        "Batch validation aborted (job cancelled).",
+      );
+    }
 
     // Delay between requests (skip before first)
     if (i > 0 && requestDelayMs > 0) {
@@ -343,9 +338,7 @@ export async function runBatchValidation(
 
     try {
       const account = await fetchAccount(horizonUrl, address, fetchOptions);
-      const result = await runAccountChecks(account, config, issuerAccount);
-      const homeDomainStrictFailure =
-        result.reasonCode === 'HOME_DOMAIN_MISMATCH' || result.reasonCode === 'HOME_DOMAIN_MISSING';
+      const result = await runAccountChecks(account, config);
 
       // Issue #725: a clawback-strict failure is a per-asset outcome, so the
       // row fails whenever *any* evaluated asset trips `clawback_strict_mode` —
@@ -365,9 +358,6 @@ export async function runBatchValidation(
             `clawback strict mode: ${clawbackStrictAssets.map((a) => a.assetCode).join(', ')}`,
           );
         }
-        if (homeDomainStrictFailure) {
-          reasons.push(`home domain ${result.homeDomainCheck?.outcome ?? 'missing'}`);
-        }
         failureReason = reasons.join('; ') || 'unknown';
       }
 
@@ -383,11 +373,9 @@ export async function runBatchValidation(
           clawbackStrictFailure,
           trustlineExists: result.trustlineExists,
           xlmReserveMet: result.xlmReserveMet,
-          homeDomainReasonCode: homeDomainStrictFailure ? result.reasonCode : undefined,
         }),
         clawbackStrictFailure,
         clawbackStrictAssets,
-        ...(result.homeDomainCheck ? { homeDomainOutcome: result.homeDomainCheck.outcome } : {}),
       });
 
       if (valid) {
@@ -402,15 +390,20 @@ export async function runBatchValidation(
         }
       }
     } catch (error) {
+      // Issue #682: never downgrade a cancellation into a per-address
+      // HORIZON_ERROR row. Abort the whole batch so the caller can exit.
+      if (isCancellationError(error) || signal?.aborted) {
+        throw error instanceof HorizonCancelledError
+          ? error
+          : new HorizonCancelledError(
+              "Batch validation aborted (job cancelled).",
+            );
+      }
+
       let failureReason: string;
       let isFunded = false;
-      let isBudgetExhausted = error instanceof RateBudgetExhaustedError;
 
-      if (isBudgetExhausted) {
-        failureReason = `Rate budget exhausted: ${error.message}`;
-        globalMetrics.incrementCounter('rate_budget_exhausted');
-        globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
-      } else if (error instanceof HorizonError && error.statusCode === 404) {
+      if (error instanceof HorizonError && error.statusCode === 404) {
         failureReason = 'account not funded';
         globalMetrics.incrementCounter('batch_fail_account_not_funded');
       } else if (error instanceof HorizonError) {
@@ -423,20 +416,13 @@ export async function runBatchValidation(
         globalMetrics.incrementCounter('batch_fail_horizon_error');
       }
 
-      let syntheticResult;
-      if (isBudgetExhausted) {
-        syntheticResult = rateBudgetExhaustedResult(
-          error instanceof Error ? error.message : 'unknown error',
-          config,
-        );
-      } else if (error instanceof HorizonError && error.statusCode === 404) {
-        syntheticResult = unfundedAccountResult(address, config);
-      } else {
-        syntheticResult = horizonFailureResult(
-          error instanceof Error ? error.message : 'unknown error',
-          config,
-        );
-      }
+      const syntheticResult =
+        error instanceof HorizonError && error.statusCode === 404
+          ? unfundedAccountResult(address, config)
+          : horizonFailureResult(
+              error instanceof Error ? error.message : 'unknown error',
+              config,
+            );
 
       results.push({
         address,
@@ -446,44 +432,16 @@ export async function runBatchValidation(
         xlmBalance: syntheticResult.xlmBalance,
         xlmReserveMet: false,
         failureReason,
-        reasonCode: isBudgetExhausted
-          ? BATCH_REASON_CODES.rateBudgetExhausted
-          : deriveBatchReasonCode(false, {
-              clawbackStrictFailure: false,
-              invalidAddress: false,
-              accountNotFunded:
-                error instanceof HorizonError && error.statusCode === 404,
-              horizonError: true,
-            }),
+        reasonCode: deriveBatchReasonCode(false, {
+          clawbackStrictFailure: false,
+          invalidAddress: false,
+          accountNotFunded:
+            error instanceof HorizonError && error.statusCode === 404,
+          horizonError: true,
+        }),
         clawbackStrictFailure: false,
         clawbackStrictAssets: [],
       });
-
-      // Stop batch early if rate budget exhausted
-      if (isBudgetExhausted) {
-        // Mark remaining addresses as budget exhausted
-        for (let j = i + 1; j < addresses.length; j++) {
-          const remainingAddress = addresses[j];
-          const exhaustedResult = rateBudgetExhaustedResult(
-            'Rate budget exhausted before checking this address',
-            config,
-          );
-          results.push({
-            address: remainingAddress,
-            valid: false,
-            accountFunded: false,
-            trustlineExists: false,
-            xlmBalance: exhaustedResult.xlmBalance,
-            xlmReserveMet: false,
-            failureReason: 'Rate budget exhausted before checking this address',
-            reasonCode: BATCH_REASON_CODES.rateBudgetExhausted,
-            clawbackStrictFailure: false,
-            clawbackStrictAssets: [],
-          });
-          globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
-        }
-        break;
-      }
     }
   }
 

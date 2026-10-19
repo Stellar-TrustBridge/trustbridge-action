@@ -97,21 +97,6 @@ export interface TraceOptions {
   parentName?: string;
 }
 
-/**
- * Options for tracing a Horizon fetch operation (issue #757).
- * Emits OTel-compatible span attributes for latency and retry counts.
- */
-export interface HorizonSpanOptions {
-  /** Horizon endpoint URL (path is stripped before recording). */
-  horizonUrl: string;
-  /** Stellar account being fetched (redacted before recording). */
-  accountId?: string;
-  /** Number of retry attempts made before the fetch resolved. */
-  retryCount?: number;
-  /** Parent span name for nesting context. */
-  parentName?: string;
-}
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -261,38 +246,26 @@ export async function withSpan<T>(
 }
 
 /**
- * Execute a Horizon fetch operation within an OTel-compatible span
- * (issue #757). Emits consistent span attributes for latency and retry
- * counts so operators can correlate Wave CI flakes without scraping logs.
+ * Record a synchronous operation within a named trace span.
  *
- * Attributes recorded on the span:
- * - `horizon.url`        — host-only Horizon endpoint (path stripped).
- * - `stellar_address`    — redacted account id (first4…last4), when provided.
- * - `horizon.retry_count`— number of retries performed (default 0).
- * - `horizon.latency_ms` — wall-clock latency of the fetch in milliseconds.
- *
- * When tracing is disabled, `fn` is called directly with zero overhead and
- * existing auth/pause/happy-path semantics are preserved.
- *
- * @param opts  Horizon span options (url, account, retryCount, parentName).
- * @param fn    The async Horizon fetch operation to trace.
- * @returns     The resolved value from `fn`.
+ * @param opts  Span options.
+ * @param fn    Synchronous operation to trace.
+ * @returns     The value returned by `fn`.
  */
-export async function withHorizonSpan<T>(
-  opts: HorizonSpanOptions,
-  fn: () => Promise<T>,
-): Promise<T> {
+export function withSpanSync<T>(
+  opts: TraceOptions,
+  fn: () => T,
+): T {
   if (!isTracingEnabled()) {
     return fn();
   }
 
   const startTimeMs = Date.now();
-  const retryCount = opts.retryCount ?? 0;
   let status: TraceSpanStatus = 'OK';
   let error: string | undefined;
 
   try {
-    const result = await fn();
+    const result = fn();
     return result;
   } catch (err) {
     status = 'ERROR';
@@ -300,22 +273,14 @@ export async function withHorizonSpan<T>(
     throw err;
   } finally {
     const durationMs = Date.now() - startTimeMs;
-
-    const attributes: Record<string, string | number | boolean> = {
-      'horizon.url': opts.horizonUrl,
-      'horizon.retry_count': retryCount,
-      'horizon.latency_ms': durationMs,
-    };
-    if (opts.accountId) {
-      attributes['stellar_address'] = opts.accountId;
-    }
+    const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
 
     const span: TraceSpan = {
-      name: 'horizon.fetch_account',
+      name: opts.name,
       startTimeMs,
       durationMs,
       status,
-      attributes: redactSpanAttributes(attributes),
+      attributes: safeAttrs,
       error,
       parentName: opts.parentName,
     };
@@ -325,7 +290,200 @@ export async function withHorizonSpan<T>(
   }
 }
 
-/**
- * Record a synchron
+// ---------------------------------------------------------------------------
+// Span export
+// ---------------------------------------------------------------------------
 
-/* … truncated 6677 chars — edit only what you need near the top … */
+/**
+ * Export a completed span to the configured exporter.
+ * Never throws — observability must not break the action.
+ */
+export function exportSpan(span: TraceSpan): void {
+  try {
+    const exporter = getExporterType();
+    switch (exporter) {
+      case 'log':
+        core.debug(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+        break;
+      case 'console':
+        console.log(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+        break;
+      case 'none':
+        // Collect but do not emit (used in tests to inspect spans without log noise).
+        break;
+      case 'otlp':
+        // OTLP export is fire-and-forget — errors are swallowed so they never
+        // affect the action result. The collector must be running at
+        // OTEL_EXPORTER_OTLP_ENDPOINT for this to have any effect.
+        void exportOtlp(span).catch(() => {
+          // Silently ignore export failures.
+        });
+        break;
+    }
+  } catch {
+    // Swallow all export errors.
+  }
+}
+
+/**
+ * Fire-and-forget OTLP/HTTP JSON export for a single span.
+ * Only called when OTEL_TRACES_EXPORTER=otlp and OTEL_EXPORTER_OTLP_ENDPOINT is set.
+ */
+async function exportOtlp(span: TraceSpan): Promise<void> {
+  const endpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
+  if (!endpoint) return;
+
+  // Minimal OTLP/JSON payload for a single span
+  const otlpPayload = {
+    resourceSpans: [
+      {
+        resource: { attributes: [{ key: 'service.name', value: { stringValue: 'trustbridge-action' } }] },
+        scopeSpans: [
+          {
+            scope: { name: 'trustbridge-action', version: '1' },
+            spans: [
+              {
+                name: span.name,
+                kind: 1, // SPAN_KIND_INTERNAL
+                startTimeUnixNano: String(span.startTimeMs * 1_000_000),
+                endTimeUnixNano: String((span.startTimeMs + span.durationMs) * 1_000_000),
+                status: {
+                  code: span.status === 'OK' ? 1 : span.status === 'ERROR' ? 2 : 0,
+                  message: span.error ?? '',
+                },
+                attributes: Object.entries(span.attributes).map(([k, v]) => ({
+                  key: k,
+                  value: typeof v === 'boolean'
+                    ? { boolValue: v }
+                    : typeof v === 'number'
+                      ? { intValue: String(v) }
+                      : { stringValue: String(v) },
+                })),
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const url = endpoint.replace(/\/$/, '') + '/v1/traces';
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(otlpPayload),
+    signal: AbortSignal.timeout(3000),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Named span helpers for the three instrumented phases
+// ---------------------------------------------------------------------------
+
+/**
+ * Trace the Horizon account fetch phase.
+ * Attributes: endpoint kind (primary/fallback), redacted URL, redacted address.
+ */
+export async function traceHorizonFetch<T>(
+  horizonUrl: string,
+  stellarAddress: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withSpan(
+    {
+      name: 'horizon.fetch_account',
+      attributes: {
+        'horizon_url': horizonUrl,
+        'stellar_address': stellarAddress,
+      },
+    },
+    fn,
+  );
+}
+
+/**
+ * Trace the GitHub issue comment post/update phase.
+ * Attributes: comment action (create/update), issue number.
+ */
+export async function traceCommentPost<T>(
+  issueNumber: number | null,
+  action: 'create' | 'update' | 'skip',
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withSpan(
+    {
+      name: 'github.post_comment',
+      attributes: {
+        'issue_number': issueNumber ?? 0,
+        'comment_action': action,
+      },
+    },
+    fn,
+  );
+}
+
+/**
+ * Trace the dashboard webhook delivery phase.
+ * Attributes: redacted webhook URL, auth mode.
+ */
+export async function traceWebhookDeliver<T>(
+  webhookUrl: string,
+  authMode: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withSpan(
+    {
+      name: 'webhook.deliver',
+      attributes: {
+        'webhook_url': webhookUrl,
+        'auth_mode': authMode,
+      },
+    },
+    fn,
+  );
+}
+
+/**
+ * Trace the full action run (root span).
+ * Attributes: redacted address, reason code, valid flag.
+ */
+export async function traceActionRun<T>(
+  stellarAddress: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withSpan(
+    {
+      name: 'trustbridge.run',
+      attributes: {
+        'stellar_address': stellarAddress,
+      },
+    },
+    fn,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Summary export
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a human-readable summary of all collected spans to `core.info`.
+ * Called at the end of a run when tracing is enabled.
+ * Never throws.
+ */
+export function emitTraceSummary(): void {
+  if (!isTracingEnabled()) return;
+  try {
+    const spans = getTraceSpans();
+    if (spans.length === 0) return;
+    const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
+    const errorCount = spans.filter((s) => s.status === 'ERROR').length;
+    core.info(
+      `[TrustBridge][trace] Run complete — ${spans.length} span(s), ` +
+      `${totalMs}ms total, ${errorCount} error(s). ` +
+      `Set OTEL_TRACES_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT to forward to a collector.`,
+    );
+  } catch {
+    // Never throw from observability.
+  }
+}

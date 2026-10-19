@@ -420,6 +420,12 @@ outputs:
       string). Empty unless the action ran in batch mode.
     value: ${{ steps.run-trustbridge.outputs.batch_failed_count }}
 
+  sarif_output_path:
+    description: >-
+      Workspace-relative path of the SARIF 2.1.0 file written when
+      `sarif_output_path` is set. Empty when no SARIF file was written.
+    value: ${{ steps.run-trustbridge.outputs.sarif_output_path }}
+
 runs:
   using: 'composite'
   steps:

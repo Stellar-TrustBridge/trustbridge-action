@@ -34,7 +34,7 @@ import { TrustbridgeConsumerConfig, ValidationResult } from './validation';
  */
 export declare function parseSimpleYaml(content: string): Record<string, unknown>;
 export interface ReadConfigResult {
-    /** The validated and typed config, or null if no config file was found. */
+    /** The validated and typed config, or null if no config files were found. */
     config: TrustbridgeConsumerConfig | null;
     /** Validation result — always present even when config is null. */
     validation: ValidationResult;
@@ -42,9 +42,15 @@ export interface ReadConfigResult {
     redactedSnapshot: Record<string, unknown> | null;
     /** Absolute path that was read (or attempted). */
     resolvedPath: string;
-    /** True when the file existed and was successfully read. */
+    /** True when at least one file existed and was successfully read. */
     found: boolean;
 }
+/**
+ * Reads and merges organization-level and repository-level configuration files.
+ * Organization config (.github/trustbridge.yml) is loaded first.
+ * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
+ */
+export declare function readTrustbridgeConfigs(repoConfigPath?: string, workspaceRoot?: string): ReadConfigResult;
 /**
  * Read and validate a consumer trustbridge.yml config file.
  *

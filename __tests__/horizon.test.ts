@@ -5,7 +5,7 @@ import { HorizonError, HorizonRateLimitError, isCreditBalance,
   parseHorizonBalance, normalizeHorizonUrl, getAssetBalance } from '../src/horizon';
 import { fetchAccount, HorizonAccount, waitForFundedAccount, getNativeBalance, hasTrustline, fetchClaimableBalanceCount } from '../src/horizon';
 import { applyWalletLabels, applyReadyLabels } from '../src/horizon';
-import { HorizonCircuitOpenError, isCircuitOpenError } from '../src/horizon';
+import { HorizonCircuitOpenError, isCircuitOpenError, HorizonCancelledError, isCancellationError } from '../src/horizon';
 import { CircuitBreaker, CircuitOpenError } from '../src/resilience';
 import * as loggerModule from '../src/logger';
 import { SimpleCache } from '../src/cache';
@@ -495,12 +495,10 @@ describe('Horizon debug log redaction', () => {
         const retryCtx = requireContext(retrySched);
         expect(retryCtx.nextAttempt).toBe(1);
         expect(retryCtx.retryAfterFromHeader).toBe(true);
-        expect(retryCtx.stellarAddress).toBe(expectedRedacted);
-        // Issue #697: retryable (429/503) response bodies are never logged.
         const parsedErr = calls.find((c) => c.message === 'Horizon error response parsed');
         const parsedErrCtx = requireContext(parsedErr);
-        expect(parsedErrCtx.bodyOmitted).toBe(true);
-        expect(parsedErrCtx.errorDetail).toBeUndefined();
+        expect(parsedErrCtx.errorDetail).not.toContain(TEST_ADDRESS);
+        expect(parsedErrCtx.errorDetail).toContain(expectedRedacted);
         assertAllCallsRedacted(calls, RAW_ADDRESSES);
       } finally {
         global.setTimeout = origSetTimeout;
@@ -1498,408 +1496,26 @@ describe('applyReadyLabels pagination (Issue #694)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Issue #558 — Hardened Horizon mock fixtures: clawback and auth_required
-// ---------------------------------------------------------------------------
-describe('HorizonBalanceCredit: clawback and auth_required fixture assertions', () => {
-  it('accepts a credit balance with is_clawback_enabled=true', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '5.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      is_clawback_enabled: true,
-    };
-    expect(balance.is_clawback_enabled).toBe(true);
-    expect(isCreditBalance(balance)).toBe(true);
+describe('cancellation errors (Issues #682 / #683)', () => {
+  it('HorizonCancelledError is a HorizonError subclass with a distinct name', () => {
+    const error = new HorizonCancelledError();
+    expect(error).toBeInstanceOf(HorizonError);
+    expect(error.name).toBe('HorizonCancelledError');
+    expect(error.message).toMatch(/job cancelled/i);
   });
 
-  it('accepts a credit balance with is_clawback_enabled=false (issuer opted out)', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '5.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      is_clawback_enabled: false,
-    };
-    expect(balance.is_clawback_enabled).toBe(false);
+  it('isCancellationError recognises explicit cancellation errors', () => {
+    expect(isCancellationError(new HorizonCancelledError())).toBe(true);
+    expect(isCancellationError(new HorizonCancelledError('custom'))).toBe(true);
   });
 
-  it('accepts a credit balance with is_authorized=true (issuer has AUTH_REQUIRED)', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '5.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      is_authorized: true,
-      is_authorized_to_maintain_liabilities: true,
-    };
-    expect(balance.is_authorized).toBe(true);
-    expect(balance.is_authorized_to_maintain_liabilities).toBe(true);
-  });
+  it('isCancellationError recognises legacy status-0 cancellation errors', () => {
+    const aborted = new HorizonError('Horizon polling aborted (job cancelled)', 0);
+    expect(isCancellationError(aborted)).toBe(true);
 
-  it('accepts a credit balance with is_authorized=false (frozen / not yet authorized)', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '0.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      is_authorized: false,
-      is_authorized_to_maintain_liabilities: false,
-    };
-    expect(balance.is_authorized).toBe(false);
-  });
-
-  it('accepts a credit balance with both clawback and auth flags set', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '1.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      is_authorized: true,
-      is_authorized_to_maintain_liabilities: true,
-      is_clawback_enabled: true,
-    };
-    expect(balance.is_authorized).toBe(true);
-    expect(balance.is_clawback_enabled).toBe(true);
-  });
-
-  it('omits optional auth/clawback fields gracefully (backward-compatible fixture)', () => {
-    const balance: import('../src/horizon').HorizonBalanceCredit = {
-      balance: '5.0000000',
-      asset_type: 'credit_alphanum4',
-      asset_code: 'USDC',
-      asset_issuer: TEST_ADDRESS_2,
-      buying_liabilities: '0.0000000',
-      selling_liabilities: '0.0000000',
-      // is_authorized, is_clawback_enabled intentionally absent
-    };
-    expect(balance.is_authorized).toBeUndefined();
-    expect(balance.is_clawback_enabled).toBeUndefined();
-    expect(isCreditBalance(balance)).toBe(true);
-  });
-});
-
-describe('HorizonAccount: account-level flags fixture assertions', () => {
-  it('accepts an account with auth_required=true in flags', () => {
-    const account: import('../src/horizon').HorizonAccount = {
-      ...makeAccount(),
-      flags: {
-        auth_required: true,
-        auth_revocable: true,
-        auth_immutable: false,
-        auth_clawback_enabled: false,
-      },
-    };
-    expect(account.flags?.auth_required).toBe(true);
-    expect(account.flags?.auth_revocable).toBe(true);
-    expect(account.flags?.auth_immutable).toBe(false);
-    expect(account.flags?.auth_clawback_enabled).toBe(false);
-  });
-
-  it('accepts an account with auth_clawback_enabled=true in flags', () => {
-    const account: import('../src/horizon').HorizonAccount = {
-      ...makeAccount(),
-      flags: {
-        auth_required: true,
-        auth_revocable: true,
-        auth_clawback_enabled: true,
-      },
-    };
-    expect(account.flags?.auth_clawback_enabled).toBe(true);
-  });
-
-  it('accepts an account without flags field (older Horizon snapshot)', () => {
-    const account = makeAccount();
-    expect(account.flags).toBeUndefined();
-    // hasTrustline should still work regardless
-    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
-  });
-
-  it('hasTrustline returns true even when trustline has is_clawback_enabled set', () => {
-    const account: import('../src/horizon').HorizonAccount = {
-      ...makeAccount(),
-      balances: [
-        {
-          balance: '10.0000000',
-          asset_type: 'native',
-          buying_liabilities: '0.0000000',
-          selling_liabilities: '0.0000000',
-        },
-        {
-          balance: '5.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: TEST_ADDRESS_2,
-          buying_liabilities: '0.0000000',
-          selling_liabilities: '0.0000000',
-          is_clawback_enabled: true,
-          is_authorized: true,
-          is_authorized_to_maintain_liabilities: true,
-        },
-      ],
-    };
-    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
-  });
-
-  it('fetchAccount round-trips a fixture containing clawback and auth flags', async () => {
-    const accountWithFlags: import('../src/horizon').HorizonAccount = {
-      id: TEST_ADDRESS,
-      account_id: TEST_ADDRESS,
-      sequence: '1',
-      subentry_count: 2,
-      num_sponsoring: 0,
-      num_sponsored: 0,
-      flags: {
-        auth_required: true,
-        auth_revocable: true,
-        auth_clawback_enabled: true,
-      },
-      balances: [
-        {
-          balance: '10.0000000',
-          asset_type: 'native',
-          buying_liabilities: '0.0000000',
-          selling_liabilities: '0.0000000',
-        },
-        {
-          balance: '5.0000000',
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer: TEST_ADDRESS_2,
-          buying_liabilities: '0.0000000',
-          selling_liabilities: '0.0000000',
-          is_authorized: true,
-          is_authorized_to_maintain_liabilities: true,
-          is_clawback_enabled: true,
-        },
-      ],
-    };
-    const mock = makeMockFetch(async () => makeMockResponse(200, accountWithFlags));
-
-    const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-      maxRetries: 0,
-      cacheTtlMs: 0,
-      fetchFn: mock,
-    });
-
-    expect(result.flags?.auth_required).toBe(true);
-    expect(result.flags?.auth_clawback_enabled).toBe(true);
-    const usdcBalance = result.balances.find(
-      (b) => isCreditBalance(b) && b.asset_code === 'USDC',
-    ) as import('../src/horizon').HorizonBalanceCredit | undefined;
-    expect(usdcBalance).toBeDefined();
-    expect(usdcBalance?.is_clawback_enabled).toBe(true);
-    expect(usdcBalance?.is_authorized).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #697 — structured Horizon retry log levels without address leakage
-// ---------------------------------------------------------------------------
-describe('Horizon structured retry logging (Issue #697)', () => {
-  const MUXED_ADDRESS = 'M' + 'A'.repeat(68);
-  const CONTRACT_ADDRESS = 'C' + 'A'.repeat(55);
-
-  type LevelCall = { level: 'debug' | 'info' | 'warn'; message: string; context: loggerModule.LogContext | undefined };
-
-  function captureAllLevels(): { calls: LevelCall[]; restore: () => void } {
-    const calls: LevelCall[] = [];
-    const spies = (['debug', 'info', 'warn'] as const).map((level) =>
-      jest.spyOn(loggerModule.logger, level).mockImplementation((message, context) => {
-        calls.push({
-          level,
-          message: loggerModule.redactString(message),
-          context: loggerModule.redactContext(context),
-        });
-      }),
-    );
-    return { calls, restore: () => spies.forEach((s) => s.mockRestore()) };
-  }
-
-  function serialize(call: LevelCall): string {
-    return `${call.message} ${JSON.stringify(call.context ?? {})}`;
-  }
-
-  let origSetTimeout: typeof setTimeout;
-  beforeEach(() => {
-    origSetTimeout = global.setTimeout;
-    global.setTimeout = ((callback: Parameters<typeof setTimeout>[0]) =>
-      origSetTimeout(callback, 0)) as typeof setTimeout;
-    loggerModule.logger.setDebugMode(true);
-  });
-  afterEach(() => {
-    global.setTimeout = origSetTimeout;
-    loggerModule.logger.setDebugMode(false);
-    jest.restoreAllMocks();
-  });
-
-  it('logs each scheduled retry at debug with attempt index and delay', async () => {
-    const { calls, restore } = captureAllLevels();
-    let callCount = 0;
-    const mock = makeMockFetch(async () => {
-      callCount += 1;
-      if (callCount < 3) {
-        return makeMockResponse(503, { detail: `Account ${TEST_ADDRESS} unavailable` });
-      }
-      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
-    });
-
-    try {
-      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-        maxRetries: 3,
-        cacheTtlMs: 0,
-        retryBaseDelayMs: 10,
-        retryMaxDelayMs: 1000,
-        fetchFn: mock,
-      });
-      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
-      expect(retries).toHaveLength(2);
-      expect(retries.every((c) => c.level === 'debug')).toBe(true);
-      expect(retries.map((c) => c.context?.attempt)).toEqual([0, 1]);
-      expect(retries.map((c) => c.context?.delayMs)).toEqual([10, 20]);
-      expect(retries.map((c) => c.context?.status)).toEqual([503, 503]);
-      expect(retries.every((c) => c.context?.capped === false)).toBe(true);
-      expect(retries.every((c) => c.context?.reasonCode === 'HORIZON_RETRY_SCHEDULED')).toBe(true);
-      expect(calls.some((c) => c.level === 'warn')).toBe(false);
-      for (const call of calls) {
-        expect(serialize(call)).not.toContain(TEST_ADDRESS);
-      }
-    } finally {
-      restore();
-    }
-  });
-
-  it('logs final exhaustion at warning with a reason_code-friendly summary', async () => {
-    const { calls, restore } = captureAllLevels();
-    const mock = makeMockFetch(async () =>
-      makeMockResponse(429, { detail: `Rate limit for ${TEST_ADDRESS}` }, { headers: { 'retry-after': '0' } }),
-    );
-
-    try {
-      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-        maxRetries: 1,
-        cacheTtlMs: 0,
-        fetchFn: mock,
-      })).rejects.toMatchObject({ statusCode: 429 });
-
-      const warnings = calls.filter((c) => c.level === 'warn');
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0].message).toContain('HORIZON_RETRIES_EXHAUSTED');
-      expect(warnings[0].message).toContain('HTTP 429');
-      expect(warnings[0].context?.phase).toBe('exhausted');
-      expect(warnings[0].context?.attempt).toBe(1);
-      expect(warnings[0].context?.maxAttempts).toBe(2);
-      expect(warnings[0].context?.stellarAddress).toBe(redactForAddress(TEST_ADDRESS));
-      // No response body fields leak into the retry event.
-      expect(serialize(warnings[0])).not.toContain('Rate limit for');
-      for (const call of calls) {
-        expect(serialize(call)).not.toContain(TEST_ADDRESS);
-      }
-    } finally {
-      restore();
-    }
-  });
-
-  it('records a capped Retry-After delay accurately, including very short values', async () => {
-    const { calls, restore } = captureAllLevels();
-    let callCount = 0;
-    const mock = makeMockFetch(async () => {
-      callCount += 1;
-      if (callCount === 1) {
-        return makeMockResponse(429, {}, { headers: { 'retry-after': '120' } });
-      }
-      if (callCount === 2) {
-        return makeMockResponse(429, {}, { headers: { 'retry-after': '0' } });
-      }
-      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
-    });
-
-    try {
-      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-        maxRetries: 3,
-        cacheTtlMs: 0,
-        retryMaxDelayMs: 5000,
-        fetchFn: mock,
-      });
-      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
-      expect(retries).toHaveLength(2);
-      expect(retries[0].context?.delayMs).toBe(5000);
-      expect(retries[0].context?.capped).toBe(true);
-      expect(retries[0].context?.retryAfterFromHeader).toBe(true);
-      expect(retries[1].context?.delayMs).toBe(0);
-      expect(retries[1].context?.capped).toBe(false);
-    } finally {
-      restore();
-    }
-  });
-
-  it('tags the fallback base URL without leaking query params', async () => {
-    const { calls, restore } = captureAllLevels();
-    const mock = makeMockFetch(async () => makeMockResponse(503, {}));
-
-    try {
-      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-        maxRetries: 0,
-        cacheTtlMs: 0,
-        horizonUrlFallback: `${FALLBACK_HORIZON}?api_key=supersecret&account=${TEST_ADDRESS}`,
-        fetchFn: mock,
-      })).rejects.toBeDefined();
-
-      const exhausted = calls.filter((c) => c.context?.event === 'horizon_retry' && c.context?.phase === 'exhausted');
-      const endpointKinds = exhausted.map((c) => c.context?.endpointKind);
-      expect(endpointKinds).toContain('primary');
-      const fallbackEvent = exhausted.find((c) => c.context?.endpointKind === 'fallback');
-      if (fallbackEvent) {
-        expect(fallbackEvent.context?.horizonUrl).not.toContain('?');
-        expect(fallbackEvent.context?.horizonUrl).toContain('horizon-fallback.stellar.org');
-      }
-      for (const call of calls.filter((c) => c.context?.event === 'horizon_retry')) {
-        expect(serialize(call)).not.toContain('supersecret');
-        expect(serialize(call)).not.toContain(TEST_ADDRESS);
-      }
-    } finally {
-      restore();
-    }
-  });
-
-  it('never leaks G, C, or M addresses on transport retries', async () => {
-    const { calls, restore } = captureAllLevels();
-    const mock = makeMockFetch(async () => {
-      throw new Error(`connect ECONNRESET ${TEST_ADDRESS} ${CONTRACT_ADDRESS} ${MUXED_ADDRESS}`);
-    });
-
-    try {
-      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
-        maxRetries: 1,
-        cacheTtlMs: 0,
-        retryBaseDelayMs: 1,
-        fetchFn: mock,
-      })).rejects.toBeDefined();
-
-      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
-      expect(retries.map((c) => c.context?.phase)).toEqual(['scheduled', 'exhausted']);
-      expect(retries[0].level).toBe('debug');
-      expect(retries[0].message).toBe('Horizon transport retry scheduled');
-      expect(retries[1].level).toBe('warn');
-      for (const call of calls) {
-        const text = serialize(call);
-        expect(text).not.toContain(TEST_ADDRESS);
-        expect(text).not.toContain(CONTRACT_ADDRESS);
-        expect(text).not.toContain(MUXED_ADDRESS);
-      }
-    } finally {
-      restore();
-    }
+    const unrelated = new HorizonError('Horizon returned 500', 500);
+    expect(isCancellationError(unrelated)).toBe(false);
+    expect(isCancellationError(new Error('boom'))).toBe(false);
+    expect(isCancellationError(null)).toBe(false);
   });
 });

@@ -60,16 +60,6 @@ function getBadgeLabel(state: BadgeState): string {
 }
 
 /**
- * Get the accessibility-friendly alt text for a badge state.
- *
- * The alt text is used in Markdown embeds so screen readers and
- * text-only renderers convey the badge meaning without the image.
- */
-export function getBadgeAltText(state: BadgeState): string {
-  return `TrustBridge ${getBadgeLabel(state)}`;
-}
-
-/**
  * Generate a Shields.io badge URL for the given state.
  *
  * Example output:
@@ -94,7 +84,7 @@ export function generateBadgeUrl(state: BadgeState, label: string = 'trustbridge
  */
 export function generateBadgeMarkdown(state: BadgeState, label: string = 'trustbridge'): string {
   const url = generateBadgeUrl(state, label);
-  const altText = getBadgeAltText(state);
+  const altText = `TrustBridge ${getBadgeLabel(state)}`;
   return `[![${altText}](${url})](https://github.com/Stellar-TrustBridge/trustbridge-action)`;
 }
 

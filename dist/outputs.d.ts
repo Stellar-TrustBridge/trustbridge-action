@@ -40,6 +40,11 @@ export interface ActionOutputExtras {
      */
     checkRunId?: string;
     checkRunConclusion?: string;
+    /**
+     * Workspace-relative path of the SARIF file written this run (Issues #681 /
+     * #680). Empty when `sarif_output_path` was unset or the write was skipped.
+     */
+    sarifOutputPath?: string;
 }
 /**
  * A single source that provided a value for a given field.
@@ -146,6 +151,23 @@ export interface ActionOutputs {
     friendbot_transaction_hash: string;
     assets_trustline_status: string;
     trustlines_summary: string;
+    /**
+     * Batch-mode outputs (Issue #670).
+     *
+     * Published on the batch code path in index.ts, which returns before
+     * `setValidationOutputs` runs. Single-address runs publish empty strings here
+     * so the action.yml output contract stays total: every declared output has a
+     * value in every mode, and a consumer never has to distinguish "unset" from
+     * "empty string".
+     */
+    batch_summary_json: string;
+    batch_passed_count: string;
+    batch_failed_count: string;
+    /**
+     * Workspace-relative path of the SARIF 2.1.0 file written when the
+     * `sarif_output_path` input is set (Issues #681 / #680). Empty otherwise.
+     */
+    sarif_output_path: string;
 }
 export declare function toActionOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): ActionOutputs;
 export declare function setValidationOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): void;

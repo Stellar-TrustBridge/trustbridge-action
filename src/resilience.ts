@@ -16,7 +16,7 @@
  */
 
 import * as core from '@actions/core';
-import { inferStellarNetworkPreset } from './links';
+import { inferStellarNetwork } from './links';
 
 // ---------------------------------------------------------------------------
 // Rate Budget Tracker
@@ -696,8 +696,8 @@ export async function runCliCheck(
 
   // If primary failed on transient error (not 404), fail over to secondary URL
   if (statusCode !== 200 && statusCode !== 404 && secondaryUrl) {
-    const primaryNet = inferStellarNetworkPreset(horizonUrl);
-    const secondaryNet = inferStellarNetworkPreset(secondaryUrl);
+    const primaryNet = inferStellarNetwork(horizonUrl);
+    const secondaryNet = inferStellarNetwork(secondaryUrl);
     if (primaryNet === secondaryNet || options.allowCrossNetworkFailover) {
       const secondaryAccountUrl = `${secondaryUrl.replace(/\/$/, '')}/accounts/${options.address}`;
       let secondaryRetries = 0;
