@@ -25,6 +25,19 @@ jest.mock('../src/comment', () => ({
   postIssueComment: jest.fn(async () => 'https://github.com/o/r/issues/1#issuecomment-1'),
 }));
 
+// The run()-level tests below exercise the posting path.  Without this mock
+// `runIssuesPreflight` performs a real `octokit.rest.issues.listComments`
+// call whenever the workflow context carries an issue/PR number — which is
+// always true on CI, where it 401s on the fake token.  Mocking it keeps the
+// suite hermetic in both environments.
+jest.mock('../src/preflight', () => ({
+  ...jest.requireActual('../src/preflight'),
+  runIssuesPreflight: jest.fn(async () => ({
+    skip: false,
+    message: 'preflight mocked for tests',
+  })),
+}));
+
 const mockFetchAccount = horizon.fetchAccount as jest.MockedFunction<typeof horizon.fetchAccount>;
 const mockPostIssueComment = comment.postIssueComment as jest.MockedFunction<typeof comment.postIssueComment>;
 
