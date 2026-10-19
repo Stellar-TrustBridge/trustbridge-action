@@ -14,11 +14,16 @@
  *   - Proxy URLs containing userinfo (username:password) are redacted in logs.
  *   - SSRF protections are NOT disabled when using a proxy.
  *   - Only HTTPS proxies are supported for Horizon requests.
+ *   - Proxy URLs are validated against the same SSRF rules as `ssrf.ts`
+ *     (Issue #758): loopback, link-local, private ranges, and cloud
+ *     metadata endpoints are rejected, as are scheme-smuggling forms
+ *     (non-http(s) schemes, embedded credentials, non-canonical hosts).
  */
 
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { URL } from 'url';
 import { logger } from './logger';
+import { isBlockedHost } from './ssrf';
 
 /**
  * Resolved proxy configuration from environment variables.
@@ -47,6 +52,66 @@ export function redactProxyUrl(url: string): string {
     // Not a valid URL — return as-is (caller will handle).
   }
   return url;
+}
+
+/**
+ * Validate a proxy URL against SSRF pivots and scheme-smuggling forms.
+ *
+ * Returns `null` when the URL is acceptable, or a stable error message
+ * describing why it was rejected. The checks mirror `ssrf.ts` so that
+ * proxy-derived Horizon traffic is subject to the same guard as direct
+ * Horizon URLs.
+ *
+ * Rejected forms:
+ *   - empty / malformed URLs
+ *   - non-http(s) schemes (e.g. `file:`, `ftp:`, `gopher:`)
+ *   - embedded credentials (`user:pass@host`)
+ *   - loopback, link-local, private ranges, and metadata endpoints
+ *   - non-canonical / obfuscated hosts (e.g. `0x7f.0.0.1`, `2130706433`)
+ */
+export function validateProxyUrl(proxyUrl: string): string | null {
+  if (!proxyUrl || typeof proxyUrl !== 'string' || proxyUrl.trim() === '') {
+    return 'Proxy URL is empty';
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch {
+    return 'Proxy URL is malformed';
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return `Proxy URL has unsupported scheme: ${parsed.protocol}`;
+  }
+
+  if (parsed.username || parsed.password) {
+    return 'Proxy URL must not contain embedded credentials';
+  }
+
+  const hostname = parsed.hostname;
+  if (!hostname) {
+    return 'Proxy URL is missing a hostname';
+  }
+
+  // Reject non-canonical / obfuscated host forms that could smuggle an
+  // internal address past naive string checks (e.g. `0x7f.0.0.1`,
+  // `2130706433`, trailing dots, percent-encoding).
+  if (hostname !== hostname.toLowerCase()) {
+    return 'Proxy URL hostname must be lowercase';
+  }
+  if (hostname.endsWith('.')) {
+    return 'Proxy URL hostname must not have a trailing dot';
+  }
+  if (hostname.includes('%')) {
+    return 'Proxy URL hostname must not be percent-encoded';
+  }
+
+  if (isBlockedHost(hostname)) {
+    return `Proxy URL host is blocked by SSRF policy: ${hostname}`;
+  }
+
+  return null;
 }
 
 /**
@@ -99,7 +164,7 @@ export function shouldBypassProxy(hostname: string, noProxyHosts: string[]): boo
  * Returns `undefined` when:
  *   - No proxy is configured
  *   - The target hostname is in the NO_PROXY list
- *   - The proxy URL is invalid
+ *   - The proxy URL is invalid or fails SSRF validation
  *
  * The returned agent is an `https-proxy-agent` instance that can be passed
  * as the `agent` option to `node-fetch` or Octokit's `httpAgent`.
@@ -130,11 +195,16 @@ export function createProxyAgent(
     return undefined;
   }
 
+  const validationError = validateProxyUrl(cfg.proxyUrl);
+  if (validationError) {
+    logger.warn(`Rejected proxy URL: ${validationError}`, {
+      component: 'proxy',
+      proxyUrl: redactProxyUrl(cfg.proxyUrl),
+    });
+    return undefined;
+  }
+
   try {
-    const parsedProxy = new URL(cfg.proxyUrl);
-    if (!parsedProxy.hostname || !['http:', 'https:'].includes(parsedProxy.protocol)) {
-      throw new Error(`Invalid proxy URL protocol or hostname: ${cfg.proxyUrl}`);
-    }
     const safeProxyUrl = redactProxyUrl(cfg.proxyUrl);
     logger.info('Creating proxy agent', {
       component: 'proxy',
