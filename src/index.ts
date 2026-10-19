@@ -54,6 +54,10 @@ async function run(): Promise<void> {
     max: 60000,
   });
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
+  const postingMode = resolvePostingMode(
+    core.getInput('posting_mode'),
+    core.getInput('comment_mode'),
+  );
   const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
     core.getInput('wait_until_funded_timeout_ms'),
@@ -82,6 +86,7 @@ async function run(): Promise<void> {
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Friendbot testnet onboarding (Issue #4 / #699). See docs/USAGE.md#friendbot-testnet-funding.
   const useFriendbot = parseBooleanInput(core.getInput('use_friendbot'), false);
@@ -382,15 +387,25 @@ async function run(): Promise<void> {
     assets: assetsTrustlineStatusExtras,
   });
 
+  // Issue #696 — comment_id is only published from a successful
+  // createComment/updateComment response. dry-run, off, a missing issue
+  // context, or a failed post all leave it (and comment_url) empty.
   let commentUrl: string | undefined;
-  try {
-    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
-    if (commentUrl) {
-      logger.info('Issue comment created', { component: 'index', commentUrl });
+  let commentId: string | undefined;
+  if (postingMode === 'post') {
+    try {
+      const posted = await upsertIssueComment(githubToken, commentBody, { sticky: stickyComment });
+      if (posted) {
+        commentUrl = posted.url;
+        commentId = posted.id !== undefined ? String(posted.id) : undefined;
+        logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
+      }
+    } catch (commentError) {
+      const message = getErrorMessage(commentError);
+      core.warning(`Failed to post issue comment: ${message}`);
     }
-  } catch (commentError) {
-    const message = getErrorMessage(commentError);
-    core.warning(`Failed to post issue comment: ${message}`);
+  } else {
+    core.info(`posting_mode is "${postingMode}" — skipping issue comment.`);
   }
 
   setValidationOutputs(result, commentUrl, undefined, {

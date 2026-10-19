@@ -144,6 +144,30 @@ export function validateSSRFSafeUrl(
 }
 
 /**
+ * Validate an outbound proxy URL against the same SSRF policy used for
+ * Horizon fetches.
+ *
+ * Proxy configuration can redirect Horizon traffic, so it must be held to
+ * the same guard as direct Horizon URLs. This rejects:
+ * - Empty or malformed inputs
+ * - Non-HTTPS schemes (http, file, ftp, etc.)
+ * - Embedded credentials / userinfo (scheme-smuggling pivots)
+ * - Loopback, link-local, private, and metadata hostnames
+ *
+ * Returns `{ valid: true }` or `{ valid: false; errors: [...] }` with stable
+ * error messages suitable for surfacing to operators.
+ */
+export function validateProxyUrl(
+  urlStr: string | undefined | null,
+): { valid: true } | { valid: false; errors: string[] } {
+  if (urlStr === undefined || urlStr === null || urlStr.trim() === '') {
+    return { valid: false, errors: ['Proxy URL must not be empty'] };
+  }
+
+  return validateSSRFSafeUrl(urlStr.trim());
+}
+
+/**
  * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
  *
  * NOT currently called by TrustBridge, but available for future enhancements
@@ -256,41 +280,48 @@ export async function fetchSSRFSafe(
         continue;
       }
 
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) {
-        const bytes = parseInt(contentLength, 10);
-        if (bytes > maxBodyBytes) {
-          return {
-            ok: false,
-            error: `Response body too large: ${bytes} bytes (max ${maxBodyBytes})`,
-            status: response.status,
-          };
-        }
-      }
-
       if (!response.ok) {
         return { ok: false, error: `HTTP ${response.status}`, status: response.status };
       }
 
-      const textData = await response.text();
-      if (Buffer.byteLength(textData, 'utf8') > maxBodyBytes) {
-        return {
-          ok: false,
-          error: `Response body exceeds limit after decompression`,
-          status: response.status,
-        };
+      const reader = response.body?.getReader();
+      if (!reader) {
+        return { ok: false, error: 'Response body is not readable', status: response.status };
       }
+
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBodyBytes) {
+          await reader.cancel();
+          return {
+            ok: false,
+            error: `Response body exceeds limit of ${maxBodyBytes} bytes`,
+            status: response.status,
+          };
+        }
+
+        chunks.push(value);
+      }
+
+      const decoder = new TextDecoder();
+      const text = chunks.map((chunk) => decoder.decode(chunk, { stream: true })).join('') + decoder.decode();
 
       return {
         ok: true,
         status: response.status,
-        text: async () => textData,
         headers: response.headers,
+        text: async () => text,
       };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isTimeout = message.includes('signal') || message.includes('timeout');
-      return { ok: false, error: isTimeout ? 'Request timeout' : `Fetch failed: ${message}` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: `Fetch failed: ${message}` };
     }
   }
 }

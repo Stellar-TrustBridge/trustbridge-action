@@ -11,6 +11,9 @@
  *   - The uploadSarifReport integration path (mock upload function)
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   buildSarifDocument,
   serialiseSarif,
@@ -24,6 +27,17 @@ import {
   HOME_DOMAIN_RULE_ID,
   HOME_DOMAIN_HELP_URI,
 } from '../src/sarif';
+import {
+  ANNOTATION_SCHEMA_KEYWORDS,
+  SARIF_SCHEMA_FILE,
+  SUPPORTED_SCHEMA_KEYWORDS,
+  loadSarifJsonSchema,
+} from '../src/sarifSchema';
+import {
+  ValidationResult,
+  circuitOpenFailureResult,
+  rateBudgetExhaustedResult,
+} from '../src/checks';
 
 const TEST_ADDRESS = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 const PRIMARY_HORIZON = 'https://horizon.stellar.org';

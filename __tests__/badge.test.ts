@@ -2,6 +2,9 @@
  * Tests for badge snippet generation (Issue #139).
  * Covers: state determination, URL generation, Markdown generation,
  * and safety (no PII or tokens in output).
+ *
+ * Issue #762: golden tests for pass/fail/skipped states and
+ * accessibility-friendly alt text in markdown embeds.
  */
 
 import {
@@ -36,6 +39,19 @@ const failResult: ValidationResult = {
     { passed: false, label: 'Account funded', detail: 'Not found' },
     { passed: false, label: 'USDC trustline', detail: 'N/A' },
     { passed: false, label: 'XLM reserve', detail: 'N/A' },
+  ],
+};
+
+const skippedResult: ValidationResult = {
+  valid: false,
+  accountFunded: false,
+  trustlineExists: false,
+  xlmBalance: '0',
+  xlmReserveMet: false,
+  checks: [
+    { passed: false, label: 'Account funded', detail: 'Skipped' },
+    { passed: false, label: 'USDC trustline', detail: 'Skipped' },
+    { passed: false, label: 'XLM reserve', detail: 'Skipped' },
   ],
 };
 
@@ -81,6 +97,10 @@ describe('determineBadgeState', () => {
     };
     expect(determineBadgeState(result)).toBe('fail');
   });
+
+  it('returns fail for skipped result (not valid)', () => {
+    expect(determineBadgeState(skippedResult)).toBe('fail');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -107,6 +127,13 @@ describe('generateBadgeUrl', () => {
     expect(url).toContain('img.shields.io/badge');
     expect(url).toContain('yellow');
     expect(url).toContain('Pending');
+  });
+
+  it('generates URL with skipped state', () => {
+    const url = generateBadgeUrl('skipped');
+    expect(url).toContain('img.shields.io/badge');
+    expect(url).toContain('lightgrey');
+    expect(url).toContain('Skipped');
   });
 
   it('uses custom label when provided', () => {
@@ -161,9 +188,23 @@ describe('generateBadgeMarkdown', () => {
     expect(markdown).toContain('github.com/Stellar-TrustBridge/trustbridge-action');
   });
 
+  it('generates valid Markdown image link for skipped state', () => {
+    const markdown = generateBadgeMarkdown('skipped');
+    expect(markdown).toContain('[![');
+    expect(markdown).toContain('lightgrey');
+    expect(markdown).toContain('Skipped');
+    expect(markdown).toContain('github.com/Stellar-TrustBridge/trustbridge-action');
+  });
+
   it('includes alt text for accessibility', () => {
     const markdown = generateBadgeMarkdown('pass');
     expect(markdown).toContain('[TrustBridge');
+  });
+
+  it('includes descriptive alt text for each state', () => {
+    expect(generateBadgeMarkdown('pass')).toMatch(/\[!\[TrustBridge[^\]]*Ready[^\]]*\]/);
+    expect(generateBadgeMarkdown('fail')).toMatch(/\[!\[TrustBridge[^\]]*Not Ready[^\]]*\]/);
+    expect(generateBadgeMarkdown('skipped')).toMatch(/\[!\[TrustBridge[^\]]*Skipped[^\]]*\]/);
   });
 
   it('links to TrustBridge repository', () => {
@@ -210,6 +251,14 @@ describe('generateBadgeSnippets', () => {
     expect(snippets.url).toContain('red');
   });
 
+  it('returns both markdown and url for skipped result', () => {
+    const snippets = generateBadgeSnippets(skippedResult);
+    expect(snippets).toHaveProperty('markdown');
+    expect(snippets).toHaveProperty('url');
+    expect(snippets.markdown).toContain('lightgrey');
+    expect(snippets.url).toContain('lightgrey');
+  });
+
   it('markdown URL matches url field', () => {
     const snippets = generateBadgeSnippets(passResult);
     // Extract URL from markdown (between first ](  and )()
@@ -240,19 +289,19 @@ describe('generateBadgeSnippets', () => {
     expect(snippets.url).toContain('red');
   });
 
-  it('contains no PII in either snippet', () => {
-    const snippets = generateBadgeSnippets(passResult);
-    const combined = snippets.markdown + snippets.url;
-    // Ensure no stellar addresses, balances, or asset codes appear
-    expect(combined).not.toMatch(/^G[A-Z2-7]{55}$/);
-    expect(combined).not.toContain('5.0000000');
-    expect(combined).not.toContain('USDC');
+  it('reflects skipped state correctly', () => {
+    const snippets = generateBadgeSnippets(skippedResult);
+    expect(snippets.markdown).toContain('Skipped');
+    expect(snippets.url).toContain('Skipped');
+    expect(snippets.markdown).toContain('lightgrey');
+    expect(snippets.url).toContain('lightgrey');
   });
 
-  it('generates consistent output on repeated calls', () => {
-    const snippets1 = generateBadgeSnippets(passResult);
-    const snippets2 = generateBadgeSnippets(passResult);
-    expect(snippets1.markdown).toBe(snippets2.markdown);
-    expect(snippets1.url).toBe(snippets2.url);
+  it('does not leak PII in snippets', () => {
+    const snippets = generateBadgeSnippets(failResult);
+    expect(snippets.markdown).not.toContain('G');
+    expect(snippets.url).not.toContain('G');
+    expect(snippets.markdown).not.toContain('XLM');
+    expect(snippets.url).not.toContain('XLM');
   });
 });

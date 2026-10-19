@@ -225,48 +225,44 @@ export function redactHorizonUrl(url: string): string {
     const query = safeParams.toString();
     parsed.search = query ? `?${query}` : '';
     masked = parsed.toString();
-    if (!hadTrailingSlash) {
-      masked = masked.replace(/\/(?=\?|#|$)/, '');
+    if (hadTrailingSlash && !masked.endsWith('/')) {
+      masked = `${masked}/`;
     }
+    return masked;
   } catch {
-    // If URL parsing fails (e.g. malformed URL), fall back to string redaction
+    // Not a parseable URL — fall back to string-level redaction so an
+    // address embedded in a malformed URL still never leaks.
+    return redactString(masked);
   }
-  return redactString(masked);
 }
 
 /**
- * Redacts a `LogContext` record in place (returns a new object, no
- * mutation) for safe logging. Policy per key type:
- *
- * - Keys in `SENSITIVE_SECRET_KEYS` → redact to '[REDACTED]'.
- * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
- *   raw string value.
- * - Key == `horizonUrl`             → run `redactHorizonUrl`.
- * - Unknown string values           → scan and mask embedded addresses
- *   and PEM keys via `redactString`.
+ * Redacts a single context value based on its key and shape. Address-typed
+ * keys are masked via {@link redactStellarAddress}; secret-typed keys are
+ * replaced wholesale; everything else is passed through {@link redactString}
+ * so embedded addresses/secrets in free-form values are still masked.
  */
-export function redactContext(context: LogContext | undefined): LogContext | undefined {
-  if (!context) return context;
-  const safe: LogContext = {};
-  for (const key of Object.keys(context)) {
-    const raw = context[key];
-    if (isSensitiveSecretKey(key)) {
-      safe[key] = '[REDACTED]';
-      continue;
-    }
-    if (key === 'component') {
-      safe.component = raw as string | undefined;
-      continue;
-    }
-    if (key === 'horizonUrl' && typeof raw === 'string') {
-      safe.horizonUrl = redactHorizonUrl(raw);
-      continue;
-    }
-    if (ADDRESS_CONTEXT_KEYS.has(key) && typeof raw === 'string') {
-      safe[key] = redactStellarAddress(raw);
-      continue;
-    }
-    safe[key] = redactValue(raw);
+function redactContextValue(key: string, value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    if (isSensitiveSecretKey(key)) return '[REDACTED]';
+    if (ADDRESS_CONTEXT_KEYS.has(key)) return redactStellarAddress(value);
+    return redactString(value);
+  }
+  if (typeof value === 'object') {
+    return redactContext(value as Record<string, unknown>);
+  }
+  return value;
+}
+
+/**
+ * Redacts every value in a structured log context. Used by {@link log} and
+ * {@link debug} so structured output never carries a raw address or token.
+ */
+export function redactContext(context: Record<string, unknown>): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(context)) {
+    safe[key] = redactContextValue(key, value);
   }
   return safe;
 }
@@ -552,125 +548,51 @@ export function formatHorizonRetryMessage(event: HorizonRetryEvent): string {
 export const logger = new StructuredLogger();
 
 /**
- * Create a timing helper for performance measurement.
+ * Logs an informational message. Context values are redacted before output.
  */
-export class Timer {
-  private startTime: number;
-  private name: string;
-
-  constructor(name: string) {
-    this.name = name;
-    this.startTime = Date.now();
-  }
-
-  /**
-   * Get elapsed time since timer creation.
-   */
-  elapsed(): number {
-    return Date.now() - this.startTime;
-  }
-
-  /**
-   * Log the elapsed time and reset the timer.
-   */
-  logAndReset(): number {
-    const elapsed = this.elapsed();
-    logger.logMetric(this.name, elapsed, 'ms');
-    this.startTime = Date.now();
-    return elapsed;
-  }
-
-  /**
-   * Return a formatted elapsed time string.
-   */
-  toString(): string {
-    const elapsed = this.elapsed();
-    return `${elapsed}ms`;
+export function log(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.info(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.info(safeMessage);
   }
 }
 
 /**
- * Represents the full set of resolved action inputs that may be logged
- * as a structured JSON artifact when `log_inputs` is enabled.
- *
- * Every field that could carry a Stellar address or sensitive URL is typed
- * as `string` so the redaction helpers can process it uniformly before the
- * record reaches any log output.
+ * Logs a debug message. Only emitted when the `debug` input is enabled, but
+ * the redaction pass runs unconditionally so enabling debug can never leak a
+ * raw address or token into public Actions logs.
  */
-export interface ActionInputsLogRecord {
-  horizonUrl: string;
-  horizonUrlFallback: string;
-  rpcFallbackUrl: string;
-  assetCode: string;
-  assetIssuer: string;
-  minXlmReserve: string;
-  minTrustlineLimit: string; // Issue #140
-  stellarAddress: string;
-  failOnMissing: boolean;
-  debugMode: boolean;
-  horizonTimeoutMs: number;
-  stickyComment: boolean;
-  waitUntilFunded: boolean;
-  waitUntilFundedTimeoutMs: number;
-  waitUntilFundedIntervalMs: number;
-  horizonCacheTtlMs: number;
-  useCache: boolean;
-  horizonMaxRequests: number;
-  maxRetries?: number;
-  retryBaseDelayMs?: number;
-  retryMaxDelayMs: number;
-  logInputs: boolean;
-  allowCrossNetworkFallback?: boolean;
+export function debug(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.debug(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.debug(safeMessage);
+  }
 }
 
 /**
- * Build a redacted copy of the resolved action inputs suitable for writing
- * to structured log output.  All Stellar addresses and Horizon/RPC URLs are
- * masked before the record is returned; no value is emitted verbatim.
- *
- * The returned object is plain JSON-serialisable — every value is a
- * primitive (string, number, boolean) so `JSON.stringify` produces a
- * deterministic, machine-readable artifact.
+ * Logs a warning message. Context values are redacted before output.
  */
-export function buildInputsLogRecord(inputs: ActionInputsLogRecord): ActionInputsLogRecord {
-  return {
-    horizonUrl: redactHorizonUrl(inputs.horizonUrl),
-    horizonUrlFallback: inputs.horizonUrlFallback ? redactHorizonUrl(inputs.horizonUrlFallback) : '',
-    rpcFallbackUrl: inputs.rpcFallbackUrl ? redactString(inputs.rpcFallbackUrl) : '',
-    assetCode: inputs.assetCode,
-    assetIssuer: redactStellarAddress(inputs.assetIssuer) || redactString(inputs.assetIssuer),
-    minXlmReserve: inputs.minXlmReserve,
-    minTrustlineLimit: inputs.minTrustlineLimit,
-    stellarAddress: redactStellarAddress(inputs.stellarAddress),
-    failOnMissing: inputs.failOnMissing,
-    debugMode: inputs.debugMode,
-    horizonTimeoutMs: inputs.horizonTimeoutMs,
-    stickyComment: inputs.stickyComment,
-    waitUntilFunded: inputs.waitUntilFunded,
-    waitUntilFundedTimeoutMs: inputs.waitUntilFundedTimeoutMs,
-    waitUntilFundedIntervalMs: inputs.waitUntilFundedIntervalMs,
-    horizonCacheTtlMs: inputs.horizonCacheTtlMs,
-    useCache: inputs.useCache,
-    horizonMaxRequests: inputs.horizonMaxRequests,
-    maxRetries: inputs.maxRetries ?? 3,
-    retryBaseDelayMs: inputs.retryBaseDelayMs ?? 1000,
-    retryMaxDelayMs: inputs.retryMaxDelayMs ?? 30000,
-    logInputs: inputs.logInputs,
-    allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,
-  };
+export function warning(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.warning(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.warning(safeMessage);
+  }
 }
 
 /**
- * Emit a structured JSON log record of all resolved action inputs to GitHub
- * Actions log output.  The record is built via `buildInputsLogRecord` so
- * every address/URL field is already redacted before it is written.
- *
- * The record is emitted with `core.info` so it is always visible (not gated
- * on debug mode) whenever the caller opts in via `log_inputs: true`.
- *
- * @param inputs  The raw resolved inputs from `src/index.ts`.
+ * Logs an error message. Context values are redacted before output.
  */
-export function emitInputsLogRecord(inputs: ActionInputsLogRecord): void {
-  const redacted = buildInputsLogRecord(inputs);
-  core.info(`[TrustBridge] action inputs: ${JSON.stringify(redacted)}`);
+export function error(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.error(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.error(safeMessage);
+  }
 }

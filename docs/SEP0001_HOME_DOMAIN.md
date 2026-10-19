@@ -135,6 +135,28 @@ All outcomes also record a `home_domain_check` metric point with `outcome` and
 
 ---
 
+## Failure matrix
+
+When a home-domain check does not pass, the `outcome` tag on the
+`home_domain_check` metric point (and the `home_domain_*` counter) is the
+canonical reason code. Use the matrix below to map each symptom to its reason
+code and remediation. The reason codes are emitted by `evaluateHomeDomain` in
+`src/checks.ts` and must stay in sync with this table.
+
+| Symptom | Reason code (`outcome`) | Counter | Typical cause | Remediation |
+|---|---|---|---|---|
+| Check never runs; no `home_domain_check` metric | `skipped` | `home_domain_skipped` | `home_domain_check_enabled` is `false` (default). | Set `home_domain_check_enabled: 'true'` on the workflow step. |
+| Issuer row shows no domain; `missing` outcome | `missing` | `home_domain_missing` | Issuer account has no `home_domain` set on-chain, or Horizon returned an empty value. | Set `home_domain` on the issuer account (`manage_data`/account merge tooling) and re-run; confirm Horizon is not serving stale data (`horizon_cache_ttl_ms: 0`). |
+| Domain present but flagged; `mismatch` outcome | `mismatch` | `home_domain_mismatch` | On-chain `home_domain` differs from `expected_home_domain` (comparison is case-insensitive). | Correct `expected_home_domain` to the issuer's real domain, or update the issuer's on-chain `home_domain`. |
+| Strict mode fails the step | `missing` or `mismatch` | `home_domain_missing` / `home_domain_mismatch` | `home_domain_check_mode: 'strict'` with `fail_on_missing: true` and a failing outcome. | Fix the underlying `missing`/`mismatch` cause above, or switch to `warn` mode while remediating. |
+| Domain looks correct but still `mismatch` | `mismatch` | `home_domain_mismatch` | Trailing whitespace, scheme (`https://`), or path included in `expected_home_domain`. | Provide a bare hostname (e.g. `centre.io`), no scheme or path. |
+
+> **Note:** `valid` is the only passing outcome and is not listed above. Any
+> outcome other than `valid`/`skipped` is a failure that `strict` mode treats
+> as blocking.
+
+---
+
 ## Comment output
 
 When the check is enabled a **SEP-0001 home domain** row is added to the
