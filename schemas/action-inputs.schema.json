@@ -677,10 +677,11 @@
       "type": "string",
       "description": "Alias for skip_for_maintainers. Opt-in skip when actor is a maintainer. Default false.",
       "enum": [
+        "",
         "true",
         "false"
       ],
-      "default": "false"
+      "default": ""
     },
     "maintainers_allowlist": {
       "type": "string",
