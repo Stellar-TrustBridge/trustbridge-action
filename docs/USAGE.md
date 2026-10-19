@@ -947,6 +947,60 @@ When the action runs in an issue context, it sets `comment_url` to the created G
   run: echo "Comment URL: ${{ steps.trustbridge.outputs.comment_url }}"
 ```
 
+### `comment_id` — chaining a follow-up edit (Issue #696)
+
+`comment_id` is the numeric REST id (as a string) of the issue comment TrustBridge created or updated in this run. It comes straight from the `createComment` / `updateComment` response, so downstream steps can edit the same comment without parsing `comment_url`.
+
+| Situation | `comment_url` | `comment_id` |
+| --- | --- | --- |
+| `posting_mode: post` + `comment_mode: sticky`, prior TrustBridge comment found | URL of the updated comment | id of the updated comment (unchanged across re-runs) |
+| `posting_mode: post` + `comment_mode: sticky`, no prior comment (or lookup failed) | URL of the new comment | id of the new comment |
+| `posting_mode: post` + sticky update fails after the comment was found | URL of the fallback new comment | id of the **new** comment — the stale id is never published |
+| `posting_mode: post` + `comment_mode: new` / `reply` | URL of the new comment | id of the new comment |
+| Sticky comment suppressed by the snooze window | URL of the existing comment | id of the existing comment |
+| `posting_mode: dry-run` or `off` | `""` | `""` |
+| No issue / PR context (e.g. `workflow_dispatch` without `issue_number`, fork PR that skips posting) | `""` | `""` |
+| Comment post failed (warning logged, job not failed) | `""` | `""` |
+
+Guard follow-up steps on `comment_id != ''` so dry runs and runs without an issue context never fail just because no comment exists:
+
+```yaml
+permissions:
+  issues: write
+
+steps:
+  - name: TrustBridge check
+    id: trustbridge
+    uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.address.outputs.address }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      comment_mode: sticky
+      posting_mode: post # use dry-run to preview; comment_id stays empty
+
+  - name: Append payout status to the TrustBridge comment
+    if: steps.trustbridge.outputs.comment_id != ''
+    uses: actions/github-script@v7
+    env:
+      COMMENT_ID: ${{ steps.trustbridge.outputs.comment_id }}
+    with:
+      script: |
+        const comment_id = Number(process.env.COMMENT_ID);
+        const { data } = await github.rest.issues.getComment({
+          ...context.repo,
+          comment_id,
+        });
+        await github.rest.issues.updateComment({
+          ...context.repo,
+          comment_id,
+          body: `${data.body}\n\n> Payout queued by ${context.workflow}.`,
+        });
+```
+
+The same recipe works for a `workflow_dispatch` run with an explicit `issue_number` input: the id refers to the comment on that issue. Keep the TrustBridge markers in the body (append, don't replace) so the next sticky run still finds and updates the comment.
+
+`comment_id` is only ever a REST issue-comment id. GitHub Discussions comments use GraphQL node ids and are not published through this output. `comment_id` is not included in the dashboard webhook payload, so `privacy_mode` has nothing extra to redact. See [Comment guide — `comment_id` output](COMMENT_GUIDE.md#comment_id-output-issue-696) for how sticky lookup decides between update and create.
+
 ### Readiness badge outputs
 
 The action exposes badge snippets suitable for embedding in READMEs or dashboards:
@@ -1589,6 +1643,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `xlm_balance`             | `string` (legacy)              | Native XLM balance as reported by Horizon.                                                                                                  |
 | `account_funded`          | `string` (legacy)              | Whether the account exists on the ledger (`"true"`/`"false"`).                                                                              |
 | `comment_url`             | `string` (legacy)              | Created/updated issue comment URL.                                                                                                          |
+| `comment_id`              | `string`                       | Numeric REST id of the created/updated issue comment; `""` when no comment was posted (dry-run, off, no issue context).                     |
 | `full_report_path`        | `string` (legacy)              | Workspace path to full report when comment body exceeded size limits.                                                                       |
 
 ### Failure Reason Code Catalog (`reason_code`)
@@ -1909,10 +1964,26 @@ steps:
 
 The SARIF file includes:
 
-- **Rule definitions** — TB001 (account funded), TB002 (trustline), TB003 (XLM reserve), TB004 (Horizon availability), TB005 (clawback safety)
-- **Severity levels** — Passed checks appear as `note`, failed checks as `error`
-- **Validation gate summary** — Total/passed/failed check counts in run properties
+- **Rule definitions** — TB001–TB010 (see the table below), plus the TB000 fallback for checks without a dedicated rule. Every `ruleId` in the results is declared in `tool.driver.rules`.
+- **Severity levels** — Passed checks appear as `note`, failed checks as `error`; the TB007 and TB008 advisories use `warning`
+- **Validation gate summary** — Total/passed/failed check counts and the `reason_code` in run properties
 - **Locations** — Links to the Horizon endpoint and checked account address
+
+Rule ids are a stable contract for filtering TrustBridge alerts in code scanning views: new rules are only ever added, existing ids are never renumbered. Several failures can share a rule id (for example the primary and an `assets_json` trustline both under TB002); each result keeps its own message text and `properties.checkLabel`.
+
+### Schema validation before upload (Issue #679)
+
+Before writing `sarif_output_path`, TrustBridge validates the document against the official OASIS SARIF 2.1.0 JSON Schema, vendored at [`schemas/sarif-schema-2.1.0.json`](../schemas/sarif-schema-2.1.0.json) (errata01). The schema is read from the action's own files, so validation works on air-gapped runners and GHES with no network fetch.
+
+If the document is invalid, the file is **not** written and the step fails with an error that lists every violation, e.g.:
+
+```text
+Error: TrustBridge generated SARIF that does not conform to the SARIF 2.1.0 schema, so trustbridge-results.sarif was not written. This is a TrustBridge bug, not a problem with the checked account. Violations:
+  $.runs[0].tool: missing required property "driver"
+Error: SARIF output failed SARIF 2.1.0 schema validation — see the error above.
+```
+
+This catches TrustBridge bugs before `upload-sarif` rejects the file, and makes clear the problem is not with GitHub code scanning. Property bags (`properties`) accept any keys, so extra fields that GitHub or other tools add there still pass. `sarif_output_path` must resolve inside `GITHUB_WORKSPACE`.
 
 ### SARIF rule reference
 
@@ -1923,6 +1994,12 @@ The SARIF file includes:
 | TB003   | XLM reserve          | [Reserves & Fees](https://developers.stellar.org/docs/learn/fundamentals/fees-and-metering#reserve)                         |
 | TB004   | Horizon availability | [Horizon API](https://developers.stellar.org/docs/data/apis/horizon)                                                        |
 | TB005   | Clawback safety      | [Clawback](https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8) — emitted when `clawback_strict_mode: true` blocks a clawback-enabled trustline |
+| TB006   | Unauthorized trustline | [Authorization required](https://developers.stellar.org/docs/tokens/control-asset-access#authorization-required-0x1) — `error` when `unauthorized_trustline_policy: fail` blocks a trustline the issuer has not authorized (`reason_code: TRUSTLINE_UNAUTHORIZED`); in `warn` mode the finding stays a TB002 `note` |
+| TB007   | Milestone gate       | [Milestone gating](#milestone-gating) — `warning` when the milestone gate skipped validation (`reason_code: MILESTONE_GATE_SKIPPED`) |
+| TB008   | Clawback advisory    | [Clawback](https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8) — `warning` when the trustline has clawback enabled but `clawback_strict_mode` is off; with strict mode on it is a TB005 `error` instead |
+| TB009   | Rate budget exhausted | [Reason codes](#failure-reason-code-catalog-reason_code) — `error` on the Horizon availability check when `horizon_max_requests` ran out (`reason_code: RATE_BUDGET_EXHAUSTED`), instead of TB004 |
+| TB010   | Circuit open         | [Circuit-breaker banner](COMMENT_GUIDE.md#circuit-breaker-banner-issue-434) — `error` on the Horizon availability check when the circuit breaker short-circuited the run (`reason_code: CIRCUIT_OPEN`), instead of TB004 |
+| TB000   | Other check (fallback) | Any check without a dedicated rule (e.g. SEP-0001 home domain, claimable balances); the label is in `properties.checkLabel` |
 
 ---
 
@@ -3085,6 +3162,8 @@ By default, dashboard webhook notifications use HMAC-SHA256 signatures with a lo
 
 When `webhook_auth_mode: oidc` is configured, TrustBridge requests a short-lived OIDC ID token directly from GitHub's OIDC provider (with `id-token: write` permission) and sends it in the HTTP `Authorization: Bearer <token>` header.
 
+> **GitHub Enterprise Server:** OIDC webhooks need GHES 3.8+ and self-hosted runners. GHES tokens use a different issuer (`https://HOSTNAME/_services/token`) and JWKS location. See the [GHES OIDC webhook matrix](GHES_COMPATIBILITY.md#oidc-webhook-authentication-matrix-issue-677) for permissions, issuer and audience values, and known limitations per platform.
+
 ### Example configuration
 
 ```yaml
@@ -3109,7 +3188,7 @@ jobs:
 
 The minted GitHub OIDC token contains standard JWT claims that the receiver validates:
 
-- `iss`: `https://token.actions.githubusercontent.com`
+- `iss`: `https://token.actions.githubusercontent.com` on github.com, or `https://HOSTNAME/_services/token` on GHES (see the [GHES OIDC webhook matrix](GHES_COMPATIBILITY.md#oidc-webhook-authentication-matrix-issue-677))
 - `aud`: Configured audience (default `trustbridge-dashboard`)
 - `repository`: Current GitHub repository (`owner/repo`)
 - `repository_owner`: Repository owner login

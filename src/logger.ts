@@ -277,6 +277,7 @@ export function redactHorizonUrl(url: string): string {
     if (hadTrailingSlash && !masked.endsWith('/')) {
       masked = `${masked}/`;
     }
+    return masked;
   } catch {
     // Not a parseable URL — fall back to string-level redaction.
     masked = redactString(masked);

@@ -234,10 +234,115 @@ export function formatDigestComment(report: DigestReport): string {
     lines.push('');
   }
 
-  lines.push(
-    '---',
-    '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_',
-  );
+  return lines.join('\n');
+}
 
+// ---------------------------------------------------------------------------
+// #764 — Delta reporting between successive runs
+// ---------------------------------------------------------------------------
+
+/**
+ * A single human-readable change detected between two successive runs.
+ * `kind` is a stable machine token so callers/tests can assert on it without
+ * parsing the human `label`.
+ */
+export interface DeltaChange {
+  kind:
+    | 'new_trustline'
+    | 'funded'
+    | 'clawback_cleared'
+    | 'clawback_added'
+    | 'check_passed'
+    | 'check_failed';
+  label: string;
+}
+
+/**
+ * Compute the delta between a previous and current `ValidationResult`.
+ *
+ * Surfaces progress signals (new trustline, funded, clawback cleared) plus
+ * generic pass/fail transitions so the rendered comment can show what changed
+ * instead of repeating an identical full check dump.
+ *
+ * Returns an empty array when nothing changed. Throws a stable error when
+ * either input is missing or malformed so CI fails loudly rather than silently
+ * dropping the delta.
+ */
+export function computeDelta(
+  previous: ValidationResult | null | undefined,
+  current: ValidationResult | null | undefined,
+): DeltaChange[] {
+  if (!previous || !Array.isArray(previous.checks)) {
+    throw new Error('delta: previous validation result is missing or malformed');
+  }
+  if (!current || !Array.isArray(current.checks)) {
+    throw new Error('delta: current validation result is missing or malformed');
+  }
+
+  const prevByLabel = new Map(previous.checks.map((c) => [c.label, c]));
+  const changes: DeltaChange[] = [];
+
+  for (const check of current.checks) {
+    const prev = prevByLabel.get(check.label);
+    const wasPassing = prev ? prev.passed : false;
+
+    if (!prev) {
+      // A brand-new check appearing is a new trustline / newly evaluated asset.
+      if (/trustline/i.test(check.label)) {
+        changes.push({
+          kind: 'new_trustline',
+          label: `New trustline detected: ${check.label}`,
+        });
+      }
+      continue;
+    }
+
+    if (!wasPassing && check.passed) {
+      if (/clawback/i.test(check.label)) {
+        changes.push({
+          kind: 'clawback_cleared',
+          label: `Clawback cleared: ${check.label}`,
+        });
+      } else if (/fund|reserve|balance/i.test(check.label)) {
+        changes.push({
+          kind: 'funded',
+          label: `Now funded: ${check.label}`,
+        });
+      } else {
+        changes.push({
+          kind: 'check_passed',
+          label: `Now passing: ${check.label}`,
+        });
+      }
+    } else if (wasPassing && !check.passed) {
+      if (/clawback/i.test(check.label)) {
+        changes.push({
+          kind: 'clawback_added',
+          label: `Clawback enabled: ${check.label}`,
+        });
+      } else {
+        changes.push({
+          kind: 'check_failed',
+          label: `Now failing: ${check.label}`,
+        });
+      }
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Render a Markdown delta section for the comment. Returns an empty string
+ * when there are no changes so callers can omit the section entirely.
+ */
+export function formatDeltaSection(changes: DeltaChange[]): string {
+  if (changes.length === 0) {
+    return '';
+  }
+  const lines = ['### 🔄 Changes since last run', ''];
+  for (const change of changes) {
+    lines.push(`- ${change.label}`);
+  }
   return lines.join('\n');
 }
