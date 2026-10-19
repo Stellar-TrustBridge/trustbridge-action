@@ -13,6 +13,7 @@
   "check_run_conclusion",
   "check_run_id",
   "checks_json",
+  "comment_id",
   "comment_url",
   "conflict_report",
   "expected_network_passphrase",

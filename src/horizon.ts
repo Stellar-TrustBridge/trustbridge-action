@@ -1669,8 +1669,68 @@ export interface ApplyWalletLabelsOptions {
 }
 
 /**
+ * Paginate through all labels on an issue, collecting every page until
+ * the API returns fewer than `perPage` results (last page).
+ *
+ * Uses a fixed page size of 100 (GitHub's maximum) to minimise round-trips.
+ * Stops automatically when a page returns fewer items than requested so
+ * issues with >100 labels are handled correctly without an extra request.
+ */
+async function listAllLabelsOnIssue(
+  octokit: {
+    rest: {
+      issues: {
+        listLabelsOnIssue: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          per_page: number;
+          page: number;
+        }) => Promise<{ data: Array<{ name: string }> }>;
+      };
+    };
+  },
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<string[]> {
+  const PER_PAGE = 100;
+  const names: string[] = [];
+  let page = 1;
+
+  for (;;) {
+    const response = await octokit.rest.issues.listLabelsOnIssue({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: PER_PAGE,
+      page,
+    });
+    for (const label of response.data) {
+      names.push(label.name);
+    }
+    if (response.data.length < PER_PAGE) {
+      break;
+    }
+    page += 1;
+  }
+
+  return names;
+}
+
+/**
  * Apply the appropriate wallet label to a GitHub issue via Octokit,
  * optionally removing stale wallet labels first.
+ *
+ * Conflict resolution: when multiple wallet state labels are present
+ * (e.g. from a previous interrupted run), all stale labels are removed
+ * before the new one is applied. The target label is derived
+ * deterministically by `deriveWalletLabel` using a fixed priority order
+ * (horizon-error > unfunded > trustline-missing > reserve-low > funded),
+ * so concurrent runs always converge to the same label.
+ *
+ * Pagination: `listLabelsOnIssue` is paginated in 100-item pages so
+ * issues with more than 100 labels are handled correctly.
  *
  * Errors are non-fatal: label failures are caught and returned as a
  * descriptive string so the main check result is never blocked by a
@@ -1736,6 +1796,16 @@ export async function applyWalletLabels(
         (l) => l !== targetLabel && currentNames.includes(l),
       );
 
+      // Deterministic conflict resolution: log when multiple stale wallet
+      // labels are present so operators can diagnose interrupted prior runs.
+      if (stale.length > 1) {
+        logger.debug('auto_wallet_labels: multiple stale wallet labels found — removing all before applying target', {
+          component: 'horizon',
+          staleLabels: stale,
+          targetLabel,
+        });
+      }
+
       for (const label of stale) {
         try {
           await octokit.rest.issues.removeLabel({
@@ -1745,8 +1815,15 @@ export async function applyWalletLabels(
             name: label,
           });
           removed.push(label);
-        } catch {
-          // Ignore individual remove failures — the add still proceeds.
+        } catch (removeErr) {
+          // Non-fatal: log the specific label that failed to remove so
+          // operators can diagnose permission issues without the run failing.
+          const msg = removeErr instanceof Error ? removeErr.message : String(removeErr);
+          logger.debug('auto_wallet_labels: failed to remove stale label (non-fatal)', {
+            component: 'horizon',
+            label,
+            error: msg,
+          });
         }
       }
     }
