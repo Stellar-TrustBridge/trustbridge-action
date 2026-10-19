@@ -902,6 +902,49 @@ export function resolveCommentMode(
   return 'sticky';
 }
 
+/**
+ * Comment posting policy (`posting_mode` input).
+ *
+ * - `'post'` (default): post or update the comment.
+ * - `'dry-run'`: build the comment body but skip every GitHub API call.
+ * - `'off'`: skip comment posting entirely.
+ *
+ * Outputs are published in every mode; `comment_url` and `comment_id` stay
+ * empty when nothing is posted (Issue #696).
+ */
+export type PostingMode = 'post' | 'dry-run' | 'off';
+
+/** Valid `PostingMode` values — used for input validation. */
+export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
+
+/**
+ * Resolve the effective `PostingMode` from action inputs.
+ *
+ * Priority: `posting_mode` input > legacy `post`/`dry-run`/`off` value in
+ * `comment_mode` > default `'post'`. Invalid `posting_mode` values fall back
+ * to `'post'` with a warning, mirroring {@link resolveCommentMode}.
+ */
+export function resolvePostingMode(
+  postingMode: string | undefined,
+  commentMode: string | undefined,
+): PostingMode {
+  if (postingMode && postingMode.trim()) {
+    const normalised = postingMode.trim().toLowerCase() as PostingMode;
+    if (VALID_POSTING_MODES.includes(normalised)) {
+      return normalised;
+    }
+    core.warning(
+      `Invalid posting_mode value "${postingMode}". Expected one of: ${VALID_POSTING_MODES.join(', ')}. Falling back to "post".`,
+    );
+    return 'post';
+  }
+  const legacy = (commentMode ?? '').trim().toLowerCase() as PostingMode;
+  if (VALID_POSTING_MODES.includes(legacy)) {
+    return legacy;
+  }
+  return 'post';
+}
+
 export interface UpsertCommentOptions {
   /**
    * When true (default), find and update TrustBridge's previous comment on
@@ -1294,6 +1337,27 @@ export async function findFirstTrustBridgeComment(
   return undefined;
 }
 
+/**
+ * A posted (created or updated) REST issue comment (Issue #696).
+ *
+ * `id` is the numeric REST `comment_id` GitHub returned for the comment that
+ * now holds the TrustBridge body — the value published as the `comment_id`
+ * action output so downstream steps can chain `issues.updateComment` calls
+ * without parsing `url`.
+ */
+export interface PostedIssueComment {
+  /** `html_url` of the comment. */
+  url: string | undefined;
+  /** Numeric REST comment id. */
+  id: number;
+}
+
+/**
+ * Post or update the TrustBridge issue comment and return the URL.
+ *
+ * Thin wrapper around {@link upsertIssueComment} kept for callers that only
+ * need `comment_url`.
+ */
 export async function postIssueComment(
   token: string,
   body: string,
@@ -1401,7 +1465,10 @@ export async function postIssueComment(
         core.info(
           `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
         );
-        return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+        return {
+          url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
+          id: existingCommentId,
+        };
       }
     }
 
@@ -1414,7 +1481,7 @@ export async function postIssueComment(
           body,
         });
         core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-        return response.data.html_url;
+        return { url: response.data.html_url, id: response.data.id ?? existingCommentId };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         core.warning(
@@ -1455,7 +1522,7 @@ export async function postIssueComment(
       core.info(
         `Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`,
       );
-      return response.data.html_url;
+      return { url: response.data.html_url, id: response.data.id };
     }
 
     const response = await octokit.rest.issues.createComment({
@@ -1466,7 +1533,7 @@ export async function postIssueComment(
     });
 
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-    return response.data.html_url;
+    return { url: response.data.html_url, id: response.data.id };
   });
 }
 

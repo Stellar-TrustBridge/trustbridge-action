@@ -52,6 +52,12 @@ export interface SnoozeState {
 }
 
 /**
+ * Stable reason_code emitted when validation is skipped because the issue is
+ * within an active snooze window (Issue #754).
+ */
+export const SNOOZE_REASON_CODE = 'snoozed' as const;
+
+/**
  * Extract snooze marker from a comment body. Returns undefined if marker
  * not found (backward compatible with older comments).
  */
@@ -252,3 +258,79 @@ export function evaluateCombinedSnoozeState(
   };
 }
 
+/**
+ * Result of enforcing a snooze window at the validation call site (Issue #754).
+ *
+ * When `skipValidation` is true, the caller must NOT run validation and must
+ * NOT fail the assignee; instead it should surface `reasonCode` in outputs and
+ * post the `commentNotice` so the user understands why nothing happened.
+ */
+export interface SnoozeEnforcement {
+  /** Whether validation should be skipped for this run. */
+  skipValidation: boolean;
+  /** Stable reason_code to emit in outputs when validation is skipped. */
+  reasonCode?: typeof SNOOZE_REASON_CODE;
+  /** User-visible comment notice to post when validation is skipped. */
+  commentNotice?: string;
+  /** Underlying snooze state that produced this decision. */
+  state: SnoozeState;
+}
+
+/**
+ * Format a human-readable duration for snooze notices (e.g. "2h 15m").
+ */
+export function formatSnoozeDuration(ms: number | undefined): string {
+  if (ms === undefined || !isFinite(ms) || ms <= 0) return '0m';
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/**
+ * Enforce a snooze window at the validation call site (Issue #754).
+ *
+ * Wraps {@link evaluateCombinedSnoozeState} and, when the issue is within an
+ * active snooze window, returns a stable `reason_code` (`snoozed`) plus a
+ * user-visible comment notice. Callers should skip validation and post the
+ * notice instead of failing the assignee.
+ *
+ * `forceComment` bypasses enforcement so maintainers can force a run.
+ */
+export function enforceSnoozeWindow(
+  currentPassed: boolean,
+  lastMarker: SnoozeMarker | undefined,
+  reactions: CommentReaction[] | undefined | null,
+  snoozeWindowMs: number,
+  options: { forceComment?: boolean; now?: number } = {},
+): SnoozeEnforcement {
+  const state = evaluateCombinedSnoozeState(
+    currentPassed,
+    lastMarker,
+    reactions,
+    snoozeWindowMs,
+    options.now,
+  );
+
+  if (options.forceComment || !state.isSnoozed) {
+    return { skipValidation: false, state };
+  }
+
+  const remainingMs =
+    state.elapsedMs !== undefined ? Math.max(0, snoozeWindowMs - state.elapsedMs) : undefined;
+  const remaining = formatSnoozeDuration(remainingMs);
+
+  const commentNotice =
+    `⏸️ **Validation snoozed** — this issue is within an active snooze window ` +
+    `(reason_code: \`${SNOOZE_REASON_CODE}\`). Validation will resume automatically ` +
+    `in ~${remaining}. Remove the :zzz:/:eyes: reaction or wait for the window to ` +
+    `expire to re-run validation.`;
+
+  return {
+    skipValidation: true,
+    reasonCode: SNOOZE_REASON_CODE,
+    commentNotice,
+    state,
+  };
+}

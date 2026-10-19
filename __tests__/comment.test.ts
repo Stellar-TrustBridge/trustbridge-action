@@ -16,6 +16,8 @@ import {
   formatCommentBody,
   isTrustBridgeComment,
   postIssueComment,
+  upsertIssueComment,
+  resolvePostingMode,
   resolveIssueOrPullRequestNumber,
   resolveDiscussionNodeId,
   findStickyDiscussionComment,
@@ -972,6 +974,132 @@ describe('postIssueComment', () => {
 // ---------------------------------------------------------------------------
 // GitHub Discussions comment path (Issue #221)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Issue #696 — upsertIssueComment exposes the numeric REST comment id
+// ---------------------------------------------------------------------------
+describe('upsertIssueComment (Issue #696)', () => {
+  const mockedGithub = github as unknown as {
+    context: {
+      eventName: string;
+      payload: { issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
+    getOctokit: jest.Mock;
+  };
+
+  beforeEach(() => {
+    mockedGithub.context.eventName = 'issues';
+    mockedGithub.context.payload = { issue: { number: 7 } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
+  });
+
+  it('returns the id from createComment on the create path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 1234, html_url: 'https://github.com/o/r/issues/7#issuecomment-1234' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted).toEqual({
+      url: 'https://github.com/o/r/issues/7#issuecomment-1234',
+      id: 1234,
+    });
+  });
+
+  it('returns the id from updateComment on the sticky update path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'updated body', { sticky: true });
+
+    expect(posted?.id).toBe(99);
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('never returns the stale id when updateComment fails after a successful find', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockRejectedValue(new Error('403 Forbidden'));
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 555, html_url: 'https://github.com/o/r/issues/7#issuecomment-555' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted?.id).toBe(555);
+    expect(posted?.id).not.toBe(99);
+  });
+
+  it('returns the reply comment id in reply mode', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 100, html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { commentMode: 'reply' });
+
+    expect(posted?.id).toBe(100);
+  });
+
+  it('returns undefined when there is no issue or PR context', async () => {
+    mockedGithub.context.payload = {};
+    const octokit = makeOctokit();
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await expect(upsertIssueComment('token', 'body')).resolves.toBeUndefined();
+  });
+
+  it('postIssueComment still returns only the URL', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 7, html_url: 'https://github.com/o/r/issues/7#issuecomment-7' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'body', { sticky: false });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-7');
+  });
+});
+
+describe('resolvePostingMode (Issue #696)', () => {
+  it('defaults to post', () => {
+    expect(resolvePostingMode('', '')).toBe('post');
+    expect(resolvePostingMode(undefined, 'sticky')).toBe('post');
+  });
+
+  it('prefers posting_mode over legacy comment_mode values', () => {
+    expect(resolvePostingMode('dry-run', 'off')).toBe('dry-run');
+    expect(resolvePostingMode(' OFF ', 'post')).toBe('off');
+  });
+
+  it('honours legacy post/dry-run/off values in comment_mode when posting_mode is unset', () => {
+    expect(resolvePostingMode('', 'dry-run')).toBe('dry-run');
+    expect(resolvePostingMode('', 'off')).toBe('off');
+  });
+
+  it('falls back to post for an invalid posting_mode', () => {
+    expect(resolvePostingMode('maybe', '')).toBe('post');
+  });
+});
 
 describe('resolveDiscussionNodeId', () => {
   it('extracts the node id from a discussion event payload', () => {
