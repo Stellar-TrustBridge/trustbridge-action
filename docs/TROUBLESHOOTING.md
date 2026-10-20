@@ -36,6 +36,12 @@ does not mean the account is unfunded: Horizon did not return a usable account
 response. Retry later, use a healthy same-network fallback, or increase the
 retry total-wait setting for a slow private mirror.
 
+## Horizon request budget exhausted (RATE_BUDGET_EXHAUSTED)
+
+The run consumed its `horizon_max_requests` budget. Back off, reduce batch
+size, enable caching, then raise the budget if needed — follow the
+[FAQ recovery playbook](FAQ.md#rate-budget-exhausted).
+
 ## Reading Horizon retry log lines
 
 Every Horizon retry emits one structured log line with a fixed set of fields,

@@ -25,6 +25,24 @@ Dependabot is configured to update NPM dependencies. Maintainers should enforce 
 
 ---
 
+## Update grouping (matches `.github/dependabot.yml`)
+
+| Ecosystem | Schedule | PR limit | Commit prefix | Labels | Groups |
+|---|---|---|---|---|---|
+| `npm` | weekly, Monday 06:00 UTC | 10 | `chore(deps)` | `dependencies`, `javascript` | `actions-patches`: `@actions/*` **patch** updates only |
+| `github-actions` | weekly, Monday 06:00 UTC | 5 | `chore(ci)` | `dependencies`, `github-actions` | none (one PR per action) |
+
+- Only `@actions/*` patch bumps are grouped (`actions-patches`). Minor and major
+  `@actions/*` bumps, and every other npm package, arrive as individual PRs so
+  security updates are not buried in a large grouped PR.
+- Grouped `actions-patches` PRs still change runtime code and **require a `dist/` rebuild**.
+- `github-actions` PRs only move SHA pins and need no rebuild; see
+  [DEPENDABOT-addition.md](DEPENDABOT-addition.md).
+
+`__tests__/dependabot-docs.test.ts` fails if this table drifts from `.github/dependabot.yml`.
+
+---
+
 ## Maintainer Checklist for Dependabot PRs
 
 When reviewing and merging Dependabot PRs affecting runtime dependencies, maintainers must follow this checklist:
