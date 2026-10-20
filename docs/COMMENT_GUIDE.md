@@ -23,6 +23,10 @@ Comments are kept below a 64,000-byte formatting budget and a 65,536-byte postin
 
 Every shortened body includes the hidden `trustbridge-action:comment-truncated` metadata marker and ends with the stable `... [Truncated due to GitHub length limits. See workflow logs for full details.]` notice. The truncator prefers a line boundary, never cuts a Unicode surrogate pair, and preserves the TrustBridge footer. In dry-run workflows, formatting still emits the truncation notice and metadata, so the body indicates what would be shortened without making a GitHub API request.
 
+### Oversized Job Summaries (Issue #780)
+
+GitHub rejects step summaries larger than 1 MiB. Before writing large batch results to the Job Summary, pass the markdown through `guardJobSummaryMarkdown()` from `src/summary.ts`. Content under `JOB_SUMMARY_MAX_BYTES` (1,048,576 bytes) is returned unchanged; larger content is cut at the last whole line that fits (never splitting a UTF-8 character) and ends with the hidden `trustbridge-action:summary-truncated` marker plus a notice linking to the issue comment (or the workflow logs when no comment URL is known).
+
 ---
 
 ## Comment threading & posting modes (`comment_mode` & `posting_mode`)

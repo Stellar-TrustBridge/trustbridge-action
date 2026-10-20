@@ -385,3 +385,18 @@ export function evaluateAssetReasonCodes(
       .map((asset) => evaluate(asset, false)),
   ];
 }
+
+/** Per-trustline clawback status read from a Horizon credit balance entry. */
+export interface AssetClawbackStatus {
+  clawbackEnabled: boolean;
+}
+
+/**
+ * Read the per-trustline clawback flag from a Horizon credit balance entry.
+ * Absent / undefined is treated as clawback disabled.
+ */
+export function getAssetClawbackStatus(
+  balance: HorizonBalanceCredit | undefined,
+): AssetClawbackStatus {
+  return { clawbackEnabled: balance?.is_clawback_enabled === true };
+}

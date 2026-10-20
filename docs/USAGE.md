@@ -3955,3 +3955,7 @@ Tests that assert span behavior should:
 4. Inspect collected spans via `getTraceSpans()`.
 
 No live collector is required at any point.
+
+## Wave freeze operations
+
+Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
