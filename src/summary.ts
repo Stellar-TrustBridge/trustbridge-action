@@ -1,5 +1,6 @@
 import { ValidationResult } from './checks';
 import { privacyMaskAddress } from './delta';
+import { CircuitOpenMetrics } from './resilience';
 
 export interface CheckSummary {
   total: number;
@@ -26,6 +27,31 @@ export function formatFailureSummary(result: ValidationResult): string {
   return summary.failedLabels.length > 0
     ? summary.failedLabels.join(', ')
     : 'none';
+}
+
+// ---------------------------------------------------------------------------
+// #788 — Circuit-open metrics in the Job Summary
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a Job Summary section explaining why Horizon checks paused. Returns
+ * an empty string when the circuit is not open. Only the error class name is
+ * shown; raw Horizon bodies and error messages are never included.
+ */
+export function formatCircuitOpenSummary(metrics: CircuitOpenMetrics | null | undefined): string {
+  if (!metrics || metrics.state !== 'open') return '';
+  const seconds = Math.round(Math.max(0, metrics.openDurationMs) / 1000);
+  const errorClass = metrics.lastErrorClass ?? 'unknown';
+  return [
+    '### ⚡ Horizon circuit breaker open',
+    '',
+    '| Metric | Value |',
+    '| --- | --- |',
+    `| Open duration | ${seconds}s |`,
+    `| Last error class | \`${errorClass}\` |`,
+    `| Consecutive failures | ${metrics.consecutiveFailures} |`,
+    '',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------

@@ -133,6 +133,29 @@ known-slow Horizon mirror.
 
 ---
 
+## Rate budget exhausted — recovery playbook {#rate-budget-exhausted}
+
+`reason_code: RATE_BUDGET_EXHAUSTED` (SARIF rule `TB009`) means the run used up
+its own `horizon_max_requests` budget before the account lookup finished. No
+Horizon request failed and the account state is **unknown**, not unfunded — do
+not ask the contributor to change their wallet.
+
+1. **Back off.** Re-run the job after a few minutes; repeated immediate re-runs
+   against public Horizon will exhaust the budget again.
+2. **Reduce batch size.** In batch/Wave mode, split the address list into
+   smaller batches (or fewer parallel matrix jobs) so each run needs fewer
+   requests.
+3. **Enable caching.** Cached account lookups do not consume budget on repeat runs.
+4. **Raise the budget.** Increase `horizon_max_requests` (or remove it) once you
+   have confirmed the extra load is expected; prefer a self-hosted Horizon for
+   very large Waves.
+5. **Verify.** The next run should report a non-`RATE_BUDGET_EXHAUSTED` reason
+   code. If it is now `RATE_LIMIT_EXHAUSTED`, Horizon itself is returning 429 —
+   see [Horizon error](#horizon-error).
+
+See also [TROUBLESHOOTING.md](TROUBLESHOOTING.md#horizon-request-budget-exhausted-rate_budget_exhausted)
+and the reason-code catalog in [USAGE.md](USAGE.md#failure-reason-code-catalog-reason_code).
+
 ## Debug mode and expert diagnostics {#debug-mode}
 
 **Symptom:** You need detailed Horizon status codes, latency, and normalized inputs to diagnose a failure.

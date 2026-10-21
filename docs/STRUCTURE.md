@@ -42,6 +42,17 @@ the compiled `dist/` bundle (when not preparing a release artifact).
 | Observability | `logger.ts`, `metrics.ts`, `diagnostics.ts`, `tracing.ts`, `checks-run.ts` | Redacted logs, metrics, diagnostics, traces, and check-run annotations |
 | Supporting logic | `batch.ts`, `cache.ts`, `configReader.ts`, `delta.ts`, `preflight.ts`, `sarif.ts`, `sarifSchema.ts` | Shared caching, configuration, batch, artifact, and reporting behavior |
 
+### Plugin snooze and roster modules
+
+| Module | Responsibility | Tests | Where Wave fixes go |
+| --- | --- | --- | --- |
+| `src/snooze.ts` | Parses and honours plugin/check snooze directives so maintainers can temporarily silence a check without disabling it | `__tests__/snooze.test.ts` | Snooze parsing, expiry, and comment-suppression bugs |
+| `src/roster.ts` | Resolves contributor ↔ Stellar address rosters used during Wave assignment | `__tests__/roster.test.ts` | Roster lookup, matching, and address-mapping bugs |
+
+Plugins themselves live in `plugin.ts`, `pluginLoader.ts`, `pluginRunner.ts`,
+and `corePlugins.ts`; `snooze.ts` only decides *whether* a result is surfaced.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how both modules fit into the run.
+
 ## Tests and fixtures
 
 Tests are grouped by behavior in `__tests__/`: core checks and parsers,

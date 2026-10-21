@@ -346,6 +346,7 @@ export class CircuitBreaker {
   private consecutiveFailures: number = 0;
   private consecutiveSuccesses: number = 0;
   private openedAt: number | null = null;
+  private lastErrorClass: string | null = null;
 
   private readonly failureThreshold: number;
   private readonly recoveryTimeoutMs: number;
@@ -444,6 +445,24 @@ export class CircuitBreaker {
     };
   }
 
+  /**
+   * Circuit-open metrics for the Job Summary (#788). Reports only the error
+   * class name — never the error message — so raw Horizon response bodies
+   * cannot leak into the summary.
+   */
+  getOpenMetrics(now: number = Date.now()): CircuitOpenMetrics {
+    const stats = this.getStats();
+    return {
+      state: stats.state,
+      openDurationMs:
+        stats.state === 'open' && stats.openedAt !== null
+          ? Math.max(0, now - stats.openedAt)
+          : 0,
+      lastErrorClass: this.lastErrorClass,
+      consecutiveFailures: stats.consecutiveFailures,
+    };
+  }
+
   // ---- private helpers ----
 
   private _maybeTransitionToHalfOpen(): void {
@@ -477,6 +496,7 @@ export class CircuitBreaker {
   }
 
   private _recordFailure(err: unknown): void {
+    this.lastErrorClass = errorClassOf(err);
     if (this.state === 'half-open') {
       // Any failure in half-open immediately re-opens the circuit.
       const prev = this.state;
@@ -505,6 +525,28 @@ export class CircuitBreaker {
       );
     }
   }
+}
+
+/**
+ * Snapshot returned by `CircuitBreaker.getOpenMetrics` (#788).
+ */
+export interface CircuitOpenMetrics {
+  state: CircuitState;
+  /** Milliseconds the circuit has been open; 0 unless state is 'open'. */
+  openDurationMs: number;
+  /** Class name of the last recorded failure (e.g. 'TypeError'), or null. */
+  lastErrorClass: string | null;
+  consecutiveFailures: number;
+}
+
+const ERROR_CLASS_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+
+function errorClassOf(err: unknown): string {
+  if (err instanceof Error) {
+    const name = err.name || err.constructor?.name || 'Error';
+    return ERROR_CLASS_PATTERN.test(name) ? name : 'Error';
+  }
+  return 'NonErrorThrown';
 }
 
 /**

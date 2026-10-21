@@ -77,6 +77,10 @@ When a Dependabot PR arrives for a GitHub Actions update:
 2. Verify the SHA in the PR matches the commit on the release page.
 3. Merge — no rebuild of `dist/` is required for pure workflow pin bumps.
 
+GitHub Actions bumps are **not grouped**: each action gets its own PR. Only
+npm `@actions/*` patch updates are grouped (`actions-patches`); see the
+grouping table in [DEPENDABOT.md](DEPENDABOT.md#update-grouping-matches-githubdependabotyml).
+
 ---
 
 ## Exemptions
