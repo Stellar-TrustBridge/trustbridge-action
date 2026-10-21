@@ -91,6 +91,8 @@ const SECRET_FIELD_NAMES = new Set([
   'secret',
   'webhook_secret',
   'webhookSecret',
+  'webhook_secret_previous',
+  'webhookSecretPrevious',
   'password',
   'token',
   'private_key',

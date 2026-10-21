@@ -266,3 +266,19 @@ When the Horizon circuit breaker is open, `CircuitBreaker.execute` fast-fails th
 > - This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.
 > - This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow.
 ```
+
+## Duplicate workflow runs (Issue #790)
+
+With `comment_mode: sticky` (the default), re-running the workflow — including repeated `workflow_dispatch` runs for the same `issue_number` — updates the existing TrustBridge comment instead of posting a new one.
+
+Two runs that start at the same moment can both find no comment and each create one. To handle that race, every run that creates a comment re-reads the thread right afterwards. If an older TrustBridge comment exists, the run writes its body there and deletes the comment it just created, so all runs converge on the oldest comment. `comment_url` / `comment_id` outputs point at that surviving comment.
+
+This never fails the step:
+
+| Situation | Result |
+|-----------|--------|
+| Re-read fails (network / API error) | The new comment is kept; warning logged |
+| Original comment cannot be updated | The new comment is kept, nothing deleted; warning logged |
+| Duplicate cannot be deleted (missing `issues: write`) | Original is updated; warning names the missing permission |
+
+`comment_mode: new` and `comment_mode: reply` are unchanged — they intentionally post a new comment on every run.

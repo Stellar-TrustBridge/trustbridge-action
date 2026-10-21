@@ -96,6 +96,7 @@ The following fields have format or pattern constraints that prevent common secu
 | `stellar_address_input` | `pattern: ^G[A-Z2-7]{55}$` | Enforces valid G-address format |
 | `asset_issuer` | `pattern: ^[GC][A-Z2-7]{55}$` | Enforces G- or C-address format |
 | `webhook_secret` | Secret field — value never logged | Shared HMAC signing secret |
+| `webhook_secret_previous` | Secret field — value never logged | Previous HMAC secret, only during rotation; signs `X-TrustBridge-Signature-Previous` (Issue #795) |
 | `github_token` | Secret field — value never logged | GitHub API token |
 
 > **Note:** The schema validates format and structure. Runtime SSRF blocking, StrKey checksum validation, and secret redaction are enforced by the action itself regardless of schema validation.

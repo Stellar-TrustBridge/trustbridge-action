@@ -158,3 +158,15 @@ Open a [GitHub Discussion](https://github.com/Stellar-TrustBridge/trustbridge-ac
 ---
 
 [← Back to README](README.md)
+
+### Testing against a mocked Horizon locally (Issue #789)
+
+For fast local loops, unit-test Horizon code against the recorded fixtures in `fixtures/` with the helpers in `docs/examples/mocked-horizon.ts` (`createMockHorizon`, `loadAccountFixture`, `fetchMockedAccount`). Copy-paste snippets: [docs/typescript-snippets.md](docs/typescript-snippets.md#local-mocked-horizon-runs) / [docs/javascript-snippets.md](docs/javascript-snippets.md#local-mocked-horizon-runs).
+
+```bash
+npx jest __tests__/typescript-snippets-mocked-horizon.test.ts
+```
+
+### License report
+
+If you change `package-lock.json`, run `npm run license:report` and commit the updated `docs/LICENSE_REPORT.md` — CI runs `npm run license:report:check` and fails on drift (Issue #791).

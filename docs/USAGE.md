@@ -3110,6 +3110,37 @@ The signature is `HMAC-SHA256` over the **raw UTF-8 JSON body**, formatted as `s
 
 When `webhook_secret` is empty the `X-TrustBridge-Signature` header is **omitted entirely** (the request is sent unsigned). Always set a secret in production.
 
+### Rotating the webhook secret without downtime (Issue #795)
+
+Set `webhook_secret_previous` to open a **dual-key accept window**. While it is set, every request carries two signatures over the same body:
+
+```
+X-TrustBridge-Signature:          sha256=<HMAC with webhook_secret (new key)>
+X-TrustBridge-Signature-Previous: sha256=<HMAC with webhook_secret_previous (old key)>
+```
+
+Rotation sequence:
+
+1. **Receiver:** accept both keys — verify against `[NEW_SECRET, OLD_SECRET]` (newest first).
+2. **Workflow:** set `webhook_secret: ${{ secrets.NEW }}` and `webhook_secret_previous: ${{ secrets.OLD }}`. Receivers on either key keep verifying.
+3. Wait until every receiver accepts the new key. `matchedKeyIndex` shows which key matched, so you can see when old-key matches stop.
+4. **Workflow:** remove `webhook_secret_previous`. Only the new key signs.
+5. **Receiver:** drop `OLD_SECRET`. Requests signed only with the old key now fail with `SIGNATURE_MISMATCH`.
+
+`webhook_secret_previous` never signs on its own: with an empty `webhook_secret` no signature headers are sent. A previous key equal to the current key is ignored.
+
+```ts
+import { verifyWebhookSignatureWithRotation } from './src/webhook';
+
+const check = verifyWebhookSignatureWithRotation(
+  rawBody,
+  [req.headers['x-trustbridge-signature'], req.headers['x-trustbridge-signature-previous']],
+  [process.env.WEBHOOK_SECRET_NEW, process.env.WEBHOOK_SECRET_OLD],
+);
+if (!check.valid) return res.status(401).send(check.reason);
+// reason: NO_SIGNATURE | MALFORMED_SIGNATURE | NO_SECRETS | SIGNATURE_MISMATCH
+```
+
 ### Payload body (schema version `"1"`)
 
 ```json

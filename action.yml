@@ -327,6 +327,14 @@ inputs:
       Only used when `webhook_url` is set. (Issue #101)
     required: false
     default: ""
+  webhook_secret_previous:
+    description: >-
+      Previous webhook secret, set only while rotating `webhook_secret`. When
+      set, requests also carry `X-TrustBridge-Signature-Previous` signed with
+      this key so receivers still on the old key keep verifying. Remove once
+      all receivers accept the new key. Never logged. (Issue #795)
+    required: false
+    default: ""
   webhook_timeout_ms:
     description: >-
       Maximum time in milliseconds to wait for the webhook endpoint to

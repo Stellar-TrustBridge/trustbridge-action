@@ -22,6 +22,10 @@ import {
   listenForRunnerCancellation,
   sendWebhookNotification,
   describeOidcMintFailure,
+  verifyWebhookSignatureWithRotation,
+  buildWebhookSignatureHeaders,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_PREVIOUS_SIGNATURE_HEADER,
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
@@ -672,5 +676,126 @@ describe('golden fixture — webhook-payload.json', () => {
     const d = new Date(goldenFixture.timestamp);
     expect(isNaN(d.getTime())).toBe(false);
     expect(d.toISOString()).toBe(goldenFixture.timestamp);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Secret rotation — dual-key accept window (Issue #795)
+// ---------------------------------------------------------------------------
+
+describe('webhook HMAC secret rotation dual-key accept window (#795)', () => {
+  const OLD_KEY = 'old-secret-key-aaaa';
+  const NEW_KEY = 'new-secret-key-bbbb';
+  const BODY = '{"schema_version":"1","event":"validation_complete"}';
+
+  const headersFrom = (fetchMock: jest.Mock): Record<string, string> =>
+    (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+  const payload = (): WebhookPayload => buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+
+  describe('sender (deliverWebhook)', () => {
+    it('signs with both keys during the rotation window', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      const p = payload();
+      await deliverWebhook(p, { ...CONFIG, webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+
+      const headers = headersFrom(fetchMock);
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body as string;
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBe(computeWebhookSignature(body, NEW_KEY));
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBe(computeWebhookSignature(body, OLD_KEY));
+    });
+
+    it('a receiver still on the old key verifies a rotation-window request', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body as string;
+
+      const oldReceiver = verifyWebhookSignatureWithRotation(
+        body,
+        [headers[WEBHOOK_SIGNATURE_HEADER], headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]],
+        [OLD_KEY],
+      );
+      expect(oldReceiver).toEqual({ valid: true, matchedKeyIndex: 0 });
+
+      const newReceiver = verifyWebhookSignatureWithRotation(
+        body,
+        [headers[WEBHOOK_SIGNATURE_HEADER], headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]],
+        [NEW_KEY],
+      );
+      expect(newReceiver).toEqual({ valid: true, matchedKeyIndex: 0 });
+    });
+
+    it('sends only the primary header outside a rotation (unchanged v1 behaviour)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: NEW_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toMatch(/^sha256=[0-9a-f]{64}$/);
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('never signs with the previous key alone when the current secret is empty', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: '', webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('OIDC mode sends no HMAC headers even when both secrets are set', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(
+        payload(),
+        { ...CONFIG, authMode: 'oidc', oidcToken: 'tok', webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY },
+        fetchMock as any,
+      );
+      const headers = headersFrom(fetchMock);
+      expect(headers['Authorization']).toBe('Bearer tok');
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('ignores a previous key identical to the current key', () => {
+      expect(buildWebhookSignatureHeaders(BODY, NEW_KEY, NEW_KEY)).toEqual({
+        [WEBHOOK_SIGNATURE_HEADER]: computeWebhookSignature(BODY, NEW_KEY),
+      });
+    });
+
+    it('never puts either secret into a header value', () => {
+      const values = Object.values(buildWebhookSignatureHeaders(BODY, NEW_KEY, OLD_KEY)).join(' ');
+      expect(values).not.toContain(NEW_KEY);
+      expect(values).not.toContain(OLD_KEY);
+    });
+  });
+
+  describe('receiver (verifyWebhookSignatureWithRotation)', () => {
+    const sigNew = computeWebhookSignature(BODY, NEW_KEY);
+    const sigOld = computeWebhookSignature(BODY, OLD_KEY);
+
+    it('accepts the new key and reports index 0', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigNew], [NEW_KEY, OLD_KEY])).toEqual({ valid: true, matchedKeyIndex: 0 });
+    });
+
+    it('accepts the old key during the window and reports index 1', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigOld], [NEW_KEY, OLD_KEY])).toEqual({ valid: true, matchedKeyIndex: 1 });
+    });
+
+    it('rejects an old-key-only request once the window closes', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigOld], [NEW_KEY])).toEqual({
+        valid: false,
+        matchedKeyIndex: null,
+        reason: 'SIGNATURE_MISMATCH',
+      });
+    });
+
+    it('rejects a tampered body under both keys', () => {
+      expect(verifyWebhookSignatureWithRotation(`${BODY} `, [sigNew, sigOld], [NEW_KEY, OLD_KEY]).reason).toBe('SIGNATURE_MISMATCH');
+    });
+
+    it('returns stable reasons for missing or malformed input', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [], [NEW_KEY]).reason).toBe('NO_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, [undefined, '  '], [NEW_KEY]).reason).toBe('NO_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, ['md5=abc'], [NEW_KEY]).reason).toBe('MALFORMED_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigNew], ['', undefined]).reason).toBe('NO_SECRETS');
+    });
   });
 });

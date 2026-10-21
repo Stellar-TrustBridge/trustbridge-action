@@ -369,3 +369,339 @@ export function logWarning(message: string, context: LogContext = {}): void {
 export function logError(message: string, context: LogContext = {}): void {
   emit('error', message, context);
 }
+
+// ---------------------------------------------------------------------------
+// StructuredLogger, Horizon retry helpers and the shared `logger` instance.
+// Restored after the #771 rewrite dropped them while src/horizon.ts,
+// src/webhook.ts and ~10 other modules still import `logger`.
+// ---------------------------------------------------------------------------
+
+function redactValue(raw: unknown): unknown {
+  if (typeof raw === 'string') return redactString(raw);
+  if (raw === null || raw === undefined) return raw;
+  if (Array.isArray(raw)) return raw.map((item) => redactValue(item));
+  if (typeof raw === 'object') {
+    const safeObj: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (isSensitiveSecretKey(k)) {
+        safeObj[k] = '[REDACTED]';
+      } else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+        safeObj[k] = redactStellarAddress(v);
+      } else if (k === 'horizonUrl' && typeof v === 'string') {
+        safeObj[k] = redactHorizonUrl(v);
+      } else {
+        safeObj[k] = redactValue(v);
+      }
+    }
+    return safeObj;
+  }
+  return raw;
+}
+
+class StructuredLogger {
+  private debugMode: boolean;
+
+  constructor(debugMode: boolean = false) {
+    this.debugMode = debugMode;
+  }
+
+  /**
+   * Enable or disable debug output.
+   */
+  setDebugMode(enabled: boolean): void {
+    this.debugMode = enabled;
+  }
+
+  /**
+   * Log an informational message.
+   */
+  info(message: string, context?: LogContext): void {
+    core.info(this.formatMessage(redactString(message), redactContext(context)));
+  }
+
+  /**
+   * Log a warning message.
+   */
+  warn(message: string, context?: LogContext): void {
+    core.warning(this.formatMessage(redactString(message), redactContext(context)));
+  }
+
+  /**
+   * Log an error message.
+   */
+  error(message: string, context?: LogContext, error?: Error): void {
+    let fullMessage = this.formatMessage(redactString(message), redactContext(context));
+    if (error) {
+      fullMessage += `\n  Error: ${redactString(error.message)}`;
+      if (error.stack) {
+        fullMessage += `\n  Stack: ${redactString(error.stack)}`;
+      }
+    }
+    core.error(fullMessage);
+  }
+
+  /**
+   * Log a debug message (only shown in debug mode).
+   */
+  debug(message: string, context?: LogContext): void {
+    if (this.debugMode) {
+      core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
+    }
+  }
+
+  /**
+   * Log a structured Horizon retry event (Issue #697).
+   *
+   * Scheduled retries are written at debug level; final exhaustion is
+   * written at warning level so operators can find rate-limit failures
+   * without enabling debug mode. The context always uses the fixed
+   * {@link HORIZON_RETRY_LOG_FIELDS} schema and is run through
+   * `redactContext` like every other log line.
+   */
+  horizonRetry(event: HorizonRetryEvent): void {
+    const level = horizonRetryLogLevel(event);
+    const message = formatHorizonRetryMessage(event);
+    const context = buildHorizonRetryLogContext(event);
+    if (level === 'warning') {
+      this.warn(message, context);
+    } else if (level === 'info') {
+      this.info(message, context);
+    } else {
+      this.debug(message, context);
+    }
+  }
+
+  /**
+   * Log performance metrics.
+   */
+  logMetric(name: string, value: number, unit: string = 'ms', context?: LogContext): void {
+    const message = `METRIC: ${name}=${value}${unit}`;
+    this.info(message, context);
+  }
+
+  /**
+   * Format a message with context information.
+   *
+   * Precondition: `message` and every string in `context` have already
+   * been run through their respective redaction helpers. This method is
+   * purely responsible for layout.
+   */
+  private formatMessage(message: string, context?: LogContext): string {
+    if (!context) {
+      return message;
+    }
+
+    const parts: string[] = [message];
+
+    if (context.component) {
+      parts.push(`[${context.component}]`);
+    }
+
+    const otherKeys = Object.keys(context).filter((k) => k !== 'component');
+    if (otherKeys.length > 0) {
+      const contextStr = otherKeys
+        .map((k) => `${k}=${stringifyForLog(context[k])}`)
+        .join(', ');
+      parts.push(`(${contextStr})`);
+    }
+
+    return parts.join(' ');
+  }
+}
+
+function stringifyForLog(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '[Unserializable]';
+  }
+}
+
+/**
+ * Structured Horizon retry event (Issue #697).
+ *
+ * - `scheduled`: a retry will be attempted after `delayMs`.
+ * - `exhausted`: no further retries will be attempted; the request fails.
+ */
+export interface HorizonRetryEvent {
+  phase: 'scheduled' | 'exhausted';
+  /** Zero-based index of the attempt that just failed. */
+  attempt: number;
+  /** Total attempts allowed (maxRetries + 1). */
+  maxAttempts: number;
+  /** HTTP status of the failed attempt; 0 for transport errors. */
+  status: number;
+  /** Wait before the next attempt (0 when exhausted). */
+  delayMs: number;
+  /** True when the wait was clamped by retry_max_delay_ms. */
+  capped: boolean;
+  /** What failed: an HTTP status, a timeout, or a network error. */
+  kind: 'http' | 'timeout' | 'network';
+  /** Which endpoint was used: the primary horizon_url or a fallback. */
+  endpointKind: 'primary' | 'fallback';
+  /** Horizon base URL; reduced to a query-free, redacted base before logging. */
+  horizonUrl: string;
+  /** Account being fetched; redacted to first-4/last-4 before logging. */
+  stellarAddress?: string;
+  /** True when the delay came from a Retry-After header. */
+  retryAfterFromHeader?: boolean;
+  /** Why retries stopped (exhausted phase only). */
+  reason?: 'max_retries' | 'wait_budget';
+}
+
+export type HorizonRetryLogLevel = 'debug' | 'info' | 'warning';
+
+/**
+ * Fixed field names emitted with every Horizon retry log line. Documented in
+ * docs/TROUBLESHOOTING.md — keep both in sync.
+ */
+export const HORIZON_RETRY_LOG_FIELDS = [
+  'event',
+  'phase',
+  'endpointKind',
+  'horizonUrl',
+  'stellarAddress',
+  'attempt',
+  'maxAttempts',
+  'nextAttempt',
+  'status',
+  'kind',
+  'delayMs',
+  'capped',
+  'retryAfterFromHeader',
+  'reasonCode',
+] as const;
+
+/** reason_code-style tag for a Horizon retry event. */
+export const HORIZON_RETRY_REASON_CODES = {
+  scheduled: 'HORIZON_RETRY_SCHEDULED',
+  max_retries: 'HORIZON_RETRIES_EXHAUSTED',
+  wait_budget: 'HORIZON_WAIT_BUDGET_EXHAUSTED',
+} as const;
+
+/**
+ * Choose the log level for a retry event: scheduled retries are debug noise,
+ * final exhaustion is a warning.
+ */
+export function horizonRetryLogLevel(event: HorizonRetryEvent): HorizonRetryLogLevel {
+  return event.phase === 'exhausted' ? 'warning' : 'debug';
+}
+
+/**
+ * Reduce a Horizon URL to its redacted base: credentials, query string and
+ * fragment are dropped so failover logs can say which host was used without
+ * leaking query params, and any account path segment is masked.
+ */
+export function redactHorizonBaseUrl(url: string): string {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return redactHorizonUrl(parsed.toString().replace(/\/$/, ''));
+  } catch {
+    return redactHorizonUrl(url.split(/[?#]/)[0]);
+  }
+}
+
+function horizonRetryReasonCode(event: HorizonRetryEvent): string {
+  if (event.phase === 'scheduled') return HORIZON_RETRY_REASON_CODES.scheduled;
+  return HORIZON_RETRY_REASON_CODES[event.reason ?? 'max_retries'];
+}
+
+/**
+ * Build the fixed-schema, redacted log context for a retry event. Only the
+ * keys in {@link HORIZON_RETRY_LOG_FIELDS} are emitted, so no response body
+ * or extra field can reach the log line.
+ */
+export function buildHorizonRetryLogContext(event: HorizonRetryEvent): LogContext {
+  const context: LogContext = {
+    component: 'horizon',
+    event: 'horizon_retry',
+    phase: event.phase,
+    endpointKind: event.endpointKind,
+    horizonUrl: redactHorizonBaseUrl(event.horizonUrl),
+    stellarAddress: event.stellarAddress,
+    attempt: event.attempt,
+    maxAttempts: event.maxAttempts,
+    nextAttempt: event.phase === 'scheduled' ? event.attempt + 1 : null,
+    status: event.status,
+    kind: event.kind,
+    delayMs: event.phase === 'scheduled' ? Math.max(0, Math.round(event.delayMs)) : 0,
+    capped: event.capped,
+    retryAfterFromHeader: event.retryAfterFromHeader ?? false,
+    reasonCode: horizonRetryReasonCode(event),
+  };
+  return redactContext(context) as LogContext;
+}
+
+/**
+ * Human-readable summary line for a retry event. Contains no URL or address;
+ * those live (redacted) in the structured context.
+ */
+export function formatHorizonRetryMessage(event: HorizonRetryEvent): string {
+  if (event.phase === 'scheduled') {
+    return event.kind === 'http' ? 'Horizon retry scheduled' : 'Horizon transport retry scheduled';
+  }
+  const what = event.kind === 'http' ? `HTTP ${event.status}` : event.kind;
+  const reasonCode = horizonRetryReasonCode(event);
+  return `Horizon retries exhausted (${reasonCode}): ${what} on ${event.endpointKind} endpoint after ${event.attempt + 1}/${event.maxAttempts} attempt(s)`;
+}
+
+export const logger = new StructuredLogger();
+
+/**
+ * Logs an informational message. Context values are redacted before output.
+ */
+export function log(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.info(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.info(safeMessage);
+  }
+}
+
+/**
+ * Logs a debug message. Only emitted when the `debug` input is enabled, but
+ * the redaction pass runs unconditionally so enabling debug can never leak a
+ * raw address or token into public Actions logs.
+ */
+export function debug(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.debug(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.debug(safeMessage);
+  }
+}
+
+/**
+ * Logs a warning message. Context values are redacted before output.
+ */
+export function warning(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.warning(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.warning(safeMessage);
+  }
+}
+
+/**
+ * Logs an error message. Context values are redacted before output.
+ */
+export function error(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.error(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.error(safeMessage);
+  }
+}

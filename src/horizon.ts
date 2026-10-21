@@ -1,6 +1,9 @@
 import { defaultCache, SimpleCache } from './cache';
-import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
-import { RateBudgetTracker, RateBudgetExhaustedError, CircuitBreaker } from './resilience';
+import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
+import { inferStellarNetwork } from './links';
+import { globalMetrics, globalHorizonHistogram } from './metrics';
+import { RateBudgetTracker, RateBudgetExhaustedError, CircuitBreaker, CircuitOpenError } from './resilience';
+import { validateHorizonUrl } from './validation';
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -190,6 +193,23 @@ export interface FetchAccountOptions {
    * transport error instead of sleeping.
    */
   retryMaxTotalWaitMs?: number;
+  /** Per-run Horizon request budget (`horizon_max_requests`). */
+  horizonMaxRequests?: number;
+  rateBudgetTracker?: RateBudgetTracker;
+  /** Optional circuit breaker for Horizon fetches (Issue #209). */
+  circuitBreaker?: CircuitBreaker;
+  /**
+   * Opt into a fallback URL on a different Stellar network than the primary
+   * `horizon_url`. Off by default: a G-address is valid on every network, so
+   * a cross-network fallback could silently report data from the wrong ledger.
+   */
+  allowCrossNetworkFallback?: boolean;
+  /** Alias for `allowCrossNetworkFallback` kept for older call sites / tests. */
+  allowCrossNetworkFailover?: boolean;
+  /** Optional secondary Horizon URL used for same-network failover. */
+  secondaryHorizonUrl?: string;
+  /** Optional SHA-256 TLS certificate fingerprint pin (Issue #303). */
+  pinFingerprint?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -522,9 +542,10 @@ async function fetchAccountOnce(
           // When the header is missing or the value exceeds the cap, fall back
           // to exponential backoff so the action never waits unbounded.
           let retryAfter: number;
-          let retryAfterCapped: boolean;
+          let retryAfterCapped = false;
           if (retryAfterHeader !== null) {
             retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
+            retryAfterCapped = retryAfterHeader > retryMaxDelayMs;
             if (retryAfterHeader > retryMaxDelayMs) {
               // Issue #705: surface the cap. Only the parsed millisecond
               // values are logged, never the raw header string.
@@ -532,6 +553,7 @@ async function fetchAccountOnce(
                 `Horizon Retry-After capped: requested ${Math.round(retryAfterHeader)}ms exceeds retry_max_delay_ms (${retryMaxDelayMs}ms); sleeping ${retryAfter}ms.`,
                 safeHorizonContext({
                   component: "horizon",
+                  stellarAddress,
                   horizonUrl: targetHorizonUrl,
                   endpointKind,
                   status: response.status,
@@ -593,29 +615,6 @@ async function fetchAccountOnce(
           if (retryAfter > 0) {
             await cancellableSleep(retryAfter, parentSignal);
           }
-          // If the job was cancelled during the sleep, bail out on the next
-          // iteration's pre-flight check rather than issuing another request.
-          attempt += 1;
-          continue;
-        }
-
-        logger.debug(
-          "Horizon non-retryable HTTP error (exhausted retries)",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            status: response.status,
-            retryable,
-            latencyMs,
-            attempt,
-            retryAfterMs: retryAfter,
-            retryAfterFromHeader: retryAfterHeader !== null,
-            retryAfterCapped: retryAfterHeader !== null && retryAfterHeader > retryMaxDelayMs,
-            nextAttempt: attempt + 1,
-          }));
-          await cancellableSleep(retryAfter, parentSignal);
           // If the job was cancelled during the sleep, bail out on the next
           // iteration's pre-flight check rather than issuing another request.
           attempt += 1;
@@ -912,18 +911,43 @@ export async function fetchAccount(
       return cached;
     }
 
-    const fetch: FetchLike =
-      options.fetchFn ?? (await import('node-fetch')).default;
+    logger.debug('Horizon cache miss', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheKey,
+      cacheTtlMs,
+    }));
+    recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
+  } else {
+    logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheTtlMs: 0,
+    }));
+  }
 
-    // Bail out immediately if the job was already cancelled before we start.
-    if (signal?.aborted) {
-      throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
-    }
+  let primaryError: HorizonError | undefined;
+  const circuitBreaker = options.circuitBreaker;
 
-    const cachingEnabled = cacheTtlMs > 0;
-    const cacheKey = cachingEnabled
-      ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
-      : '';
+  try {
+    const result = await fetchAccountOnce(
+      fetch,
+      normalizedHorizonUrl,
+      stellarAddress,
+      timeoutMs,
+      maxRetries,
+      'primary',
+      retryMaxDelayMs,
+      retryMaxTotalWaitMs,
+      signal,
+      rateBudgetTracker,
+      circuitBreaker,
+      retryBaseDelayMs,
+    );
 
     result.account._servedByUrl = normalizedHorizonUrl;
 
@@ -954,22 +978,71 @@ export async function fetchAccount(
     } else {
       throw error;
     }
+  }
 
-    if (!normalizedFallbackUrl) {
-      throw primaryError;
-    }
+  if (!normalizedFallbackUrl) {
+    throw primaryError;
+  }
 
-    // Network binding rule: a G-address is valid on every Stellar network, so
-    // a fallback URL that resolves to a different network than the primary
-    // could silently return funded/trustline/reserve data for the *wrong*
-    // ledger instead of failing loudly. Compare the inferred networks and
-    // refuse the fallback unless the caller explicitly opted in.
-    const primaryNetwork = inferStellarNetworkPreset(normalizedHorizonUrl);
-    const fallbackNetwork = inferStellarNetworkPreset(normalizedFallbackUrl);
-    const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
+  // Network binding rule: a G-address is valid on every Stellar network, so
+  // a fallback URL that resolves to a different network than the primary
+  // could silently return funded/trustline/reserve data for the *wrong*
+  // ledger instead of failing loudly. Compare the inferred networks and
+  // refuse the fallback unless the caller explicitly opted in.
+  const primaryNetwork = inferStellarNetwork(normalizedHorizonUrl);
+  const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
+  const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
 
-    if (crossNetworkFallback && !allowCrossNetwork) {
-      logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
+  if (crossNetworkFallback && !allowCrossNetwork) {
+    logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      primaryNetwork,
+      fallbackNetwork,
+      primaryStatusCode: primaryError?.statusCode,
+      primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+    }));
+    throw primaryError;
+  }
+
+  logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+    component: 'horizon',
+    stellarAddress,
+    horizonUrl,
+    horizonUrlFallback: normalizedFallbackUrl,
+    cacheKey: cachingEnabled ? cacheKey : undefined,
+    primaryNetwork,
+    fallbackNetwork,
+    crossNetworkFallback,
+    primaryStatusCode: primaryError?.statusCode,
+    primaryRetryable: primaryError?.retryable,
+    primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+  }));
+
+  try {
+    const fallbackResult = await fetchAccountOnce(
+      fetch,
+      normalizedFallbackUrl,
+      stellarAddress,
+      timeoutMs,
+      maxRetries,
+      'fallback',
+      retryMaxDelayMs,
+      retryMaxTotalWaitMs,
+      signal,
+      rateBudgetTracker,
+      circuitBreaker,
+      retryBaseDelayMs,
+    );
+
+    fallbackResult.account._servedByUrl = normalizedFallbackUrl;
+
+    if (cachingEnabled) {
+      cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+      const cacheStatsAfter = redactCacheStats(cache.getStats());
+      logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,

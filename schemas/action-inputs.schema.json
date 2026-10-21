@@ -351,6 +351,14 @@
         "${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET }}"
       ]
     },
+    "webhook_secret_previous": {
+      "type": "string",
+      "description": "Previous HMAC secret used only during webhook secret rotation. Adds an X-TrustBridge-Signature-Previous header signed with this key. Never logged.",
+      "default": "",
+      "examples": [
+        "${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET_PREVIOUS }}"
+      ]
+    },
     "webhook_timeout_ms": {
       "type": "string",
       "description": "Timeout in milliseconds for webhook delivery. On timeout the request is aborted and a warning is logged. Comment posting is unaffected.",

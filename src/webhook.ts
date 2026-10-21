@@ -129,6 +129,15 @@ export interface WebhookConfig {
    * this for production HMAC use.
    */
   webhookSecret?: string;
+  /**
+   * Previous HMAC secret, set only during a secret rotation (Issue #795).
+   *
+   * While set, every request carries a second signature computed with this
+   * key in `X-TrustBridge-Signature-Previous`, so receivers that have not yet
+   * switched to the new `webhookSecret` keep verifying without downtime.
+   * Remove it once every receiver accepts the new key.
+   */
+  webhookSecretPrevious?: string;
   /** Request timeout in milliseconds. Default 5 000. */
   timeoutMs?: number;
   /** Parent cancellation signal, such as an Actions runner job-abort signal. */
@@ -244,6 +253,83 @@ export function verifyWebhookSignature(body: string, signature: string, secret: 
   const expectedBytes = Buffer.from(expected, 'utf8');
 
   return received.length === expectedBytes.length && crypto.timingSafeEqual(received, expectedBytes);
+}
+
+// ---------------------------------------------------------------------------
+// Secret rotation — dual-key accept window (Issue #795)
+// ---------------------------------------------------------------------------
+
+/** Header carrying the signature made with the *current* `webhook_secret`. */
+export const WEBHOOK_SIGNATURE_HEADER = 'X-TrustBridge-Signature';
+/** Header carrying the signature made with `webhook_secret_previous` during a rotation. */
+export const WEBHOOK_PREVIOUS_SIGNATURE_HEADER = 'X-TrustBridge-Signature-Previous';
+
+const SIGNATURE_FORMAT = /^sha256=[0-9a-f]{64}$/;
+
+export interface WebhookSignatureVerification {
+  /** True when any supplied signature matches any accepted secret. */
+  valid: boolean;
+  /**
+   * Index into `secrets` of the key that verified (0 = newest), or `null`.
+   * Receivers can watch this to see when old-key matches stop.
+   */
+  matchedKeyIndex: number | null;
+  /** Stable reason when `valid` is false. */
+  reason?: 'NO_SIGNATURE' | 'MALFORMED_SIGNATURE' | 'NO_SECRETS' | 'SIGNATURE_MISMATCH';
+}
+
+/**
+ * Receiver-side verification across a rotation window (Issue #795).
+ *
+ * Accepts the request when any supplied signature header value
+ * (`X-TrustBridge-Signature`, `X-TrustBridge-Signature-Previous`) matches any
+ * of the receiver's accepted secrets. Order `secrets` newest first so
+ * `matchedKeyIndex` tells you which key matched. Empty secrets are ignored and
+ * every comparison is constant-time.
+ */
+export function verifyWebhookSignatureWithRotation(
+  body: string,
+  signatures: Array<string | null | undefined>,
+  secrets: Array<string | null | undefined>,
+): WebhookSignatureVerification {
+  const presented = signatures
+    .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+    .map((s) => s.trim());
+  if (presented.length === 0) return { valid: false, matchedKeyIndex: null, reason: 'NO_SIGNATURE' };
+  const wellFormed = presented.filter((s) => SIGNATURE_FORMAT.test(s));
+  if (wellFormed.length === 0) return { valid: false, matchedKeyIndex: null, reason: 'MALFORMED_SIGNATURE' };
+  const accepted = secrets
+    .map((s, i) => ({ s, i }))
+    .filter((k): k is { s: string; i: number } => typeof k.s === 'string' && k.s !== '');
+  if (accepted.length === 0) return { valid: false, matchedKeyIndex: null, reason: 'NO_SECRETS' };
+
+  for (const { s, i } of accepted) {
+    for (const sig of wellFormed) {
+      if (verifyWebhookSignature(body, sig, s)) return { valid: true, matchedKeyIndex: i };
+    }
+  }
+  return { valid: false, matchedKeyIndex: null, reason: 'SIGNATURE_MISMATCH' };
+}
+
+/**
+ * Signature headers for a request body. Signs with `webhookSecret` and, during
+ * a rotation, also with `webhookSecretPrevious`. A previous secret equal to
+ * the current one is ignored. Returns `{}` when no current secret is set —
+ * the previous key never signs on its own.
+ */
+export function buildWebhookSignatureHeaders(
+  body: string,
+  webhookSecret?: string,
+  webhookSecretPrevious?: string,
+): Record<string, string> {
+  if (!webhookSecret) return {};
+  const headers: Record<string, string> = {
+    [WEBHOOK_SIGNATURE_HEADER]: computeWebhookSignature(body, webhookSecret),
+  };
+  if (webhookSecretPrevious && webhookSecretPrevious !== webhookSecret) {
+    headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER] = computeWebhookSignature(body, webhookSecretPrevious);
+  }
+  return headers;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,8 +600,8 @@ export async function deliverWebhook(
 
   if (config.oidcToken) {
     headers['Authorization'] = `Bearer ${config.oidcToken}`;
-  } else if (config.webhookSecret) {
-    headers['X-TrustBridge-Signature'] = computeWebhookSignature(body, config.webhookSecret);
+  } else {
+    Object.assign(headers, buildWebhookSignatureHeaders(body, config.webhookSecret, config.webhookSecretPrevious));
   }
 
   const controller = new AbortController();

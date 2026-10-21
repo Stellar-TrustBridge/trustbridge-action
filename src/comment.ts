@@ -1533,8 +1533,75 @@ export async function postIssueComment(
     });
 
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-    return { url: response.data.html_url, id: response.data.id };
+    const created = { url: response.data.html_url, id: response.data.id };
+    if (!sticky) return created;
+    // Duplicate runs (e.g. two workflow_dispatch runs racing) can both miss
+    // the sticky lookup and create a comment each. Converge on the oldest one.
+    return reconcileDuplicateStickyComment(octokit, owner, repo, issueNumber, created, body);
   });
+}
+
+/**
+ * Collapse duplicate sticky comments created by concurrent runs (Issue #790).
+ *
+ * Every racing run that created a comment re-reads the thread afterwards. If
+ * an older TrustBridge comment exists, the run writes its body there and
+ * deletes the comment it just created, so all runs converge on the oldest
+ * comment and the issue keeps exactly one TrustBridge comment.
+ *
+ * Never throws: if the re-read, update, or delete fails, the freshly created
+ * comment is returned unchanged and a warning is logged, so the run's
+ * outputs still point at a real comment.
+ *
+ * @internal Exported for testing.
+ */
+export async function reconcileDuplicateStickyComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  created: PostedIssueComment,
+  body: string,
+): Promise<PostedIssueComment> {
+  let canonicalId: number | undefined;
+  try {
+    canonicalId = await findFirstTrustBridgeComment(octokit, owner, repo, issueNumber);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(`Could not re-check for duplicate TrustBridge comments on issue #${issueNumber}: ${message}`);
+    return created;
+  }
+  if (canonicalId === undefined || canonicalId === created.id) return created;
+
+  let canonical: PostedIssueComment;
+  try {
+    const updated = await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: canonicalId,
+      body,
+    });
+    canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Duplicate TrustBridge comment detected on issue #${issueNumber} but the original (id=${canonicalId}) could not be updated; keeping comment id=${created.id}: ${message}`,
+    );
+    return created;
+  }
+
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: created.id });
+    core.info(
+      `Removed duplicate TrustBridge comment id=${created.id} on issue #${issueNumber}; updated original id=${canonicalId}.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Could not delete duplicate TrustBridge comment id=${created.id} on issue #${issueNumber} (needs issues: write): ${message}`,
+    );
+  }
+  return canonical;
 }
 
 // ---------------------------------------------------------------------------
