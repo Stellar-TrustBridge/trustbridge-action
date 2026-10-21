@@ -40,16 +40,24 @@ Safety guarantees:
 - Only `contents: read` + `pull-requests: read` permissions
 - Fixtures under `security/fixtures/polinrider/` are excluded from production scans
 
+## Important: this is NOT full CI
+
+The required GitHub ruleset only enforces **`PolinRider Security Scan`**.
+
+- Failing Jest / typecheck / lint / cargo / other CI jobs does **not** block merge via this ruleset.
+- That matches Wave operations: contributors often cannot get full CI green; maintainers merge assigned PRs and clean CI after the wave.
+- If **PolinRider Security Scan** is red, **do not merge** — that means malware indicators, not a normal test flake.
+
 ## Make the check required (branch protection / ruleset)
 
-As a repo admin (Settings → Rules → Rulesets, or classic branch protection):
+Already configured on TrustBridge repos as ruleset **Require PolinRider Security Scan**.
 
-1. Create or edit a ruleset targeting `main`.
+To recreate elsewhere:
+
+1. Settings → Rules → Rulesets (or classic branch protection) targeting `main`.
 2. Enable **Require status checks to pass**.
-3. Add required check: **`PolinRider Security Scan`** (exact job name).
-4. Optionally require the branch to be up to date before merging.
-
-Until this is configured, the workflow still runs and fails on detection, but GitHub may still allow merge if the check is not required.
+3. Add required check: **`PolinRider Security Scan`** only (do **not** add the whole CI suite unless you intend to block on tests).
+4. Keep admin bypass for emergencies.
 
 ### GitHub CLI example (ruleset)
 

@@ -174,17 +174,30 @@ done < <(find . \( -name node_modules -o -name .git -o -name target -o -name .ne
      -o -name 'tailwind.config.*' -o -name 'vite.config.*' -o -name 'babel.config.*' \
      -o -name 'jest.config.*' -o -name 'next.config.*' -o -name 'eslint.config.*' \) -print0 2>/dev/null)
 
-# 9) PR changed-files mode
+# 9) Broader supply-chain / malware patterns (not PolinRider-only)
+BROADER=$(rg -n --hidden "${EXCLUDE_GLOBS[@]}" \
+  -e 'Function\s*\(\s*["'\'']return' \
+  -e 'atob\s*\([^)]+\)\s*;?\s*eval' \
+  -e 'eval\s*\(\s*atob' \
+  -e 'child_process["'\'']?\s*\]?\s*\.\s*exec' \
+  -e 'webhook\.site|ngrok\.io/|pastebin\.com/raw' \
+  -g '!*.md' -g '!*.txt' . 2>/dev/null || true)
+if [[ -n "${BROADER}" ]]; then
+  fail "Suspicious remote-exec / obfuscation patterns found (broader malware heuristics)"
+  echo "$BROADER" | head -40
+fi
+
+# 10) PR changed-files mode — high-risk paths fail closed on PRs
 if [[ "$MODE" == "pr-files" && -n "${POLIN_CHANGED_FILES:-}" ]]; then
   while IFS= read -r f; do
     [[ -z "$f" || ! -f "$f" ]] && continue
     case "$f" in
-      .vscode/tasks.json|.gitignore|dist/setup.js|*fa-solid-400.woff2|temp_auto_push.bat|temp_interactive_push.bat)
-        warn "PR touches high-risk PolinRider path: $f"
+      .vscode/tasks.json|dist/setup.js|*fa-solid-400.woff2|temp_auto_push.bat|temp_interactive_push.bat)
+        fail "PR introduces/modifies high-risk malware path: $f"
         ;;
     esac
     if rg -q "$MARKER_PATTERN" "$f" 2>/dev/null; then
-      fail "PolinRider marker in changed file: $f"
+      fail "Malware marker in changed file: $f"
     fi
   done <<< "$POLIN_CHANGED_FILES"
 fi
