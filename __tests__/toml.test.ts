@@ -22,9 +22,17 @@ import {
   fetchTomlWithCache,
   runStellarTomlCheck,
   MAX_STELLAR_TOML_CACHE_TTL_MS,
+  MAX_STELLAR_TOML_BYTES,
+  STELLAR_TOML_MAX_REDIRECTS,
+  isAllowedTomlContentType,
 } from '../src/toml';
 import { defaultCache } from '../src/cache';
 import * as ssrf from '../src/ssrf';
+
+jest.mock('../src/logger', () => ({
+  ...jest.requireActual('../src/logger'),
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -530,5 +538,73 @@ describe('runStellarTomlCheck — Issue #709', () => {
     } as any);
     const outcome = await runStellarTomlCheck('anchor.example', { enabled: true, dnsLookup: publicLookup });
     expect(outcome.status).toBe('failed');
+  });
+});
+
+describe('fetchTomlWithCache — size, content-type and redirect limits (Issue #782)', () => {
+  beforeEach(async () => {
+    await defaultCache.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('accepts an allowlisted Content-Type with parameters', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(FIXTURE_TOML, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a disallowed Content-Type and does not cache it', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/unexpected Content-Type "text\/html"/);
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example'))).toBeFalsy();
+  });
+
+  it('rejects an empty body', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('   ', { status: 200 }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/empty body/);
+  });
+
+  it('never raises the body cap above MAX_STELLAR_TOML_BYTES', async () => {
+    const spy = jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue({ ok: false, error: 'stub' });
+    await fetchTomlWithCache('anchor.example', { maxBodyBytes: 50 * 1024 * 1024, cacheTtlMs: 0 });
+    expect(spy.mock.calls[0][1]).toMatchObject({
+      maxBodyBytes: MAX_STELLAR_TOML_BYTES,
+      followRedirects: false,
+      maxRedirects: STELLAR_TOML_MAX_REDIRECTS,
+    });
+  });
+
+  it('fails closed when the body exceeds the cap', async () => {
+    const big = 'A'.repeat(MAX_STELLAR_TOML_BYTES + 1);
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response(big, { status: 200 }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/exceeds limit/);
+  });
+
+  it('refuses redirects', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toBe('HTTP 302');
+  });
+
+  it('isAllowedTomlContentType handles missing, allowed and disallowed types', () => {
+    expect(isAllowedTomlContentType(null)).toBe(true);
+    expect(isAllowedTomlContentType('Application/TOML')).toBe(true);
+    expect(isAllowedTomlContentType('application/json')).toBe(false);
   });
 });

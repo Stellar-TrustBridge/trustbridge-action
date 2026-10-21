@@ -47,6 +47,18 @@ export interface CheckRunResult {
    * Optional error message if creation failed.
    */
   error?: string;
+
+  /**
+   * True when the run was cancelled (via `options.signal`) before the Check
+   * Run was written. No Check Run exists in that case — never a partial one.
+   */
+  cancelled?: boolean;
+}
+
+function cancelledResult(): CheckRunResult {
+  const message = 'Check Run creation cancelled before completion; no Check Run was written.';
+  logger.warn(message, { component: 'checks-run' });
+  return { success: false, cancelled: true, message };
 }
 
 /**
@@ -132,13 +144,17 @@ export function buildCheckRunSummary(result: ValidationResult): string {
  * @param result        The ValidationResult from running checks.
  * @param token         GitHub API token (requires checks: write permission).
  * @param options       Additional options (e.g. stellar address for annotation context).
+ *                      `signal` cancels the run: if it is aborted before or
+ *                      during the API call, no Check Run is written and the
+ *                      result has `cancelled: true` (Issue #783).
  * @returns             CheckRunResult with success flag and details.
  */
 export async function createCheckRun(
   result: ValidationResult,
   token: string,
-  options: { stellarAddress?: string } = {},
+  options: { stellarAddress?: string; signal?: AbortSignal } = {},
 ): Promise<CheckRunResult> {
+  if (options.signal?.aborted) return cancelledResult();
   try {
     // Fail gracefully if we're not in a GitHub Actions context.
     if (!github.context.runId || !github.context.repo.owner || !github.context.repo.repo) {
@@ -148,13 +164,18 @@ export async function createCheckRun(
       };
     }
 
-    const octokit = github.getOctokit(token, getOctokitProxyOptions());    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(token, getOctokitProxyOptions());
+    const { owner, repo } = github.context.repo;
     const conclusion = determineCheckConclusion(result);
     const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
 
     // Octokit Checks API supports up to 50 annotations per request.
     // For simplicity, we truncate to the first 50 checks.
     const annotationsSlice = annotations.slice(0, 50);
+
+    // Annotations are built synchronously, but re-check so a cancel that
+    // landed while preparing never reaches the API.
+    if (options.signal?.aborted) return cancelledResult();
 
     core.info(`Creating Check Run with conclusion="${conclusion}", ${annotationsSlice.length} annotations`);
 
@@ -170,6 +191,7 @@ export async function createCheckRun(
         summary: buildCheckRunSummary(result),
         annotations: annotationsSlice,
       },
+      ...(options.signal ? { request: { signal: options.signal } } : {}),
     });
 
     const checkRunId = response.data.id;
@@ -186,6 +208,7 @@ export async function createCheckRun(
       message: `Check Run #${checkRunId} created with conclusion=${conclusion}`,
     };
   } catch (error) {
+    if (options.signal?.aborted || (error as any)?.name === 'AbortError') return cancelledResult();
     const httpError = error as any;
     const status = httpError?.status;
     const message = error instanceof Error ? error.message : String(error);

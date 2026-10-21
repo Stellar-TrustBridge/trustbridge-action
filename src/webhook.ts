@@ -344,6 +344,12 @@ export function buildWebhookSignatureHeaders(
 export const WEBHOOK_MAX_ASSETS = 100;
 
 /**
+ * Current webhook payload schema version. Bumped only for breaking payload
+ * changes; see the versioning policy in docs/SCHEMA.md (Issue #784).
+ */
+export const WEBHOOK_SCHEMA_VERSION = '1' as const;
+
+/**
  * Build a sanitised webhook payload from a `ValidationResult`.
  *
  * All sensitive values are redacted using the same policy as structured log
@@ -462,7 +468,9 @@ export function validateWebhookPayload(payload: unknown): string[] {
 
   checkObjectKeys(payload, WEBHOOK_PAYLOAD_REQUIRED_FIELDS, 'payload', errors, WEBHOOK_PAYLOAD_OPTIONAL_FIELDS);
 
-  if (payload.schema_version !== '1') errors.push('schema_version: must be "1"');
+  if (payload.schema_version !== WEBHOOK_SCHEMA_VERSION) {
+    errors.push(`schema_version: must be "${WEBHOOK_SCHEMA_VERSION}"`);
+  }
   if (payload.event !== 'validation_complete') errors.push('event: must be "validation_complete"');
   if (typeof payload.timestamp !== 'string' || !ISO_DATE_TIME.test(payload.timestamp) || isNaN(Date.parse(payload.timestamp))) {
     errors.push('timestamp: must be an ISO-8601 date-time string');

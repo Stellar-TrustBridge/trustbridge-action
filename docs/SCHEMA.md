@@ -152,3 +152,45 @@ The **only** way to green the `action-schema-sync` test after a sync failure is 
 - **`required[]` mismatch** → align `required: true/false` in `action.yml` with the `required[]` array in the schema.
 
 There is no suppression mechanism for sync failures — they must be fixed before a PR can merge.
+
+---
+
+## Webhook and reason-code versioning policy
+
+Two machine-readable contracts besides the input schema are consumed by Wave
+dashboards and integrators. Both carry an explicit version, and both follow the
+same compatibility rules. The full classification of breaking vs. additive
+changes lives in [`docs/BREAKING_CHANGES.md`](BREAKING_CHANGES.md).
+
+| Contract | Schema file | Version field | Current version | Runtime source |
+|----------|-------------|---------------|-----------------|----------------|
+| Webhook payload | `schemas/webhook-payload.schema.json` | `schema_version` (body) and `X-TrustBridge-Schema-Version` (header) | `1` | `WEBHOOK_SCHEMA_VERSION` in `src/webhook.ts` |
+| Reason codes | `schemas/reason-codes.json` | top-level `version`; per-code `since` | `1` | `src/checks.ts` |
+
+### Compatibility rules
+
+- **Additive (any minor/patch release, no version bump):** new optional
+  webhook fields, new `result.checks[]` items, new reason codes. Every new
+  reason code records the release that introduced it in `since`.
+- **Breaking (MAJOR release and version bump):** removing, renaming or
+  retyping a frozen webhook field; removing or renaming a reason code;
+  changing the meaning of an existing reason code.
+- **Version bump procedure:** publish the new schema alongside the old one
+  (e.g. `schemas/webhook-payload-v2.schema.json`), bump
+  `WEBHOOK_SCHEMA_VERSION` / the catalog `version`, add an entry to
+  `docs/BREAKING_CHANGES.md`, and keep emitting the previous version for at
+  least one deprecation window.
+
+### Integrator guidance
+
+- Route on `X-TrustBridge-Schema-Version` (or `schema_version`) and reject or
+  quarantine versions you do not recognise; `validateWebhookPayload` in
+  `src/webhook.ts` rejects any `schema_version` other than the current one.
+- Ignore unknown fields and unknown reason codes rather than failing.
+
+### Enforcement
+
+`__tests__/schema-versioning-policy.test.ts` fails CI when the version in
+this table drifts from `WEBHOOK_SCHEMA_VERSION`, the webhook schema `enum`,
+or the reason-code catalog `version`, or when a reason code is missing
+`since`.

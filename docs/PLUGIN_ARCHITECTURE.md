@@ -25,6 +25,23 @@ invokes the plugin and collects its results. Plugins must not assume they are
 the only plugin running; they should treat their inputs as read-only and return
 structured results.
 
+## Built-in plugins
+
+`src/corePlugins.ts` registers these plugins (in this order) before any user
+plugin is loaded by `src/pluginLoader.ts`. The list is frozen by
+`__tests__/core-plugins-freeze.test.ts`: adding, removing, renaming or
+reordering a core plugin fails CI until this table is updated too.
+
+| Order | Plugin id | Label |
+|---|---|---|
+| 1 | `trustbridge/account-funded` | Account funded |
+| 2 | `trustbridge/trustline` | Trustline |
+| 3 | `trustbridge/xlm-reserve` | XLM reserve |
+| 4 | `trustbridge/home-domain` | SEP-0001 home domain |
+
+User plugins must not reuse a `trustbridge/` id; the `trustbridge/` prefix is
+reserved for built-in checks.
+
 ## Timeout behavior
 
 When a plugin exceeds its configured timeout, the runner:

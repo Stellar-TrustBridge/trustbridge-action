@@ -340,6 +340,9 @@ Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additio
 
 When introducing a breaking payload change, increment `schema_version` in the payload **and** publish the new JSON Schema as `schemas/webhook-payload-v2.schema.json`. Run both schemas simultaneously for a deprecation window before removing v1 support.
 
+Reason codes follow the same policy: see the versioning table in
+[`docs/SCHEMA.md`](SCHEMA.md#webhook-and-reason-code-versioning-policy).
+
 ### Header versioning
 
 The HTTP header `X-TrustBridge-Schema-Version: 1` is sent with every webhook delivery alongside `X-TrustBridge-Signature`. Dashboard receivers can use this header for version routing without parsing the body first:

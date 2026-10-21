@@ -266,6 +266,13 @@ export const corePlugins: CheckPlugin[] = [
 ];
 
 /**
+ * Frozen list of built-in plugin ids, in canonical order. Must match the
+ * "Built-in plugins" table in `docs/PLUGIN_ARCHITECTURE.md`; enforced by
+ * `__tests__/core-plugins-freeze.test.ts`.
+ */
+export const CORE_PLUGIN_IDS: readonly string[] = Object.freeze(corePlugins.map((p) => p.id));
+
+/**
  * Register all core plugins with the default registry.
  * Called once at action startup before any user plugins are loaded.
  */

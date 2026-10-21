@@ -75,12 +75,47 @@ export const DEFAULT_STELLAR_TOML_CACHE_TTL_MS = 3_600_000;
  */
 export const MAX_STELLAR_TOML_CACHE_TTL_MS = 86_400_000;
 
+/**
+ * Hard ceiling on a stellar.toml body (256 KB). `maxBodyBytes` may lower the
+ * cap but can never raise it, so a misconfiguration cannot turn the fetch
+ * into an unbounded download.
+ */
+export const MAX_STELLAR_TOML_BYTES = 256 * 1024;
+
+/**
+ * Media types accepted for a stellar.toml response. Parameters such as
+ * `; charset=utf-8` are ignored. A response without a Content-Type header is
+ * accepted (many static hosts omit it); any other declared type fails closed.
+ */
+export const STELLAR_TOML_ALLOWED_CONTENT_TYPES: readonly string[] = [
+  'application/toml',
+  'application/x-toml',
+  'text/toml',
+  'text/x-toml',
+  'text/plain',
+];
+
+/** stellar.toml fetches never follow redirects (SEP-0001 requires the canonical URL). */
+export const STELLAR_TOML_MAX_REDIRECTS = 0;
+
+/** Returns true when `contentType` is absent or on the stellar.toml allowlist. */
+export function isAllowedTomlContentType(contentType: string | null | undefined): boolean {
+  if (contentType === null || contentType === undefined || contentType.trim() === '') return true;
+  const mediaType = contentType.split(';')[0].trim().toLowerCase();
+  return STELLAR_TOML_ALLOWED_CONTENT_TYPES.includes(mediaType);
+}
+
+function clampTomlMaxBytes(bytes: number | undefined): number {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) return MAX_STELLAR_TOML_BYTES;
+  return Math.min(Math.floor(bytes), MAX_STELLAR_TOML_BYTES);
+}
+
 export interface TomlFetchOptions {
   /** Cache TTL in milliseconds (`stellar_toml_cache_ttl_ms`). 0 disables caching. */
   cacheTtlMs?: number;
   /** `algorithm:hex` integrity pin (`stellar_toml_hash_pin`). */
   hashPin?: string;
-  /** Download cap passed to the SSRF-guarded fetch. Default 256 KB. */
+  /** Download cap passed to the SSRF-guarded fetch. Default and maximum 256 KB. */
   maxBodyBytes?: number;
   /** Resolver for the DNS-rebinding guard (injectable for tests). */
   dnsLookup?: SSRFFetchOptions['dnsLookup'];
@@ -102,8 +137,11 @@ function clampTomlTtl(ttl: number | undefined): number {
  *   body that no longer matches the pin (e.g. after pin rotation) is evicted
  *   and re-fetched; a fetched body that does not match fails closed and is
  *   never cached.
- * - Redirects are refused (`followRedirects: false`), so a 3xx to another
- *   host can never bypass the SSRF policy.
+ * - Redirects are refused (`followRedirects: false`, `maxRedirects: 0`), so
+ *   a 3xx to another host can never bypass the SSRF policy.
+ * - The body is capped at `MAX_STELLAR_TOML_BYTES`, a declared Content-Type
+ *   must be on `STELLAR_TOML_ALLOWED_CONTENT_TYPES`, and an empty body is
+ *   rejected. Rejected bodies are never cached.
  */
 export async function fetchTomlWithCache(
   domain: string,
@@ -141,9 +179,10 @@ export async function fetchTomlWithCache(
   }
 
   const fetchResult = await fetchSSRFSafe(`https://${domainNorm}/.well-known/stellar.toml`, {
-    maxBodyBytes: options.maxBodyBytes ?? 256 * 1024,
+    maxBodyBytes: clampTomlMaxBytes(options.maxBodyBytes),
     timeoutMs: 10000,
     followRedirects: false,
+    maxRedirects: STELLAR_TOML_MAX_REDIRECTS,
     dnsLookup: options.dnsLookup,
   });
   if (!fetchResult.ok) {
@@ -152,7 +191,19 @@ export async function fetchTomlWithCache(
     return { ok: false, error, cachedAt: startTime };
   }
 
+  const contentType = fetchResult.headers?.get?.('content-type') ?? null;
+  if (!isAllowedTomlContentType(contentType)) {
+    const error = `stellar.toml from ${domainNorm} rejected: unexpected Content-Type "${contentType}"`;
+    logger.warn(error, { component: 'toml', domain: domainNorm });
+    return { ok: false, error, cachedAt: startTime };
+  }
+
   const content = await fetchResult.text();
+  if (content.trim() === '') {
+    const error = `stellar.toml from ${domainNorm} rejected: empty body`;
+    logger.warn(error, { component: 'toml', domain: domainNorm });
+    return { ok: false, error, cachedAt: startTime };
+  }
   const validation = validateTomlHash(content, options.hashPin);
   if (!validation.valid) {
     const error = 'error' in validation ? validation.error : 'Invalid TOML hash';

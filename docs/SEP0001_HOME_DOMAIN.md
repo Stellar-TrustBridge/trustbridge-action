@@ -123,6 +123,20 @@ on-chain `home_domain`. When neither is known, the TOML step is skipped.
 | Poisoned cache entry served later | Cache is per-job memory with a bounded TTL, and the pin is checked on every cache hit. |
 | Oversized response / memory pressure | 256 KB cap on `Content-Length` and on the downloaded body. |
 
+### Fetch limits (Issue #782)
+
+Every stellar.toml fetch goes through `fetchSSRFSafe` (`src/ssrf.ts`) with
+these fixed limits, enforced in `src/toml.ts`:
+
+| Limit | Value | Failure detail |
+|---|---|---|
+| Max body size | 256 KB (`MAX_STELLAR_TOML_BYTES`); a caller-supplied `maxBodyBytes` can lower but never raise it | `Response body exceeds limit of 262144 bytes` |
+| Content-Type allowlist | `application/toml`, `application/x-toml`, `text/toml`, `text/x-toml`, `text/plain` (parameters such as `charset` ignored; a missing header is accepted) | `stellar.toml from <domain> rejected: unexpected Content-Type "<type>"` |
+| Redirects | None followed (`maxRedirects: 0`) | `HTTP 3xx` |
+| Empty body | Rejected | `stellar.toml from <domain> rejected: empty body` |
+
+Rejected responses fail the check and are never cached.
+
 ### Pin rotation workflow
 
 1. Before the anchor publishes a new `stellar.toml`, compute its digest from a
