@@ -293,3 +293,7 @@ GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect t
 **Helpful links:**
 - [TrustBridge OIDC docs](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/USAGE.md#oidc-federation-for-dashboard-webhooks-issue-224)
 - [GitHub: About security hardening with OpenID Connect](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect)
+
+## Why didn't my comment update during a Wave? {#wave-freeze}
+
+Before a Drips Wave opens, maintainers apply Wave labels, set a snooze window, and freeze the workflow (see the Wave freeze labeling section of [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md)). While snoozed, outputs still update but the comment is not re-posted; ask a maintainer to re-run with `force_comment: true` if you need a fresh comment.

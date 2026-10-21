@@ -122,12 +122,15 @@ export interface PreflightOptions {
  */
 export class PreflightError extends Error {
   readonly status: number;
+  /** Alias of `status`, kept for callers that read `statusCode`. */
+  readonly statusCode: number;
   readonly reasonCode?: string;
 
   constructor(message: string, status: number, reasonCode?: string) {
     super(message);
     this.name = 'PreflightError';
     this.status = status;
+    this.statusCode = status;
     this.reasonCode = reasonCode;
   }
 }
@@ -224,7 +227,10 @@ export async function runIssuesPreflight(
     }
 
     // Transient / unexpected errors fail fast so we do not spend Horizon quota.
-    throw error;
+    throw new PreflightError(
+      error instanceof Error ? error.message : String(error),
+      status ?? 0,
+    );
   }
 
   return {
@@ -232,6 +238,51 @@ export async function runIssuesPreflight(
     message: `Preflight passed: token can read comments on #${issueNumber}.`,
     issueNumber,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run missing-permission report (#779)
+// ---------------------------------------------------------------------------
+
+/** Workflow permissions the preflight can report as missing. */
+export type PreflightPermission = 'issues: write' | 'id-token: write';
+
+const PERMISSION_REASONS: Record<PreflightPermission, string> = {
+  'issues: write': 'required to post or update the TrustBridge issue comment',
+  'id-token: write': 'required when `webhook_auth_mode: oidc` signs webhook deliveries',
+};
+
+/**
+ * Build the exact log/comment text a dry-run preflight emits when the job is
+ * missing `issues: write` and/or `id-token: write`. Output is deterministic
+ * (permissions are de-duplicated and sorted) so it can be snapshot-tested and
+ * copy-pasted into a workflow. Returns an empty string when nothing is missing.
+ *
+ * @throws When an unknown permission name is supplied.
+ */
+export function formatMissingPermissionsDryRun(missing: readonly string[]): string {
+  const unique = [...new Set(missing)].sort();
+  for (const permission of unique) {
+    if (!(permission in PERMISSION_REASONS)) {
+      throw new Error(`preflight: unknown permission "${permission}"`);
+    }
+  }
+  if (unique.length === 0) {
+    return '';
+  }
+  const lines = [
+    '[trustbridge] preflight (dry-run): missing workflow permissions',
+    ...unique.map((p) => `- \`${p}\` — ${PERMISSION_REASONS[p as PreflightPermission]}`),
+    '',
+    'Add to the workflow job:',
+    '',
+    '```yaml',
+    'permissions:',
+    '  contents: read',
+    ...unique.map((p) => `  ${p}`),
+    '```',
+  ];
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -339,24 +390,6 @@ async function fetchWithTimeout(
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PreflightError
-// ---------------------------------------------------------------------------
-
-/**
- * Thrown by `runIssuesPreflight` when the token is missing permission or the
- * issue context is invalid.  Callers should surface this via `core.setFailed`.
- */
-export class PreflightError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = 'PreflightError';
   }
 }
 

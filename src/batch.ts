@@ -338,6 +338,9 @@ export async function runBatchValidation(
         clawbackStrictAssets: [],
       });
       globalMetrics.incrementCounter('batch_address_invalid');
+      // Issue #777: every row counts toward exactly one of passed/failed so
+      // `batch_address_passed + batch_address_failed === batch_size`.
+      globalMetrics.incrementCounter('batch_address_failed');
       continue;
     }
 
@@ -422,6 +425,7 @@ export async function runBatchValidation(
         failureReason = `error: ${msg}`;
         globalMetrics.incrementCounter('batch_fail_horizon_error');
       }
+      globalMetrics.incrementCounter('batch_address_failed');
 
       let syntheticResult;
       if (isBudgetExhausted) {
@@ -481,6 +485,7 @@ export async function runBatchValidation(
             clawbackStrictAssets: [],
           });
           globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+          globalMetrics.incrementCounter('batch_address_failed');
         }
         break;
       }

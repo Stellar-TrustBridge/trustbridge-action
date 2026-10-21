@@ -159,3 +159,20 @@ Set `preflight_only: true` to run only the permission probe and exit immediately
 ```
 
 The step succeeds when the probe passes (200) and fails with a clear error when the token lacks permission (403/401) or the issue is not found (404).
+
+## Dry-run preflight output for missing permissions
+
+`formatMissingPermissionsDryRun()` in `src/preflight.ts` renders the exact text logged by a dry-run preflight when the job lacks `issues: write` and/or `id-token: write` (the latter only matters for `webhook_auth_mode: oidc`). The output is snapshot-tested in `__tests__/preflight-dry-run.test.ts`, so it is stable across releases:
+
+```text
+[trustbridge] preflight (dry-run): missing workflow permissions
+- `id-token: write` — required when `webhook_auth_mode: oidc` signs webhook deliveries
+- `issues: write` — required to post or update the TrustBridge issue comment
+
+Add to the workflow job:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+```

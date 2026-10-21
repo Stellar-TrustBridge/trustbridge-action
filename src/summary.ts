@@ -346,3 +346,66 @@ export function formatDeltaSection(changes: DeltaChange[]): string {
   }
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// #780 — Job Summary markdown size guard
+// ---------------------------------------------------------------------------
+
+/**
+ * GitHub rejects step summaries larger than 1 MiB (1,048,576 bytes). Large
+ * batch results must be truncated before `core.summary.write()` so the Wave
+ * results are never silently dropped.
+ */
+export const JOB_SUMMARY_MAX_BYTES = 1024 * 1024;
+
+/** Stable marker appended to every truncated Job Summary. */
+export const JOB_SUMMARY_TRUNCATED_MARKER = '<!-- trustbridge-action:summary-truncated -->';
+
+export interface JobSummaryGuardResult {
+  markdown: string;
+  truncated: boolean;
+  /** UTF-8 byte length of the original markdown. */
+  originalBytes: number;
+}
+
+/**
+ * Ensure `markdown` fits within the GitHub Job Summary size limit.
+ *
+ * Content under the limit is returned unchanged. Oversized content is cut at
+ * the last line boundary that fits (never splitting a multi-byte character)
+ * and followed by a notice pointing readers at the issue comment, when one is
+ * known, or the workflow logs otherwise.
+ *
+ * @throws When `markdown` is not a string or `maxBytes` is not a positive
+ *         integer large enough to hold the truncation notice.
+ */
+export function guardJobSummaryMarkdown(
+  markdown: string,
+  options: { maxBytes?: number; commentUrl?: string } = {},
+): JobSummaryGuardResult {
+  if (typeof markdown !== 'string') {
+    throw new Error('summary: Job Summary markdown must be a string');
+  }
+  const maxBytes = options.maxBytes ?? JOB_SUMMARY_MAX_BYTES;
+  const originalBytes = Buffer.byteLength(markdown, 'utf8');
+  if (originalBytes <= maxBytes) {
+    return { markdown, truncated: false, originalBytes };
+  }
+
+  const pointer = options.commentUrl
+    ? `See the [full results in the issue comment](${options.commentUrl}).`
+    : 'See the workflow logs for full details.';
+  const notice = `\n\n${JOB_SUMMARY_TRUNCATED_MARKER}\n> ⚠️ Job Summary truncated (${originalBytes} bytes exceeds the ${maxBytes}-byte limit). ${pointer}\n`;
+  const budget = maxBytes - Buffer.byteLength(notice, 'utf8');
+  if (!Number.isInteger(maxBytes) || budget <= 0) {
+    throw new Error(`summary: maxBytes (${maxBytes}) is too small to hold the truncation notice`);
+  }
+
+  // Cut on a byte budget, then drop any partial trailing character and line.
+  let head = Buffer.from(markdown, 'utf8').subarray(0, budget).toString('utf8');
+  if (head.endsWith('�')) head = head.slice(0, -1);
+  const lastNewline = head.lastIndexOf('\n');
+  if (lastNewline > 0) head = head.slice(0, lastNewline);
+
+  return { markdown: head + notice, truncated: true, originalBytes };
+}
