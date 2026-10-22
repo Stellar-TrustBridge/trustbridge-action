@@ -91,6 +91,8 @@ const SECRET_FIELD_NAMES = new Set([
   'secret',
   'webhook_secret',
   'webhookSecret',
+  'webhook_secret_previous',
+  'webhookSecretPrevious',
   'password',
   'token',
   'private_key',
@@ -101,6 +103,38 @@ const SECRET_FIELD_NAMES = new Set([
 function isSecretField(key: string): boolean {
   return SECRET_FIELD_NAMES.has(key) || key.toLowerCase().includes('secret') ||
     key.toLowerCase().includes('token') || key.toLowerCase().includes('password');
+}
+
+// ---------------------------------------------------------------------------
+// Address field detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Field names whose values are Stellar G/C addresses and must be redacted.
+ * Matched case-insensitively; also catches any key ending in `address`,
+ * `issuer`, or `account` so new address-shaped inputs are covered by default.
+ */
+const ADDRESS_FIELD_NAMES = new Set([
+  'assetissuer',
+  'issuer',
+  'sourceaccount',
+  'source_account',
+  'destinationaccount',
+  'destination_account',
+  'account',
+  'accountid',
+  'account_id',
+  'address',
+  'stellaraddress',
+  'stellar_address',
+]);
+
+function isAddressField(key: string): boolean {
+  const lower = key.toLowerCase();
+  return ADDRESS_FIELD_NAMES.has(lower) ||
+    lower.endsWith('address') ||
+    lower.endsWith('issuer') ||
+    lower.endsWith('account');
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +159,7 @@ export function buildSafeInputsSnapshot(
       safe[key] = typeof value === 'string' ? redactHorizonUrl(value) : value;
       continue;
     }
-    if (key === 'assetIssuer' && typeof value === 'string') {
+    if (isAddressField(key) && typeof value === 'string') {
       safe[key] = redactStellarAddress(value) || redactString(value);
       continue;
     }
@@ -226,104 +260,36 @@ export function buildDiagnosticsBlock(config: DiagnosticsConfig): string {
 }
 
 // ---------------------------------------------------------------------------
-// Sponsorship diagnostics extension (Issue #1)
+// Sponsorship diagnostics (Issue #1)
 // ---------------------------------------------------------------------------
 
-export interface SponsorshipDiagnostics {
-  numSponsoring: number;
-  numSponsored: number;
-  subentryCount: number;
-  netSponsorshipEffect: number;
-  protocolMinimum: number;
-  configuredFloor: number;
-  finalRequired: number;
-  actualBalance: number;
-  meetsRequirement: boolean;
-}
-
-/**
- * Build a sponsorship-specific diagnostics section for accounts with
- * non-zero sponsorship counts. This provides visibility into how nested
- * sponsorship chains affect reserve requirements without modifying the
- * contributor-facing sections.
- */
-export function buildSponsorshipDiagnostics(
+function buildSponsorshipDiagnostics(
   sponsorshipInfo?: { numSponsoring: number; numSponsored: number },
-  reserveRequirement?: {
-    protocolMinimum: number;
-    configuredFloor: number;
-    required: number;
-    actual: number;
-    met: boolean;
-    subentryCount: number;
-  },
+  reserveRequirement?: DiagnosticsConfig['reserveRequirement'],
 ): string {
-  if (!sponsorshipInfo || (sponsorshipInfo.numSponsoring === 0 && sponsorshipInfo.numSponsored === 0)) {
+  if (!sponsorshipInfo && !reserveRequirement) {
     return '';
   }
 
-  if (!reserveRequirement) {
-    return '';
+  const lines: string[] = ['#### Sponsorship & reserve analysis', ''];
+  lines.push('| Field | Value |');
+  lines.push('| --- | --- |');
+
+  if (sponsorshipInfo) {
+    lines.push(`| Sponsoring subentries | \`${sponsorshipInfo.numSponsoring}\` |`);
+    lines.push(`| Sponsored subentries | \`${sponsorshipInfo.numSponsored}\` |`);
   }
 
-  const { numSponsoring, numSponsored } = sponsorshipInfo;
-  const netEffect = numSponsoring - numSponsored;
-
-  const lines: string[] = [
-    '',
-    '#### Sponsorship chain analysis',
-    '',
-    '> ℹ️ **Chain depth context:** This account has active sponsorship relationships that affect its reserve requirement.',
-    '',
-    '| Metric | Value | Impact |',
-    '| --- | --- | --- |',
-    `| Accounts sponsored (outbound) | \`${numSponsoring}\` | ${numSponsoring > 0 ? `+${(numSponsoring * 0.5).toFixed(1)} XLM to requirement` : 'None'} |`,
-    `| Sponsorships received (inbound) | \`${numSponsored}\` | ${numSponsored > 0 ? `-${(numSponsored * 0.5).toFixed(1)} XLM from requirement` : 'None'} |`,
-    `| Net sponsorship effect | \`${netEffect > 0 ? '+' : ''}${netEffect}\` entries | ${netEffect > 0 ? `**Increases** requirement by ${(netEffect * 0.5).toFixed(1)} XLM` : netEffect < 0 ? `**Reduces** requirement by ${(Math.abs(netEffect) * 0.5).toFixed(1)} XLM` : 'Neutral (balanced)'} |`,
-    `| Subentries (trustlines/offers/data) | \`${reserveRequirement.subentryCount}\` | +${(reserveRequirement.subentryCount * 0.5).toFixed(1)} XLM base |`,
-    '',
-    '**Reserve breakdown:**',
-    '',
-    '```',
-    'Protocol formula: (2 + subentries + sponsoring - sponsored) × 0.5 XLM',
-    `                  (2 + ${reserveRequirement.subentryCount} + ${numSponsoring} - ${numSponsored}) × 0.5`,
-    `                = ${reserveRequirement.protocolMinimum.toFixed(1)} XLM`,
-    '',
-    `Configured floor: ${reserveRequirement.configuredFloor.toFixed(1)} XLM`,
-    `Final required:   ${reserveRequirement.required.toFixed(1)} XLM (max of protocol and floor)`,
-    `Actual balance:   ${reserveRequirement.actual.toFixed(1)} XLM`,
-    `Status:           ${reserveRequirement.met ? '✅ Met' : '❌ Deficit'}`,
-    '```',
-    '',
-  ];
-
-  // Warning for deep sponsorship chains
-  if (numSponsoring > 3) {
-    lines.push(
-      '> ⚠️ **Deep sponsorship chain detected:** This account sponsors more than 3 accounts.',
-      '> Nested sponsor-of-sponsor patterns can cause cascading reserve failures if any',
-      '> intermediate sponsor becomes underfunded. Monitor the full chain, not just',
-      '> immediate sponsees.',
-      '',
-    );
+  if (reserveRequirement) {
+    const { protocolMinimum, configuredFloor, required, actual, met, subentryCount } = reserveRequirement;
+    lines.push(`| Protocol minimum reserve | \`${protocolMinimum} XLM\` |`);
+    lines.push(`| Configured reserve floor | \`${configuredFloor} XLM\` |`);
+    lines.push(`| Required reserve | \`${required} XLM\` |`);
+    lines.push(`| Actual balance | \`${actual} XLM\` |`);
+    lines.push(`| Subentry count | \`${subentryCount}\` |`);
+    lines.push(`| Reserve met | \`${met ? '✅ yes' : '❌ no'}\` |`);
   }
 
-  // Guidance for overfunding scenario
-  if (numSponsored > 0 && numSponsoring === 0 && reserveRequirement.actual > reserveRequirement.required + 1.0) {
-    lines.push(
-      '> ℹ️ **Overfunding detected:** This sponsored account has significantly more XLM than',
-      `> required (${(reserveRequirement.actual - reserveRequirement.required).toFixed(1)} XLM surplus). Since sponsorship covers reserve`,
-      '> costs, this balance may be unnecessary. Consider keeping only operational funds',
-      '> (for transaction fees) on sponsored accounts.',
-      '',
-    );
-  }
-
+  lines.push('');
   return lines.join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// Exported markers (for tests and comment.ts integration)
-// ---------------------------------------------------------------------------
-
-export { DIAGNOSTICS_OPEN_MARKER, DIAGNOSTICS_CLOSE_MARKER };

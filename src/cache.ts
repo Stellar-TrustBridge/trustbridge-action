@@ -389,6 +389,20 @@ export class SimpleCache {
   }
 
   /**
+   * Remove a single entry from the in-memory store.
+   *
+   * Used when a cached value is found to be untrustworthy (for example a
+   * stellar.toml body that no longer matches the configured hash pin) so the
+   * next read goes back to the network instead of serving the stale entry.
+   *
+   * @param key  The opaque cache key to evict.
+   * @returns    `true` when an entry was removed.
+   */
+  delete(key: string): boolean {
+    return this.store.delete(key);
+  }
+
+  /**
    * Remove all cached entries from the in-memory store and, if a persistent
    * backend is configured, call its `dispose` lifecycle hook.
    *

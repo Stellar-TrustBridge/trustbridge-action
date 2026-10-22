@@ -4,6 +4,54 @@
 name: TrustBridge Reusable Check
 
 on:
+  # Manual smoke trigger (see docs/examples/reusable-smoke.yml). Defaults to
+  # posting_mode: dry-run so a dispatch run never comments on an issue.
+  workflow_dispatch:
+    inputs:
+      stellar_address_input:
+        description: Stellar account address (G-address) to validate
+        required: false
+        type: string
+        default: ""
+      horizon_url:
+        description: Stellar Horizon API base URL
+        required: false
+        type: string
+        default: "https://horizon.stellar.org"
+      asset_code:
+        description: Asset code to check trustline for
+        required: false
+        type: string
+        default: "USDC"
+      asset_issuer:
+        description: Asset issuer Stellar address
+        required: false
+        type: string
+        default: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+      min_xlm_reserve:
+        description: Minimum native XLM balance required
+        required: false
+        type: string
+        default: "1.5"
+      fail_on_missing:
+        description: Fail the workflow step when checks do not pass
+        required: false
+        type: boolean
+        default: false
+      clawback_strict_mode:
+        description: Fail validation when the asset has clawback enabled
+        required: false
+        type: boolean
+        default: false
+      posting_mode:
+        description: Whether to post the comment (post, dry-run, or off)
+        required: false
+        type: choice
+        options:
+          - dry-run
+          - post
+          - "off"
+        default: "dry-run"
   workflow_call:
     inputs:
       stellar_address_input:
@@ -41,6 +89,21 @@ on:
         required: false
         type: string
         default: "dry-run"
+      clawback_strict_mode:
+        description: Fail validation when the asset has clawback enabled
+        required: false
+        type: boolean
+        default: false
+      posting_mode:
+        description: Whether to post the comment (post, dry-run, or off). Empty defers to comment_mode
+        required: false
+        type: string
+        default: ""
+      issue_number:
+        description: Explicit issue or pull request number to post the result comment on
+        required: false
+        type: string
+        default: ""
     outputs:
       ready:
         description: Whether all validation checks passed
@@ -73,3 +136,6 @@ jobs:
           min_xlm_reserve: ${{ inputs.min_xlm_reserve }}
           fail_on_missing: ${{ inputs.fail_on_missing }}
           comment_mode: ${{ inputs.comment_mode }}
+          clawback_strict_mode: ${{ inputs.clawback_strict_mode }}
+          posting_mode: ${{ inputs.posting_mode }}
+          issue_number: ${{ inputs.issue_number }}

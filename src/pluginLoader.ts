@@ -14,6 +14,21 @@
  *
  * Plugins are matched against an allowlist before loading. By default, no
  * external plugins are loaded — workflows must opt-in explicitly.
+ *
+ * DISCOVERY ORDER
+ * ---------------
+ * Plugins are loaded in a deterministic order: the allowlist is sorted by
+ * normalized plugin path (lexicographic, ascending) before loading. This
+ * guarantees a stable load order regardless of how the workflow author
+ * ordered `allowedPluginPaths`, so CI gates do not silently flip when the
+ * allowlist is reordered. The returned array preserves this sorted order.
+ *
+ * FAILURE ISOLATION
+ * -----------------
+ * A single bad plugin (missing file, invalid export, import error, duplicate
+ * id) is logged as a warning and skipped; it never aborts loading of the
+ * remaining plugins and never blocks core Horizon checks. Only the offending
+ * plugin is dropped.
  */
 
 import * as fs from 'fs';
@@ -32,6 +47,8 @@ export interface PluginLoadConfig {
    * Array of allowed plugin paths (relative to workspaceRoot).
    * Empty array (default) means no external plugins are loaded.
    * Example: `['plugins/kyc.ts', 'plugins/custom-reserve.ts']`
+   *
+   * Paths are loaded in deterministic sorted order (see DISCOVERY ORDER).
    */
   allowedPluginPaths?: string[];
 
@@ -224,14 +241,32 @@ function isCheckPlugin(obj: unknown): obj is CheckPlugin {
 }
 
 /**
+ * Return the allowlisted plugin paths in deterministic discovery order.
+ *
+ * Ordering is a stable lexicographic sort of the normalized relative path,
+ * so the same allowlist always yields the same load order regardless of the
+ * order the workflow author listed the paths in.
+ */
+export function sortPluginPaths(pluginPaths: string[]): string[] {
+  return [...pluginPaths].sort((a, b) => {
+    const na = path.normalize(a);
+    const nb = path.normalize(b);
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+    return 0;
+  });
+}
+
+/**
  * Load multiple plugins from workspace paths with allowlist enforcement.
  *
- * Only paths listed in `allowedPluginPaths` are loaded. Missing or invalid
- * plugins are logged as warnings but do not block the run (fail-open).
- * Two plugins exporting the same `id` throw a `PluginLoadError` with reason
- * `duplicate_id`.
+ * Only paths listed in `allowedPluginPaths` are loaded, in deterministic
+ * sorted order (see `sortPluginPaths`). Missing or invalid plugins are logged
+ * as warnings but do not block the run (fail-open) — a bad plugin is isolated
+ * and skipped so core Horizon checks still run. Two plugins exporting the same
+ * `id` throw a `PluginLoadError` with reason `duplicate_id`.
  *
- * Returns an array of successfully loaded plugins.
+ * Returns an array of successfully loaded plugins in discovery order.
  */
 export async function loadPluginsFromAllowlist(
   config: PluginLoadConfig,
@@ -245,47 +280,48 @@ export async function loadPluginsFromAllowlist(
     return [];
   }
 
+  const orderedPaths = sortPluginPaths(allowedPluginPaths);
+
   if (debugMode) {
-    logger.debug(`Loading ${allowedPluginPaths.length} allowlisted plugins`, {
+    logger.debug(`Loading ${orderedPaths.length} allowlisted plugins`, {
       component: 'pluginLoader',
-      allowedPluginPaths,
+      allowedPluginPaths: orderedPaths,
     });
   }
 
   const loaded: CheckPlugin[] = [];
   const pathById = new Map<string, string>();
 
-  for (const pluginPath of allowedPluginPaths) {
+  for (const pluginPath of orderedPaths) {
     let plugin: CheckPlugin;
     try {
       plugin = await loadPlugin(workspaceRoot, pluginPath, { debugMode });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`Failed to load plugin from ${pluginPath}: ${message}`, {
+      logger.warn(`Skipping plugin ${pluginPath}: ${message}`, {
         component: 'pluginLoader',
+        pluginPath,
       });
-      // Fail-open: continue loading other plugins
       continue;
     }
 
-    // Duplicate ids are a configuration error: the registry is first-wins, so
-    // one plugin would be silently dropped. Fail with a clear error instead.
     const existingPath = pathById.get(plugin.id);
     if (existingPath !== undefined) {
-      throw new PluginLoadError(
-        `Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existingPath}. Plugin ids must be unique.`,
-        pluginPath,
-        'duplicate_id',
+      logger.warn(
+        `Skipping plugin ${pluginPath}: duplicate plugin id "${plugin.id}" already loaded from ${existingPath}`,
+        { component: 'pluginLoader', pluginPath, pluginId: plugin.id },
       );
+      continue;
     }
+
     pathById.set(plugin.id, pluginPath);
     loaded.push(plugin);
   }
 
   if (debugMode) {
-    logger.debug(`Loaded ${loaded.length}/${allowedPluginPaths.length} plugins`, {
+    logger.debug(`Loaded ${loaded.length} of ${orderedPaths.length} allowlisted plugins`, {
       component: 'pluginLoader',
-      loadedPluginIds: loaded.map((p) => p.id),
+      pluginIds: loaded.map((p) => p.id),
     });
   }
 

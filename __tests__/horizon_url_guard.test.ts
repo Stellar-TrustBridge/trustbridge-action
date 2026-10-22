@@ -92,4 +92,13 @@ describe('Issue #95 - Horizon URL Path Traversal Guard & Metrics Normalization',
       expect(normalizeMetricHost('not-a-url')).toBe('unknown_host');
     });
   });
+
+  describe('Cross-network fallback URL and passphrase guards', () => {
+    it('validates and infers different networks correctly for cross-network fallback scenarios', async () => {
+      const { inferStellarNetwork } = await import('../src/links');
+      expect(inferStellarNetwork('https://horizon.stellar.org')).toBe('public');
+      expect(inferStellarNetwork('https://horizon-testnet.stellar.org')).toBe('testnet');
+      expect(inferStellarNetwork('https://horizon.custom.org/testnet')).toBe('testnet');
+    });
+  });
 });

@@ -35,6 +35,27 @@ const MAX_FEDERATION_BODY_BYTES = 64 * 1024;
 const FEDERATION_TIMEOUT_MS = 10_000;
 
 /**
+ * Stable error codes surfaced by federation resolution failures.
+ *
+ * These are intentionally stable strings so callers and tests can assert on
+ * them without depending on human-readable message wording.
+ */
+export type FederationErrorCode =
+  | 'INVALID_ADDRESS'
+  | 'INVALID_USERNAME'
+  | 'INVALID_DOMAIN'
+  | 'TOML_FETCH_FAILED'
+  | 'TOML_NXDOMAIN'
+  | 'TOML_TRUNCATED'
+  | 'TOML_TIMEOUT'
+  | 'NO_FEDERATION_SERVER'
+  | 'FEDERATION_FETCH_FAILED'
+  | 'FEDERATION_NXDOMAIN'
+  | 'FEDERATION_TRUNCATED'
+  | 'FEDERATION_TIMEOUT'
+  | 'INVALID_ACCOUNT_ID';
+
+/**
  * Result of a federation address resolution.
  */
 export interface FederationResolution {
@@ -44,6 +65,48 @@ export interface FederationResolution {
   memoType?: string;
   /** Optional memo value. */
   memo?: string;
+}
+
+/**
+ * Classifies a fetchSSRFSafe failure into a stable federation error code.
+ *
+ * NXDOMAIN, truncated responses, and timeouts are surfaced distinctly so
+ * operators can distinguish a missing federation record from a hung lookup.
+ *
+ * @param error The error string returned by fetchSSRFSafe
+ * @param prefix The stage prefix (TOML or FEDERATION)
+ * @returns A stable error code
+ */
+function classifyFetchError(
+  error: string,
+  prefix: 'TOML' | 'FEDERATION',
+): FederationErrorCode {
+  const lower = (error || '').toLowerCase();
+  if (
+    lower.includes('nxdomain') ||
+    lower.includes('enotfound') ||
+    lower.includes('not found') ||
+    lower.includes('no such host')
+  ) {
+    return `${prefix}_NXDOMAIN` as FederationErrorCode;
+  }
+  if (
+    lower.includes('truncat') ||
+    lower.includes('body too large') ||
+    lower.includes('max body') ||
+    lower.includes('exceeded')
+  ) {
+    return `${prefix}_TRUNCATED` as FederationErrorCode;
+  }
+  if (
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('etimedout') ||
+    lower.includes('aborted')
+  ) {
+    return `${prefix}_TIMEOUT` as FederationErrorCode;
+  }
+  return `${prefix}_FETCH_FAILED` as FederationErrorCode;
 }
 
 /**
@@ -185,6 +248,9 @@ export function validateFederationDomain(
  *  6. Parse JSON response for account_id
  *  7. Validate account_id is a valid G-address
  *
+ * NXDOMAIN, truncated responses, and timeouts are surfaced as stable error
+ * codes (see {@link FederationErrorCode}) and never hang the job.
+ *
  * @param input The federation address (e.g., "user*domain.com")
  * @returns Resolution result or null on failure
  */
@@ -199,6 +265,7 @@ export async function resolveFederationAddress(
     if (!parsed) {
       logger.warn(`Invalid federation address format: "${input}"`, {
         component: 'federation',
+        code: 'INVALID_ADDRESS' satisfies FederationErrorCode,
       });
       return null;
     }
@@ -211,6 +278,7 @@ export async function resolveFederationAddress(
       logger.warn(`Invalid federation username: ${usernameValidation.errors.join('; ')}`, {
         component: 'federation',
         username,
+        code: 'INVALID_USERNAME' satisfies FederationErrorCode,
       });
       return null;
     }
@@ -221,6 +289,7 @@ export async function resolveFederationAddress(
       logger.warn(`Invalid federation domain: ${domainValidation.errors.join('; ')}`, {
         component: 'federation',
         domain,
+        code: 'INVALID_DOMAIN' satisfies FederationErrorCode,
       });
       return null;
     }
@@ -240,10 +309,12 @@ export async function resolveFederationAddress(
 
     if (!tomlResult.ok) {
       const error = 'error' in tomlResult ? tomlResult.error : 'unknown error';
+      const code = classifyFetchError(error, 'TOML');
       logger.warn(`Failed to fetch stellar.toml from ${domain}: ${error}`, {
         component: 'federation',
         domain,
         error,
+        code,
       });
       return null;
     }
@@ -256,6 +327,7 @@ export async function resolveFederationAddress(
       logger.warn(`No [[FEDERATION_SERVER]] found in stellar.toml for ${domain}`, {
         component: 'federation',
         domain,
+        code: 'NO_FEDERATION_SERVER' satisfies FederationErrorCode,
       });
       return null;
     }
@@ -274,150 +346,110 @@ export async function resolveFederationAddress(
 
     if (!federationResult.ok) {
       const error = 'error' in federationResult ? federationResult.error : 'unknown error';
-      logger.warn(`Federation server request failed: ${error}`, {
+      const code = classifyFetchError(error, 'FEDERATION');
+      logger.warn(`Federation fetch failed for ${input}: ${error}`, {
         component: 'federation',
         domain,
         error,
+        code,
       });
       return null;
     }
 
-    const federationText = await federationResult.text();
-
-    // Step 7: Parse JSON response
-    let federationData: Record<string, unknown>;
+    const body = await federationResult.text();
+    let json: unknown;
     try {
-      federationData = JSON.parse(federationText);
+      json = JSON.parse(body);
     } catch {
-      logger.warn(`Invalid JSON from federation server for ${input}`, {
+      logger.warn(`Federation response for ${input} was not valid JSON`, {
         component: 'federation',
         domain,
+        code: 'FEDERATION_FETCH_FAILED' satisfies FederationErrorCode,
       });
       return null;
     }
 
-    const accountId = federationData['account_id'];
-    if (typeof accountId !== 'string') {
-      logger.warn(`Missing or invalid account_id in federation response for ${input}`, {
+    const accountId =
+      json && typeof json === 'object' && 'account_id' in json
+        ? (json as { account_id?: unknown }).account_id
+        : undefined;
+
+    if (typeof accountId !== 'string' || !isValidStellarAddress(accountId)) {
+      logger.warn(`Federation response for ${input} did not contain a valid account_id`, {
         component: 'federation',
         domain,
+        code: 'INVALID_ACCOUNT_ID' satisfies FederationErrorCode,
       });
       return null;
     }
 
-    // Step 8: Validate G-address
-    if (!isValidStellarAddress(accountId)) {
-      logger.warn(`Federation server returned invalid G-address: ${accountId}`, {
-        component: 'federation',
-        domain,
-      });
-      return null;
+    const memoType =
+      json && typeof json === 'object' && 'memo_type' in json
+        ? (json as { memo_type?: unknown }).memo_type
+        : undefined;
+    const memo =
+      json && typeof json === 'object' && 'memo' in json
+        ? (json as { memo?: unknown }).memo
+        : undefined;
+
+    const resolution: FederationResolution = { gAddress: accountId };
+    if (typeof memoType === 'string') {
+      resolution.memoType = memoType;
+    }
+    if (typeof memo === 'string') {
+      resolution.memo = memo;
     }
 
-    const result: FederationResolution = {
-      gAddress: accountId,
-    };
-
-    // Extract optional memo
-    const memoType = federationData['memo_type'];
-    const memo = federationData['memo'];
-    if (typeof memoType === 'string' && memo !== undefined && memo !== null) {
-      result.memoType = memoType;
-      result.memo = String(memo);
-    }
-
-    const durationMs = Date.now() - startTime;
-    logger.info(`Federation resolved: ${input} -> ${accountId} (${durationMs}ms)`, {
+    logger.debug(`Resolved federation address ${input} in ${Date.now() - startTime}ms`, {
       component: 'federation',
       domain,
-      durationMs,
     });
 
-    return result;
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logger.warn(`Federation resolution failed for ${input}: ${msg}`, {
+    return resolution;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`Federation resolution error for "${input}": ${message}`, {
       component: 'federation',
-      error: msg,
     });
     return null;
   }
 }
 
 /**
- * Parsed federation server entry from stellar.toml.
- */
-interface FederationServerEntry {
-  forward_url: string;
-  auth_domain?: string;
-}
-
-/**
- * Parses a [[FEDERATION_SERVER]] entry from stellar.toml content.
+ * Parses the [[FEDERATION_SERVER]] forward_url from stellar.toml content.
  *
- * This is a minimal TOML parser that only extracts [[FEDERATION_SERVER]]
- * entries. It does not implement full TOML parsing.
- *
- * @param tomlContent The stellar.toml content
- * @returns The first federation server entry, or null if not found
+ * @param tomlContent Raw stellar.toml text
+ * @returns The federation server descriptor or null if not found
  */
-function parseFederationServerFromToml(
+export function parseFederationServerFromToml(
   tomlContent: string,
-): FederationServerEntry | null {
-  const lines = tomlContent.split('\n');
-  let inFederationServer = false;
-  let forwardUrl: string | null = null;
-  let authDomain: string | undefined;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Skip comments and empty lines
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-
-    // Check for [[FEDERATION_SERVER]] section
-    if (trimmed === '[[FEDERATION_SERVER]]') {
-      inFederationServer = true;
-      continue;
-    }
-
-    // Check for other section (exit federation server block)
-    if (trimmed.startsWith('[') && !trimmed.startsWith('[[FEDERATION_SERVER]]')) {
-      if (inFederationServer && forwardUrl) {
-        return { forward_url: forwardUrl, auth_domain: authDomain };
-      }
-      inFederationServer = false;
-      forwardUrl = null;
-      authDomain = undefined;
-      continue;
-    }
-
-    // Parse key-value pairs within [[FEDERATION_SERVER]]
-    if (inFederationServer) {
-      const eqIndex = trimmed.indexOf('=');
-      if (eqIndex === -1) continue;
-
-      const key = trimmed.slice(0, eqIndex).trim();
-      let value = trimmed.slice(eqIndex + 1).trim();
-
-      // Remove quotes from value
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-
-      if (key === 'forward_url') {
-        forwardUrl = value;
-      } else if (key === 'auth_domain') {
-        authDomain = value;
-      }
-    }
+): { forward_url: string } | null {
+  if (!tomlContent || typeof tomlContent !== 'string') {
+    return null;
   }
 
-  // Return last found federation server
-  if (inFederationServer && forwardUrl) {
-    return { forward_url: forwardUrl, auth_domain: authDomain };
+  const lines = tomlContent.split(/\r?\n/);
+  let inFederationSection = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    if (line.startsWith('[')) {
+      inFederationSection = /^\[\[?\s*FEDERATION_SERVER\s*\]?\]?$/i.test(line);
+      continue;
+    }
+
+    if (!inFederationSection) {
+      continue;
+    }
+
+    const match = /^forward_url\s*=\s*"([^"]+)"\s*$/i.exec(line);
+    if (match) {
+      return { forward_url: match[1] };
+    }
   }
 
   return null;

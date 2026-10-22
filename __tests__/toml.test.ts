@@ -20,8 +20,19 @@ import {
   validateTomlHash,
   buildTomlCacheKey,
   fetchTomlWithCache,
+  runStellarTomlCheck,
+  MAX_STELLAR_TOML_CACHE_TTL_MS,
+  MAX_STELLAR_TOML_BYTES,
+  STELLAR_TOML_MAX_REDIRECTS,
+  isAllowedTomlContentType,
 } from '../src/toml';
 import { defaultCache } from '../src/cache';
+import * as ssrf from '../src/ssrf';
+
+jest.mock('../src/logger', () => ({
+  ...jest.requireActual('../src/logger'),
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -305,5 +316,295 @@ describe('Hash uniqueness', () => {
     const hash1 = computeHash(SAMPLE_TOML, 'sha256');
     const hash2 = computeHash(SAMPLE_TOML + 'x', 'sha256');
     expect(hash1).not.toBe(hash2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #709: TTL cache, hash pin fail-closed, fetch-disabled short-circuit
+// ---------------------------------------------------------------------------
+
+/** Fixed fixture body with a known SHA-256 (do not edit without updating the hash). */
+const FIXTURE_TOML =
+  'VERSION="2.0.0"\n' +
+  'NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"\n' +
+  '\n' +
+  '[DOCUMENTATION]\n' +
+  'ORG_NAME="TrustBridge Fixture Anchor"\n';
+const FIXTURE_TOML_SHA256 = '76cd761dc8c5168e6ba5fc661df8d1159538f5154b7f0cb31d7997d99338b3b1';
+const ROTATED_TOML = FIXTURE_TOML + 'ORG_URL="https://anchor.example"\n';
+
+const publicLookup = async () => ['93.184.216.34'];
+
+function tomlResponse(body: string, headers: Record<string, string> = {}) {
+  return {
+    status: 200,
+    ok: true,
+    headers: new Headers(headers),
+    text: async () => body,
+  } as any;
+}
+
+describe('fetchTomlWithCache — Issue #709', () => {
+  let now: number;
+  let fetchSpy: jest.SpyInstance;
+
+  beforeEach(async () => {
+    await defaultCache.clear();
+    now = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async () => tomlResponse(FIXTURE_TOML));
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('fixture hash constant matches computeHash', () => {
+    expect(computeHash(FIXTURE_TOML, 'sha256')).toBe(FIXTURE_TOML_SHA256);
+  });
+
+  it('cache hit within the TTL window avoids a second HTTP request', async () => {
+    const first = await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+    now += 59_999;
+    const second = await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+
+    expect(first.ok && first.fetched).toBe(true);
+    expect(second.ok && !second.fetched).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-fetches once the TTL has elapsed', async () => {
+    await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+    now += 60_001;
+    const second = await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+
+    expect(second.ok && second.fetched).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('stellar_toml_cache_ttl_ms = 0 disables caching', async () => {
+    await fetchTomlWithCache('anchor.example', { cacheTtlMs: 0, dnsLookup: publicLookup });
+    await fetchTomlWithCache('anchor.example', { cacheTtlMs: 0, dnsLookup: publicLookup });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('clamps oversized TTLs to MAX_STELLAR_TOML_CACHE_TTL_MS', async () => {
+    await fetchTomlWithCache('anchor.example', { cacheTtlMs: Number.MAX_SAFE_INTEGER, dnsLookup: publicLookup });
+    now += MAX_STELLAR_TOML_CACHE_TTL_MS + 1;
+    const second = await fetchTomlWithCache('anchor.example', {
+      cacheTtlMs: Number.MAX_SAFE_INTEGER,
+      dnsLookup: publicLookup,
+    });
+    expect(second.ok && second.fetched).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('clock skew (entry dated in the future) does not extend the TTL', async () => {
+    await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+    now -= 10_000; // clock jumped backwards
+    const second = await fetchTomlWithCache('anchor.example', { cacheTtlMs: 60_000, dnsLookup: publicLookup });
+    expect(second.ok && second.fetched).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a body whose SHA-256 matches stellar_toml_hash_pin', async () => {
+    const result = await fetchTomlWithCache('anchor.example', {
+      hashPin: `sha256:${FIXTURE_TOML_SHA256}`,
+      dnsLookup: publicLookup,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.hash).toBe(FIXTURE_TOML_SHA256);
+  });
+
+  it('hash pin mismatch fails closed with a clear error and is never cached', async () => {
+    fetchSpy.mockImplementation(async () => tomlResponse(ROTATED_TOML));
+    const pin = `sha256:${FIXTURE_TOML_SHA256}`;
+
+    const result = await fetchTomlWithCache('anchor.example', { hashPin: pin, dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/hash mismatch/i);
+      expect(result.error).toContain(FIXTURE_TOML_SHA256);
+      // The TOML body itself (which may carry issuer metadata) is never echoed.
+      expect(result.error).not.toContain('ORG_NAME');
+      expect(result.error).not.toContain('anchor.example"');
+    }
+
+    await fetchTomlWithCache('anchor.example', { hashPin: pin, dnsLookup: publicLookup });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('verifies the pin before trusting a cached entry and re-fetches after pin rotation', async () => {
+    await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup });
+    fetchSpy.mockImplementation(async () => tomlResponse(ROTATED_TOML));
+    const rotatedPin = `sha256:${computeHash(ROTATED_TOML, 'sha256')}`;
+
+    const result = await fetchTomlWithCache('anchor.example', { hashPin: rotatedPin, dnsLookup: publicLookup });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.fetched).toBe(true);
+      expect(result.content).toBe(ROTATED_TOML);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a cached body that mismatches the pin and re-fetches to the same body still fails closed', async () => {
+    await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup });
+    const result = await fetchTomlWithCache('anchor.example', {
+      hashPin: `sha256:${'0'.repeat(64)}`,
+      dnsLookup: publicLookup,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a malformed pin without touching the network', async () => {
+    const result = await fetchTomlWithCache('anchor.example', { hashPin: 'md5:abc', dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/stellar_toml_hash_pin format/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('respects the download size cap via Content-Length', async () => {
+    fetchSpy.mockImplementation(async () => tomlResponse(FIXTURE_TOML, { 'content-length': '999999' }));
+    const result = await fetchTomlWithCache('anchor.example', { maxBodyBytes: 1024, dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/too large/);
+  });
+
+  it('respects the download size cap when Content-Length is absent', async () => {
+    fetchSpy.mockImplementation(async () => tomlResponse('x'.repeat(2048)));
+    const result = await fetchTomlWithCache('anchor.example', { maxBodyBytes: 1024, dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('runStellarTomlCheck — Issue #709', () => {
+  beforeEach(async () => {
+    await defaultCache.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('fetch disabled never calls the SSRF-guarded HTTP client', async () => {
+    const ssrfSpy = jest.spyOn(ssrf, 'fetchSSRFSafe');
+    const fetchSpy = jest.spyOn(global, 'fetch');
+
+    const outcome = await runStellarTomlCheck('anchor.example', {
+      enabled: false,
+      hashPin: `sha256:${FIXTURE_TOML_SHA256}`,
+    });
+
+    expect(outcome.status).toBe('skipped');
+    expect(ssrfSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips without a network call when no home domain is known', async () => {
+    const ssrfSpy = jest.spyOn(ssrf, 'fetchSSRFSafe');
+    const outcome = await runStellarTomlCheck(undefined, { enabled: true });
+    expect(outcome.status).toBe('skipped');
+    expect(ssrfSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports ok for a pinned fixture', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(tomlResponse(FIXTURE_TOML));
+    const outcome = await runStellarTomlCheck('anchor.example', {
+      enabled: true,
+      hashPin: `sha256:${FIXTURE_TOML_SHA256}`,
+      dnsLookup: publicLookup,
+    });
+    expect(outcome.status).toBe('ok');
+  });
+
+  it('reports failed for a pin mismatch', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(tomlResponse(ROTATED_TOML));
+    const outcome = await runStellarTomlCheck('anchor.example', {
+      enabled: true,
+      hashPin: `sha256:${FIXTURE_TOML_SHA256}`,
+      dnsLookup: publicLookup,
+    });
+    expect(outcome.status).toBe('failed');
+    expect(outcome.detail).toMatch(/hash mismatch/i);
+  });
+
+  it('redirect to a disallowed host fails the SSRF check', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 302,
+      ok: false,
+      headers: new Headers({ location: 'https://10.0.0.5/stellar.toml' }),
+      text: async () => '',
+    } as any);
+    const outcome = await runStellarTomlCheck('anchor.example', { enabled: true, dnsLookup: publicLookup });
+    expect(outcome.status).toBe('failed');
+  });
+});
+
+describe('fetchTomlWithCache — size, content-type and redirect limits (Issue #782)', () => {
+  beforeEach(async () => {
+    await defaultCache.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('accepts an allowlisted Content-Type with parameters', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(FIXTURE_TOML, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a disallowed Content-Type and does not cache it', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/unexpected Content-Type "text\/html"/);
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example'))).toBeFalsy();
+  });
+
+  it('rejects an empty body', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('   ', { status: 200 }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/empty body/);
+  });
+
+  it('never raises the body cap above MAX_STELLAR_TOML_BYTES', async () => {
+    const spy = jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue({ ok: false, error: 'stub' });
+    await fetchTomlWithCache('anchor.example', { maxBodyBytes: 50 * 1024 * 1024, cacheTtlMs: 0 });
+    expect(spy.mock.calls[0][1]).toMatchObject({
+      maxBodyBytes: MAX_STELLAR_TOML_BYTES,
+      followRedirects: false,
+      maxRedirects: STELLAR_TOML_MAX_REDIRECTS,
+    });
+  });
+
+  it('fails closed when the body exceeds the cap', async () => {
+    const big = 'A'.repeat(MAX_STELLAR_TOML_BYTES + 1);
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response(big, { status: 200 }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/exceeds limit/);
+  });
+
+  it('refuses redirects', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }));
+    const result = await fetchTomlWithCache('anchor.example', { dnsLookup: publicLookup, cacheTtlMs: 0 });
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toBe('HTTP 302');
+  });
+
+  it('isAllowedTomlContentType handles missing, allowed and disallowed types', () => {
+    expect(isAllowedTomlContentType(null)).toBe(true);
+    expect(isAllowedTomlContentType('Application/TOML')).toBe(true);
+    expect(isAllowedTomlContentType('application/json')).toBe(false);
   });
 });

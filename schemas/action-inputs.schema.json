@@ -302,9 +302,15 @@
     },
     "retry_max_delay_ms": {
       "type": "string",
-      "description": "Maximum backoff delay in milliseconds for Horizon retries.",
+      "description": "Maximum delay in milliseconds for any single Horizon retry sleep. Caps both Retry-After values and exponential backoff. \"0\" disables sleeping between retries while still honoring max_retries.",
       "pattern": "^[0-9]+$",
       "default": "30000"
+    },
+    "retry_max_total_wait_ms": {
+      "type": "string",
+      "description": "Total retry sleep budget in milliseconds per Horizon endpoint. Retries stop with RATE_LIMIT_EXHAUSTED when the next capped sleep would exceed it.",
+      "pattern": "^[0-9]+$",
+      "default": "120000"
     },
     "horizon_max_requests": {
       "type": "string",
@@ -343,6 +349,14 @@
       "default": "",
       "examples": [
         "${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET }}"
+      ]
+    },
+    "webhook_secret_previous": {
+      "type": "string",
+      "description": "Previous HMAC secret used only during webhook secret rotation. Adds an X-TrustBridge-Signature-Previous header signed with this key. Never logged.",
+      "default": "",
+      "examples": [
+        "${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET_PREVIOUS }}"
       ]
     },
     "webhook_timeout_ms": {

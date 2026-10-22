@@ -176,6 +176,8 @@ function statusIcon(passed: boolean): string {
 export const MAX_COMMENT_LENGTH = 64000;
 const TRUNCATION_NOTICE =
   "\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_";
+export const COMMENT_TRUNCATED_MARKER =
+  "<!-- trustbridge-action:comment-truncated -->";
 
 export function formatCommentBody(
   result: ValidationResult,
@@ -624,21 +626,40 @@ export function formatCommentBody(
 
   let fullBody = buildWithRemediation(result.remediation);
 
-  if (fullBody.length > MAX_COMMENT_LENGTH && result.remediation) {
-    const excess = fullBody.length - MAX_COMMENT_LENGTH;
-    const availableForRemediation =
-      result.remediation.length - excess - TRUNCATION_NOTICE.length;
+  if (Buffer.byteLength(fullBody, "utf8") > MAX_COMMENT_LENGTH) {
+    const suffix = `\n\n${COMMENT_TRUNCATED_MARKER}${TRUNCATION_NOTICE}`;
+    const bodyBudget =
+      MAX_COMMENT_LENGTH - Buffer.byteLength(suffix, "utf8");
+    const bodyWithoutRemediation = buildWithRemediation(undefined);
 
-    let truncatedRemediation: string;
-    if (availableForRemediation > 0) {
-      truncatedRemediation =
-        result.remediation.slice(0, availableForRemediation) +
-        TRUNCATION_NOTICE;
-    } else {
-      truncatedRemediation = TRUNCATION_NOTICE.trimStart();
+    let prioritizedBody = bodyWithoutRemediation;
+    if (result.remediation) {
+      const bodyWithPlaceholder = buildWithRemediation("x");
+      const fixedRemediationBytes =
+        Buffer.byteLength(bodyWithPlaceholder, "utf8") -
+        Buffer.byteLength(bodyWithoutRemediation, "utf8") -
+        1;
+      const remediationBudget =
+        bodyBudget -
+        Buffer.byteLength(bodyWithoutRemediation, "utf8") -
+        fixedRemediationBytes;
+      const remediationPrefix = takeUtf8Prefix(
+        result.remediation,
+        Math.max(0, remediationBudget),
+      );
+      prioritizedBody = buildWithRemediation(
+        remediationPrefix || undefined,
+      );
     }
 
-    fullBody = buildWithRemediation(truncatedRemediation);
+    fullBody = takeUtf8PrefixAtLineBoundary(
+      prioritizedBody,
+      Math.max(0, bodyBudget),
+    );
+    fullBody += suffix;
+    core.info(
+      "Comment body exceeded the safe length limit; oversized remediation was shortened to preserve core checklist sections.",
+    );
   }
 
   return fullBody;
@@ -715,13 +736,35 @@ export const COMMENT_SIZE_LIMIT_BYTES = 65536;
  */
 export const COMMENT_TRUNCATION_NOTICE_BYTES = 512;
 
+function takeUtf8Prefix(text: string, byteLimit: number): string {
+  let prefix = "";
+  let bytesUsed = 0;
+  for (const character of text) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytesUsed + characterBytes > byteLimit) break;
+    prefix += character;
+    bytesUsed += characterBytes;
+  }
+  return prefix;
+}
+
+function takeUtf8PrefixAtLineBoundary(
+  text: string,
+  byteLimit: number,
+): string {
+  const prefix = takeUtf8Prefix(text, byteLimit);
+  if (prefix.length === text.length) return prefix;
+
+  const lastLineBreak = prefix.lastIndexOf("\n");
+  return lastLineBreak >= 0 ? prefix.slice(0, lastLineBreak + 1) : prefix;
+}
+
 /**
  * Build a truncated comment body that fits within the given size limit.
  *
- * The full body is cut at a safe byte offset, a truncation notice is
- * appended, and the TrustBridge footer is preserved so the sticky-comment
- * marker remains present.  The cut always happens on a line boundary so the
- * resulting markdown is clean.
+ * The body is shortened on a Unicode code-point boundary, then the footer,
+ * truncation metadata, and stable notice are appended. A line boundary is
+ * preferred when one fits within the budget.
  *
  * @param fullBody  The full comment body produced by `formatCommentBody`.
  * @param reportPath  Workspace-relative path where the full report was written.
@@ -736,17 +779,6 @@ export function buildTruncatedCommentBody(
   reportPath: string,
   sizeLimit: number = COMMENT_SIZE_LIMIT_BYTES,
 ): string {
-  const budget = sizeLimit - COMMENT_TRUNCATION_NOTICE_BYTES;
-
-  // Walk backwards from the budget boundary to find a clean line break.
-  const bodyBytes = Buffer.from(fullBody, "utf8");
-  let cutByte = budget;
-  while (cutByte > 0 && bodyBytes[cutByte] !== 0x0a /* '\n' */) {
-    cutByte--;
-  }
-
-  const truncated = bodyBytes.subarray(0, cutByte).toString("utf8");
-
   const notice = [
     "",
     "---",
@@ -757,9 +789,32 @@ export function buildTruncatedCommentBody(
     "",
     "---",
     TRUSTBRIDGE_FOOTER,
+    COMMENT_TRUNCATED_MARKER,
+    TRUNCATION_NOTICE,
   ].join("\n");
 
+  const noticeBytes = Buffer.byteLength(notice, "utf8");
+  const budget =
+    sizeLimit - Math.max(COMMENT_TRUNCATION_NOTICE_BYTES, noticeBytes);
+  if (budget < 0) {
+    throw new RangeError(
+      `Comment size limit (${sizeLimit} bytes) is too small for the truncation notice (${noticeBytes} bytes).`,
+    );
+  }
+
+  const truncated = takeUtf8PrefixAtLineBoundary(fullBody, budget);
   return truncated + notice;
+}
+
+function fitCommentBodyToLimit(body: string): string {
+  if (Buffer.byteLength(body, "utf8") <= COMMENT_SIZE_LIMIT_BYTES) {
+    return body;
+  }
+
+  core.info(
+    "Comment body exceeds GitHub's size limit; truncating it before posting.",
+  );
+  return buildTruncatedCommentBody(body, "trustbridge-report.md");
 }
 
 /**
@@ -845,6 +900,49 @@ export function resolveCommentMode(
   // Derive from legacy sticky boolean.
   if (sticky === false) return 'new';
   return 'sticky';
+}
+
+/**
+ * Comment posting policy (`posting_mode` input).
+ *
+ * - `'post'` (default): post or update the comment.
+ * - `'dry-run'`: build the comment body but skip every GitHub API call.
+ * - `'off'`: skip comment posting entirely.
+ *
+ * Outputs are published in every mode; `comment_url` and `comment_id` stay
+ * empty when nothing is posted (Issue #696).
+ */
+export type PostingMode = 'post' | 'dry-run' | 'off';
+
+/** Valid `PostingMode` values — used for input validation. */
+export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
+
+/**
+ * Resolve the effective `PostingMode` from action inputs.
+ *
+ * Priority: `posting_mode` input > legacy `post`/`dry-run`/`off` value in
+ * `comment_mode` > default `'post'`. Invalid `posting_mode` values fall back
+ * to `'post'` with a warning, mirroring {@link resolveCommentMode}.
+ */
+export function resolvePostingMode(
+  postingMode: string | undefined,
+  commentMode: string | undefined,
+): PostingMode {
+  if (postingMode && postingMode.trim()) {
+    const normalised = postingMode.trim().toLowerCase() as PostingMode;
+    if (VALID_POSTING_MODES.includes(normalised)) {
+      return normalised;
+    }
+    core.warning(
+      `Invalid posting_mode value "${postingMode}". Expected one of: ${VALID_POSTING_MODES.join(', ')}. Falling back to "post".`,
+    );
+    return 'post';
+  }
+  const legacy = (commentMode ?? '').trim().toLowerCase() as PostingMode;
+  if (VALID_POSTING_MODES.includes(legacy)) {
+    return legacy;
+  }
+  return 'post';
 }
 
 export interface UpsertCommentOptions {
@@ -1239,11 +1337,34 @@ export async function findFirstTrustBridgeComment(
   return undefined;
 }
 
+/**
+ * A posted (created or updated) REST issue comment (Issue #696).
+ *
+ * `id` is the numeric REST `comment_id` GitHub returned for the comment that
+ * now holds the TrustBridge body — the value published as the `comment_id`
+ * action output so downstream steps can chain `issues.updateComment` calls
+ * without parsing `url`.
+ */
+export interface PostedIssueComment {
+  /** `html_url` of the comment. */
+  url: string | undefined;
+  /** Numeric REST comment id. */
+  id: number;
+}
+
+/**
+ * Post or update the TrustBridge issue comment and return the URL.
+ *
+ * Thin wrapper around {@link upsertIssueComment} kept for callers that only
+ * need `comment_url`.
+ */
 export async function postIssueComment(
   token: string,
   body: string,
   options: UpsertCommentOptions = {},
 ): Promise<string | undefined> {
+  body = fitCommentBodyToLimit(body);
+
   // Resolve effective comment mode (#322): commentMode input takes precedence
   // over legacy sticky boolean.
   const effectiveMode = resolveCommentMode(
@@ -1344,7 +1465,10 @@ export async function postIssueComment(
         core.info(
           `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
         );
-        return existingCommentId ? `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}` : undefined;
+        return {
+          url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
+          id: existingCommentId,
+        };
       }
     }
 
@@ -1357,7 +1481,7 @@ export async function postIssueComment(
           body,
         });
         core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-        return response.data.html_url;
+        return { url: response.data.html_url, id: response.data.id ?? existingCommentId };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         core.warning(
@@ -1398,7 +1522,7 @@ export async function postIssueComment(
       core.info(
         `Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`,
       );
-      return response.data.html_url;
+      return { url: response.data.html_url, id: response.data.id };
     }
 
     const response = await octokit.rest.issues.createComment({
@@ -1409,8 +1533,75 @@ export async function postIssueComment(
     });
 
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-    return response.data.html_url;
+    const created = { url: response.data.html_url, id: response.data.id };
+    if (!sticky) return created;
+    // Duplicate runs (e.g. two workflow_dispatch runs racing) can both miss
+    // the sticky lookup and create a comment each. Converge on the oldest one.
+    return reconcileDuplicateStickyComment(octokit, owner, repo, issueNumber, created, body);
   });
+}
+
+/**
+ * Collapse duplicate sticky comments created by concurrent runs (Issue #790).
+ *
+ * Every racing run that created a comment re-reads the thread afterwards. If
+ * an older TrustBridge comment exists, the run writes its body there and
+ * deletes the comment it just created, so all runs converge on the oldest
+ * comment and the issue keeps exactly one TrustBridge comment.
+ *
+ * Never throws: if the re-read, update, or delete fails, the freshly created
+ * comment is returned unchanged and a warning is logged, so the run's
+ * outputs still point at a real comment.
+ *
+ * @internal Exported for testing.
+ */
+export async function reconcileDuplicateStickyComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  created: PostedIssueComment,
+  body: string,
+): Promise<PostedIssueComment> {
+  let canonicalId: number | undefined;
+  try {
+    canonicalId = await findFirstTrustBridgeComment(octokit, owner, repo, issueNumber);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(`Could not re-check for duplicate TrustBridge comments on issue #${issueNumber}: ${message}`);
+    return created;
+  }
+  if (canonicalId === undefined || canonicalId === created.id) return created;
+
+  let canonical: PostedIssueComment;
+  try {
+    const updated = await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: canonicalId,
+      body,
+    });
+    canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Duplicate TrustBridge comment detected on issue #${issueNumber} but the original (id=${canonicalId}) could not be updated; keeping comment id=${created.id}: ${message}`,
+    );
+    return created;
+  }
+
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: created.id });
+    core.info(
+      `Removed duplicate TrustBridge comment id=${created.id} on issue #${issueNumber}; updated original id=${canonicalId}.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Could not delete duplicate TrustBridge comment id=${created.id} on issue #${issueNumber} (needs issues: write): ${message}`,
+    );
+  }
+  return canonical;
 }
 
 // ---------------------------------------------------------------------------
@@ -1663,6 +1854,8 @@ export async function postDiscussionComment(
   body: string,
   options: UpsertDiscussionCommentOptions = {},
 ): Promise<string | undefined> {
+  body = fitCommentBodyToLimit(body);
+
   const sticky = resolveCommentMode(options.commentMode, options.sticky) === 'sticky';
   const forceComment = options.forceComment ?? false;
   const snoozeWindowMs = options.snoozeWindowMs ?? 0;

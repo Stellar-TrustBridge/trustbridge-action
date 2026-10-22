@@ -7,13 +7,17 @@ import {
   STICKY_COMMENT_MARKER_LEGACY,
   TRUSTBRIDGE_FOOTER,
   MAX_STICKY_COMMENT_SEARCH_PAGES,
+  MAX_COMMENT_LENGTH,
   COMMENT_SIZE_LIMIT_BYTES,
   COMMENT_TRUNCATION_NOTICE_BYTES,
+  COMMENT_TRUNCATED_MARKER,
   findStickyComment,
   findFirstTrustBridgeComment,
   formatCommentBody,
   isTrustBridgeComment,
   postIssueComment,
+  upsertIssueComment,
+  resolvePostingMode,
   resolveIssueOrPullRequestNumber,
   resolveDiscussionNodeId,
   findStickyDiscussionComment,
@@ -210,6 +214,61 @@ describe('formatCommentBody', () => {
     expect(body).toContain('- [ ] **Add USDC trustline**');
     expect(body).toContain('- [ ] **Verify XLM balance**');
     expect(body).toContain('onboarding_checklist');
+  });
+
+  it('shortens oversized remediation while preserving the earlier checklist', () => {
+    const resultWithLongRemediation: ValidationResult = {
+      ...validationResult,
+      remediation: '🚀'.repeat(40000),
+    };
+
+    const body = formatCommentBody(resultWithLongRemediation, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(body.indexOf('### Onboarding checklist')).toBeLessThan(
+      body.indexOf('### Remediation'),
+    );
+    expect(body).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(body).toContain('🚀');
+    expect(body).not.toContain('🚀'.repeat(40000));
+    expect(
+      body.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
+  it('truncates oversized diagnostics safely when remediation is empty', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      debugMode: true,
+      diagnosticsConfig: {
+        inputs: {
+          horizonUrl: 'https://horizon.stellar.org',
+          assetCode: 'USDC',
+          assetIssuer: baseConfig.assetIssuer,
+          minXlmReserve: 1.5,
+          horizonTimeoutMs: 15000,
+          useCache: false,
+          allowCrossNetworkFallback: false,
+          debugMode: true,
+          diagnosticJson: JSON.stringify({ detail: '🚀'.repeat(40000) }),
+        },
+      },
+    });
+
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(body).toContain('### Onboarding checklist');
+    expect(body).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      body.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
   });
 
   it('omits onboarding checklist when disabled', () => {
@@ -692,6 +751,30 @@ describe('postIssueComment', () => {
     });
   });
 
+  it('truncates oversized issue bodies before the REST request', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postIssueComment('token', '🚀'.repeat(COMMENT_SIZE_LIMIT_BYTES), {
+      sticky: false,
+    });
+
+    const postedBody = octokit.rest.issues.createComment.mock.calls[0][0]
+      .body as string;
+    expect(Buffer.byteLength(postedBody, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(postedBody).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      postedBody.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
   it('updates the existing sticky comment instead of creating a new one', async () => {
     const octokit = makeOctokit();
     octokit.paginate.mockResolvedValue([
@@ -892,6 +975,132 @@ describe('postIssueComment', () => {
 // GitHub Discussions comment path (Issue #221)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Issue #696 — upsertIssueComment exposes the numeric REST comment id
+// ---------------------------------------------------------------------------
+describe('upsertIssueComment (Issue #696)', () => {
+  const mockedGithub = github as unknown as {
+    context: {
+      eventName: string;
+      payload: { issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
+    getOctokit: jest.Mock;
+  };
+
+  beforeEach(() => {
+    mockedGithub.context.eventName = 'issues';
+    mockedGithub.context.payload = { issue: { number: 7 } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
+  });
+
+  it('returns the id from createComment on the create path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 1234, html_url: 'https://github.com/o/r/issues/7#issuecomment-1234' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted).toEqual({
+      url: 'https://github.com/o/r/issues/7#issuecomment-1234',
+      id: 1234,
+    });
+  });
+
+  it('returns the id from updateComment on the sticky update path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'updated body', { sticky: true });
+
+    expect(posted?.id).toBe(99);
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('never returns the stale id when updateComment fails after a successful find', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockRejectedValue(new Error('403 Forbidden'));
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 555, html_url: 'https://github.com/o/r/issues/7#issuecomment-555' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted?.id).toBe(555);
+    expect(posted?.id).not.toBe(99);
+  });
+
+  it('returns the reply comment id in reply mode', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 100, html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { commentMode: 'reply' });
+
+    expect(posted?.id).toBe(100);
+  });
+
+  it('returns undefined when there is no issue or PR context', async () => {
+    mockedGithub.context.payload = {};
+    const octokit = makeOctokit();
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await expect(upsertIssueComment('token', 'body')).resolves.toBeUndefined();
+  });
+
+  it('postIssueComment still returns only the URL', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 7, html_url: 'https://github.com/o/r/issues/7#issuecomment-7' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'body', { sticky: false });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-7');
+  });
+});
+
+describe('resolvePostingMode (Issue #696)', () => {
+  it('defaults to post', () => {
+    expect(resolvePostingMode('', '')).toBe('post');
+    expect(resolvePostingMode(undefined, 'sticky')).toBe('post');
+  });
+
+  it('prefers posting_mode over legacy comment_mode values', () => {
+    expect(resolvePostingMode('dry-run', 'off')).toBe('dry-run');
+    expect(resolvePostingMode(' OFF ', 'post')).toBe('off');
+  });
+
+  it('honours legacy post/dry-run/off values in comment_mode when posting_mode is unset', () => {
+    expect(resolvePostingMode('', 'dry-run')).toBe('dry-run');
+    expect(resolvePostingMode('', 'off')).toBe('off');
+  });
+
+  it('falls back to post for an invalid posting_mode', () => {
+    expect(resolvePostingMode('maybe', '')).toBe('post');
+  });
+});
+
 describe('resolveDiscussionNodeId', () => {
   it('extracts the node id from a discussion event payload', () => {
     expect(
@@ -1072,6 +1281,33 @@ describe('postDiscussionComment', () => {
     });
   });
 
+  it('truncates oversized discussion bodies before the GraphQL mutation', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue({
+      addDiscussionComment: {
+        comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-101' },
+      },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postDiscussionComment(
+      'token',
+      '🚀'.repeat(COMMENT_SIZE_LIMIT_BYTES),
+      { sticky: false },
+    );
+
+    const mutationBody = octokit.graphql.mock.calls[0][1].body as string;
+    expect(Buffer.byteLength(mutationBody, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(mutationBody).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      mutationBody.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
   it('updates the existing sticky discussion comment via GraphQL instead of creating a new one', async () => {
     const octokit = makeOctokit();
     octokit.graphql
@@ -1193,6 +1429,8 @@ describe('COMMENT_SIZE_LIMIT_BYTES', () => {
 
 describe('buildTruncatedCommentBody', () => {
   const reportPath = 'trustbridge-report.md';
+  const stableNotice =
+    '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_';
 
   it('returns a body within COMMENT_SIZE_LIMIT_BYTES when given an oversized input', () => {
     const oversizedBody = 'x'.repeat(COMMENT_SIZE_LIMIT_BYTES + 10000);
@@ -1205,6 +1443,22 @@ describe('buildTruncatedCommentBody', () => {
     const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
     expect(truncated).toContain('⚠️ Report truncated');
     expect(truncated).toContain(reportPath);
+  });
+
+  it('truncates emoji-heavy JSON safely and marks the shortened comment', () => {
+    const diagnostics = `### Expert diagnostics\n\n\`\`\`json\n${JSON.stringify({
+      detail: '🚀'.repeat(40000),
+    })}\n\`\`\``;
+    const oversizedBody = `## Report\n\n### Onboarding checklist\n\n- [ ] Fund account\n\n${diagnostics}`;
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+
+    expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(Buffer.from(truncated, 'utf8').toString('utf8')).toBe(truncated);
+    expect(truncated).toContain('### Onboarding checklist');
+    expect(truncated).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(truncated.endsWith(stableNotice)).toBe(true);
   });
 
   it('includes a link to USAGE.md in the truncation notice', () => {

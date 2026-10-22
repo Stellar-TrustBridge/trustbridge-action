@@ -1,0 +1,114 @@
+name: PolinRider Security Scan
+
+# Blocks merge when required as a status check named "PolinRider Security Scan".
+# Safe: checkout only, no npm install, no execution of PR code, no secrets.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Scan mode (repo or self-test)"
+        required: true
+        default: repo
+        type: choice
+        options:
+          - repo
+          - self-test
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: polinrider-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  polinrider-scan:
+    name: PolinRider Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep file
+
+      - name: Collect changed files (PR)
+        if: github.event_name == 'pull_request'
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git diff --name-only "$BASE...$HEAD" > /tmp/changed.txt || true
+          echo "Changed files:" && cat /tmp/changed.txt || true
+          {
+            echo "POLIN_CHANGED_FILES<<EOF"
+            cat /tmp/changed.txt
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Run PolinRider scanner
+        env:
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'repo' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/security/scan-polinrider.sh
+          if [ "$MODE" = "self-test" ]; then
+            ./scripts/security/scan-polinrider.sh . self-test
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./scripts/security/scan-polinrider.sh . pr-files
+            ./scripts/security/scan-polinrider.sh . repo
+          else
+            ./scripts/security/scan-polinrider.sh . repo
+          fi
+
+      - name: Fixture self-test (always on PRs)
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'self-test')
+        run: |
+          set -euo pipefail
+          ./scripts/security/scan-polinrider.sh . self-test
+
+  # Advisory history scan — does not fail the required check alone, but surfaces hits
+  history-advisory:
+    name: PolinRider History Advisory
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Search recent history for markers
+        run: |
+          set -euo pipefail
+          echo "## Git history advisory (last 500 commits, all refs fetched)"
+          FOUND=0
+          # Path excludes keep this workflow / scanner docs out of pickaxe noise.
+          for needle in "rmcej%otb%" '_$_1e42' "global['!']" 'temp_auto_push.bat' 'fa-solid-400.woff2'; do
+            hits=$(git log --all -n 500 -S "$needle" --oneline -- \
+              ':(exclude)scripts/security' \
+              ':(exclude)docs/SECURITY_POLINRIDER.md' \
+              ':(exclude).github/workflows/polinrider-security.yml' \
+              ':(exclude)security/fixtures' | head -10 || true)
+            if [ -n "$hits" ]; then
+              echo "::warning::History contains commits introducing marker: $needle"
+              echo "$hits"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No marker introductions found in recent history pickaxe search."
+          fi

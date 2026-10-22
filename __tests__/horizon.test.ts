@@ -495,10 +495,12 @@ describe('Horizon debug log redaction', () => {
         const retryCtx = requireContext(retrySched);
         expect(retryCtx.nextAttempt).toBe(1);
         expect(retryCtx.retryAfterFromHeader).toBe(true);
+        expect(retryCtx.stellarAddress).toBe(expectedRedacted);
+        // Issue #697: retryable (429/503) response bodies are never logged.
         const parsedErr = calls.find((c) => c.message === 'Horizon error response parsed');
         const parsedErrCtx = requireContext(parsedErr);
-        expect(parsedErrCtx.errorDetail).not.toContain(TEST_ADDRESS);
-        expect(parsedErrCtx.errorDetail).toContain(expectedRedacted);
+        expect(parsedErrCtx.bodyOmitted).toBe(true);
+        expect(parsedErrCtx.errorDetail).toBeUndefined();
         assertAllCallsRedacted(calls, RAW_ADDRESSES);
       } finally {
         global.setTimeout = origSetTimeout;
@@ -1699,5 +1701,205 @@ describe('HorizonAccount: account-level flags fixture assertions', () => {
     expect(usdcBalance).toBeDefined();
     expect(usdcBalance?.is_clawback_enabled).toBe(true);
     expect(usdcBalance?.is_authorized).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #697 — structured Horizon retry log levels without address leakage
+// ---------------------------------------------------------------------------
+describe('Horizon structured retry logging (Issue #697)', () => {
+  const MUXED_ADDRESS = 'M' + 'A'.repeat(68);
+  const CONTRACT_ADDRESS = 'C' + 'A'.repeat(55);
+
+  type LevelCall = { level: 'debug' | 'info' | 'warn'; message: string; context: loggerModule.LogContext | undefined };
+
+  function captureAllLevels(): { calls: LevelCall[]; restore: () => void } {
+    const calls: LevelCall[] = [];
+    const spies = (['debug', 'info', 'warn'] as const).map((level) =>
+      jest.spyOn(loggerModule.logger, level).mockImplementation((message, context) => {
+        calls.push({
+          level,
+          message: loggerModule.redactString(message),
+          context: loggerModule.redactContext(context),
+        });
+      }),
+    );
+    return { calls, restore: () => spies.forEach((s) => s.mockRestore()) };
+  }
+
+  function serialize(call: LevelCall): string {
+    return `${call.message} ${JSON.stringify(call.context ?? {})}`;
+  }
+
+  let origSetTimeout: typeof setTimeout;
+  beforeEach(() => {
+    origSetTimeout = global.setTimeout;
+    global.setTimeout = ((callback: Parameters<typeof setTimeout>[0]) =>
+      origSetTimeout(callback, 0)) as typeof setTimeout;
+    loggerModule.logger.setDebugMode(true);
+  });
+  afterEach(() => {
+    global.setTimeout = origSetTimeout;
+    loggerModule.logger.setDebugMode(false);
+    jest.restoreAllMocks();
+  });
+
+  it('logs each scheduled retry at debug with attempt index and delay', async () => {
+    const { calls, restore } = captureAllLevels();
+    let callCount = 0;
+    const mock = makeMockFetch(async () => {
+      callCount += 1;
+      if (callCount < 3) {
+        return makeMockResponse(503, { detail: `Account ${TEST_ADDRESS} unavailable` });
+      }
+      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+    });
+
+    try {
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 3,
+        cacheTtlMs: 0,
+        retryBaseDelayMs: 10,
+        retryMaxDelayMs: 1000,
+        fetchFn: mock,
+      });
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries).toHaveLength(2);
+      expect(retries.every((c) => c.level === 'debug')).toBe(true);
+      expect(retries.map((c) => c.context?.attempt)).toEqual([0, 1]);
+      expect(retries.map((c) => c.context?.delayMs)).toEqual([10, 20]);
+      expect(retries.map((c) => c.context?.status)).toEqual([503, 503]);
+      expect(retries.every((c) => c.context?.capped === false)).toBe(true);
+      expect(retries.every((c) => c.context?.reasonCode === 'HORIZON_RETRY_SCHEDULED')).toBe(true);
+      expect(calls.some((c) => c.level === 'warn')).toBe(false);
+      for (const call of calls) {
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs final exhaustion at warning with a reason_code-friendly summary', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () =>
+      makeMockResponse(429, { detail: `Rate limit for ${TEST_ADDRESS}` }, { headers: { 'retry-after': '0' } }),
+    );
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 1,
+        cacheTtlMs: 0,
+        fetchFn: mock,
+      })).rejects.toMatchObject({ statusCode: 429 });
+
+      const warnings = calls.filter((c) => c.level === 'warn');
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].message).toContain('HORIZON_RETRIES_EXHAUSTED');
+      expect(warnings[0].message).toContain('HTTP 429');
+      expect(warnings[0].context?.phase).toBe('exhausted');
+      expect(warnings[0].context?.attempt).toBe(1);
+      expect(warnings[0].context?.maxAttempts).toBe(2);
+      expect(warnings[0].context?.stellarAddress).toBe(redactForAddress(TEST_ADDRESS));
+      // No response body fields leak into the retry event.
+      expect(serialize(warnings[0])).not.toContain('Rate limit for');
+      for (const call of calls) {
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('records a capped Retry-After delay accurately, including very short values', async () => {
+    const { calls, restore } = captureAllLevels();
+    let callCount = 0;
+    const mock = makeMockFetch(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return makeMockResponse(429, {}, { headers: { 'retry-after': '120' } });
+      }
+      if (callCount === 2) {
+        return makeMockResponse(429, {}, { headers: { 'retry-after': '0' } });
+      }
+      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+    });
+
+    try {
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 3,
+        cacheTtlMs: 0,
+        retryMaxDelayMs: 5000,
+        fetchFn: mock,
+      });
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries).toHaveLength(2);
+      expect(retries[0].context?.delayMs).toBe(5000);
+      expect(retries[0].context?.capped).toBe(true);
+      expect(retries[0].context?.retryAfterFromHeader).toBe(true);
+      expect(retries[1].context?.delayMs).toBe(0);
+      expect(retries[1].context?.capped).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('tags the fallback base URL without leaking query params', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () => makeMockResponse(503, {}));
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 0,
+        horizonUrlFallback: `${FALLBACK_HORIZON}?api_key=supersecret&account=${TEST_ADDRESS}`,
+        fetchFn: mock,
+      })).rejects.toBeDefined();
+
+      const exhausted = calls.filter((c) => c.context?.event === 'horizon_retry' && c.context?.phase === 'exhausted');
+      const endpointKinds = exhausted.map((c) => c.context?.endpointKind);
+      expect(endpointKinds).toContain('primary');
+      const fallbackEvent = exhausted.find((c) => c.context?.endpointKind === 'fallback');
+      if (fallbackEvent) {
+        expect(fallbackEvent.context?.horizonUrl).not.toContain('?');
+        expect(fallbackEvent.context?.horizonUrl).toContain('horizon-fallback.stellar.org');
+      }
+      for (const call of calls.filter((c) => c.context?.event === 'horizon_retry')) {
+        expect(serialize(call)).not.toContain('supersecret');
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('never leaks G, C, or M addresses on transport retries', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () => {
+      throw new Error(`connect ECONNRESET ${TEST_ADDRESS} ${CONTRACT_ADDRESS} ${MUXED_ADDRESS}`);
+    });
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 1,
+        cacheTtlMs: 0,
+        retryBaseDelayMs: 1,
+        fetchFn: mock,
+      })).rejects.toBeDefined();
+
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries.map((c) => c.context?.phase)).toEqual(['scheduled', 'exhausted']);
+      expect(retries[0].level).toBe('debug');
+      expect(retries[0].message).toBe('Horizon transport retry scheduled');
+      expect(retries[1].level).toBe('warn');
+      for (const call of calls) {
+        const text = serialize(call);
+        expect(text).not.toContain(TEST_ADDRESS);
+        expect(text).not.toContain(CONTRACT_ADDRESS);
+        expect(text).not.toContain(MUXED_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
   });
 });

@@ -1,6 +1,9 @@
 import * as core from '@actions/core';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CheckConfig,
+  HomeDomainCheckMode,
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
@@ -9,17 +12,26 @@ import {
   validateStellarAddress,
   rateBudgetExhaustedResult,
 } from './checks';
-import { fetchAccount, getAssetBalance, HorizonError, waitForFundedAccount } from './horizon';
+import {
+  callFriendbot,
+  fetchAccount,
+  fetchHomeDomainIssuerAccount,
+  getAssetBalance,
+  HorizonError,
+  isTestnetHorizon,
+  waitForFundedAccount,
+} from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
-import { globalMetrics } from './metrics';
+import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { readTrustbridgeConfig } from './configReader';
 import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
+import { runStellarTomlCheck, DEFAULT_STELLAR_TOML_CACHE_TTL_MS, MAX_STELLAR_TOML_CACHE_TTL_MS } from './toml';
 
 async function run(): Promise<void> {
   const jobController = new AbortController();
@@ -42,6 +54,10 @@ async function run(): Promise<void> {
     max: 60000,
   });
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
+  const postingMode = resolvePostingMode(
+    core.getInput('posting_mode'),
+    core.getInput('comment_mode'),
+  );
   const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
     core.getInput('wait_until_funded_timeout_ms'),
@@ -55,6 +71,7 @@ async function run(): Promise<void> {
   );
   const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
   const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+  const allowCrossNetworkFallback = parseBooleanInput(core.getInput('allow_cross_network_fallback'), false);
   const fallbackUrls = rpcFallbackUrlRaw
     ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
     : horizonUrlFallback
@@ -67,9 +84,58 @@ async function run(): Promise<void> {
   const horizonMaxRequests = parseNumberInput(core.getInput('horizon_max_requests'), 0, {
     min: 0,
   });
+  // Retry / Retry-After caps (Issue #705). Every sleep is min(Retry-After or
+  // backoff, retry_max_delay_ms); the cumulative sleep per endpoint is bounded
+  // by retry_max_total_wait_ms. See docs/ERROR_HANDLING.md.
+  const maxRetries = parseNumberInput(core.getInput('max_retries'), 3, { min: 0, max: 10 });
+  const retryBaseDelayMs = parseNumberInput(core.getInput('retry_base_delay_ms'), 1000, {
+    min: 0,
+    max: 60000,
+  });
+  const retryMaxDelayMs = parseNumberInput(core.getInput('retry_max_delay_ms'), 30000, {
+    min: 0,
+    max: 300000,
+  });
+  const retryMaxTotalWaitMs = parseNumberInput(core.getInput('retry_max_total_wait_ms'), 120000, {
+    min: 0,
+    max: 600000,
+  });
+
+  // SEP-0001 home domain + optional stellar.toml fetch (Issue #709).
+  const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
+  const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim();
+  const homeDomainCheckMode =
+    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
+  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
+  const stellarTomlCacheTtlMs = parseNumberInput(
+    core.getInput('stellar_toml_cache_ttl_ms'),
+    DEFAULT_STELLAR_TOML_CACHE_TTL_MS,
+    { min: 0, max: MAX_STELLAR_TOML_CACHE_TTL_MS },
+  );
+  const stellarTomlHashPin = (core.getInput('stellar_toml_hash_pin') || '').trim();
+
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
+
+  // Friendbot testnet onboarding (Issue #4 / #699). See docs/USAGE.md#friendbot-testnet-funding.
+  const useFriendbot = parseBooleanInput(core.getInput('use_friendbot'), false);
+  const friendbotUrl = core.getInput('friendbot_url') || 'https://friendbot.stellar.org';
+  const friendbotTimeoutMs = parseNumberInput(core.getInput('friendbot_timeout_ms'), 15000, {
+    min: 1000,
+    max: 60000,
+  });
+  let friendbotCalled = false;
+  let friendbotSuccess = false;
+  let friendbotTransactionHash = '';
+
+  // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
+  const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
+  const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
+  const homeDomainCheckMode: HomeDomainCheckMode =
+    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
+  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Create RateBudgetTracker if horizon_max_requests > 0
   const rateBudgetTracker = horizonMaxRequests > 0 ? new RateBudgetTracker(horizonMaxRequests) : undefined;
@@ -125,6 +191,14 @@ async function run(): Promise<void> {
     rpcFallbackUrl: rpcFallbackUrlRaw,
     useCache,
     sep0007DeepLinks,
+    maxRetries,
+    retryBaseDelayMs,
+    retryMaxDelayMs,
+    retryMaxTotalWaitMs,
+    homeDomainCheckEnabled,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPinSet: Boolean(stellarTomlHashPin),
   });
 
   if (logInputs) {
@@ -175,6 +249,12 @@ async function run(): Promise<void> {
     ...normalizedAsset,
     minXlmReserve,
     horizonUrl,
+    homeDomainCheckEnabled,
+    expectedHomeDomain: expectedHomeDomain || undefined,
+    homeDomainCheckMode,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPin: stellarTomlHashPin || undefined,
   };
 
   core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
@@ -194,9 +274,15 @@ async function run(): Promise<void> {
     timeoutMs: horizonTimeoutMs,
     horizonUrlFallback: horizonUrlFallback || undefined,
     fallbackUrls,
+    allowCrossNetworkFallback,
     cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
     useCache,
     rateBudgetTracker,
+    maxRetries,
+    retryBaseDelayMs,
+    retryMaxDelayMs,
+    retryMaxTotalWaitMs,
+    signal: jobController.signal,
   };
 
   try {
@@ -219,7 +305,38 @@ async function run(): Promise<void> {
           (hUrl, sAddr, opts) => fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
         )
       : await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
-    result = runAccountChecks(account, checkConfig);
+    // The home domain lives on the issuer account, not the contributor's.
+    const issuerAccount = homeDomainCheckEnabled
+      ? await fetchHomeDomainIssuerAccount(horizonUrl, normalizedAsset.assetIssuer, horizonOptions)
+      : undefined;
+    result = runAccountChecks(account, checkConfig, issuerAccount);
+
+    // Issue #709 — optional stellar.toml fetch layered on top of the on-chain
+    // home_domain check. When stellar_toml_fetch_enabled is false the
+    // SSRF-guarded HTTP client is never called.
+    if (homeDomainCheckEnabled && stellarTomlFetchEnabled) {
+      const tomlDomain = expectedHomeDomain || result.homeDomainCheck?.actualHomeDomain;
+      const tomlOutcome = await runStellarTomlCheck(tomlDomain, {
+        enabled: stellarTomlFetchEnabled,
+        cacheTtlMs: stellarTomlCacheTtlMs,
+        hashPin: stellarTomlHashPin || undefined,
+      });
+      if (tomlOutcome.status !== 'skipped') {
+        // A pinned hash always fails closed; otherwise fetch errors only block
+        // in strict home_domain_check_mode.
+        const blocks =
+          tomlOutcome.status === 'failed' && (Boolean(stellarTomlHashPin) || homeDomainCheckMode === 'strict');
+        result.checks.push({
+          passed: !blocks,
+          label: 'SEP-0001 stellar.toml',
+          detail: tomlOutcome.detail,
+        });
+        result.valid = result.checks.every((c) => c.passed);
+        if (!result.valid && result.reasonCode === 'SUCCESS') {
+          result.reasonCode = 'FAILED';
+        }
+      }
+    }
 
     // Issue #536 — extra trustlines from assets_json gate the ready output.
     // runAccountChecks only validates the single primary asset_code/asset_issuer
@@ -271,6 +388,46 @@ async function run(): Promise<void> {
       result = horizonFailureResult('Funding poll cancelled', checkConfig);
     } else if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
+      if (useFriendbot && !isTestnetHorizon(horizonUrl)) {
+        // Pubnet guard: never request Friendbot funding against a public
+        // network Horizon, so friendbot_called stays false.
+        core.warning('use_friendbot is enabled but horizon_url is not a test network — Friendbot was not called.');
+      } else if (useFriendbot && !friendbotCalled) {
+        // Guarded so a single run never issues more than one funding request.
+        friendbotCalled = true;
+        logger.info('Account 404 encountered and use_friendbot enabled — calling Friendbot', {
+          component: 'index',
+          stellarAddress,
+          friendbotUrl,
+        });
+        const fbResult = await callFriendbot(
+          stellarAddress,
+          { friendbotUrl, timeoutMs: friendbotTimeoutMs },
+          horizonUrl,
+        );
+        friendbotSuccess = fbResult.success;
+        friendbotTransactionHash = fbResult.transactionHash ?? '';
+        if (fbResult.success) {
+          logger.info('Friendbot funding succeeded — re-fetching account', {
+            component: 'index',
+            transactionHash: friendbotTransactionHash,
+          });
+          try {
+            const fundedAccount = await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
+            const issuerAccount = homeDomainCheckEnabled
+              ? await fetchHomeDomainIssuerAccount(horizonUrl, normalizedAsset.assetIssuer, horizonOptions)
+              : undefined;
+            result = runAccountChecks(fundedAccount, checkConfig, issuerAccount);
+          } catch (refetchErr) {
+            logger.warn('Failed to re-fetch account after Friendbot funding', {
+              component: 'index',
+              error: getErrorMessage(refetchErr),
+            });
+          }
+        } else {
+          logger.warn(`Friendbot funding failed: ${fbResult.message}`, { component: 'index' });
+        }
+      }
     } else if (error instanceof HorizonError) {
       core.error(error.message);
       result = horizonFailureResult(error.message, checkConfig);
@@ -286,6 +443,9 @@ async function run(): Promise<void> {
     assetCode: normalizedAsset.assetCode,
     assetIssuer: normalizedAsset.assetIssuer,
     assetsTrustlineStatus: assetsTrustlineStatusExtras,
+    friendbotCalled,
+    friendbotSuccess,
+    friendbotTransactionHash,
   });
 
   const commentBody = formatCommentBody(result, {
@@ -302,15 +462,25 @@ async function run(): Promise<void> {
     assets: assetsTrustlineStatusExtras,
   });
 
+  // Issue #696 — comment_id is only published from a successful
+  // createComment/updateComment response. dry-run, off, a missing issue
+  // context, or a failed post all leave it (and comment_url) empty.
   let commentUrl: string | undefined;
-  try {
-    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
-    if (commentUrl) {
-      logger.info('Issue comment created', { component: 'index', commentUrl });
+  let commentId: string | undefined;
+  if (postingMode === 'post') {
+    try {
+      const posted = await upsertIssueComment(githubToken, commentBody, { sticky: stickyComment });
+      if (posted) {
+        commentUrl = posted.url;
+        commentId = posted.id !== undefined ? String(posted.id) : undefined;
+        logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
+      }
+    } catch (commentError) {
+      const message = getErrorMessage(commentError);
+      core.warning(`Failed to post issue comment: ${message}`);
     }
-  } catch (commentError) {
-    const message = getErrorMessage(commentError);
-    core.warning(`Failed to post issue comment: ${message}`);
+  } else {
+    core.info(`posting_mode is "${postingMode}" — skipping issue comment.`);
   }
 
   setValidationOutputs(result, commentUrl, undefined, {
@@ -318,7 +488,21 @@ async function run(): Promise<void> {
     assetCode: normalizedAsset.assetCode,
     assetIssuer: normalizedAsset.assetIssuer,
     assetsTrustlineStatus: assetsTrustlineStatusExtras,
+    friendbotCalled,
+    friendbotSuccess,
+    friendbotTransactionHash,
   });
+
+  // SARIF 2.1.0 output (Issue #197). Includes rule TB004 for the home domain
+  // check when home_domain_check_enabled is true (Issue #708).
+  if (sarifOutputPath) {
+    writeSarifOutput(sarifOutputPath, result, {
+      horizonUrl,
+      stellarAddress,
+      assetCode: normalizedAsset.assetCode,
+      homeDomainCheckMode,
+    });
+  }
 
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
@@ -331,6 +515,8 @@ async function run(): Promise<void> {
       core.debug(JSON.stringify(spans, null, 2));
     }
   }
+
+  await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
 
   if (result.valid) {
     core.info('All TrustBridge checks passed.');
@@ -345,6 +531,30 @@ async function run(): Promise<void> {
     core.setFailed(failureMessage);
   } else {
     core.warning(failureMessage);
+  }
+}
+
+function writeSarifOutput(
+  sarifOutputPath: string,
+  result: Parameters<typeof sarifOutcomeFromResult>[0],
+  context: Parameters<typeof sarifOutcomeFromResult>[1],
+): void {
+  const workspaceRoot = path.normalize(process.env.GITHUB_WORKSPACE || process.cwd());
+  const resolved = path.normalize(
+    path.isAbsolute(sarifOutputPath) ? sarifOutputPath : path.join(workspaceRoot, sarifOutputPath),
+  );
+  // Path traversal guard: SARIF is only ever written inside the workspace.
+  if (!resolved.startsWith(workspaceRoot + path.sep)) {
+    core.warning('sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.');
+    return;
+  }
+  try {
+    const sarifJson = serialiseSarif(buildSarifDocument(sarifOutcomeFromResult(result, context)));
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    fs.writeFileSync(resolved, sarifJson, 'utf8');
+    core.info(`Wrote SARIF 2.1.0 output to ${resolved}`);
+  } catch (sarifError) {
+    core.warning(`Failed to write SARIF output (non-fatal): ${getErrorMessage(sarifError)}`);
   }
 }
 

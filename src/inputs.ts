@@ -17,6 +17,21 @@ export function parseBooleanInput(value: string, defaultValue: boolean): boolean
 }
 
 /**
+ * Canonical list of input names declared in `action.yml`.
+ *
+ * Kept in sync with `action.yml` by the schema parity test
+ * (`__tests__/inputs-schema-parity.test.ts`), which fails CI when an input is
+ * added to one side only (Issue #769).
+ */
+export const DECLARED_INPUTS = [
+  'skip_for_maintainers',
+  'skip_if_maintainer',
+  'assignee_address_map',
+] as const;
+
+export type DeclaredInput = (typeof DECLARED_INPUTS)[number];
+
+/**
  * Result of {@link resolveMaintainerSkipInput}, carrying the resolved value
  * plus provenance so the action can emit a precise warning instead of
  * guessing which input the user meant.

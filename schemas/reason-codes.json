@@ -136,6 +136,26 @@
       "since": "v1"
     },
     {
+      "code": "HOME_DOMAIN_MISMATCH",
+      "description": "The asset issuer's on-chain `home_domain` does not match `expected_home_domain` and `home_domain_check_mode: strict` blocked validation. The account itself may be fully funded with the trustline present. In `warn` mode this condition is reported in the comment but does not change the reason code.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when home_domain_check_enabled is true)",
+      "since": "v1"
+    },
+    {
+      "code": "HOME_DOMAIN_MISSING",
+      "description": "The asset issuer has no `home_domain` set on-chain (or its account could not be fetched) and `home_domain_check_mode: strict` blocked validation. Distinct from HOME_DOMAIN_MISMATCH: there is no domain to compare. In `warn` mode this condition is reported in the comment but does not change the reason code.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when home_domain_check_enabled is true)",
+      "since": "v1"
+    },
+    {
       "code": "MILESTONE_GATE_SKIPPED",
       "description": "The milestone gate skipped validation because the issue or pull request's milestone was not in `milestone_allowlist` (or no milestone was set while the allowlist was active). No account checks were performed, so this is a skip rather than a validation failure. Set `milestone_fail_on_skip: true` to hard-fail instead of warn.",
       "accountFunded": false,

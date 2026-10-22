@@ -16,6 +16,7 @@
 
 import { detectNetworkMismatch, unfundedAccountResult, NetworkMismatchHint, buildNetworkMismatchDetail } from '../src/checks';
 import { inferStellarNetwork, canonicalHorizonUrl, oppositeNetwork } from '../src/links';
+import { fetchAccount, HorizonError } from '../src/horizon';
 
 // ---------------------------------------------------------------------------
 // Helpers / fixtures
@@ -277,5 +278,248 @@ describe('unfundedAccountResult with NetworkMismatchHint', () => {
     const result = unfundedAccountResult(VALID_ADDRESS, MOCK_CONFIG, hint);
     expect(result.checks[0].detail).toContain('active on testnet');
     expect(result.remediation).toContain('Network mismatch');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchAccount — allow_cross_network_fallback guard
+// ---------------------------------------------------------------------------
+
+import { fetchAccount, HorizonError } from '../src/horizon';
+import { inferStellarNetwork } from '../src/links';
+
+const PRIMARY_HORIZON = 'https://horizon.stellar.org';
+const TESTNET_HORIZON = 'https://horizon-testnet.stellar.org';
+const SECONDARY_MAINNET = 'https://horizon2.stellar.org';
+const VALID_ADDRESS_2 = 'G' + 'B'.repeat(55);
+
+function makeMockFetch(responses: Map<string, { status: number; body: unknown }>) {
+  return async (url: string, init?: RequestInit) => {
+    for (const [prefix, response] of responses.entries()) {
+      if (url.startsWith(prefix)) {
+        return {
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          statusText: response.status >= 400 ? 'Error' : 'OK',
+          json: async () => response.body,
+          headers: new Headers({ 'content-type': 'application/json' }),
+        } as Response;
+      }
+    }
+    return {
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({ title: 'Not Found' }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    } as Response;
+  };
+}
+
+describe('fetchAccount — allow_cross_network_fallback guard', () => {
+  const baseAccount = {
+    id: VALID_ADDRESS_2,
+    account_id: VALID_ADDRESS_2,
+    sequence: '1',
+    subentry_count: 0,
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    balances: [
+      { balance: '100.0000000', asset_type: 'native' as const, buying_liabilities: '0', selling_liabilities: '0' },
+    ],
+    signers: [],
+    data: {},
+    paging_token: '',
+  };
+
+  const makeAccountResponse = () => ({ ...baseAccount });
+
+  it('blocks fallback when primary is mainnet, fallback is testnet, and allowCrossNetworkFallback=false', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    await expect(
+      fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+        maxRetries: 0,
+        horizonUrlFallback: TESTNET_HORIZON,
+        allowCrossNetworkFallback: false,
+        fetchFn: mock,
+      }),
+    ).rejects.toThrow(/Cross-network fallback from public.*to testnet.*is blocked/);
+
+    // Should only call primary, not fallback
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks fallback when primary is testnet, fallback is mainnet, and allowCrossNetworkFallback=false', async () => {
+    const mock = makeMockFetch(new Map([
+      [TESTNET_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [PRIMARY_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    await expect(
+      fetchAccount(TESTNET_HORIZON, VALID_ADDRESS_2, {
+        maxRetries: 0,
+        horizonUrlFallback: PRIMARY_HORIZON,
+        allowCrossNetworkFallback: false,
+        fetchFn: mock,
+      }),
+    ).rejects.toThrow(/Cross-network fallback from testnet.*to public.*is blocked/);
+
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows fallback when allowCrossNetworkFallback=true (mainnet -> testnet)', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    const account = await fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+      maxRetries: 0,
+      horizonUrlFallback: TESTNET_HORIZON,
+      allowCrossNetworkFallback: true,
+      fetchFn: mock,
+    });
+
+    expect(account.id).toBe(VALID_ADDRESS_2);
+    expect(account._servedByUrl).toBe(TESTNET_HORIZON);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows fallback when allowCrossNetworkFallback=true (testnet -> mainnet)', async () => {
+    const mock = makeMockFetch(new Map([
+      [TESTNET_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [PRIMARY_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    const account = await fetchAccount(TESTNET_HORIZON, VALID_ADDRESS_2, {
+      maxRetries: 0,
+      horizonUrlFallback: PRIMARY_HORIZON,
+      allowCrossNetworkFallback: true,
+      fetchFn: mock,
+    });
+
+    expect(account.id).toBe(VALID_ADDRESS_2);
+    expect(account._servedByUrl).toBe(PRIMARY_HORIZON);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows fallback when both URLs are on the same network (mainnet -> mainnet) even with flag false', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [SECONDARY_MAINNET, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    const account = await fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+      maxRetries: 0,
+      horizonUrlFallback: SECONDARY_MAINNET,
+      allowCrossNetworkFallback: false,
+      fetchFn: mock,
+    });
+
+    expect(account.id).toBe(VALID_ADDRESS_2);
+    expect(account._servedByUrl).toBe(SECONDARY_MAINNET);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks fallback when using fallbackUrls array with cross-network URL and flag false', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    await expect(
+      fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+        maxRetries: 0,
+        fallbackUrls: [TESTNET_HORIZON],
+        allowCrossNetworkFallback: false,
+        fetchFn: mock,
+      }),
+    ).rejects.toThrow(/Cross-network fallback from public.*to testnet.*is blocked/);
+
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows fallback when using fallbackUrls array with cross-network URL and flag true', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    const account = await fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+      maxRetries: 0,
+      fallbackUrls: [TESTNET_HORIZON],
+      allowCrossNetworkFallback: true,
+      fetchFn: mock,
+    });
+
+    expect(account.id).toBe(VALID_ADDRESS_2);
+    expect(account._servedByUrl).toBe(TESTNET_HORIZON);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses first URL in fallbackUrls array when multiple provided', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [SECONDARY_MAINNET, { status: 200, body: makeAccountResponse() }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    const account = await fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+      maxRetries: 0,
+      fallbackUrls: [SECONDARY_MAINNET, TESTNET_HORIZON],
+      allowCrossNetworkFallback: false,
+      fetchFn: mock,
+    });
+
+    expect(account._servedByUrl).toBe(SECONDARY_MAINNET);
+    // Should only call primary and first fallback (SECONDARY_MAINNET)
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('error message includes both URLs when cross-network fallback is blocked', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    try {
+      await fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+        maxRetries: 0,
+        horizonUrlFallback: TESTNET_HORIZON,
+        allowCrossNetworkFallback: false,
+        fetchFn: mock,
+      });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HorizonError);
+      const err = e as HorizonError;
+      expect(err.message).toContain(PRIMARY_HORIZON);
+      expect(err.message).toContain(TESTNET_HORIZON);
+      expect(err.message).toContain('allow_cross_network_fallback');
+      expect(err.statusCode).toBe(0);
+      expect(err.retryable).toBe(false);
+    }
+  });
+
+  it('default behavior (flag not set) blocks cross-network fallback', async () => {
+    const mock = makeMockFetch(new Map([
+      [PRIMARY_HORIZON, { status: 500, body: { title: 'Internal Error' } }],
+      [TESTNET_HORIZON, { status: 200, body: makeAccountResponse() }],
+    ]));
+
+    await expect(
+      fetchAccount(PRIMARY_HORIZON, VALID_ADDRESS_2, {
+        maxRetries: 0,
+        horizonUrlFallback: TESTNET_HORIZON,
+        // allowCrossNetworkFallback not set (defaults to false)
+        fetchFn: mock,
+      }),
+    ).rejects.toThrow(/Cross-network fallback from public.*to testnet.*is blocked/);
+
+    expect(mock).toHaveBeenCalledTimes(1);
   });
 });

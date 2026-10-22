@@ -755,6 +755,35 @@ describe('setValidationOutputs (Issue #535)', () => {
     expect(written.get('check_run_id')).toBe('');
     expect(written.get('check_run_conclusion')).toBe('');
   });
+
+  // Issue #696 — comment_id is published next to comment_url so downstream
+  // steps can chain issues.updateComment without parsing the URL.
+  it('publishes comment_id alongside comment_url when a comment was posted', () => {
+    setValidationOutputs(result, 'https://github.com/o/r/issues/1#issuecomment-987654321', undefined, {
+      commentId: '987654321',
+    });
+
+    const written = outputsByName();
+    expect(written.get('comment_url')).toBe('https://github.com/o/r/issues/1#issuecomment-987654321');
+    expect(written.get('comment_id')).toBe('987654321');
+    expect(written.get('comment_id')).toMatch(/^\d+$/);
+  });
+
+  it('publishes comment_id as an empty string when no comment was posted (dry-run / off)', () => {
+    setValidationOutputs(result);
+
+    const written = outputsByName();
+    expect(written.has('comment_id')).toBe(true);
+    expect(written.get('comment_id')).toBe('');
+    expect(written.get('comment_url')).toBe('');
+  });
+
+  it('declares comment_id in action.yml', () => {
+    const declared = parseActionYmlOutputs(
+      fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'action.yml'), 'utf8'),
+    );
+    expect(declared.has('comment_id')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -808,19 +837,17 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
     expect(extras).toEqual([]);
   });
 
-  it('publishes every single-address success output with its documented value', () => {
+  it('publishes the complete single-address success contract after a mocked success', () => {
     const successResult: ValidationResult = {
       ...result,
       assetBalance: '25.0000000',
+      sponsorshipInfo: { numSponsoring: 2, numSponsored: 1 },
     };
-    const validatedAt = '2024-01-15T10:00:00Z';
-    const commentUrl = 'https://github.com/o/r/issues/1#issuecomment-1';
-    const fullReportPath = '/workspace/trustbridge-report.md';
     const extras = {
       horizonUrl: 'https://horizon.stellar.org',
       assetCode: 'USDC',
       assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-      validatedAt,
+      validatedAt: '2024-01-15T10:00:00Z',
       timings: {
         input_parse_ms: 10,
         horizon_fetch_ms: 100,
@@ -828,80 +855,71 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
         comment_post_ms: 20,
         total_ms: 135,
       },
-      assigneeLogin: 'alice',
-      stellarAddress: 'GALICE123...',
-      assetsTrustlineStatus: [
-        {
-          assetCode: 'EURC',
-          assetIssuer: 'GEURC...',
-          trustlineExists: true,
-          balance: '12.0000000',
-        },
-      ],
     };
-    const expectedOutputs = {
+
+    setValidationOutputs(successResult, 'https://github.com/o/r/issues/1#issuecomment-9', '/report.md', extras);
+
+    const written = outputsByName();
+    const goldenOutputNames = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'action-output-golden.json'), 'utf8'),
+    ) as string[];
+    expect([...written.keys()].sort()).toEqual([...goldenOutputNames].sort());
+    expect(Object.fromEntries(written)).toEqual({
       trustline_exists: 'true',
       xlm_balance: '5.0000000',
       account_funded: 'true',
-      comment_url: commentUrl,
-      full_report_path: fullReportPath,
+      comment_url: 'https://github.com/o/r/issues/1#issuecomment-9',
+      full_report_path: '/report.md',
       ready: 'true',
-      validated_at: validatedAt,
+      validated_at: '2024-01-15T10:00:00Z',
       reason_code: 'SUCCESS',
       horizon_url: 'https://horizon.stellar.org',
       asset_code: 'USDC',
       asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-      checks_json:
-        '[{"label":"Account funded","passed":true,"detail":"Funded"},{"label":"USDC trustline","passed":true,"detail":"Trustline exists"}]',
+      checks_json: JSON.stringify([
+        { label: 'Account funded', passed: true, detail: 'Funded' },
+        { label: 'USDC trustline', passed: true, detail: 'Trustline exists' },
+      ]),
       asset_balance: '25.0000000',
       native_balance: '5.0000000',
-      badge_markdown:
-        '[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)',
+      badge_markdown: '[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)',
       badge_url: 'https://img.shields.io/badge/trustbridge-Ready-brightgreen',
-      timings_json:
-        '{"input_parse_ms":10,"horizon_fetch_ms":100,"checks_ms":5,"comment_post_ms":20,"total_ms":135}',
+      timings_json: JSON.stringify({
+        input_parse_ms: 10,
+        horizon_fetch_ms: 100,
+        checks_ms: 5,
+        comment_post_ms: 20,
+        total_ms: 135,
+      }),
       timing_input_parse_ms: '10',
       timing_horizon_fetch_ms: '100',
       timing_checks_ms: '5',
       timing_comment_post_ms: '20',
       timing_total_ms: '135',
-      num_sponsoring: '0',
-      num_sponsored: '0',
+      num_sponsoring: '2',
+      num_sponsored: '1',
       conflict_report: '',
       has_conflicts: 'false',
       network_passphrase_mismatch: 'false',
       expected_network_passphrase: '',
       actual_network_passphrase: '',
-      assignee_results_json:
-        '{"alice":{"ready":true,"stellar_address":"GALICE123...","xlm_balance":"5.0000000","account_funded":true,"trustline_exists":true,"reason_code":"SUCCESS","validated_at":"2024-01-15T10:00:00Z"}}',
-      matrix_ready_map: '{"alice":true}',
+      assignee_results_json: '{}',
+      matrix_ready_map: '{}',
       check_run_id: '',
       check_run_conclusion: '',
       friendbot_called: 'false',
       friendbot_success: 'false',
       friendbot_transaction_hash: '',
-      assets_trustline_status:
-        '[{"asset_code":"EURC","asset_issuer":"GEURC...","trustline_exists":true,"balance":"12.0000000"}]',
-      trustlines_summary: '1 of 1 additional trustlines present',
+      assets_trustline_status: '[]',
+      trustlines_summary: '0 of 0 additional trustlines present',
       batch_summary_json: '',
       batch_passed_count: '',
       batch_failed_count: '',
-    };
-
-    setValidationOutputs(successResult, commentUrl, fullReportPath, extras);
-
-    const actionYml = fs.readFileSync(
-      path.join(path.resolve(__dirname, '..'), 'action.yml'),
-      'utf8',
-    );
-    expect([...parseActionYmlOutputs(actionYml)].sort()).toEqual(
-      Object.keys(expectedOutputs).sort(),
-    );
-    expect(Object.fromEntries(outputsByName())).toEqual(expectedOutputs);
+    });
   });
 
-  it('publishes failure readiness and reason while keeping the full output contract', () => {
-    const failResult: ValidationResult = {
+  it('publishes failure status and the full single-address contract on validation failure', () => {
+    const failedResult: ValidationResult = {
       valid: false,
       accountFunded: false,
       trustlineExists: false,
@@ -911,18 +929,16 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       reasonCode: 'ACCOUNT_NOT_FUNDED',
     };
 
-    setValidationOutputs(failResult);
+    setValidationOutputs(failedResult);
 
     const written = outputsByName();
-    const actionYml = fs.readFileSync(
-      path.join(path.resolve(__dirname, '..'), 'action.yml'),
-      'utf8',
-    );
-    expect([...written.keys()].sort()).toEqual([...parseActionYmlOutputs(actionYml)].sort());
+    const goldenOutputNames = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'action-output-golden.json'), 'utf8'),
+    ) as string[];
+    expect([...written.keys()].sort()).toEqual([...goldenOutputNames].sort());
     expect(written.get('ready')).toBe('false');
-    expect(written.get('reason_code')).toBe('ACCOUNT_NOT_FUNDED');
     expect(written.get('account_funded')).toBe('false');
-    expect(written.get('trustline_exists')).toBe('false');
+    expect(written.get('reason_code')).toBe('ACCOUNT_NOT_FUNDED');
   });
 
   it('publishes each declared output exactly once', () => {

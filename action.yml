@@ -151,9 +151,22 @@ inputs:
     required: false
     default: "0"
   retry_max_delay_ms:
-    description: "Maximum backoff delay in milliseconds for Horizon retries"
+    description: >-
+      Maximum delay in milliseconds for any single Horizon retry sleep. Caps
+      both server-supplied Retry-After values on HTTP 429/503 and exponential
+      backoff (retry_base_delay_ms * 2^attempt). "0" disables sleeping between
+      retries while still honoring max_retries. Default 30000.
     required: false
     default: "30000"
+  retry_max_total_wait_ms:
+    description: >-
+      Total retry sleep budget in milliseconds per Horizon endpoint. When the
+      next (already capped) sleep would push the cumulative wait past this
+      value, retries stop and the run fails with RATE_LIMIT_EXHAUSTED instead
+      of sleeping. See docs/ERROR_HANDLING.md for the worst-case formula.
+      Default 120000.
+    required: false
+    default: "120000"
   use_cache:
     description: "Cache successful Horizon responses in job memory (true/false)"
     required: false
@@ -312,6 +325,14 @@ inputs:
       the format `sha256=<hex-digest>`. Never logged or embedded in comments.
       Leave empty to send unsigned webhooks (not recommended for production).
       Only used when `webhook_url` is set. (Issue #101)
+    required: false
+    default: ""
+  webhook_secret_previous:
+    description: >-
+      Previous webhook secret, set only while rotating `webhook_secret`. When
+      set, requests also carry `X-TrustBridge-Signature-Previous` signed with
+      this key so receivers still on the old key keep verifying. Remove once
+      all receivers accept the new key. Never logged. (Issue #795)
     required: false
     default: ""
   webhook_timeout_ms:
@@ -483,7 +504,8 @@ inputs:
   stellar_toml_cache_ttl_ms:
     description: >-
       Time-to-live for stellar.toml fetch cache in milliseconds. Default 3600000
-      (1 hour). Only used when stellar_toml_fetch_enabled is true.
+      (1 hour); "0" disables caching; values are capped at 86400000 (24 hours).
+      Only used when stellar_toml_fetch_enabled is true.
     required: false
     default: "3600000"
   stellar_toml_hash_pin:
@@ -850,6 +872,12 @@ outputs:
     description: "Whether the account exists and is activated on the Stellar network"
   comment_url:
     description: "URL of the created or updated issue comment, when run in an issue context"
+  comment_id:
+    description: >-
+      Numeric REST id (as a string) of the issue comment TrustBridge created or
+      updated this run. Pass it to issues.updateComment in a later step to edit
+      the same comment. Empty string when no comment was posted (posting_mode
+      dry-run or off, no issue/PR context, or the post failed). (Issue #696)
   full_report_path:
     description: >-
       Absolute path of the full validation report file written to the workflow
@@ -942,7 +970,7 @@ outputs:
   # These are only populated when the action runs in batch mode over multiple
   # addresses. Single-address runs do not set them, so they read as empty
   # strings in workflow expressions rather than zero — guard consumers with
-  # `if: steps.bridge.outputs.batch_total != ''` before branching on them.
+  # `if: steps.bridge.outputs.batch_passed_count != ''` before branching on them.
   batch_summary_json:
     description: >-
       JSON object summarizing the batch run, as produced by buildBatchSummary in

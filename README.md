@@ -118,17 +118,99 @@ Full input semantics and output reference: [docs/USAGE.md](docs/USAGE.md).
 
 ## Outputs
 
+Every output below is declared in [`action.yml`](action.yml) and emitted by `toActionOutputs` in [`src/outputs.ts`](src/outputs.ts). All values are **strings**, as with any GitHub Actions output: booleans are `'true'` / `'false'`, numbers are numeric strings, and JSON outputs need `fromJSON(...)`. Outputs that do not apply to a run are set to an empty string `''`. New outputs are additive (MINOR) per [docs/BREAKING_CHANGES.md](docs/BREAKING_CHANGES.md#output-stability-contract). Removing or renaming one is a breaking change.
+
+### Legacy outputs (v1 contract)
+
 | Output | Type | Description |
 | -------- | ------ | ------------- |
 | `trustline_exists` | boolean (string) | `true` if the configured asset trustline exists |
 | `xlm_balance` | string | Native XLM balance from Horizon (or `0` / `unknown`) |
 | `account_funded` | boolean (string) | `true` if Horizon returned an active account |
-| `asset_balance` | string | Current configured asset (e.g. USDC) balance as reported by Horizon, or `0` / `unknown` |
-| `asset_balance_met` | boolean (string) | `true` when `min_asset_balance` is not set or the balance meets or exceeds the floor, otherwise `false` |
-| `comment_url` | string | URL to the created issue comment when run in issue context |
-| `check_account_funded` | boolean (string) | Named per-check output — mirrors `account_funded` |
-| `check_trustline` | boolean (string) | Named per-check output — mirrors `trustline_exists` |
-| `check_xlm_reserve` | boolean (string) | Named per-check output — `true` if native XLM ≥ `min_xlm_reserve` |
+| `comment_url` | string | URL of the created or updated issue comment when run in an issue context |
+| `full_report_path` | string | Workspace path of the full report file written when the comment exceeded GitHub's size limit; empty otherwise |
+
+### Audit and readiness outputs
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `ready` | boolean (string) | `true` only when every validation check passed. Use this as the single payout gate |
+| `validated_at` | string (ISO-8601) | UTC timestamp of when the checks ran |
+| `horizon_url` | string | Horizon base URL used for validation |
+| `asset_code` | string | Asset code that was validated |
+| `asset_issuer` | string | Asset issuer (G-account or Soroban C-contract) that was validated |
+| `reason_code` | string (enum) | Machine-readable outcome, e.g. `SUCCESS`, `ACCOUNT_NOT_FUNDED`, `TRUSTLINE_MISSING`, `RESERVE_TOO_LOW`, `CLAWBACK_BLOCKED`, `RATE_BUDGET_EXHAUSTED`. Full catalog: [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md#structured-error-catalog) and [`schemas/reason-codes.json`](schemas/reason-codes.json) |
+| `checks_json` | string (JSON array) | Per-check `{label, passed, detail}` objects |
+
+### Balance and sponsorship outputs
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `asset_balance` | string | Configured asset (e.g. USDC) balance from Horizon. `0` when there is no trustline, `unknown` on Horizon error |
+| `native_balance` | string | Native XLM balance (alias of `xlm_balance`, 7-decimal Horizon string) |
+| `num_sponsoring` | number (string) | Number of accounts this account sponsors |
+| `num_sponsored` | number (string) | Number of accounts sponsoring this account |
+
+### Badge outputs
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `badge_markdown` | string (Markdown) | Badge snippet for README embeds |
+| `badge_url` | string (URL) | Shields.io badge URL reflecting the validation state |
+
+### Timing outputs
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `timings_json` | string (JSON object) | Millisecond timings for every major phase |
+| `timing_input_parse_ms` | number (string) | Input parsing duration (ms) |
+| `timing_horizon_fetch_ms` | number (string) | Horizon fetch duration (ms) |
+| `timing_checks_ms` | number (string) | Validation checks duration (ms) |
+| `timing_comment_post_ms` | number (string) | Comment posting duration (ms) |
+| `timing_total_ms` | number (string) | Total run duration (ms) |
+
+### Network, assignee and integration outputs
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `network_passphrase_mismatch` | boolean (string) | `true` when the configured and Horizon-reported network passphrases differ |
+| `expected_network_passphrase` | string | Configured or inferred network passphrase |
+| `actual_network_passphrase` | string | Network passphrase reported by Horizon |
+| `assignee_results_json` | string (JSON) | Result for the validated assignee, when one is available |
+| `matrix_ready_map` | string (JSON object) | Map of assignee login → readiness, for matrix jobs |
+| `friendbot_called` | boolean (string) | Whether Friendbot was called to fund a testnet account |
+| `friendbot_success` | boolean (string) | Whether Friendbot funding succeeded |
+| `friendbot_transaction_hash` | string | Friendbot funding transaction hash; empty when not called |
+| `check_run_id` | string | ID of the GitHub Check Run when `use_check_runs` is `true`; empty otherwise |
+| `check_run_conclusion` | string | Check Run conclusion (`success` / `failure`); empty when skipped |
+| `conflict_report` | string (JSON object) | Merge-resolution conflict report; empty when no report was produced |
+| `has_conflicts` | boolean (string) | `true` when any input conflict was detected |
+
+### Multi-asset outputs (`assets_json`)
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `assets_trustline_status` | string (JSON array) | One `{asset_code, asset_issuer, trustline_exists, balance}` entry per additional asset; `[]` when none were checked |
+| `trustlines_summary` | string | Human-readable count, e.g. `2 of 3 additional trustlines present` |
+
+### Batch outputs (`stellar_addresses` / `assignee_address_map`)
+
+These outputs are empty strings in single-address mode, not `0`. Guard with `!= ''` before you compare them to numbers.
+
+| Output | Type | Description |
+| -------- | ------ | ------------- |
+| `batch_summary_json` | string (JSON object) | `{total, passed, failed, failures[], failureTaxonomy, clawbackStrictFailures, clawbackStrictMode}`. Each `failures[]` entry carries `address`, `reason`, `reasonCode` and `clawbackStrict` |
+| `batch_passed_count` | number (string) | Addresses that passed every check |
+| `batch_failed_count` | number (string) | Addresses that failed at least one check |
+
+> **Removed from this table:** `check_account_funded`, `check_trustline`, `check_xlm_reserve` and `asset_balance_met` were listed here in earlier versions of this README. They were never declared in `action.yml` and are not emitted, so they always read as `''` in workflows. Use these instead:
+>
+> - `check_account_funded`: use `account_funded`
+> - `check_trustline`: use `trustline_exists`
+> - `check_xlm_reserve`: use `ready` plus `reason_code != 'RESERVE_TOO_LOW'`, or read the reserve entry in `checks_json`
+> - `asset_balance_met`: use `ready` plus `reason_code`
+>
+> No shipped output was removed, so this is not a breaking change under [docs/BREAKING_CHANGES.md](docs/BREAKING_CHANGES.md).
 
 Use outputs in downstream steps:
 
@@ -714,3 +796,6 @@ Built for the Stellar open-source ecosystem. Horizon data provided by the [Stell
 
 <!-- handsoff-issue-493 -->
 - #493: Align org-defaults composite with root action inputs
+
+<!-- handsoff-issue-770 -->
+- #770: Harden validation.ts for empty stellar_addresses JSON and oversized maps

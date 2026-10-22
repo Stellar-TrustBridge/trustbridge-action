@@ -4,6 +4,7 @@
  * #145 — issues:write preflight check
  * #220 — extended to `pull_request` / `pull_request_target` events
  * #443 — optional Horizon fallback health probe
+ * #732 — cataloged reason_code for missing issues:write
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
  * issue/PR comments **before** any expensive Horizon calls are made.  Failing
@@ -56,12 +57,21 @@
  *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
  *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
  *   workflows.
+ * - #732 — a 403 on the permission probe is tagged with the cataloged
+ *   `reason_code` `issues_write_missing` so `index.ts` can emit it as an
+ *   output before `core.setFailed`.
  */
 
 import * as github from '@actions/github';
 import { resolveIssueOrPullRequestNumber } from './comment';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+/**
+ * #732 — cataloged reason code emitted when the token lacks `issues: write`.
+ * Must match the entry in `schemas/reason-codes.json`.
+ */
+export const REASON_CODE_ISSUES_WRITE_MISSING = 'issues_write_missing';
 
 export interface PreflightResult {
   /**
@@ -103,6 +113,26 @@ export interface PreflightOptions {
   fetchImpl?: typeof fetch;
   /** Injectable logger for tests.  Defaults to `console.warn`. */
   warn?: (message: string) => void;
+}
+
+/**
+ * #732 — error thrown by the preflight when the token demonstrably lacks the
+ * required permission.  Carries a cataloged `reasonCode` so callers can emit
+ * it as an output before failing the job.
+ */
+export class PreflightError extends Error {
+  readonly status: number;
+  /** Alias of `status`, kept for callers that read `statusCode`. */
+  readonly statusCode: number;
+  readonly reasonCode?: string;
+
+  constructor(message: string, status: number, reasonCode?: string) {
+    super(message);
+    this.name = 'PreflightError';
+    this.status = status;
+    this.statusCode = status;
+    this.reasonCode = reasonCode;
+  }
 }
 
 /**
@@ -181,42 +211,78 @@ export async function runIssuesPreflight(
       throw new PreflightError(
         'GitHub token lacks `issues: write` permission (403). ' +
           'Add `permissions: issues: write` to your workflow job, for example:\n\n' +
-          '```yaml\npermissions:\n  issues: write\n  contents: read\n```\n\n' +
-          'If you are using a PAT, ensure it has the `repo` scope (public repos) ' +
-          'or `repo` + `issues` scopes (private repos).' +
+          '```yaml\npermissions:\n  issues: write\n  contents: read\n```' +
           forkHint,
         403,
+        REASON_CODE_ISSUES_WRITE_MISSING,
       );
     }
 
     if (status === 404) {
       throw new PreflightError(
         `Issue or pull request #${issueNumber} was not found (404). ` +
-          'It may have been deleted, or the repository name in the event payload is incorrect.',
+          'It may have been deleted, or the token may lack access to this repository.',
         404,
       );
     }
 
-    // Transient / unexpected errors — fail fast rather than proceeding
-    const message =
-      error instanceof Error ? error.message : String(error);
+    // Transient / unexpected errors fail fast so we do not spend Horizon quota.
     throw new PreflightError(
-      `issues:write preflight failed with an unexpected error (HTTP ${status ?? 'unknown'}): ${message}. ` +
-        'Retry the workflow or check your token permissions.',
+      error instanceof Error ? error.message : String(error),
       status ?? 0,
     );
   }
 
-  // ── 3. Optional Horizon health probe (#443) ───────────────────────────────
-  if (options.horizonProbe === true) {
-    await runHorizonHealthProbe(options);
-  }
-
   return {
     skip: false,
-    message: `issues:write preflight passed — issue/PR #${issueNumber} is accessible.`,
+    message: `Preflight passed: token can read comments on #${issueNumber}.`,
     issueNumber,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run missing-permission report (#779)
+// ---------------------------------------------------------------------------
+
+/** Workflow permissions the preflight can report as missing. */
+export type PreflightPermission = 'issues: write' | 'id-token: write';
+
+const PERMISSION_REASONS: Record<PreflightPermission, string> = {
+  'issues: write': 'required to post or update the TrustBridge issue comment',
+  'id-token: write': 'required when `webhook_auth_mode: oidc` signs webhook deliveries',
+};
+
+/**
+ * Build the exact log/comment text a dry-run preflight emits when the job is
+ * missing `issues: write` and/or `id-token: write`. Output is deterministic
+ * (permissions are de-duplicated and sorted) so it can be snapshot-tested and
+ * copy-pasted into a workflow. Returns an empty string when nothing is missing.
+ *
+ * @throws When an unknown permission name is supplied.
+ */
+export function formatMissingPermissionsDryRun(missing: readonly string[]): string {
+  const unique = [...new Set(missing)].sort();
+  for (const permission of unique) {
+    if (!(permission in PERMISSION_REASONS)) {
+      throw new Error(`preflight: unknown permission "${permission}"`);
+    }
+  }
+  if (unique.length === 0) {
+    return '';
+  }
+  const lines = [
+    '[trustbridge] preflight (dry-run): missing workflow permissions',
+    ...unique.map((p) => `- \`${p}\` — ${PERMISSION_REASONS[p as PreflightPermission]}`),
+    '',
+    'Add to the workflow job:',
+    '',
+    '```yaml',
+    'permissions:',
+    '  contents: read',
+    ...unique.map((p) => `  ${p}`),
+    '```',
+  ];
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +331,13 @@ export async function runHorizonHealthProbe(
   }
 }
 
-interface ProbeResult {
+export interface ProbeResult {
   ok: boolean;
   reason: string;
   status?: number;
 }
 
-async function probeHorizonUrl(
+export async function probeHorizonUrl(
   url: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
@@ -324,24 +390,6 @@ async function fetchWithTimeout(
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PreflightError
-// ---------------------------------------------------------------------------
-
-/**
- * Thrown by `runIssuesPreflight` when the token is missing permission or the
- * issue context is invalid.  Callers should surface this via `core.setFailed`.
- */
-export class PreflightError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = 'PreflightError';
   }
 }
 

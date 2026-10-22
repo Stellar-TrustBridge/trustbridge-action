@@ -759,3 +759,211 @@ describe('HttpMockMatrix integration with fetchAccount', () => {
     expect(secondaryCalled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #705: Retry-After cap (retry_max_delay_ms) and total wait budget
+// (retry_max_total_wait_ms)
+// ---------------------------------------------------------------------------
+
+import { parseRetryAfterMs, HorizonRateLimitError } from '../src/horizon';
+import { logger } from '../src/logger';
+
+describe('Retry-After cap and total wait budget (Issue #705)', () => {
+  /** Request timeout sentinel so the setTimeout spy can tell sleeps apart. */
+  const REQUEST_TIMEOUT_MS = 4321;
+  const ACCOUNT = {
+    id: TEST_ADDR,
+    account_id: TEST_ADDR,
+    sequence: '1',
+    subentry_count: 0,
+    balances: [{ asset_type: 'native', balance: '10.0000000' }],
+  };
+
+  function response(status: number, headers: Record<string, string> = {}, body: unknown = {}) {
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      statusText: status === 429 ? 'Too Many Requests' : 'OK',
+      headers: new Headers(headers),
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    } as any;
+  }
+
+  /** Records every retry sleep and runs it immediately so tests stay fast. */
+  function captureSleeps(): number[] {
+    const sleeps: number[] = [];
+    const realSetTimeout = global.setTimeout;
+    jest.spyOn(global, 'setTimeout').mockImplementation(((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      if (ms === REQUEST_TIMEOUT_MS) return realSetTimeout(fn, ms, ...args);
+      sleeps.push(ms ?? 0);
+      return realSetTimeout(fn, 0, ...args);
+    }) as unknown as typeof setTimeout);
+    return sleeps;
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('never sleeps longer than retryMaxDelayMs when Retry-After is oversized', async () => {
+    const sleeps = captureSleeps();
+    const infoSpy = jest.spyOn(logger, 'info');
+    let calls = 0;
+    const fetchFn = jest.fn(async () => {
+      calls += 1;
+      return calls <= 2 ? response(429, { 'retry-after': '86400' }) : response(200, {}, ACCOUNT);
+    }) as unknown as FetchAccountOptions['fetchFn'];
+
+    const account = await fetchAccount(PRIMARY, TEST_ADDR, {
+      fetchFn,
+      cacheTtlMs: 0,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      maxRetries: 3,
+      retryMaxDelayMs: 50,
+      retryMaxTotalWaitMs: 1_000,
+    });
+
+    expect(account.account_id).toBe(TEST_ADDR);
+    expect(sleeps).toEqual([50, 50]);
+    expect(Math.max(...sleeps)).toBeLessThanOrEqual(50);
+
+    // The cap is logged with parsed millisecond values only.
+    const capLogs = infoSpy.mock.calls.filter(([msg]) => String(msg).includes('Retry-After capped'));
+    expect(capLogs).toHaveLength(2);
+    expect(String(capLogs[0][0])).toContain('86400000ms');
+    expect(String(capLogs[0][0])).toContain('50ms');
+  });
+
+  it('aborts with a clear error once the total wait budget would be exceeded', async () => {
+    const sleeps = captureSleeps();
+    const fetchFn = jest.fn(async () => response(429, { 'retry-after': '600' })) as unknown as FetchAccountOptions['fetchFn'];
+
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 5,
+        retryMaxDelayMs: 50,
+        retryMaxTotalWaitMs: 80,
+      }),
+    ).rejects.toThrow(/wait budget exhausted.*80ms/);
+
+    // 50ms fits, the next 50ms would bring the total to 100ms > 80ms.
+    expect(sleeps).toEqual([50]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws HorizonRateLimitError (RATE_LIMIT_EXHAUSTED) when the budget is exhausted', async () => {
+    captureSleeps();
+    const fetchFn = jest.fn(async () => response(429, { 'retry-after': '5' })) as unknown as FetchAccountOptions['fetchFn'];
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 3,
+        retryMaxDelayMs: 100,
+        retryMaxTotalWaitMs: 0,
+      }),
+    ).rejects.toBeInstanceOf(HorizonRateLimitError);
+  });
+
+  it('missing Retry-After falls back to exponential backoff, still capped', async () => {
+    const sleeps = captureSleeps();
+    const fetchFn = jest.fn(async () => response(429)) as unknown as FetchAccountOptions['fetchFn'];
+
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 3,
+        retryBaseDelayMs: 40,
+        retryMaxDelayMs: 60,
+        retryMaxTotalWaitMs: 10_000,
+      }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+
+    expect(sleeps).toEqual([40, 60, 60]);
+  });
+
+  it('zero retryMaxDelayMs disables sleeping but still respects maxRetries', async () => {
+    const sleeps = captureSleeps();
+    const fetchFn = jest.fn(async () => response(429, { 'retry-after': '30' })) as unknown as FetchAccountOptions['fetchFn'];
+
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 2,
+        retryMaxDelayMs: 0,
+        retryMaxTotalWaitMs: 10_000,
+      }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+
+    expect(sleeps).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it('primary and fallback both returning 429 never sleep past the cap', async () => {
+    const sleeps = captureSleeps();
+    const fetchFn = jest.fn(async () => response(429, { 'retry-after': '3600' })) as unknown as FetchAccountOptions['fetchFn'];
+
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 2,
+        retryMaxDelayMs: 25,
+        retryMaxTotalWaitMs: 1_000,
+        horizonUrlFallback: FALLBACK,
+      }),
+    ).rejects.toThrow();
+
+    expect(sleeps.length).toBeGreaterThan(0);
+    expect(sleeps.every((ms) => ms <= 25)).toBe(true);
+  });
+
+  it('job cancellation during a Retry-After sleep aborts the retry loop', async () => {
+    const controller = new AbortController();
+    const fetchFn = jest.fn(async () => {
+      controller.abort();
+      return response(429, { 'retry-after': '10' });
+    }) as unknown as FetchAccountOptions['fetchFn'];
+
+    await expect(
+      fetchAccount(PRIMARY, TEST_ADDR, {
+        fetchFn,
+        cacheTtlMs: 0,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: 3,
+        retryMaxDelayMs: 10_000,
+        retryMaxTotalWaitMs: 60_000,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/abort/i);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  describe('parseRetryAfterMs', () => {
+    it.each([
+      ['5', 5000],
+      ['0', 0],
+      ['86400', 86_400_000],
+    ])('parses %s seconds', (header, expected) => {
+      expect(parseRetryAfterMs(response(429, { 'retry-after': header }))).toBe(expected);
+    });
+
+    it.each([['-5'], ['1e400'], ['not-a-date']])('treats %s as absent (falls back to backoff)', (header) => {
+      expect(parseRetryAfterMs(response(429, { 'retry-after': header }))).toBeNull();
+    });
+
+    it('returns null when the header is missing', () => {
+      expect(parseRetryAfterMs(response(429))).toBeNull();
+    });
+  });
+});

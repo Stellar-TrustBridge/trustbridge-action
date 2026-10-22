@@ -74,6 +74,49 @@ Notes:
 - **`horizon_url_allowlist`**: Enforces strict URL matching for Horizon endpoints. When set (as a comma-separated list of domains), any `horizon_url` or fallback URL must exactly match one of the allowed hostnames. This provides a strong defense-in-depth layer against Server-Side Request Forgery (SSRF) and prevents the action from inadvertently contacting rogue endpoints even if the SSRF blocklist is bypassed.
 - **SSRF Blocklist**: Even without the allowlist, TrustBridge strictly prevents consumer-supplied Horizon and Dashboard URLs from targeting private IP ranges, loopback addresses (127.x.x.x, ::1), cloud metadata endpoints (169.254.x.x), and the `file://` protocol.
 
+### Host normalization and denied hostnames (Issue #702)
+
+`horizon_url`, its fallbacks, and every SEP-0001 `stellar.toml` / federation fetch go through the same SSRF gate (`isSSRFBlocked` in `src/ssrf.ts`). Before matching, the host is normalized with the WHATWG URL parser, so alternate encodings resolve to the address they really point at:
+
+- userinfo is ignored for matching (`https://horizon.stellar.org@127.0.0.1` targets `127.0.0.1`) and is rejected on its own;
+- decimal / octal / hex / short-form IPv4 (`2130706433`, `0177.0.0.1`, `0x7f.1`, `127.1`) become dotted quads;
+- IDNA mapping is applied (full-width digits `１２７.０.０.１`, ideographic full stops `127。0。0。1`, `ⓛocalhost`);
+- trailing dots and IPv6 zone IDs are stripped (`localhost.`, `fe80::1%eth0`);
+- IPv4 addresses embedded in IPv6 (`::ffff:7f00:1`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) are unpacked and checked as IPv4.
+
+The scheme does not matter: these hosts are rejected over `https://` too.
+
+| Category | Denied examples |
+|----------|-----------------|
+| Loopback | `127.0.0.0/8`, `::1`, `0:0:0:0:0:0:0:1`, `localhost`, `*.localhost`, `2130706433`, `0x7f000001` |
+| Unspecified | `0.0.0.0/8`, `0`, `::` |
+| RFC 1918 private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `3232235521`, `0xc0a80001` |
+| Link-local / cloud metadata | `169.254.0.0/16` (`169.254.169.254`, `2852039166`, `0xa9.0xfe.0xa9.0xfe`), `fe80::/10`, `metadata.google.internal`, `metadata`, `instance-data` |
+| Carrier-grade NAT | `100.64.0.0/10` (includes Alibaba metadata `100.100.100.200`) |
+| Other non-public IPv4 | `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` multicast, `240.0.0.0/4` reserved |
+| Other non-public IPv6 | `fc00::/7` ULA, `ff00::/8` multicast, `::ffff:<private v4>`, `64:ff9b::<private v4>`, `2002:<private v4>::` |
+
+Rejections name the normalized host and the category, for example:
+
+```
+horizon_url targets a blocked address (private IP, loopback, or metadata endpoint): "https://2130706433/" normalizes to "127.0.0.1" (loopback). Use a publicly resolvable hostname; see docs/INPUT_VALIDATION.md.
+```
+
+**DNS rebinding.** A public-looking name can resolve to a private address (`127.0.0.1.nip.io`, or an attacker domain whose A record flips between requests). `fetchSSRFSafe` (used for `stellar.toml` and federation) resolves the host before every request and every redirect hop, and refuses to connect if *any* returned address falls in a denied range. Redirects from `stellar.toml` are refused outright; federation follows at most 3 same-origin HTTPS hops, each validated again.
+
+**IDNA homographs.** Look-alike names such as `һorizon.stellar.org` (Cyrillic `һ`) are converted to punycode (`xn--orizon-vgg.stellar.org`). They are public names, so the blocklist does not stop them, but they never match a `horizon_url_allowlist` entry for the real host. Use the allowlist when you need to pin exact hosts.
+
+**Proxies (GHES).** `HTTPS_PROXY` / `NO_PROXY` only change transport. They never turn off the SSRF gate, and listing a private host in `NO_PROXY` does not make it reachable.
+
+### Self-hosted Horizon: safe patterns
+
+Because private addresses are always denied, a self-hosted Horizon must be reachable at a **public DNS name over HTTPS**:
+
+1. Put Horizon behind a reverse proxy or load balancer with a public DNS record and a valid TLS certificate (for example `https://horizon.example.org`). Restrict access with firewall rules, mTLS at the proxy, or an IP allowlist for GitHub-hosted runner ranges, not by using a private IP.
+2. Set `horizon_url_allowlist` to that exact host so typos or injected config cannot point the action anywhere else.
+3. Do **not** publish a public DNS name whose A/AAAA record points at an RFC 1918 or loopback address. TrustBridge treats that as DNS rebinding and refuses the fetch.
+4. On GHES or self-hosted runners that can only reach Horizon on a private network, run the action against a public mirror, or expose Horizon through an egress proxy with a public name. There is intentionally no input that disables the SSRF gate.
+
 ## Config & Rosters
 
 - **`trustbridge_config_path`**: Can point to `.github/trustbridge.yml`. Supports repository-level overrides of organization-level policies (`.github/trustbridge.yml`).

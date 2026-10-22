@@ -1,4 +1,11 @@
-import { CONTRACT_ADDRESS_TAG_KEY, MetricsCollector, writeJobSummary, JobSummaryReport } from '../src/metrics';
+import {
+  CONTRACT_ADDRESS_TAG_KEY,
+  MetricsCollector,
+  writeJobSummary,
+  JobSummaryReport,
+  HorizonLatencyHistogram,
+  LATENCY_BUCKETS_MS,
+} from '../src/metrics';
 import * as core from '@actions/core';
 
 jest.mock('@actions/core');
@@ -340,5 +347,117 @@ describe('writeJobSummary (Wave #27)', () => {
   it('does not throw if core.summary methods throw (outside Actions context)', async () => {
     summaryAddHeadingMock.mockImplementation(() => { throw new Error('no summary'); });
     await expect(writeJobSummary(makeReport())).resolves.not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #703: HorizonLatencyHistogram
+// ---------------------------------------------------------------------------
+
+describe('HorizonLatencyHistogram', () => {
+  it('starts with zero samples for both endpoint kinds', () => {
+    const h = new HorizonLatencyHistogram();
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(0);
+    expect(snap.fallback.count).toBe(0);
+    expect(h.totalSamples).toBe(0);
+  });
+
+  it('records primary and fallback samples independently', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('primary', 200);
+    h.record('fallback', 300);
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(2);
+    expect(snap.fallback.count).toBe(1);
+    expect(h.totalSamples).toBe(3);
+  });
+
+  it('computes correct min, max, avg, and total for primary', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('primary', 300);
+    const { primary } = h.toSnapshot();
+    expect(primary.minMs).toBe(100);
+    expect(primary.maxMs).toBe(300);
+    expect(primary.totalMs).toBe(400);
+    expect(primary.avgMs).toBe(200);
+  });
+
+  it('places samples into the correct bucket', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 40);   // <=50ms
+    h.record('primary', 80);   // <=100ms
+    h.record('primary', 600);  // <=1000ms
+    h.record('primary', 9000); // +Inf
+    const { primary } = h.toSnapshot();
+    expect(primary.buckets['<=50ms']).toBe(1);
+    expect(primary.buckets['<=100ms']).toBe(1);
+    expect(primary.buckets['<=1000ms']).toBe(1);
+    expect(primary.buckets['+Inf']).toBe(1);
+  });
+
+  it('all defined LATENCY_BUCKETS_MS keys are present in snapshot', () => {
+    const h = new HorizonLatencyHistogram();
+    const { primary } = h.toSnapshot();
+    for (const bound of LATENCY_BUCKETS_MS) {
+      const key = bound === Infinity ? '+Inf' : `<=${bound}ms`;
+      expect(primary.buckets).toHaveProperty(key);
+    }
+  });
+
+  it('reset clears all samples', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('fallback', 200);
+    h.reset();
+    expect(h.totalSamples).toBe(0);
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(0);
+    expect(snap.fallback.count).toBe(0);
+  });
+
+  it('buildJobSummary includes histogram snapshot when histogram is passed', () => {
+    const m = new MetricsCollector();
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 120);
+    h.record('fallback', 450);
+    const report = m.buildJobSummary(h);
+    expect(report.horizonFetchLatencyHistogram).toBeDefined();
+    expect(report.horizonFetchLatencyHistogram!.primary.count).toBe(1);
+    expect(report.horizonFetchLatencyHistogram!.fallback.count).toBe(1);
+  });
+
+  it('buildJobSummary omits histogram when no histogram is passed', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    expect(report.horizonFetchLatencyHistogram).toBeUndefined();
+  });
+
+  it('jsonArtifact includes horizonFetchLatencyHistogram when histogram is passed', () => {
+    const m = new MetricsCollector();
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 75);
+    const report = m.buildJobSummary(h);
+    const artifact = JSON.parse(report.jsonArtifact);
+    expect(artifact.horizonFetchLatencyHistogram).toBeDefined();
+    expect(artifact.horizonFetchLatencyHistogram.primary.count).toBe(1);
+  });
+
+  it('jsonArtifact omits horizonFetchLatencyHistogram when no histogram is passed', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    const artifact = JSON.parse(report.jsonArtifact);
+    expect(artifact.horizonFetchLatencyHistogram).toBeUndefined();
+  });
+
+  it('histogram snapshot contains no raw addresses or URLs', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    const snap = JSON.stringify(h.toSnapshot());
+    // Must not contain anything that looks like a Stellar address or URL
+    expect(snap).not.toMatch(/G[A-Z2-7]{55}/);
+    expect(snap).not.toMatch(/https?:\/\//);
   });
 });

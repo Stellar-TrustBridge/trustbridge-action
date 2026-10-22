@@ -10,6 +10,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as core from '@actions/core';
 import { EventEmitter } from 'events';
 import { createServer } from 'http';
 import {
@@ -17,11 +18,18 @@ import {
   verifyWebhookSignature,
   buildWebhookPayload,
   deliverWebhook,
+  validateWebhookPayload,
   listenForRunnerCancellation,
   sendWebhookNotification,
+  describeOidcMintFailure,
+  verifyWebhookSignatureWithRotation,
+  buildWebhookSignatureHeaders,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_PREVIOUS_SIGNATURE_HEADER,
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
+import { logger } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // Golden fixture
@@ -393,6 +401,202 @@ describe('sendWebhookNotification', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #674 — OIDC mode fails closed when token minting fails
+// ---------------------------------------------------------------------------
+
+describe('OIDC fail-closed delivery (Issue #674)', () => {
+  const FAKE_JWT = 'eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ0cnVzdGJyaWRnZSJ9.c2lnbmF0dXJlLXZhbHVl';
+  const OIDC_CONFIG: WebhookConfig = {
+    webhookUrl: 'https://dashboard.example.com/webhook',
+    webhookSecret: 'hmac-secret-that-must-not-be-used',
+    timeoutMs: 1000,
+    authMode: 'oidc',
+  };
+
+  let origFetch: typeof fetch;
+  let fetchMock: jest.Mock;
+  let setFailedSpy: jest.SpyInstance;
+  let warningSpy: jest.SpyInstance;
+  let infoSpy: jest.SpyInstance;
+  let debugSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    origFetch = global.fetch;
+    fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+    (global as any).fetch = fetchMock;
+    setFailedSpy = jest.spyOn(core, 'setFailed').mockImplementation(() => {});
+    warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    debugSpy = jest.spyOn(core, 'debug').mockImplementation(() => {});
+    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    (global as any).fetch = origFetch;
+    jest.restoreAllMocks();
+  });
+
+  const allLogText = (): string =>
+    [setFailedSpy, warningSpy, infoSpy, debugSpy]
+      .flatMap((spy) => spy.mock.calls.map((call: unknown[]) => String(call[0])))
+      .join('\n');
+
+  it('fails the step and sends nothing when id-token permission is missing', async () => {
+    jest
+      .spyOn(core, 'getIDToken')
+      .mockRejectedValue(new Error('Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable'));
+
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setFailedSpy).toHaveBeenCalledTimes(1);
+    const message = String(setFailedSpy.mock.calls[0][0]);
+    expect(message).toContain('OIDC token minting failed');
+    expect(message).toContain('id-token: write');
+    expect(message).toContain('fork');
+  });
+
+  it('fails the step and sends nothing on an OIDC provider error, without leaking JWT material', async () => {
+    jest
+      .spyOn(core, 'getIDToken')
+      .mockRejectedValue(new Error(`Failed to get ID Token. Error Code : 500 Error Message: bad response ${FAKE_JWT}`));
+
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setFailedSpy).toHaveBeenCalledTimes(1);
+    expect(String(setFailedSpy.mock.calls[0][0])).toContain('OIDC provider returned an error');
+    expect(allLogText()).not.toContain(FAKE_JWT);
+  });
+
+  it('treats an empty minted token as a failure', async () => {
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('');
+
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setFailedSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('never falls back to HMAC signing or unsigned delivery in oidc mode', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({ status: 200 });
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+
+    const result = await deliverWebhook(payload, OIDC_CONFIG, mockFetch as any);
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.sent).toBe(false);
+    expect(result.error).toContain('oidc');
+  });
+
+  it('sends the bearer token (and no HMAC signature) when minting succeeds', async () => {
+    jest.spyOn(core, 'getIDToken').mockResolvedValue(FAKE_JWT);
+
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(setFailedSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Authorization']).toBe(`Bearer ${FAKE_JWT}`);
+    expect(headers['X-TrustBridge-Signature']).toBeUndefined();
+    expect(allLogText()).not.toContain(FAKE_JWT);
+  });
+
+  it('does not attempt to mint a token when webhook_url is unset', async () => {
+    const mintSpy = jest.spyOn(core, 'getIDToken');
+
+    await sendWebhookNotification(passedResult, ADDRESS, { ...OIDC_CONFIG, webhookUrl: '' }, 'owner/repo', 1);
+
+    expect(mintSpy).not.toHaveBeenCalled();
+    expect(setFailedSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('describeOidcMintFailure redacts JWTs embedded in the provider message', () => {
+    const message = describeOidcMintFailure('trustbridge-dashboard', new Error(`bad ${FAKE_JWT}`));
+    expect(message).not.toContain(FAKE_JWT);
+    expect(message).toContain('[REDACTED_JWT]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #675 — Soroban C-address redaction in payloads and debug logs
+// ---------------------------------------------------------------------------
+
+describe('C-address redaction (Issue #675)', () => {
+  const C_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+  const FULL_C_ADDRESS_PATTERN = /C[A-Z2-7]{55}/;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('redacts a C-address stellar_address and keeps the payload schema-valid', () => {
+    const payload = buildWebhookPayload(passedResult, C_ADDRESS, 'owner/repo', 1);
+    expect(payload.stellar_address).toBe('CAAA...D2KM');
+    expect(validateWebhookPayload(payload)).toEqual([]);
+  });
+
+  it('redacts C-address asset issuers in the per-asset section', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, [
+      {
+        assetCode: 'TOKN',
+        assetIssuer: C_ADDRESS,
+        primary: true,
+        trustlineExists: true,
+        clawbackEnabled: false,
+        reasonCode: 'SUCCESS',
+      },
+    ]);
+    expect(payload.assets![0].asset_issuer).toBe('CAAA...D2KM');
+    expect(JSON.stringify(payload)).not.toMatch(FULL_C_ADDRESS_PATTERN);
+    expect(validateWebhookPayload(payload)).toEqual([]);
+  });
+
+  it('redacts C-addresses embedded in check labels', () => {
+    const result = {
+      ...passedResult,
+      checks: [{ label: `SAC issuer_${C_ADDRESS} reachable`, passed: true, detail: 'ok' }],
+    };
+    const payload = buildWebhookPayload(result, ADDRESS, 'owner/repo', 1);
+    expect(payload.result.checks[0].label).toContain('CAAA...D2KM');
+    expect(JSON.stringify(payload)).not.toMatch(FULL_C_ADDRESS_PATTERN);
+  });
+
+  it('keeps G-address redaction unchanged', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+    expect(payload.stellar_address).toBe('GA5Z...KZVN');
+  });
+
+  it('debug-mode webhook JSON log contains no full 56-char C-address', async () => {
+    logger.setDebugMode(true);
+    const debugSpy = jest.spyOn(core, 'debug').mockImplementation(() => {});
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const origFetch = global.fetch;
+    (global as any).fetch = jest.fn().mockResolvedValue({ status: 200 });
+    try {
+      await sendWebhookNotification(passedResult, C_ADDRESS, CONFIG, 'owner/repo', 1, [
+        {
+          assetCode: 'TOKN',
+          assetIssuer: C_ADDRESS,
+          primary: true,
+          trustlineExists: true,
+          clawbackEnabled: true,
+          reasonCode: 'CLAWBACK_BLOCKED',
+        },
+      ]);
+    } finally {
+      (global as any).fetch = origFetch;
+      logger.setDebugMode(false);
+    }
+
+    const logged = debugSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).toContain('Webhook payload');
+    expect(logged).toContain('CAAA...D2KM');
+    expect(logged).not.toMatch(FULL_C_ADDRESS_PATTERN);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden fixture alignment (Issue #326)
 // ---------------------------------------------------------------------------
 
@@ -472,5 +676,126 @@ describe('golden fixture — webhook-payload.json', () => {
     const d = new Date(goldenFixture.timestamp);
     expect(isNaN(d.getTime())).toBe(false);
     expect(d.toISOString()).toBe(goldenFixture.timestamp);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Secret rotation — dual-key accept window (Issue #795)
+// ---------------------------------------------------------------------------
+
+describe('webhook HMAC secret rotation dual-key accept window (#795)', () => {
+  const OLD_KEY = 'old-secret-key-aaaa';
+  const NEW_KEY = 'new-secret-key-bbbb';
+  const BODY = '{"schema_version":"1","event":"validation_complete"}';
+
+  const headersFrom = (fetchMock: jest.Mock): Record<string, string> =>
+    (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+  const payload = (): WebhookPayload => buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+
+  describe('sender (deliverWebhook)', () => {
+    it('signs with both keys during the rotation window', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      const p = payload();
+      await deliverWebhook(p, { ...CONFIG, webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+
+      const headers = headersFrom(fetchMock);
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body as string;
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBe(computeWebhookSignature(body, NEW_KEY));
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBe(computeWebhookSignature(body, OLD_KEY));
+    });
+
+    it('a receiver still on the old key verifies a rotation-window request', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body as string;
+
+      const oldReceiver = verifyWebhookSignatureWithRotation(
+        body,
+        [headers[WEBHOOK_SIGNATURE_HEADER], headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]],
+        [OLD_KEY],
+      );
+      expect(oldReceiver).toEqual({ valid: true, matchedKeyIndex: 0 });
+
+      const newReceiver = verifyWebhookSignatureWithRotation(
+        body,
+        [headers[WEBHOOK_SIGNATURE_HEADER], headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]],
+        [NEW_KEY],
+      );
+      expect(newReceiver).toEqual({ valid: true, matchedKeyIndex: 0 });
+    });
+
+    it('sends only the primary header outside a rotation (unchanged v1 behaviour)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: NEW_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toMatch(/^sha256=[0-9a-f]{64}$/);
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('never signs with the previous key alone when the current secret is empty', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(payload(), { ...CONFIG, webhookSecret: '', webhookSecretPrevious: OLD_KEY }, fetchMock as any);
+      const headers = headersFrom(fetchMock);
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('OIDC mode sends no HMAC headers even when both secrets are set', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+      await deliverWebhook(
+        payload(),
+        { ...CONFIG, authMode: 'oidc', oidcToken: 'tok', webhookSecret: NEW_KEY, webhookSecretPrevious: OLD_KEY },
+        fetchMock as any,
+      );
+      const headers = headersFrom(fetchMock);
+      expect(headers['Authorization']).toBe('Bearer tok');
+      expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+      expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    });
+
+    it('ignores a previous key identical to the current key', () => {
+      expect(buildWebhookSignatureHeaders(BODY, NEW_KEY, NEW_KEY)).toEqual({
+        [WEBHOOK_SIGNATURE_HEADER]: computeWebhookSignature(BODY, NEW_KEY),
+      });
+    });
+
+    it('never puts either secret into a header value', () => {
+      const values = Object.values(buildWebhookSignatureHeaders(BODY, NEW_KEY, OLD_KEY)).join(' ');
+      expect(values).not.toContain(NEW_KEY);
+      expect(values).not.toContain(OLD_KEY);
+    });
+  });
+
+  describe('receiver (verifyWebhookSignatureWithRotation)', () => {
+    const sigNew = computeWebhookSignature(BODY, NEW_KEY);
+    const sigOld = computeWebhookSignature(BODY, OLD_KEY);
+
+    it('accepts the new key and reports index 0', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigNew], [NEW_KEY, OLD_KEY])).toEqual({ valid: true, matchedKeyIndex: 0 });
+    });
+
+    it('accepts the old key during the window and reports index 1', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigOld], [NEW_KEY, OLD_KEY])).toEqual({ valid: true, matchedKeyIndex: 1 });
+    });
+
+    it('rejects an old-key-only request once the window closes', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigOld], [NEW_KEY])).toEqual({
+        valid: false,
+        matchedKeyIndex: null,
+        reason: 'SIGNATURE_MISMATCH',
+      });
+    });
+
+    it('rejects a tampered body under both keys', () => {
+      expect(verifyWebhookSignatureWithRotation(`${BODY} `, [sigNew, sigOld], [NEW_KEY, OLD_KEY]).reason).toBe('SIGNATURE_MISMATCH');
+    });
+
+    it('returns stable reasons for missing or malformed input', () => {
+      expect(verifyWebhookSignatureWithRotation(BODY, [], [NEW_KEY]).reason).toBe('NO_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, [undefined, '  '], [NEW_KEY]).reason).toBe('NO_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, ['md5=abc'], [NEW_KEY]).reason).toBe('MALFORMED_SIGNATURE');
+      expect(verifyWebhookSignatureWithRotation(BODY, [sigNew], ['', undefined]).reason).toBe('NO_SECRETS');
+    });
   });
 });

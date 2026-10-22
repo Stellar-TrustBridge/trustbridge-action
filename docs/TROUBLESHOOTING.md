@@ -36,6 +36,66 @@ does not mean the account is unfunded: Horizon did not return a usable account
 response. Retry later, use a healthy same-network fallback, or increase the
 retry total-wait setting for a slow private mirror.
 
+## Horizon request budget exhausted (RATE_BUDGET_EXHAUSTED)
+
+The run consumed its `horizon_max_requests` budget. Back off, reduce batch
+size, enable caching, then raise the budget if needed — follow the
+[FAQ recovery playbook](FAQ.md#rate-budget-exhausted).
+
+## Reading Horizon retry log lines
+
+Every Horizon retry emits one structured log line with a fixed set of fields,
+so rate-limit problems can be searched in the Actions log:
+
+- Scheduled retries log at **debug** level (visible with `debug_mode: true` or
+  `ACTIONS_STEP_DEBUG`) as `Horizon retry scheduled` (HTTP status) or
+  `Horizon transport retry scheduled` (timeout / network error).
+- Final exhaustion logs at **warning** level, always visible, as
+  `Horizon retries exhausted (<reasonCode>): ...`.
+
+| Field | Meaning |
+| --- | --- |
+| `event` | Always `horizon_retry`. |
+| `phase` | `scheduled` (another attempt follows) or `exhausted` (request failed). |
+| `endpointKind` | `primary` (`horizon_url`) or `fallback` (secondary / fallback URL). |
+| `horizonUrl` | Base URL that was called; query string, fragment and credentials are removed and any account path segment is redacted. |
+| `stellarAddress` | Account being fetched, redacted to first-4/last-4 (G, C and M addresses). |
+| `attempt` | Zero-based index of the attempt that failed. |
+| `maxAttempts` | Total attempts allowed (`max_retries + 1`). |
+| `nextAttempt` | Index of the next attempt, or `null` when exhausted. |
+| `status` | HTTP status of the failed attempt; `0` for transport errors. |
+| `kind` | `http`, `timeout`, or `network`. |
+| `delayMs` | Wait before the next attempt (`0` when exhausted). |
+| `capped` | `true` when the wait was clamped to `retry_max_delay_ms` (for example a large `Retry-After`). |
+| `retryAfterFromHeader` | `true` when the wait came from a `Retry-After` header. |
+| `reasonCode` | `HORIZON_RETRY_SCHEDULED`, `HORIZON_RETRIES_EXHAUSTED`, or `HORIZON_WAIT_BUDGET_EXHAUSTED`. |
+
+Horizon response bodies are never logged for retryable (`429` / `5xx`)
+responses, and no other fields are added to these lines. Offline runs never
+call Horizon, so they produce no retry lines.
+
+## Friendbot funding failed
+
+With `use_friendbot: true`, a failed Friendbot call does not fail the job by
+itself. `friendbot_called` is `true`, `friendbot_success` is `false`, and the
+account is reported as unfunded. Common messages:
+
+- `Friendbot returned HTTP 400: ...`: usually "account already exists". The
+  account is already funded on that network, so check that `horizon_url` and
+  `friendbot_url` point at the same network.
+- `Friendbot returned HTTP 429` / `HTTP 5xx`: Friendbot is rate limiting or
+  unavailable. Re-run later. TrustBridge calls Friendbot at most once per run
+  and does not retry the request.
+- `Friendbot request timed out after <n>ms`: raise `friendbot_timeout_ms`
+  (max `60000`).
+- `Friendbot URL "..." is not on the allowlist`: only official SDF Friendbot
+  hosts are accepted. On futurenet use `https://friendbot-futurenet.stellar.org`.
+- Warning `use_friendbot is enabled but horizon_url is not a test network`:
+  Friendbot is never called on pubnet.
+
+See [USAGE.md — Friendbot testnet funding](USAGE.md#friendbot-testnet-funding)
+for the input reference.
+
 ## Comment posting fails with 404 on GitHub Enterprise Server (GHES)
 
 TrustBridge builds its Octokit client from `context.apiUrl` (backed by the runner's `GITHUB_API_URL`), so it should target your GHES instance automatically. A 404 or "resource not accessible" error usually means either the runner isn't actually GHES-registered (so `GITHUB_API_URL` never got set) or the token lacks `issues: write`. See [docs/USAGE.md — GitHub Enterprise Server (GHES) support](USAGE.md#github-enterprise-server-ghes-support) for the full verification checklist.
@@ -77,3 +137,48 @@ TrustBridge builds its Octokit client from `context.apiUrl` (backed by the runne
 
 **Helpful links:**
 - [USAGE: GitHub Projects v2 status updates](USAGE.md#github-projects-v2-status-updates-issue-222)
+
+## Preflight permission probe fails (403 / 401)
+
+Before making any Horizon calls, TrustBridge issues a read-only `GET /repos/{owner}/{repo}/issues/{number}/comments?per_page=1` probe to verify the token has at minimum `issues: read`. A 403 here means the workflow job is missing the required permission block:
+
+```yaml
+permissions:
+  issues: write
+  contents: read
+```
+
+A 401 means the token itself is invalid or expired — check that `github_token: ${{ secrets.GITHUB_TOKEN }}` is set correctly.
+
+The preflight probe is **skipped entirely** when `comment_mode` is `dry-run` or `off`, because those modes never post a comment and therefore do not need `issues: write`. Use `comment_mode: dry-run` to validate Horizon checks without requiring write permission.
+
+## Using preflight_only to diagnose permission issues
+
+Set `preflight_only: true` to run only the permission probe and exit immediately — no Horizon calls are made. This is useful for verifying token permissions in a new repository without spending API quota:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    preflight_only: true
+```
+
+The step succeeds when the probe passes (200) and fails with a clear error when the token lacks permission (403/401) or the issue is not found (404).
+
+## Dry-run preflight output for missing permissions
+
+`formatMissingPermissionsDryRun()` in `src/preflight.ts` renders the exact text logged by a dry-run preflight when the job lacks `issues: write` and/or `id-token: write` (the latter only matters for `webhook_auth_mode: oidc`). The output is snapshot-tested in `__tests__/preflight-dry-run.test.ts`, so it is stable across releases:
+
+```text
+[trustbridge] preflight (dry-run): missing workflow permissions
+- `id-token: write` — required when `webhook_auth_mode: oidc` signs webhook deliveries
+- `issues: write` — required to post or update the TrustBridge issue comment
+
+Add to the workflow job:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+```

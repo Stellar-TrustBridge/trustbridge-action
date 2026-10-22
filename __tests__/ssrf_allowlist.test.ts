@@ -21,7 +21,14 @@ import {
   validateSsrfSafeUrl,
   validateHorizonUrl,
 } from '../src/validation';
-import { fetchSSRFSafe } from '../src/ssrf';
+import {
+  fetchSSRFSafe,
+  checkResolvedAddresses,
+  isSSRFBlocked,
+  validateSSRFSafeUrl,
+} from '../src/ssrf';
+import { fetchTomlWithCache } from '../src/toml';
+import { defaultCache } from '../src/cache';
 
 // ---------------------------------------------------------------------------
 // Block-list structural integrity
@@ -363,5 +370,197 @@ describe('IPv6 Horizon endpoint fixtures (Issue #302)', () => {
     // Should not be blocked by SSRF patterns
     const ssrfBlocked = result.errors.some((e) => e.includes('blocked address'));
     expect(ssrfBlocked).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #702 — private IPs over https, DNS rebinding, shared toml gate
+// ---------------------------------------------------------------------------
+
+describe('Issue #702: private and link-local hosts are rejected even over https', () => {
+  const httpsPrivate = [
+    'https://10.0.0.1/',
+    'https://172.16.0.1/',
+    'https://192.168.1.1/',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://127.0.0.1/',
+    'https://[::1]/',
+    'https://[fe80::1]/',
+    'https://[fd00::1]/',
+    'https://0.0.0.0/',
+    'https://100.100.100.200/',
+  ];
+
+  it.each(httpsPrivate)('validateSsrfSafeUrl (https-only) rejects %s', (url) => {
+    const r = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: false });
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/blocked address/);
+  });
+
+  it.each(httpsPrivate)('fetch gate validateSSRFSafeUrl rejects %s with actionable message', (url) => {
+    const r = validateSSRFSafeUrl(url);
+    expect(r.valid).toBe(false);
+    if (!r.valid) {
+      expect(r.errors.join(' ')).toMatch(/SSRF policy/);
+      expect(r.errors.join(' ')).toMatch(/publicly resolvable/);
+    }
+  });
+
+  it('userinfo cannot hide the real host (https://evil@127.0.0.1)', () => {
+    expect(validateSsrfSafeUrl('https://evil@127.0.0.1/', 'horizon_url').valid).toBe(false);
+    expect(validateSsrfSafeUrl('https://horizon.stellar.org@10.0.0.1/', 'horizon_url').valid).toBe(false);
+    expect(validateSSRFSafeUrl('https://evil@127.0.0.1/').valid).toBe(false);
+  });
+
+  it('public stellar.org Horizon hosts remain allowed (regression)', () => {
+    for (const url of [
+      'https://horizon.stellar.org',
+      'https://horizon-testnet.stellar.org',
+      'https://horizon-futurenet.stellar.org',
+    ]) {
+      expect(validateSsrfSafeUrl(url, 'horizon_url').valid).toBe(true);
+      expect(validateHorizonUrl(url).valid).toBe(true);
+      expect(validateSSRFSafeUrl(url).valid).toBe(true);
+    }
+  });
+
+  it('proxy environment variables do not disable SSRF checks (GHES)', () => {
+    const saved = { HTTPS_PROXY: process.env.HTTPS_PROXY, NO_PROXY: process.env.NO_PROXY };
+    process.env.HTTPS_PROXY = 'http://proxy.corp.example:8080';
+    process.env.NO_PROXY = '127.0.0.1,localhost,169.254.169.254';
+    try {
+      expect(validateSsrfSafeUrl('https://127.0.0.1/', 'horizon_url').valid).toBe(false);
+      expect(validateSSRFSafeUrl('https://169.254.169.254/').valid).toBe(false);
+      expect(isSSRFBlocked('localhost').blocked).toBe(true);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe('Issue #702: DNS rebinding guard', () => {
+  const makeResponse = (status: number, headers: Record<string, string>, body = '') => ({
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers(headers),
+    text: async () => body,
+  } as any);
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    ['127.0.0.1'],
+    ['10.1.2.3'],
+    ['169.254.169.254'],
+    ['::1'],
+    ['::ffff:192.168.0.1'],
+    ['fd00::5'],
+  ])('rejects a public-looking hostname that resolves to %s', async (address) => {
+    const lookup = jest.fn().mockResolvedValue(['93.184.216.34', address]);
+    const verdict = await checkResolvedAddresses('rebind.attacker.example', lookup);
+    expect(verdict.blocked).toBe(true);
+    if (verdict.blocked) {
+      expect(verdict.reason).toMatch(/rebinding/);
+    }
+  });
+
+  it('allows a hostname that resolves only to public addresses', async () => {
+    const lookup = jest.fn().mockResolvedValue(['93.184.216.34', '2606:2800:220:1::1']);
+    expect((await checkResolvedAddresses('horizon.stellar.org', lookup)).blocked).toBe(false);
+  });
+
+  it('skips DNS for IP literals (already checked statically)', async () => {
+    const lookup = jest.fn();
+    await checkResolvedAddresses('8.8.8.8', lookup);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('fetchSSRFSafe refuses to send the request when DNS resolves to a private IP', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(makeResponse(200, {}, 'secret'));
+    const result = await fetchSSRFSafe('https://127.0.0.1.nip.io/.well-known/stellar.toml', {
+      dnsLookup: async () => ['127.0.0.1'],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/SSRF policy/);
+      expect(result.error).toMatch(/rebinding/);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-resolves each redirect hop (same-origin hop rebinding to metadata IP is refused)', async () => {
+    const resolutions = [['93.184.216.34'], ['169.254.169.254']];
+    const lookup = jest.fn(async () => resolutions.shift() ?? ['169.254.169.254']);
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(makeResponse(302, { location: 'https://flip.example.com/next' }));
+
+    const result = await fetchSSRFSafe('https://flip.example.com/start', {
+      followRedirects: true,
+      dnsLookup: lookup,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Issue #702: stellar.toml fetch uses the same SSRF gate as horizon_url', () => {
+  const makeResponse = (status: number, headers: Record<string, string>, body = '') => ({
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers(headers),
+    text: async () => body,
+  } as any);
+
+  beforeEach(async () => {
+    await defaultCache.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    ['127.0.0.1'],
+    ['2130706433'],
+    ['localhost'],
+    ['169.254.169.254'],
+    ['metadata.google.internal'],
+  ])('fetchTomlWithCache never fetches from blocked home domain %s', async (domain) => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const result = await fetchTomlWithCache(domain, { dnsLookup: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/SSRF/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses any redirect from stellar.toml (no redirect chain without explicit policy)', async () => {
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(makeResponse(302, { location: 'https://example.com/other.toml' }));
+    const result = await fetchTomlWithCache('example.com', { dnsLookup: async () => ['93.184.216.34'] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/HTTP 302/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a redirect to a disallowed host', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(makeResponse(301, { location: 'https://169.254.169.254/latest/meta-data/' }));
+    const result = await fetchTomlWithCache('example.org', { dnsLookup: async () => ['93.184.216.34'] });
+    expect(result.ok).toBe(false);
+  });
+
+  it('a horizon_url and a toml domain on the same private host are both rejected', () => {
+    expect(validateHorizonUrl('https://192.168.10.5').valid).toBe(false);
+    expect(validateSSRFSafeUrl('https://192.168.10.5/.well-known/stellar.toml').valid).toBe(false);
   });
 });

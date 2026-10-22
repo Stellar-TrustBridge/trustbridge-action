@@ -6,8 +6,8 @@
  * on Horizon predictable and avoids triggering rate limits.
  */
 
-import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult } from './checks';
-import { fetchAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
+import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult, HomeDomainOutcome } from './checks';
+import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
 import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 import { globalMetrics } from './metrics';
@@ -81,6 +81,11 @@ export interface BatchAddressResult {
    * Same asset code with different issuers is evaluated independently.
    */
   clawbackStrictAssets?: BatchAssetFailure[];
+  /**
+   * SEP-0001 home domain outcome for this row's asset issuer (Issue #708).
+   * Only set when `home_domain_check_enabled` is true.
+   */
+  homeDomainOutcome?: HomeDomainOutcome;
 }
 
 /** Aggregate summary across all addresses in a batch run. */
@@ -130,6 +135,12 @@ export interface BatchRunOptions {
    * Same asset code with a different issuer is evaluated independently.
    */
   extraAssets?: AssetConfigInput[];
+  /**
+   * Asset issuer account for the SEP-0001 home domain check (Issue #708).
+   * When omitted and `config.homeDomainCheckEnabled` is true, the issuer is
+   * fetched once per batch. `null` means the issuer is unavailable.
+   */
+  issuerAccount?: HorizonAccount | null;
 }
 
 const DEFAULT_REQUEST_DELAY_MS = 200;
@@ -220,6 +231,8 @@ function deriveBatchReasonCode(
     horizonError?: boolean;
     trustlineExists?: boolean;
     xlmReserveMet?: boolean;
+    /** HOME_DOMAIN_* code from a strict-mode home domain failure (Issue #708). */
+    homeDomainReasonCode?: string;
   },
 ): string {
   if (valid) return BATCH_REASON_CODES.success;
@@ -229,6 +242,7 @@ function deriveBatchReasonCode(
   if (options.clawbackStrictFailure) return CLAWBACK_STRICT_REASON_CODE;
   if (options.trustlineExists === false) return BATCH_REASON_CODES.trustlineMissing;
   if (options.xlmReserveMet === false) return BATCH_REASON_CODES.reserveTooLow;
+  if (options.homeDomainReasonCode) return options.homeDomainReasonCode;
   return 'FAILED';
 }
 
@@ -293,6 +307,14 @@ export async function runBatchValidation(
 
   const results: BatchAddressResult[] = [];
 
+  // Issue #708: every row shares the same configured issuer, so fetch it once
+  // and evaluate the home domain against it for each address.
+  const issuerAccount: HorizonAccount | null | undefined = !config.homeDomainCheckEnabled
+    ? undefined
+    : options.issuerAccount !== undefined
+      ? options.issuerAccount
+      : await fetchHomeDomainIssuerAccount(horizonUrl, config.assetIssuer, fetchOptions);
+
   for (let i = 0; i < addresses.length; i++) {
     const address = addresses[i];
 
@@ -316,12 +338,17 @@ export async function runBatchValidation(
         clawbackStrictAssets: [],
       });
       globalMetrics.incrementCounter('batch_address_invalid');
+      // Issue #777: every row counts toward exactly one of passed/failed so
+      // `batch_address_passed + batch_address_failed === batch_size`.
+      globalMetrics.incrementCounter('batch_address_failed');
       continue;
     }
 
     try {
       const account = await fetchAccount(horizonUrl, address, fetchOptions);
-      const result = await runAccountChecks(account, config);
+      const result = await runAccountChecks(account, config, issuerAccount);
+      const homeDomainStrictFailure =
+        result.reasonCode === 'HOME_DOMAIN_MISMATCH' || result.reasonCode === 'HOME_DOMAIN_MISSING';
 
       // Issue #725: a clawback-strict failure is a per-asset outcome, so the
       // row fails whenever *any* evaluated asset trips `clawback_strict_mode` —
@@ -341,6 +368,9 @@ export async function runBatchValidation(
             `clawback strict mode: ${clawbackStrictAssets.map((a) => a.assetCode).join(', ')}`,
           );
         }
+        if (homeDomainStrictFailure) {
+          reasons.push(`home domain ${result.homeDomainCheck?.outcome ?? 'missing'}`);
+        }
         failureReason = reasons.join('; ') || 'unknown';
       }
 
@@ -356,9 +386,11 @@ export async function runBatchValidation(
           clawbackStrictFailure,
           trustlineExists: result.trustlineExists,
           xlmReserveMet: result.xlmReserveMet,
+          homeDomainReasonCode: homeDomainStrictFailure ? result.reasonCode : undefined,
         }),
         clawbackStrictFailure,
         clawbackStrictAssets,
+        ...(result.homeDomainCheck ? { homeDomainOutcome: result.homeDomainCheck.outcome } : {}),
       });
 
       if (valid) {
@@ -393,6 +425,7 @@ export async function runBatchValidation(
         failureReason = `error: ${msg}`;
         globalMetrics.incrementCounter('batch_fail_horizon_error');
       }
+      globalMetrics.incrementCounter('batch_address_failed');
 
       let syntheticResult;
       if (isBudgetExhausted) {
@@ -452,6 +485,7 @@ export async function runBatchValidation(
             clawbackStrictAssets: [],
           });
           globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+          globalMetrics.incrementCounter('batch_address_failed');
         }
         break;
       }

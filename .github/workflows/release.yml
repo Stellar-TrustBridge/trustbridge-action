@@ -36,3 +36,42 @@ jobs:
 
       - name: Verify action bundle exists
         run: test -f dist/index.js
+
+      - name: BREAKING note gate on major bump
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Extract the major version from the release tag (e.g. v2.1.0 -> 2).
+          if ! [[ "$RELEASE_TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Malformed release tag '$RELEASE_TAG'. Expected vMAJOR.MINOR.PATCH (e.g. v2.1.0)."
+            exit 1
+          fi
+          TAG_MAJOR="${BASH_REMATCH[1]}"
+
+          # Read the current major version from package.json.
+          PKG_MAJOR="$(node -p "require('./package.json').version.split('.')[0]")"
+          if ! [[ "$PKG_MAJOR" =~ ^[0-9]+$ ]]; then
+            echo "::error::Malformed package.json version. Expected MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+
+          echo "Release tag major: $TAG_MAJOR, package.json major: $PKG_MAJOR"
+
+          if [ "$TAG_MAJOR" -gt 0 ] && [ "$TAG_MAJOR" != "$PKG_MAJOR" ]; then
+            echo "::error::Release tag major ($TAG_MAJOR) does not match package.json major ($PKG_MAJOR). Bump package.json before tagging."
+            exit 1
+          fi
+
+          # Major bumps (>= 1) require a BREAKING note in docs/BREAKING_CHANGES.md.
+          if [ "$TAG_MAJOR" -ge 1 ]; then
+            if ! grep -q "## v${TAG_MAJOR}" docs/BREAKING_CHANGES.md; then
+              echo "::error::Major release $RELEASE_TAG requires a '## v${TAG_MAJOR}' entry in docs/BREAKING_CHANGES.md. See docs/RELEASE_CHECKLIST.md."
+              exit 1
+            fi
+            echo "::notice::Major release $RELEASE_TAG detected. Confirm docs/BREAKING_CHANGES.md and docs/RELEASE_CHECKLIST.md are updated."
+          else
+            echo "::notice::Non-major release $RELEASE_TAG. No BREAKING note gate required."
+          fi

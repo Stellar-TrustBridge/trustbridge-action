@@ -40,7 +40,18 @@ the compiled `dist/` bundle (when not preparing a release artifact).
 | Integrations | `roster.ts`, `codeowners.ts`, `soroban.ts`, `webhook.ts`, `federation.ts`, `projects.ts` | Resolve identities and connect optional GitHub, Stellar, and dashboard services |
 | Extensibility | `plugin.ts`, `pluginLoader.ts`, `pluginRunner.ts`, `corePlugins.ts`, `template.ts` | Load plugins and safe comment partials; see [plugin docs](PLUGIN_ARCHITECTURE.md) |
 | Observability | `logger.ts`, `metrics.ts`, `diagnostics.ts`, `tracing.ts`, `checks-run.ts` | Redacted logs, metrics, diagnostics, traces, and check-run annotations |
-| Supporting logic | `batch.ts`, `cache.ts`, `configReader.ts`, `delta.ts`, `preflight.ts`, `sarif.ts` | Shared caching, configuration, batch, artifact, and reporting behavior |
+| Supporting logic | `batch.ts`, `cache.ts`, `configReader.ts`, `delta.ts`, `preflight.ts`, `sarif.ts`, `sarifSchema.ts` | Shared caching, configuration, batch, artifact, and reporting behavior |
+
+### Plugin snooze and roster modules
+
+| Module | Responsibility | Tests | Where Wave fixes go |
+| --- | --- | --- | --- |
+| `src/snooze.ts` | Parses and honours plugin/check snooze directives so maintainers can temporarily silence a check without disabling it | `__tests__/snooze.test.ts` | Snooze parsing, expiry, and comment-suppression bugs |
+| `src/roster.ts` | Resolves contributor ↔ Stellar address rosters used during Wave assignment | `__tests__/roster.test.ts` | Roster lookup, matching, and address-mapping bugs |
+
+Plugins themselves live in `plugin.ts`, `pluginLoader.ts`, `pluginRunner.ts`,
+and `corePlugins.ts`; `snooze.ts` only decides *whether* a result is surfaced.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how both modules fit into the run.
 
 ## Tests and fixtures
 

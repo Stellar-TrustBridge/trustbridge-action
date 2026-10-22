@@ -17,6 +17,16 @@ Every TrustBridge issue comment follows a fixed section order:
 7. **Optional sections** (in order): ledger freshness alert, network-passphrase mismatch, delta section, validation gate, balances, setup cost estimate, Stellar Lab / LOBSTR links, SEP-0007 deep links, SEP-0010 proof, remediation, configuration summary, action outputs reference, hardened metrics, expert diagnostics (debug mode only).
 8. **Footer** — `_Posted by [trustbridge-action](…)_`
 
+### Oversized comments
+
+Comments are kept below a 64,000-byte formatting budget and a 65,536-byte posting limit. If content exceeds the formatting budget, the remediation body is shortened first; the results and onboarding checklist stay ahead of lower-priority optional sections. If the remaining body still exceeds the posting limit, both issue (REST) and discussion (GraphQL) paths use the same UTF-8-safe truncator before calling GitHub.
+
+Every shortened body includes the hidden `trustbridge-action:comment-truncated` metadata marker and ends with the stable `... [Truncated due to GitHub length limits. See workflow logs for full details.]` notice. The truncator prefers a line boundary, never cuts a Unicode surrogate pair, and preserves the TrustBridge footer. In dry-run workflows, formatting still emits the truncation notice and metadata, so the body indicates what would be shortened without making a GitHub API request.
+
+### Oversized Job Summaries (Issue #780)
+
+GitHub rejects step summaries larger than 1 MiB. Before writing large batch results to the Job Summary, pass the markdown through `guardJobSummaryMarkdown()` from `src/summary.ts`. Content under `JOB_SUMMARY_MAX_BYTES` (1,048,576 bytes) is returned unchanged; larger content is cut at the last whole line that fits (never splitting a UTF-8 character) and ends with the hidden `trustbridge-action:summary-truncated` marker plus a notice linking to the issue comment (or the workflow logs when no comment URL is known).
+
 ---
 
 ## Comment threading & posting modes (`comment_mode` & `posting_mode`)
@@ -49,6 +59,32 @@ When `comment_mode: 'reply'` is configured, TrustBridge:
 ```
 3. If no previous TrustBridge comment exists on the issue, TrustBridge posts the initial comment cleanly without a reply prefix.
 4. On GitHub Discussions, TrustBridge uses GraphQL `addDiscussionComment` with `replyToId` to post threaded replies in the discussion thread.
+
+### `comment_id` output (Issue #696)
+
+Every successful post publishes the numeric REST comment id as the `comment_id` action output, next to `comment_url`. `upsertIssueComment` in `src/comment.ts` returns `{ url, id }` from the response of whichever call actually wrote the body, and `setValidationOutputs` publishes it.
+
+How `posting_mode` and `comment_mode` decide between update and create:
+
+| `posting_mode` | `comment_mode` (`sticky_comment`) | Prior TrustBridge comment | API call | `comment_id` |
+| --- | --- | --- | --- | --- |
+| `post` | `sticky` (`true`) | found | `issues.updateComment` | id of the existing comment |
+| `post` | `sticky` (`true`) | found, but update fails | `issues.createComment` (fallback) | id of the **new** comment |
+| `post` | `sticky` (`true`) | not found / lookup fails | `issues.createComment` | id of the new comment |
+| `post` | `sticky` (`true`) | found, snooze window active | none | id of the existing comment |
+| `post` | `new` (`false`) | any | `issues.createComment` | id of the new comment |
+| `post` | `reply` | any | `issues.createComment` (with reply header) | id of the reply |
+| `dry-run` | any | any | none | `""` |
+| `off` | any | any | none | `""` |
+
+Notes:
+
+- With an explicit `issue_number` (e.g. `workflow_dispatch`), the lookup and the id refer to that issue. With no issue or PR context the post is skipped with a warning and `comment_id` is `""`; the job is not failed.
+- A failed post is downgraded to a warning and leaves `comment_id` empty.
+- The id is always a REST issue-comment id. Discussion comments (GraphQL node ids such as `DC_…`) are not published as `comment_id`.
+- `comment_id` is not part of the dashboard webhook payload, so `privacy_mode` has nothing extra to redact.
+
+See [USAGE.md — `comment_id`](USAGE.md#comment_id--chaining-a-follow-up-edit-issue-696) for a workflow that edits the comment in a later step.
 
 ---
 ## FAQ deep links
@@ -98,6 +134,109 @@ All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `
 
 ---
 
+## Multi-check failure summaries (Issue #761)
+
+When a single run fails more than one check, the **Results** section lists every failing bullet in the fixed check order (funding → trustline → XLM reserve → per-asset trustlines → clawback → authorization), each with its own `[→ FAQ]` link. The **Validation gate** then aggregates them into one `Blocked by:` line so a triager can read the whole failure set without scanning the log.
+
+These examples show the combinations Wave contributors hit most often. They are illustrative — the exact wording comes from `src/markdown.ts` and the labels from `src/i18n.ts`.
+
+### Example A — multi-asset + clawback + unauthorized
+
+A run with `assets_json` listing two assets, where the primary asset is clawback-enabled and the account is not authorized for one of the listed assets:
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ❌ XLM reserve below minimum [→ FAQ](docs/FAQ.md#xlm-reserve)
+- ❌ Trustline missing for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#asset-trustlines)
+- ❌ Asset `USDC:GA5Z…KZVN` has clawback enabled [→ FAQ](docs/FAQ.md#clawback)
+- ❌ Account not authorized for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#authorization)
+
+### Validation gate
+
+- Blocked by: XLM reserve, Asset trustlines, Clawback, Authorization
+- Passed checks: 2/6
+- Failed checks: 4
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example B — multi-asset only (no clawback, no authorization)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ❌ Trustline missing for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#asset-trustlines)
+- ❌ Trustline missing for `FOO:GA5Z…KZVN` [→ FAQ](docs/FAQ.md#asset-trustlines)
+
+### Validation gate
+
+- Blocked by: Asset trustlines
+- Passed checks: 3/5
+- Failed checks: 2
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example C — clawback + unauthorized (single asset)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ❌ Asset `USDC:GA5Z…KZVN` has clawback enabled [→ FAQ](docs/FAQ.md#clawback)
+- ❌ Account not authorized for `USDC:GA5Z…KZVN` [→ FAQ](docs/FAQ.md#authorization)
+
+### Validation gate
+
+- Blocked by: Clawback, Authorization
+- Passed checks: 3/5
+- Failed checks: 2
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example D — happy path (all checks pass)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ✅ Trustline ready for `EURC:GCQT…KRR2`
+- ✅ Asset `USDC:GA5Z…KZVN` has no clawback
+- ✅ Account authorized for `EURC:GCQT…KRR2`
+
+### Validation gate
+
+- Ready to proceed: all checks passed.
+- Passed checks: 6/6
+- Failed checks: 0
+- Ready: `true`
+- Reason code: `SUCCESS`
+```
+
+### Rules for multi-check summaries
+
+- **Order is stable.** Failing bullets follow the fixed check order above so diffs between runs stay readable and sticky-comment updates don't reshuffle lines.
+- **One FAQ link per failing bullet.** Never collapse multiple failures into a single bullet — each failure keeps its own `[→ FAQ]` anchor so remediation is one click away.
+- **`Blocked by:` lists every failed check label**, comma-separated, in the same order as the Results bullets. It is derived from the same `ValidationResult` the `reason_code` output uses, so the comment and the output never disagree.
+- **`Passed checks` / `Failed checks`** count every check that ran, including per-asset trustline checks from `assets_json`.
+- **Clawback and authorization failures are distinct checks.** A clawback-enabled asset and an unauthorized account are separate bullets with separate FAQ anchors; do not merge them.
+- **Empty or malformed `assets_json`** is ignored (no per-asset bullets) and never produces a partial privileged state — the run either renders the full set or omits the section entirely, matching the single-asset golden snapshots.
+
+Implementation: `buildResults` and `buildValidationGate` in `src/markdown.ts`, wired into `formatCommentBody` in `src/comment.ts`; labels localized in `src/i18n.ts`.
+
+---
+
 ## Per-asset trustline table (`assets_json`) (Issue #552)
 
 When the workflow sets `assets_json`, the run checks trustlines for every listed asset in addition to the primary `asset_code`/`asset_issuer` pair. The results are rendered as a dedicated table directly after the **Balances** section — matching the behaviour `action.yml` documents for the `assets_trustline_status` / `trustlines_summary` outputs.
@@ -129,219 +268,21 @@ When the Horizon circuit breaker is open, `CircuitBreaker.execute` fast-fails th
 ```markdown
 > ⚡ **Circuit breaker open**
 > - This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.
-> - This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow. …
-> - Reason code: `CIRCUIT_OPEN`
+> - This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow.
 ```
 
-Key properties:
+## Duplicate workflow runs (Issue #790)
 
-- **Distinct reason code.** `CIRCUIT_OPEN`, not `HORIZON_ERROR`. A `HORIZON_ERROR` implies Horizon answered and the answer was bad; a tripped circuit means the request never left the process. Conflating the two sends triagers hunting for a broken endpoint or a misconfigured account that may not exist.
-- **Fails closed.** `ready: false`, `accountFunded: false`, and all balances `unknown`. Unknown is reported as unknown rather than as zero.
-- **Recovery hint.** The banner tells the contributor to wait for the recovery window and re-run, and points at `horizon_url` / `max_retries` if it keeps happening.
-- **PII-safe.** The banner carries no account address, issuer, balance, or endpoint URL — only the fact that the breaker tripped. Balances stay `_unknown_` rather than leaking a stale figure.
-- **Localized.** Rendered from the `circuitBreaker*` string pack in `src/i18n.ts`.
+With `comment_mode: sticky` (the default), re-running the workflow — including repeated `workflow_dispatch` runs for the same `issue_number` — updates the existing TrustBridge comment instead of posting a new one.
 
-The signal flows `CircuitOpenError` (`src/resilience.ts`) → `HorizonCircuitOpenError` (`src/horizon.ts`) → `circuitOpenFailureResult` (`src/checks.ts`) → `ValidationResult.circuitOpen` → this banner (`src/comment.ts`). `HorizonCircuitOpenError` extends `HorizonError`, so existing `instanceof HorizonError` handling keeps working.
+Two runs that start at the same moment can both find no comment and each create one. To handle that race, every run that creates a comment re-reads the thread right afterwards. If an older TrustBridge comment exists, the run writes its body there and deletes the comment it just created, so all runs converge on the oldest comment. `comment_url` / `comment_id` outputs point at that surviving comment.
 
----
+This never fails the step:
 
-## Onboarding checklist
+| Situation | Result |
+|-----------|--------|
+| Re-read fails (network / API error) | The new comment is kept; warning logged |
+| Original comment cannot be updated | The new comment is kept, nothing deleted; warning logged |
+| Duplicate cannot be deleted (missing `issues: write`) | Original is updated; warning names the missing permission |
 
-When `onboarding_checklist` is enabled (the default), the comment includes a concise guided path:
-
-1. Fund account
-2. Add trustline
-3. Verify XLM balance
-
-Each item is a GitHub Markdown task-list checkbox (`- [x]` / `- [ ]`) driven by `accountFunded`, `trustlineExists`, and `xlmReserveMet`. Boxes are comment-only — they are not synced via the GitHub Projects task-list API. FAQ links point at [FAQ.md](FAQ.md) anchors.
-
-Set `onboarding_checklist: false` to omit the section entirely (e.g. for expert-only workflows).
-
-### Localized checklist labels (Issue #436)
-
-The checklist heading and all three labels come from the locale string pack in `src/i18n.ts` (`checklistHeading`, `checklistFundAccountLabel`, `checklistTrustlineLabel`, `checklistReserveLabel`, …), so a `locale: es` comment no longer mixes English checklist copy into a translated comment:
-
-```markdown
-### Lista de incorporación
-
-_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
-
-- [x] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](…#account-not-funded))
-- [ ] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](…#trustline-missing))
-- [x] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](…#xlm-reserve-too-low))
-```
-
-All six locales ship the checklist strings; the import-time guard in `src/i18n.ts` fails fast if a new locale is added without them.
-
-**Extraction is locale-resilient.** `extractChecklistState` recognises the checklist heading and labels in *every* supported locale by default, so switching `locale` between runs does not silently discard manually-checked boxes. Pass `{ locale }` to restrict parsing to a single locale.
-
-The per-locale trustline label is dynamic (it embeds the asset code), so the parser derives the literal prefix/suffix around the asset code from the locale's own label template instead of hard-coding per-locale affixes. State is keyed on the locale-independent canonical keys (`Fund account`, `trustline`, `Verify XLM balance`), which is what makes state survive a locale switch.
-
-### Checklist state persistence across sticky updates (Issue #311)
-
-By default, every sticky update rebuilds the checklist from live Horizon data. This means that if a contributor manually checks a box in GitHub (e.g. they have funded their account but Horizon hasn't indexed the transaction yet), the next run could overwrite their check with an unchecked state.
-
-**TrustBridge now preserves checked boxes across sticky updates.** When a sticky update runs, the action:
-
-1. Fetches the existing sticky comment body.
-2. Parses the previous checklist section with `extractChecklistState()` to recover which boxes were checked.
-3. Merges that prior state into the new checklist: a box is checked if **either** the live Horizon check passes **or** the previous comment had the box checked.
-
-This ensures contributor-manually-checked boxes survive re-runs even when Horizon hasn't caught up yet — including across a change of `locale`.
-
-#### Merge semantics
-
-| Live Horizon result | Previous box state | Final rendered state |
-|--------------------|--------------------|---------------------|
-| ✅ pass | checked or unchecked | `[x]` (live truth wins) |
-| ❌ fail | checked | `[x]` (manual check preserved) |
-| ❌ fail | unchecked | `[ ]` (stays unchecked) |
-| ❌ fail | (no prior state) | `[ ]` (stays unchecked) |
-
-A live pass always checks the box, regardless of prior state. A live fail only checks the box if the contributor (or a previous run) had it checked before.
-
-#### Security: injection guard
-
-The checklist parser is scoped to the checklist section only (it stops at the next `###` heading) and matches only a fixed allowlist of known label names, in every supported locale:
-
-- `Fund account` / localized equivalents
-- `Add <ASSET_CODE> trustline` and its per-locale equivalents (asset code must be ASCII-printable)
-- `Verify XLM balance` / localized equivalents
-
-No user-controlled label text is used as a map key. A maliciously crafted comment body cannot inject unexpected checked state for arbitrary labels or sections. Asset code strings with non-ASCII or control characters are rejected silently.
-
-## SEP-0010 challenge proof (Issue #252)
-
-To prove wallet control, you can include a SEP-0010 challenge snippet in the comment:
-
-- **Dashboard Freighter proof (preferred):** set `sep0010_dashboard_url` to an `https` dashboard URL (e.g. `https://your-dashboard.example/verify?address=G…`). The comment shows: *“Proof of wallet control (SEP-0010) — [Open dashboard proof](url)”* with network context. The link is informational and **does not block `ready`** unless your workflow explicitly gates on it. The URL must be `https` and not a private/loopback host; invalid URLs are silently omitted so comment posting is never blocked.
-- **Raw challenge XDR (fallback):** set `sep0010_challenge_xdr` to a base64 XDR string. The comment shows a truncated `24…8` snippet with signing instructions and a SEP-0010 link. Raw nonces are truncated in the comment and never logged; do not reuse a challenge — prefer the dashboard link when possible.
-
-When both are set, the dashboard link wins (no raw XDR rendered). The section is size-capped; if the total comment exceeds GitHub’s 65k limit, the snippet is included in the truncated report (`trustbridge-report.md`). See `src/links.ts:buildSep0010ChallengeSnippet` and `src/comment.ts` for the exact rendering.
-
-```yaml
-with:
-  sep0010_dashboard_url: https://your-dashboard.example/verify?address=GABC...
-  # or
-  sep0010_challenge_xdr: AAAA...
-```
-
-Every value maps 1-to-1 to a heading in `docs/FAQ.md` that uses the explicit `{#anchor-id}` syntax, for example:
-
-```markdown
-## Account not funded {#account-not-funded}
-```
-
-### Check label → anchor mapping
-
-`getFaqAnchorForCheck(checkLabel)` in `src/links.ts` maps check labels to FAQ anchors by keyword:
-
-| Keyword in label | FAQ anchor |
-|-----------------|-----------|
-| `funded` | `account-not-funded` |
-| `trustline` | `trustline-missing` |
-| `reserve` | `xlm-reserve-too-low` |
-| `xlm` | `xlm-reserve-too-low` |
-| `horizon` | `horizon-error` |
-
----
-
-## Custom comment templates (markdown partials) (#312)
-
-Organisations that want to add Wave-specific help, campaign links, or custom remediation guidance without forking the action can supply a **Markdown partial** file. TrustBridge loads the partial, runs safe interpolation, and appends it just before the action footer.
-
-### Quick start
-
-```yaml
-- uses: Stellar-TrustBridge/trustbridge-action@v1
-  with:
-    stellar_address_input: ${{ steps.address.outputs.address }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    custom_comment_template_path: .trustbridge/comment-help.md
-```
-
-Create `.trustbridge/comment-help.md` in your repository:
-
-```markdown
-### Wave-specific help
-
-This run validated account {{account}} for the **{{asset}}** token on {{network}}.
-Current status: {{status}}
-
-Need help? Join [#wave-support](https://discord.example/wave-support) on Discord.
-See the [campaign FAQ](https://your-org.example/wave/faq) for trustline setup instructions.
-```
-
-### Available template variables
-
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `{{account}}` | Checked Stellar address | Escaped for Markdown |
-| `{{asset}}` | Asset code (e.g. `USDC`) | Escaped for Markdown |
-| `{{issuer}}` | Asset issuer address | Escaped for Markdown |
-| `{{network}}` | Inferred network (`mainnet` / `testnet` / `unknown`) | Escaped for Markdown |
-| `{{horizon}}` | Horizon base URL | Escaped for Markdown |
-| `{{status}}` | `✅ ready` or `❌ blocked` | Safe emoji string — not escaped |
-| `{{locale:KEY}}` | i18n string for `KEY` in the active locale | See i18n keys below |
-
-All variable values (except `{{status}}`) are run through `escapeMarkdownInline` before substitution, so contributor-supplied strings (addresses, asset codes, etc.) cannot inject Markdown structures such as links, emphasis, headings, or code spans.
-
-### i18n string variables (`{{locale:KEY}}`)
-
-Use `{{locale:KEY}}` to embed a translated string from the active locale (`en`, `es`, `pt`). For example:
-
-```markdown
-### {{locale:remediationHeading}}
-
-{{locale:readyToProceed}}
-```
-
-Only `string`-typed fields of `CommentStrings` are supported (function-typed check helpers are excluded and resolve to an empty string). Unknown keys also produce an empty string.
-
-### Security guarantees
-
-| Threat | Defence |
-|--------|---------|
-| **Path traversal** | The resolved path must stay inside the workspace root. `../../etc/passwd`-style paths throw immediately before any file read. |
-| **Oversized file** | Files larger than **8 KB** are rejected before content is read. |
-| **HTML/XSS injection** | Templates containing `<script`, `javascript:`, `vbscript:`, `data:text/html`, or inline event handlers (`onclick=`, `onload=`, etc.) are rejected. |
-| **Prototype-chain placeholders** | `{{constructor}}`, `{{__proto__}}`, `{{prototype}}`, `{{__defineGetter__}}`, `{{__defineSetter__}}`, `{{__lookupGetter__}}`, `{{__lookupSetter__}}` throw a hard error before any substitution occurs. |
-| **Unknown placeholder leakage** | Any `{{unknown}}` placeholder (not in the supported variable set and not a valid `{{locale:KEY}}`) is replaced with an empty string, never echoed back. |
-| **Markdown injection via values** | All substituted values (except the safe `{{status}}`) are escaped through `escapeMarkdownInline`. A contributor address like `][evil](https://malicious.example)` becomes `\\]\\[evil\\]\\(https://malicious.example\\)`. |
-| **Template failure isolation** | Any template loading or validation error emits a `core.warning` and omits the partial. The rest of the comment (i18n core sections) and the footer are always posted. |
-
-### Constraints
-
-- The template file must be **inside the workspace root** (the repository checkout directory). Absolute paths outside the workspace are rejected.
-- Maximum template size: **8 KB**. Keep partials focused to avoid hitting GitHub's 65 KB comment size limit alongside the full TrustBridge comment body.
-- The feature is opt-in. Leave `custom_comment_template_path` empty (the default) to disable it.
-- i18n core sections are produced by `formatCommentBody` using `getStrings()` and are not affected by the template.
-
-### Implementation reference
-
-- Template loader: `src/template.ts` (`loadCommentTemplate`, `validateTemplatePath`, `validateTemplateContent`, `interpolateTemplate`, `buildTemplateContext`)
-- Integration point: `formatCommentBody` in `src/comment.ts` — partial injected before `---` footer
-- Tests: `__tests__/template.test.ts` (unit), `__tests__/comment.test.ts` (integration, injection scenarios)
-
-## Local Comment Preview
-
-Contributors can preview how a comment will render locally without needing to run the full action or post to a live issue. This is useful when modifying `src/comment.ts` or testing custom comment templates.
-
-Run the preview script against any JSON fixture from the `fixtures/` directory:
-
-```bash
-npm run preview-comment fixtures/account-funded.json
-```
-
-By default, the script prints the generated Markdown to `stdout`. To save the output to a file, provide a second argument:
-
-```bash
-npm run preview-comment fixtures/account-funded.json preview.md
-```
-
-You can customize the check configuration by setting `INPUT_*` environment variables before running the script:
-
-```bash
-INPUT_ASSET_CODE="EURC" INPUT_MIN_XLM_RESERVE="2.5" npm run preview-comment fixtures/account-funded.json
-```
-
+`comment_mode: new` and `comment_mode: reply` are unchanged — they intentionally post a new comment on every run.

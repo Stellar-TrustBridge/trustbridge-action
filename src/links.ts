@@ -144,6 +144,53 @@ export function inferStellarNetwork(horizonUrl: string): StellarNetwork {
 }
 
 /**
+ * Official Stellar network presets (Issue #707). `StellarNetwork` stays
+ * `public | testnet` for link builders; this wider union adds futurenet so
+ * passphrase inference and failover network binding can tell it apart.
+ */
+export type StellarNetworkPreset = StellarNetwork | 'futurenet';
+
+export interface StellarNetworkPresetDefaults {
+  /** Official SDF Horizon base URL. */
+  horizonUrl: string;
+  /** Network passphrase reported by that Horizon's root endpoint. */
+  networkPassphrase: string;
+  /** Official Friendbot URL, or null when the network has no Friendbot. */
+  friendbotUrl: string | null;
+}
+
+/**
+ * Default Horizon host, passphrase and Friendbot per network. Documented in
+ * docs/USAGE.md#network-presets — keep both in sync.
+ */
+export const STELLAR_NETWORK_PRESETS: Record<StellarNetworkPreset, StellarNetworkPresetDefaults> = {
+  public: {
+    horizonUrl: 'https://horizon.stellar.org',
+    networkPassphrase: 'Public Global Stellar Network ; September 2015',
+    friendbotUrl: null,
+  },
+  testnet: {
+    horizonUrl: 'https://horizon-testnet.stellar.org',
+    networkPassphrase: 'Test SDF Network ; September 2015',
+    friendbotUrl: 'https://friendbot.stellar.org',
+  },
+  futurenet: {
+    horizonUrl: 'https://horizon-futurenet.stellar.org',
+    networkPassphrase: 'Test SDF Future Network ; October 2022',
+    friendbotUrl: 'https://friendbot-futurenet.stellar.org',
+  },
+};
+
+/**
+ * Like {@link inferStellarNetwork}, but recognises futurenet hosts instead of
+ * folding them into `public`.
+ */
+export function inferStellarNetworkPreset(horizonUrl: string): StellarNetworkPreset {
+  if (horizonUrl.toLowerCase().includes('futurenet')) return 'futurenet';
+  return inferStellarNetwork(horizonUrl);
+}
+
+/**
  * Known Horizon presets and the network they belong to. Used by cross-network
  * detection to identify which network an address was most recently active on.
  */

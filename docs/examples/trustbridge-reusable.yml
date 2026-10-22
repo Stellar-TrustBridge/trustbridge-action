@@ -119,6 +119,21 @@ on:
         required: false
         type: string
         default: ''
+      use_friendbot:
+        description: 'Fund unfunded (404) accounts via Friendbot on testnet/futurenet only; ignored on pubnet'
+        required: false
+        type: boolean
+        default: false
+      friendbot_url:
+        description: 'Allowlisted Friendbot endpoint (use https://friendbot-futurenet.stellar.org on futurenet)'
+        required: false
+        type: string
+        default: 'https://friendbot.stellar.org'
+      friendbot_timeout_ms:
+        description: 'Friendbot request timeout in milliseconds (1000-60000)'
+        required: false
+        type: number
+        default: 15000
     secrets:
       github_token:
         description: >-
@@ -140,6 +155,15 @@ on:
       comment_url:
         description: 'URL of the created or updated issue comment, when run in an issue context'
         value: ${{ jobs.verify.outputs.comment_url }}
+      friendbot_called:
+        description: 'Whether Friendbot was called to fund the account (true/false)'
+        value: ${{ jobs.verify.outputs.friendbot_called }}
+      friendbot_success:
+        description: 'Whether Friendbot funding succeeded (true/false)'
+        value: ${{ jobs.verify.outputs.friendbot_success }}
+      friendbot_transaction_hash:
+        description: 'Transaction hash from successful Friendbot funding, empty otherwise'
+        value: ${{ jobs.verify.outputs.friendbot_transaction_hash }}
 
 jobs:
   verify:
@@ -152,6 +176,9 @@ jobs:
       xlm_balance: ${{ steps.trustbridge.outputs.xlm_balance }}
       account_funded: ${{ steps.trustbridge.outputs.account_funded }}
       comment_url: ${{ steps.trustbridge.outputs.comment_url }}
+      friendbot_called: ${{ steps.trustbridge.outputs.friendbot_called }}
+      friendbot_success: ${{ steps.trustbridge.outputs.friendbot_success }}
+      friendbot_transaction_hash: ${{ steps.trustbridge.outputs.friendbot_transaction_hash }}
     steps:
       - name: TrustBridge check
         id: trustbridge
@@ -179,3 +206,6 @@ jobs:
           log_inputs: ${{ inputs.log_inputs }}
           sep0007_deep_links: ${{ inputs.sep0007_deep_links }}
           sep0007_origin_domain: ${{ inputs.sep0007_origin_domain }}
+          use_friendbot: ${{ inputs.use_friendbot }}
+          friendbot_url: ${{ inputs.friendbot_url }}
+          friendbot_timeout_ms: ${{ inputs.friendbot_timeout_ms }}

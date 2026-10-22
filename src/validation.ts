@@ -23,6 +23,8 @@
  * A real OTEL exporter can be plugged in by replacing `recordSpan()`.
  */
 
+import { isSSRFBlocked, normalizeHostForSSRF } from './ssrf';
+
 // ---------------------------------------------------------------------------
 // Span types and in-process span store
 // ---------------------------------------------------------------------------
@@ -430,8 +432,10 @@ export function validateSsrfSafeUrl(
 
   // Protocol check
   const allowedProtocols = options.allowHttp ? ['http', 'https'] : ['https'];
+  let parsedHostname = '';
   try {
     const parsed = new URL(trimmed);
+    parsedHostname = parsed.hostname;
     const proto = parsed.protocol.replace(':', '');
     if (!allowedProtocols.includes(proto)) {
       errors.push(
@@ -458,6 +462,24 @@ export function validateSsrfSafeUrl(
         `${fieldName} targets a blocked address (private IP, loopback, or metadata endpoint): "${trimmed}"`,
       );
       break;
+    }
+  }
+
+  // Issue #702: the regex list above only sees the raw string. Re-check the
+  // WHATWG-normalized hostname so alternate encodings (2130706433, 0x7f.1,
+  // 0177.0.0.1, full-width digits, [::ffff:7f00:1], 0.0.0.0, NAT64/6to4
+  // embeddings) are rejected with the same policy used by fetchSSRFSafe.
+  const alreadyBlocked = errors.some((e) => e.includes('targets a blocked address'));
+  const localhostExempt = options.allowLocalhost && normalizeHostForSSRF(parsedHostname) === 'localhost';
+  if (parsedHostname && !alreadyBlocked && !localhostExempt) {
+    const verdict = isSSRFBlocked(parsedHostname);
+    if (verdict.blocked) {
+      const reason = 'reason' in verdict ? verdict.reason.replace('Host matches SSRF blocklist: ', '') : 'blocked';
+      errors.push(
+        `${fieldName} targets a blocked address (private IP, loopback, or metadata endpoint): "${trimmed}" ` +
+          `normalizes to "${normalizeHostForSSRF(parsedHostname)}" (${reason}). ` +
+          'Use a publicly resolvable hostname; see docs/INPUT_VALIDATION.md.',
+      );
     }
   }
 

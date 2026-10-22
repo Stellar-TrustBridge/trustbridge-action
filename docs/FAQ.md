@@ -133,6 +133,29 @@ known-slow Horizon mirror.
 
 ---
 
+## Rate budget exhausted — recovery playbook {#rate-budget-exhausted}
+
+`reason_code: RATE_BUDGET_EXHAUSTED` (SARIF rule `TB009`) means the run used up
+its own `horizon_max_requests` budget before the account lookup finished. No
+Horizon request failed and the account state is **unknown**, not unfunded — do
+not ask the contributor to change their wallet.
+
+1. **Back off.** Re-run the job after a few minutes; repeated immediate re-runs
+   against public Horizon will exhaust the budget again.
+2. **Reduce batch size.** In batch/Wave mode, split the address list into
+   smaller batches (or fewer parallel matrix jobs) so each run needs fewer
+   requests.
+3. **Enable caching.** Cached account lookups do not consume budget on repeat runs.
+4. **Raise the budget.** Increase `horizon_max_requests` (or remove it) once you
+   have confirmed the extra load is expected; prefer a self-hosted Horizon for
+   very large Waves.
+5. **Verify.** The next run should report a non-`RATE_BUDGET_EXHAUSTED` reason
+   code. If it is now `RATE_LIMIT_EXHAUSTED`, Horizon itself is returning 429 —
+   see [Horizon error](#horizon-error).
+
+See also [TROUBLESHOOTING.md](TROUBLESHOOTING.md#horizon-request-budget-exhausted-rate_budget_exhausted)
+and the reason-code catalog in [USAGE.md](USAGE.md#failure-reason-code-catalog-reason_code).
+
 ## Debug mode and expert diagnostics {#debug-mode}
 
 **Symptom:** You need detailed Horizon status codes, latency, and normalized inputs to diagnose a failure.
@@ -253,11 +276,11 @@ function verifySignature(payload, secret, signatureHeader) {
 
 ## OIDC webhook authentication failures {#oidc-webhook-troubleshooting}
 
-These apply when `webhook_auth_mode: oidc` is set. OIDC failures are non-fatal: validation and comment posting continue, but the dashboard rejects or never sees the webhook.
+These apply when `webhook_auth_mode: oidc` is set. A failed token mint **fails the step** and the webhook is not sent. There is no fallback to HMAC or unsigned delivery (Issue #674). Delivery errors after a successful mint stay non-fatal: validation and comment posting continue, but the dashboard rejects or never sees the webhook.
 
 ### Token minting fails (missing `id-token: write`)
 
-**Symptom:** The Actions log shows `OIDC token minting failed for audience "trustbridge-dashboard": ... Ensure the workflow has 'permissions: id-token: write'`, and the receiver returns `401` because no `Authorization` header was sent.
+**Symptom:** The step fails with `OIDC token minting failed for audience "trustbridge-dashboard": ... The job has no 'permissions: id-token: write'`. No webhook request is sent.
 
 **Fix:** Grant the permission on the job (or workflow) that runs TrustBridge. Setting any `permissions:` block drops unlisted scopes, so list `id-token: write` explicitly alongside the others:
 
@@ -268,7 +291,7 @@ permissions:
   id-token: write
 ```
 
-GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect this warning there. Use HMAC mode for fork-triggered workflows or run TrustBridge from a trusted event (for example `issue_comment` or `issues`).
+GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect this failure there. Use HMAC mode for fork-triggered workflows or run TrustBridge from a trusted event (for example `issue_comment` or `issues`).
 
 ### Audience mismatch
 
@@ -293,3 +316,7 @@ GitHub does not issue OIDC tokens to `pull_request` runs from forks, so expect t
 **Helpful links:**
 - [TrustBridge OIDC docs](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/USAGE.md#oidc-federation-for-dashboard-webhooks-issue-224)
 - [GitHub: About security hardening with OpenID Connect](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect)
+
+## Why didn't my comment update during a Wave? {#wave-freeze}
+
+Before a Drips Wave opens, maintainers apply Wave labels, set a snooze window, and freeze the workflow (see the Wave freeze labeling section of [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md)). While snoozed, outputs still update but the comment is not re-posted; ask a maintainer to re-run with `force_comment: true` if you need a fresh comment.

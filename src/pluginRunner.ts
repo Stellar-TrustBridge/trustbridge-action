@@ -19,8 +19,46 @@ import { escapeMarkdownInline } from './markdown';
 // ---------------------------------------------------------------------------
 
 /**
+ * Default per-plugin timeout (ms). Plugins that exceed this budget are
+ * treated as failed (fail closed) so a hung third-party check cannot
+ * stall the whole Actions job.
+ */
+export const DEFAULT_PLUGIN_TIMEOUT_MS = 5000;
+
+/**
+ * Options for {@link runPlugins}.
+ */
+export interface RunPluginsOptions {
+  /** Per-plugin timeout in milliseconds. Defaults to {@link DEFAULT_PLUGIN_TIMEOUT_MS}. */
+  timeoutMs?: number;
+}
+
+/**
  * Run every plugin registered in `registry` against `ctx`, then
  * compose their `CheckPluginResult`s into a `ValidationResult`.
+ *
+ * Discovery / load order
+ * ----------------------
+ * Plugins are executed in the deterministic order returned by
+ * `registry.list()` (see `pluginLoader` / `PluginRegistry`), which is
+ * stable across runs so CI gates do not flip on ordering. The composed
+ * `checks` array preserves that same order.
+ *
+ * Failure isolation
+ * -----------------
+ * Each plugin runs inside its own try/catch. A plugin that throws is
+ * recorded as a failed check with a stable, actionable message and the
+ * remaining plugins (including core Horizon checks) still run. A bad
+ * custom plugin therefore fails the gate but never prevents core checks
+ * from executing or reporting.
+ *
+ * Timeout boundary
+ * ----------------
+ * Each plugin is also bounded by `options.timeoutMs` (default
+ * {@link DEFAULT_PLUGIN_TIMEOUT_MS}). A plugin that exceeds the budget is
+ * recorded as a failed check with a stable `timed out after Nms` message
+ * and the remaining plugins still run. This keeps a hung plugin from
+ * stalling the job while preserving isolation between plugins.
  *
  * Composition rules
  * -----------------
@@ -42,18 +80,21 @@ import { escapeMarkdownInline } from './markdown';
  *
  * @param ctx       Context object shared across all plugins.
  * @param registry  Optional registry; defaults to `defaultRegistry`.
+ * @param options   Optional runner options (e.g. per-plugin timeout).
  */
 export function runPlugins(
   ctx: CheckPluginContext,
   registry: PluginRegistry = defaultRegistry,
+  options: RunPluginsOptions = {},
 ): ValidationResult {
   const plugins = registry.list();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PLUGIN_TIMEOUT_MS;
 
   // Run each plugin, wrapping any unexpected throw so one bad plugin
   // cannot silently kill the whole action.
   const pluginOutputs = plugins.map((plugin) => {
     try {
-      return { plugin, result: plugin.run(ctx) };
+      return { plugin, result: runWithTimeout(plugin, ctx, timeoutMs) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -125,6 +166,34 @@ export function runPlugins(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Run a single plugin, enforcing a synchronous timeout boundary.
+ *
+ * Plugins are synchronous by contract, so we measure elapsed wall-clock
+ * time around `plugin.run(ctx)` and fail closed when the budget is
+ * exceeded. This keeps the runner deterministic and testable without
+ * introducing async plumbing into the plugin ABI.
+ */
+function runWithTimeout(
+  plugin: CheckPlugin,
+  ctx: CheckPluginContext,
+  timeoutMs: number,
+): ReturnType<CheckPlugin['run']> {
+  const startedAt = Date.now();
+  const result = plugin.run(ctx);
+  const elapsed = Date.now() - startedAt;
+
+  if (elapsed > timeoutMs) {
+    return {
+      passed: false,
+      detail: `Plugin \`${plugin.id}\` timed out after ${timeoutMs}ms.`,
+      remediation: `Contact the plugin author to fix \`${plugin.id}\`.`,
+    };
+  }
+
+  return result;
+}
 
 /**
  * Derive a boolean flag from the first plugin whose id ends with `suffix`.

@@ -1,0 +1,69 @@
+# Example: testnet onboarding with automatic Friendbot funding.
+#
+# Calls the shared reusable workflow in trustbridge-reusable.yml with
+# `use_friendbot: true`, so an assignee whose testnet account does not exist
+# yet (Horizon 404) is funded by Friendbot and then validated in the same run.
+#
+# Friendbot is only ever called for test networks: if `horizon_url` points at
+# pubnet (https://horizon.stellar.org) the action skips Friendbot and reports
+# `friendbot_called: false`.
+#
+# For futurenet, set:
+#   horizon_url:   https://horizon-futurenet.stellar.org
+#   friendbot_url: https://friendbot-futurenet.stellar.org
+#
+# See docs/USAGE.md#friendbot-testnet-funding for the full input reference and
+# docs/TROUBLESHOOTING.md#friendbot-funding-failed for common HTTP errors.
+#
+# TODO(maintainers): replace 07b97d28d482a18d277285f980dd5d7206673eb5 with the commit SHA of the
+# release tag this example should track.
+
+name: Testnet onboarding (Friendbot)
+
+on:
+  issues:
+    types: [assigned]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  resolve-address:
+    runs-on: ubuntu-latest
+    outputs:
+      address: ${{ steps.addr.outputs.value }}
+    steps:
+      - name: Resolve address
+        id: addr
+        # See docs/USAGE.md#extracting-stellar-addresses-from-issues for a
+        # robust issue-form extraction example.
+        run: echo "value=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
+
+  trustbridge:
+    needs: resolve-address
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0
+    secrets: inherit
+    with:
+      stellar_address_input: ${{ needs.resolve-address.outputs.address }}
+      horizon_url: https://horizon-testnet.stellar.org
+      asset_code: USDC
+      asset_issuer: GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2
+      use_friendbot: true
+      friendbot_url: https://friendbot.stellar.org
+      friendbot_timeout_ms: 15000
+
+  report:
+    needs: trustbridge
+    runs-on: ubuntu-latest
+    if: needs.trustbridge.outputs.friendbot_called == 'true'
+    steps:
+      - name: Report Friendbot result
+        env:
+          FRIENDBOT_SUCCESS: ${{ needs.trustbridge.outputs.friendbot_success }}
+          FRIENDBOT_TX: ${{ needs.trustbridge.outputs.friendbot_transaction_hash }}
+        run: |
+          echo "Friendbot success: ${FRIENDBOT_SUCCESS}"
+          if [ "${FRIENDBOT_SUCCESS}" = "true" ]; then
+            echo "Funding transaction: ${FRIENDBOT_TX}"
+          fi

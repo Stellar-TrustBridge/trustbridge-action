@@ -18,9 +18,11 @@ import {
   buildWebhookPayload,
   deliverWebhook,
   computeWebhookSignature,
+  validateWebhookPayload,
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
+import { evaluateAssetReasonCodes, deriveAssetReasonCode } from '../src/assets';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -303,5 +305,103 @@ describe('buildWebhookPayload always produces schema_version "1"', () => {
   it('schema_version is a string, never a number', () => {
     const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
     expect(typeof payload.schema_version).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #676 — per-asset clawback reason_code (additive, optional)
+// ---------------------------------------------------------------------------
+
+describe('per-asset assets section is additive (Issue #676)', () => {
+  const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+  const EURC_ISSUER = 'GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2';
+  const SAC_ISSUER = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+
+  const credit = (code: string, issuer: string, clawback: boolean) => ({
+    balance: '1.0000000',
+    asset_type: 'credit_alphanum4',
+    asset_code: code,
+    asset_issuer: issuer,
+    is_clawback_enabled: clawback,
+  });
+
+  const account = {
+    balances: [
+      { balance: '10.5000000', asset_type: 'native' },
+      credit('USDC', USDC_ISSUER, false),
+      credit('TOKN', SAC_ISSUER, true),
+    ],
+  } as any;
+
+  const extras = [
+    { assetCode: 'EURC', assetIssuer: EURC_ISSUER },
+    { assetCode: 'TOKN', assetIssuer: SAC_ISSUER },
+  ];
+
+  it('v1 payload has no assets key when per-asset evaluations are not supplied', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42);
+    expect('assets' in payload).toBe(false);
+    expect(Object.keys(payload)).toEqual(V1_REQUIRED_FIELDS);
+  });
+
+  it('empty evaluations also leave the v1 shape untouched', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42, []);
+    expect('assets' in payload).toBe(false);
+  });
+
+  it('assets section is optional in the schema (not in required)', () => {
+    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+    expect(schema['required']).not.toContain('assets');
+    expect(schema['properties']['assets']).toBeDefined();
+  });
+
+  it('strict mode reports CLAWBACK_BLOCKED per asset and TRUSTLINE_MISSING for absent trustlines', () => {
+    const evaluations = evaluateAssetReasonCodes(account, { assetCode: 'USDC', assetIssuer: USDC_ISSUER }, extras, true);
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42, evaluations);
+
+    expect(payload.assets).toEqual([
+      { asset_code: 'USDC', asset_issuer: 'GA5Z...KZVN', primary: true, trustline_exists: true, clawback_enabled: false, reason_code: 'SUCCESS' },
+      { asset_code: 'EURC', asset_issuer: 'GDHU...NPP2', primary: false, trustline_exists: false, clawback_enabled: false, reason_code: 'TRUSTLINE_MISSING' },
+      { asset_code: 'TOKN', asset_issuer: 'CAAA...D2KM', primary: false, trustline_exists: true, clawback_enabled: true, reason_code: 'CLAWBACK_BLOCKED' },
+    ]);
+    expect(validateWebhookPayload(payload)).toEqual([]);
+  });
+
+  it('warn mode keeps SUCCESS but still exposes clawback_enabled', () => {
+    const evaluations = evaluateAssetReasonCodes(account, { assetCode: 'USDC', assetIssuer: USDC_ISSUER }, extras, false);
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42, evaluations);
+    const tokn = payload.assets!.find((a) => a.asset_code === 'TOKN')!;
+    expect(tokn.clawback_enabled).toBe(true);
+    expect(tokn.reason_code).toBe('SUCCESS');
+  });
+
+  it('primary asset is listed once even when assets_json repeats it', () => {
+    const evaluations = evaluateAssetReasonCodes(
+      account,
+      { assetCode: 'USDC', assetIssuer: USDC_ISSUER },
+      [{ assetCode: 'USDC', assetIssuer: USDC_ISSUER }],
+      true,
+    );
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0].primary).toBe(true);
+  });
+
+  it('missing trustline outranks clawback in per-asset precedence', () => {
+    expect(deriveAssetReasonCode(false, true, true)).toBe('TRUSTLINE_MISSING');
+    expect(deriveAssetReasonCode(true, true, true)).toBe('CLAWBACK_BLOCKED');
+    expect(deriveAssetReasonCode(true, true, false)).toBe('SUCCESS');
+    expect(deriveAssetReasonCode(true, false, true)).toBe('SUCCESS');
+  });
+
+  it('additive assets section keeps schema_version "1" and the X-TrustBridge-Schema-Version header', async () => {
+    const evaluations = evaluateAssetReasonCodes(account, { assetCode: 'USDC', assetIssuer: USDC_ISSUER }, extras, true);
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 42, evaluations);
+    const mockFetch = jest.fn().mockResolvedValue({ status: 200 });
+    const result = await deliverWebhook(payload, CONFIG, mockFetch as any);
+
+    expect(result.sent).toBe(true);
+    const headers = (mockFetch.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['X-TrustBridge-Schema-Version']).toBe('1');
+    expect(JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string).schema_version).toBe('1');
   });
 });

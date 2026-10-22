@@ -10,6 +10,8 @@
     "test:coverage": "jest --coverage",
     "lint": "eslint src __tests__ --ext .ts",
     "license:check": "node scripts/check-licenses.js",
+    "license:report": "node scripts/generate-license-report.js",
+    "license:report:check": "node scripts/generate-license-report.js --check",
     "prepare": "npm run build"
   },
   "repository": {
@@ -26,6 +28,7 @@
   "author": "Stellar-TrustBridge",
   "license": "MIT",
   "dependencies": {
+    "@actions/cache": "^4.1.0",
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.1",
     "node-fetch": "^2.7.0"

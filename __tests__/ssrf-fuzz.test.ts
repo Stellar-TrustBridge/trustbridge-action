@@ -21,6 +21,7 @@
  */
 
 import { validateSsrfSafeUrl, validateHorizonUrl, SSRF_BLOCKED_PATTERNS } from '../src/validation';
+import { isSSRFBlocked, normalizeHostForSSRF, validateSSRFSafeUrl } from '../src/ssrf';
 
 // ---------------------------------------------------------------------------
 // Generator helpers
@@ -329,25 +330,11 @@ describe('SSRF fuzz — IDNA / percent-encoding hostname variants', () => {
   // if Node's URL parser normalizes them to their canonical form before
   // pattern matching occurs.
 
-  it('URL parser normalizes 0x7f000001 — verify it resolves or is rejected', () => {
-    // Decimal-encoded 127.0.0.1 = 2130706433
-    // These are non-standard and most parsers reject them or normalize them
-    const hexForm = 'http://0x7f000001/horizon';
-    const decimalForm = 'http://2130706433/horizon';
-    // These may not be blocked by the pattern matcher since URL() might not
-    // normalize them — but they also should not be treated as valid Horizon URLs
-    // (they're either blocked OR rejected as invalid URLs)
-    for (const url of [hexForm, decimalForm]) {
-      const result = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: true });
-      // Either blocked or URL parse error — must not be valid
-      if (result.valid) {
-        // If somehow valid, the host should be a public-looking string
-        // This is a documentation-level note: blocklist covers IP-literal form;
-        // decimal-encoded IPs may bypass if URL() doesn't normalize them.
-        // The test documents this behavior rather than requiring a hard fail.
-        console.warn(`Note: ${url} was not blocked — decimal/hex IP bypass not covered by pattern list`);
-      }
-    }
+  it('URL parser normalizes 0x7f000001 / 2130706433 — both must be blocked (Issue #702)', () => {
+    // WHATWG URL canonicalizes these to 127.0.0.1; the validator re-checks
+    // the normalized hostname so the encoding no longer bypasses the list.
+    blocked('http://0x7f000001/horizon');
+    blocked('http://2130706433/horizon');
   });
 
   it('percent-encoded localhost variants are rejected or blocked', () => {
@@ -526,5 +513,154 @@ describe('SSRF fuzz — pattern list regression guard', () => {
       const matched = SSRF_BLOCKED_PATTERNS.some((p) => p.test(url));
       expect({ url, matched }).toEqual({ url, matched: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. Issue #702 — normalized-host corpus (alternate encodings, rebinding
+//     helpers, IDNA). Each entry must be rejected even over https.
+// ---------------------------------------------------------------------------
+
+describe('SSRF fuzz — Issue #702 normalized host corpus (https)', () => {
+  const corpus: [string, string][] = [
+    // Decimal / octal / hex / short-form IPv4 encodings
+    ['https://2130706433/', 'decimal 127.0.0.1'],
+    ['https://0x7f000001/', 'hex 127.0.0.1'],
+    ['https://0x7f.1/', 'mixed hex short-form 127.0.0.1'],
+    ['https://0177.0.0.1/', 'octal first octet 127.0.0.1'],
+    ['https://017700000001/', 'octal 127.0.0.1'],
+    ['https://127.1/', 'short-form 127.0.0.1'],
+    ['https://2852039166/', 'decimal 169.254.169.254 (metadata)'],
+    ['https://0xa9.0xfe.0xa9.0xfe/', 'hex-dotted 169.254.169.254 (metadata)'],
+    ['https://3232235521/', 'decimal 192.168.0.1'],
+    ['https://0xc0a80001/', 'hex 192.168.0.1'],
+    ['https://10.1/', 'short-form 10.0.0.1'],
+    ['https://167772161/', 'decimal 10.0.0.1'],
+    ['https://2886729729/', 'decimal 172.16.0.1'],
+    // Unspecified / CGNAT / benchmarking ranges
+    ['https://0.0.0.0/', 'unspecified IPv4'],
+    ['https://0/', 'bare zero → 0.0.0.0'],
+    ['https://100.100.100.200/', 'Alibaba metadata (100.64.0.0/10)'],
+    ['https://198.18.0.1/', 'benchmarking 198.18.0.0/15'],
+    // IPv6 forms that hide an IPv4 private address
+    ['https://[::]/', 'unspecified IPv6'],
+    ['https://[::ffff:7f00:1]/', 'IPv4-mapped loopback (hex form)'],
+    ['https://[0:0:0:0:0:ffff:a9fe:a9fe]/', 'IPv4-mapped metadata (expanded)'],
+    ['https://[64:ff9b::a9fe:a9fe]/', 'NAT64 embedded metadata'],
+    ['https://[2002:7f00:1::]/', '6to4 embedded loopback'],
+    ['https://[2002:c0a8:1::1]/', '6to4 embedded 192.168.0.1'],
+    ['https://[0000:0000:0000:0000:0000:0000:0000:0001]/', 'fully expanded ::1'],
+    ['https://[ff02::1]/', 'IPv6 multicast'],
+    // Hostname tricks
+    ['https://localhost./', 'trailing-dot localhost'],
+    ['https://api.localhost/', '*.localhost'],
+    ['https://METADATA.GOOGLE.INTERNAL./', 'trailing-dot GCP metadata'],
+    // IDNA mapping: full-width digits / ideographic full stop / enclosed letters
+    ['https://\uFF11\uFF12\uFF17.\uFF10.\uFF10.\uFF11/', 'full-width 127.0.0.1'],
+    ['https://127\u30020\u30020\u30021/', 'ideographic full stop 127.0.0.1'],
+    ['https://\u24DBocalhost/', 'enclosed-letter localhost'],
+    // Userinfo must never change the target host
+    ['https://evil@127.0.0.1/', 'userinfo + loopback'],
+    ['https://horizon.stellar.org@2130706433/', 'public-looking userinfo + decimal loopback'],
+    ['https://user:pass@0x7f.1:8443/', 'credentials + hex loopback + port'],
+  ];
+
+  it('covers at least 20 new malicious hostname variants', () => {
+    expect(corpus.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it.each(corpus)('blocks %s (%s)', (url) => {
+    const result = validateSsrfSafeUrl(url, 'horizon_url', { allowHttp: false });
+    expect(result.valid).toBe(false);
+  });
+
+  it.each(corpus)('validateHorizonUrl rejects %s (%s)', (url) => {
+    expect(validateHorizonUrl(url).valid).toBe(false);
+  });
+
+  it.each(corpus)('isSSRFBlocked / validateSSRFSafeUrl (fetch gate) reject %s', (url) => {
+    let host: string;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return; // URL() rejection is fail-closed
+    }
+    expect(isSSRFBlocked(host).blocked).toBe(true);
+    expect(validateSSRFSafeUrl(url).valid).toBe(false);
+  });
+
+  it('IPv6 ::1 and 127.0.0.1 are blocked consistently in both gates', () => {
+    for (const url of ['https://[::1]/', 'https://127.0.0.1/']) {
+      expect(validateSsrfSafeUrl(url, 'horizon_url').valid).toBe(false);
+      expect(validateSSRFSafeUrl(url).valid).toBe(false);
+    }
+  });
+
+  it('error message names the normalized host so operators can act on it', () => {
+    const result = validateSsrfSafeUrl('https://2130706433/', 'horizon_url');
+    expect(result.errors.join(' ')).toMatch(/127\.0\.0\.1/);
+    expect(result.errors.join(' ')).toMatch(/loopback/);
+  });
+});
+
+describe('SSRF fuzz — Issue #702 normalizeHostForSSRF', () => {
+  it.each([
+    ['2130706433', '127.0.0.1'],
+    ['0x7f.1', '127.0.0.1'],
+    ['LOCALHOST.', 'localhost'],
+    ['[::FFFF:127.0.0.1]', '::ffff:7f00:1'],
+    ['fe80::1%eth0', 'fe80::1'],
+    ['\uFF11\uFF12\uFF17.\uFF10.\uFF10.\uFF11', '127.0.0.1'],
+  ])('normalizes %s → %s', (input, expected) => {
+    expect(normalizeHostForSSRF(input)).toBe(expected);
+  });
+
+  it('blocks zone-scoped link-local even when passed as a bare host', () => {
+    expect(isSSRFBlocked('fe80::1%25eth0').blocked).toBe(true);
+  });
+});
+
+describe('SSRF fuzz — Issue #702 public hosts stay allowed', () => {
+  const publicHosts = [
+    'https://horizon.stellar.org',
+    'https://horizon-testnet.stellar.org',
+    'https://horizon-futurenet.stellar.org',
+    'https://soroban-testnet.stellar.org',
+    'https://8.8.8.8/',
+    'https://100.63.255.255/', // just below CGNAT
+    'https://100.128.0.1/', // just above CGNAT
+    'https://[2606:4700:4700::1111]/',
+    'https://[2002:808:808::1]/', // 6to4 wrapping public 8.8.8.8
+  ];
+
+  it.each(publicHosts)('allows %s', (url) => {
+    allowed(url);
+    expect(validateSSRFSafeUrl(url).valid).toBe(true);
+  });
+});
+
+describe('SSRF fuzz — Issue #702 IDNA homographs vs. allowlist', () => {
+  // Cyrillic "һ" (U+04BB) and "а" (U+0430) look like Latin h / a. They are
+  // public names (so not SSRF-blocked), but must never satisfy an allowlist
+  // entry for the genuine host.
+  const homographs = [
+    'https://\u04BBorizon.stellar.org',
+    'https://horizon.stell\u0430r.org',
+    'https://horizon.\u0455tellar.org', // Cyrillic dze "ѕ"
+    'https://horizon.stellar.\u043Erg', // Cyrillic "о"
+  ];
+
+  it.each(homographs)('punycode homograph %s does not match the stellar.org allowlist', (url) => {
+    const result = validateHorizonUrl(url, 'horizon_url', { allowlist: ['horizon.stellar.org'] });
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/not in the allowlist/);
+    expect(new URL(url).hostname).toMatch(/xn--/);
+  });
+
+  it('the genuine host still matches the allowlist', () => {
+    const result = validateHorizonUrl('https://horizon.stellar.org', 'horizon_url', {
+      allowlist: ['horizon.stellar.org'],
+    });
+    expect(result.valid).toBe(true);
   });
 });

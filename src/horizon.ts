@@ -1,18 +1,19 @@
-import * as tls from 'tls';
-import * as crypto from 'crypto';
 import { defaultCache, SimpleCache } from './cache';
-import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
-import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
+import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
+import { inferStellarNetwork } from './links';
+import { globalMetrics, globalHorizonHistogram } from './metrics';
+import { RateBudgetTracker, RateBudgetExhaustedError, CircuitBreaker, CircuitOpenError } from './resilience';
+import { validateHorizonUrl } from './validation';
 export interface HorizonBalanceNative {
   balance: string;
-  asset_type: "native";
+  asset_type: 'native';
   buying_liabilities: string;
   selling_liabilities: string;
 }
 
 export interface HorizonBalanceCredit {
   balance: string;
-  asset_type: "credit_alphanum4" | "credit_alphanum12";
+  asset_type: 'credit_alphanum4' | 'credit_alphanum12';
   asset_code: string;
   asset_issuer: string;
   buying_liabilities: string;
@@ -34,7 +35,7 @@ export interface HorizonBalanceCredit {
 
 export interface HorizonBalanceLiquidityPoolShares {
   balance: string;
-  asset_type: "liquidity_pool_shares";
+  asset_type: 'liquidity_pool_shares';
   liquidity_pool_id: string;
   buying_liabilities: string;
   selling_liabilities: string;
@@ -44,7 +45,7 @@ export interface HorizonBalanceLiquidityPoolShares {
 }
 
 export interface HorizonBalanceClaimable {
-  asset_type: "claimable_balance_id";
+  asset_type: 'claimable_balance_id';
   balance: string;
   claimable_balance_id: string;
 }
@@ -99,17 +100,14 @@ export class HorizonError extends Error {
     public readonly retryable: boolean = false,
   ) {
     super(message);
-    this.name = "HorizonError";
+    this.name = 'HorizonError';
   }
 }
 
 export class HorizonRateLimitError extends HorizonError {
-  constructor(
-    message: string,
-    public readonly retryAfterMs?: number,
-  ) {
+  constructor(message: string, public readonly retryAfterMs?: number) {
     super(message, 429, true);
-    this.name = "HorizonRateLimitError";
+    this.name = 'HorizonRateLimitError';
   }
 }
 
@@ -119,54 +117,8 @@ export class HorizonTlsError extends HorizonError {
     public readonly originalCode?: string,
   ) {
     super(message, 0, false);
-    this.name = "HorizonTlsError";
+    this.name = 'HorizonTlsError';
   }
-}
-
-/**
- * Thrown when the Horizon TLS certificate fingerprint does not match the
- * configured `horizon_pin_fingerprint` value (Issue #303).
- */
-export class HorizonPinMismatchError extends HorizonError {
-  constructor(
-    message: string,
-    public readonly expectedFingerprint: string,
-    public readonly actualFingerprint: string,
-  ) {
-    super(message, 0, false);
-    this.name = 'HorizonPinMismatchError';
-  }
-}
-
-/**
- * Thrown when a Horizon request was short-circuited by the circuit breaker
- * (Issue #209) and surfaced for comment rendering (Issue #434).
- *
- * Distinct from a plain `HorizonError` because the failure says nothing about
- * the account: no request reached the network, so the account was never
- * checked. The sticky comment renders a dedicated "circuit breaker open"
- * banner for this case so a resilience safeguard is not mistaken for an
- * account-level failure.
- *
- * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
- * working unchanged.
- */
-export class HorizonCircuitOpenError extends HorizonError {
-  constructor(message: string) {
-    super(message, 0, false);
-    this.name = "HorizonCircuitOpenError";
-  }
-}
-
-/** Is this error a circuit-breaker fast-fail (Issue #434)? */
-export function isCircuitOpenError(
-  error: unknown,
-): error is HorizonCircuitOpenError {
-  return (
-    error instanceof HorizonCircuitOpenError ||
-    error instanceof CircuitOpenError ||
-    (error instanceof Error && error.name === "HorizonCircuitOpenError")
-  );
 }
 
 /**
@@ -174,21 +126,21 @@ export function isCircuitOpenError(
  * verification failure, as opposed to a generic connection/network error.
  */
 const TLS_ERROR_CODES = new Set<string>([
-  "CERT_HAS_EXPIRED",
-  "CERT_NOT_YET_VALID",
-  "CERT_REVOKED",
-  "CERT_UNTRUSTED",
-  "CERT_CHAIN_TOO_LONG",
-  "DEPTH_ZERO_SELF_SIGNED_CERT",
-  "SELF_SIGNED_CERT_IN_CHAIN",
-  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-  "UNABLE_TO_GET_ISSUER_CERT",
-  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-  "UNABLE_TO_GET_CRL",
-  "HOSTNAME_MISMATCH",
-  "ERR_TLS_CERT_ALTNAME_INVALID",
-  "ERR_SSL_WRONG_VERSION_NUMBER",
-  "ERR_TLS_HANDSHAKE_TIMEOUT",
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'CERT_UNTRUSTED',
+  'CERT_CHAIN_TOO_LONG',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_GET_CRL',
+  'HOSTNAME_MISMATCH',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_TLS_HANDSHAKE_TIMEOUT',
 ]);
 
 function tlsErrorCode(error: unknown): string | undefined {
@@ -204,9 +156,9 @@ function tlsErrorCode(error: unknown): string | undefined {
 }
 
 export type FetchLike = (
-  url: string | import("node-fetch").Request,
-  init?: import("node-fetch").RequestInit,
-) => Promise<import("node-fetch").Response>;
+  url: string | import('node-fetch').Request,
+  init?: import('node-fetch').RequestInit,
+) => Promise<import('node-fetch').Response>;
 
 export interface FetchAccountOptions {
   timeoutMs?: number;
@@ -217,50 +169,73 @@ export interface FetchAccountOptions {
   cacheTtlMs?: number;
   cache?: SimpleCache;
   fetchFn?: FetchLike;
-  rateBudgetTracker?: RateBudgetTracker;
-  /** Optional AbortSignal to cancel the request early. */
+  /**
+   * Optional AbortSignal from a parent controller (e.g. job cancellation).
+   * When the signal fires, in-flight and pending requests are aborted
+   * immediately; no misleading "account not funded" result is produced.
+   */
   signal?: AbortSignal;
+  /**
+   * Base delay for exponential backoff (`retry_base_delay_ms`). The n-th
+   * retry waits `retryBaseDelayMs * 2^n`, capped at `retryMaxDelayMs`.
+   */
+  retryBaseDelayMs?: number;
+  /**
+   * Hard cap on any single retry sleep (`retry_max_delay_ms`), applied to
+   * both `Retry-After` values and exponential backoff. 0 disables sleeping
+   * between retries while still honoring `maxRetries`.
+   */
+  retryMaxDelayMs?: number;
+  /**
+   * Cumulative sleep budget across all retries of one endpoint
+   * (`retry_max_total_wait_ms`). When the next sleep would exceed it the
+   * retry loop aborts with a `HorizonRateLimitError` (429) or the last
+   * transport error instead of sleeping.
+   */
+  retryMaxTotalWaitMs?: number;
+  /** Per-run Horizon request budget (`horizon_max_requests`). */
+  horizonMaxRequests?: number;
+  rateBudgetTracker?: RateBudgetTracker;
+  /** Optional circuit breaker for Horizon fetches (Issue #209). */
+  circuitBreaker?: CircuitBreaker;
+  /**
+   * Opt into a fallback URL on a different Stellar network than the primary
+   * `horizon_url`. Off by default: a G-address is valid on every network, so
+   * a cross-network fallback could silently report data from the wrong ledger.
+   */
+  allowCrossNetworkFallback?: boolean;
+  /** Alias for `allowCrossNetworkFallback` kept for older call sites / tests. */
+  allowCrossNetworkFailover?: boolean;
+  /** Optional secondary Horizon URL used for same-network failover. */
+  secondaryHorizonUrl?: string;
+  /** Optional SHA-256 TLS certificate fingerprint pin (Issue #303). */
+  pinFingerprint?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
-const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
+export const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
+export const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
-    return "";
+    return '';
   }
   // Horizon endpoints may use http on private/testnet mirrors; still enforce
   // credential + traversal guards via validateHorizonUrl.
-  const validation = validateHorizonUrl(trimmed, "horizon_url", {
-    allowHttp: true,
-    allowLocalhost: process.env.HORIZON_MOCK_URL === trimmed,
-  });
+  const validation = validateHorizonUrl(trimmed, 'horizon_url', { allowHttp: true });
   if (!validation.valid) {
-    throw new HorizonError(
-      `Invalid horizon_url: ${validation.errors.join("; ")}`,
-      400,
-      false,
-    );
+    throw new HorizonError(`Invalid horizon_url: ${validation.errors.join('; ')}`, 400, false);
   }
   // Re-check raw traversal after allowing http, since URL() would otherwise normalize it.
-  if (
-    /(?:^|\/)(?:\.\.|%2e%2e)(?:\/|$)/i.test(trimmed) ||
-    /\/\.\//.test(trimmed)
-  ) {
-    throw new HorizonError(
-      "Invalid horizon_url: path traversal segments are not allowed",
-      400,
-      false,
-    );
+  if (/(?:^|\/)(?:\.\.|%2e%2e)(?:\/|$)/i.test(trimmed) || /\/\.\//.test(trimmed)) {
+    throw new HorizonError('Invalid horizon_url: path traversal segments are not allowed', 400, false);
   }
   const parsed = new URL(trimmed);
-  const cleanPath =
-    parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+  const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
   return `${parsed.origin}${cleanPath}`;
 }
 
@@ -281,101 +256,12 @@ export function displayHorizonUrl(url: string, revealHost: boolean): string {
     const parsed = new URL(url);
     return `${parsed.protocol}//••• (set debug_mode: true to reveal)`;
   } catch {
-    return "••• (set debug_mode: true to reveal)";
+    return '••• (set debug_mode: true to reveal)';
   }
 }
 
 export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 503 || status === 502 || status === 504;
-}
-
-/**
- * Performs a TLS pre-flight check to verify the server certificate fingerprint.
- * Only runs for HTTPS URLs; HTTP URLs are silently skipped.
- *
- * @param horizonUrl - The Horizon URL to check (must be https:)
- * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...').
- *   Pass an empty string to skip the pin check and rely on standard WebPKI validation.
- * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
- * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
- * (Issue #303)
- */
-export async function checkCertificatePin(
-  horizonUrl: string,
-  expectedFingerprint: string,
-): Promise<void> {
-  const parsed = new URL(horizonUrl);
-  if (parsed.protocol !== 'https:') {
-    // Only HTTPS connections have TLS certificates to pin
-    return;
-  }
-
-  // When pinFingerprint is empty (not configured), skip the pin check
-  // and rely on standard WebPKI certificate validation.
-  if (!expectedFingerprint || expectedFingerprint.trim() === '') {
-    return;
-  }
-
-  const host = parsed.hostname;
-  const port = parseInt(parsed.port || '443', 10);
-  const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
-
-  return new Promise<void>((resolve, reject) => {
-    const socket = tls.connect({ host, port, servername: host }, () => {
-      try {
-        const cert = socket.getPeerCertificate();
-        socket.destroy();
-
-        if (!cert || !cert.raw) {
-          reject(new HorizonTlsError(
-            'Could not retrieve server certificate for fingerprint check.',
-          ));
-          return;
-        }
-
-        // Compute SHA-256 fingerprint over the raw DER-encoded certificate
-        const fingerprint = crypto
-          .createHash('sha256')
-          .update(cert.raw)
-          .digest('hex')
-          .toUpperCase()
-          .match(/.{2}/g)!
-          .join(':');
-
-        const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
-
-        if (normalizedActual !== normalizedExpected) {
-          reject(new HorizonPinMismatchError(
-            `TLS certificate fingerprint mismatch for Horizon endpoint. ` +
-            `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +
-            `The Horizon host certificate may have changed — update horizon_pin_fingerprint or investigate MITM.`,
-            normalizedExpected,
-            normalizedActual,
-          ));
-          return;
-        }
-
-        resolve();
-      } catch (err) {
-        socket.destroy();
-        reject(err instanceof Error ? err : new HorizonTlsError('Certificate pin check failed.'));
-      }
-    });
-
-    socket.on('error', (err) => {
-      const tlsCode = (err as NodeJS.ErrnoException).code;
-      reject(new HorizonTlsError(
-        'TLS connection failed during certificate pin check.',
-        tlsCode,
-      ));
-    });
-
-    // 10 second timeout for the TLS probe
-    socket.setTimeout(10000, () => {
-      socket.destroy();
-      reject(new HorizonTlsError('TLS certificate pin check timed out.'));
-    });
-  });
 }
 
 export function parseRetryAfterMs(response: import('node-fetch').Response): number | null {
@@ -385,7 +271,9 @@ export function parseRetryAfterMs(response: import('node-fetch').Response): numb
   }
   const seconds = Number(header);
   if (!Number.isNaN(seconds)) {
-    return seconds * 1000;
+    // Negative or non-finite values (e.g. "-5", "1e400") are treated as
+    // absent so the caller falls back to capped exponential backoff.
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
   }
   const date = Date.parse(header);
   if (!Number.isNaN(date)) {
@@ -412,21 +300,18 @@ function cancellableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   }
   return new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
       resolve();
     };
-    signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
-function buildCacheKey(
-  normalizedHorizonUrl: string,
-  stellarAddress: string,
-): string {
+function buildCacheKey(normalizedHorizonUrl: string, stellarAddress: string): string {
   return `horizon:account:${normalizedHorizonUrl}:${stellarAddress}`;
 }
 
@@ -453,11 +338,11 @@ function redactCacheStats(stats: { size: number; entries: string[] }): {
  * the redaction policy used everywhere else in this module.
  */
 function recordCacheMetric(
-  outcome: "hit" | "miss",
+  outcome: 'hit' | 'miss',
   normalizedHorizonUrl: string,
   stellarAddress: string,
 ): void {
-  globalMetrics.recordMetric(`horizon_cache_${outcome}`, 1, "count", {
+  globalMetrics.recordMetric(`horizon_cache_${outcome}`, 1, 'count', {
     horizonUrl: redactHorizonUrl(normalizedHorizonUrl),
     stellarAddress: redactStellarAddress(stellarAddress),
   });
@@ -465,7 +350,7 @@ function recordCacheMetric(
 }
 
 function safeHorizonContext(
-  base: Omit<LogContext, "stellarAddress" | "horizonUrl"> & {
+  base: Omit<LogContext, 'stellarAddress' | 'horizonUrl'> & {
     stellarAddress: string;
     horizonUrl: string;
     horizonUrlFallback?: string;
@@ -496,9 +381,8 @@ function safeAccountSummary(account: HorizonAccount): {
 } {
   return {
     balancesCount: account.balances.length,
-    hasNativeBalance: account.balances.some((b) => b.asset_type === "native"),
-    creditTrustlineCount: account.balances.filter((b) => isCreditBalance(b))
-      .length,
+    hasNativeBalance: account.balances.some((b) => b.asset_type === 'native'),
+    creditTrustlineCount: account.balances.filter((b) => isCreditBalance(b)).length,
     subentryCount: account.subentry_count,
   };
 }
@@ -517,8 +401,14 @@ async function fetchAccountOnce(
   timeoutMs: number,
   maxRetries: number,
   endpointKind: 'primary' | 'fallback',
-  externalSignal?: AbortSignal,
+  retryMaxDelayMs: number = DEFAULT_RETRY_MAX_DELAY_MS,
+  retryMaxTotalWaitMs: number = DEFAULT_RETRY_MAX_TOTAL_WAIT_MS,
+  parentSignal?: AbortSignal,
+  rateBudgetTracker?: RateBudgetTracker,
+  circuitBreaker?: CircuitBreaker,
+  retryBaseDelayMs: number = DEFAULT_RETRY_BASE_DELAY_MS,
 ): Promise<FetchOnceResult> {
+  const externalSignal = parentSignal;
   const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
   const safeUrlForLog = redactHorizonUrl(url);
@@ -530,37 +420,33 @@ async function fetchAccountOnce(
   while (attempt <= maxRetries) {
     // Bail out immediately if the job was cancelled before this attempt.
     if (parentSignal?.aborted) {
-      throw new HorizonError(
-        "Horizon request aborted (job cancelled).",
-        0,
-        false,
-      );
+      throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
     }
 
     const requestStartedAt = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    // If external signal is provided, abort our controller when it aborts
-    const onExternalAbort = () => controller.abort();
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        clearTimeout(timer);
-        throw new HorizonError('Horizon request aborted', 499, false);
-      }
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    // Propagate the parent cancellation signal to the per-request controller.
+    let parentAbortHandler: (() => void) | undefined;
+    if (parentSignal) {
+      parentAbortHandler = () => controller.abort();
+      parentSignal.addEventListener("abort", parentAbortHandler);
     }
 
-    logger.debug('Horizon fetch start', safeHorizonContext({
-      component: 'horizon',
-      stellarAddress,
-      horizonUrl: targetHorizonUrl,
-      endpointKind,
-      attempt,
-      maxAttempts: maxRetries + 1,
-      timeoutMs,
-      url: safeUrlForLog,
-    }));
+    logger.debug(
+      "Horizon fetch start",
+      safeHorizonContext({
+        component: "horizon",
+        stellarAddress,
+        horizonUrl: targetHorizonUrl,
+        endpointKind,
+        attempt,
+        maxAttempts: maxRetries + 1,
+        timeoutMs,
+        url: safeUrlForLog,
+      }),
+    );
 
     try {
       if (rateBudgetTracker) {
@@ -573,32 +459,30 @@ async function fetchAccountOnce(
       const response = circuitBreaker
         ? await circuitBreaker.execute(() =>
             fetch(url, {
-              method: "GET",
-              headers: { Accept: "application/json" },
+              method: 'GET',
+              headers: { Accept: 'application/json' },
               signal: controller.signal,
             }),
           )
         : await fetch(url, {
-            method: "GET",
-            headers: { Accept: "application/json" },
+            method: 'GET',
+            headers: { Accept: 'application/json' },
             signal: controller.signal,
           });
 
       const latencyMs = Date.now() - requestStartedAt;
 
       if (response.status === 404) {
-        logger.debug(
-          "Horizon account not found (404)",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            status: 404,
-            latencyMs,
-            attempt,
-          }),
-        );
+        logger.debug('Horizon account not found (404)', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          status: 404,
+          latencyMs,
+          attempt,
+        }));
+        globalHorizonHistogram.record(endpointKind, latencyMs);
         throw new HorizonError(
           `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
           404,
@@ -627,26 +511,29 @@ async function fetchAccountOnce(
               retryable,
               latencyMs,
               attempt,
-              errorDetail: redactString(detail),
-              errorType: body.type ? redactString(body.type) : undefined,
-              errorTitle: body.title ? redactString(body.title) : undefined,
+              // Issue #697: never log Horizon response bodies on retryable
+              // (429/5xx) responses — they can echo request details back.
+              ...(retryable
+                ? { bodyOmitted: true }
+                : {
+                    errorDetail: redactString(detail),
+                    errorType: body.type ? redactString(body.type) : undefined,
+                    errorTitle: body.title ? redactString(body.title) : undefined,
+                  }),
             }),
           );
         } catch {
-          logger.debug(
-            "Horizon error response missing JSON body",
-            safeHorizonContext({
-              component: "horizon",
-              stellarAddress,
-              horizonUrl: targetHorizonUrl,
-              endpointKind,
-              status: response.status,
-              retryable,
-              latencyMs,
-              attempt,
-              statusText: response.statusText,
-            }),
-          );
+          logger.debug('Horizon error response missing JSON body', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl: targetHorizonUrl,
+            endpointKind,
+            status: response.status,
+            retryable,
+            latencyMs,
+            attempt,
+            statusText: response.statusText,
+          }));
         }
 
         if (retryable && attempt < maxRetries) {
@@ -655,18 +542,52 @@ async function fetchAccountOnce(
           // When the header is missing or the value exceeds the cap, fall back
           // to exponential backoff so the action never waits unbounded.
           let retryAfter: number;
+          let retryAfterCapped = false;
           if (retryAfterHeader !== null) {
             retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
+            retryAfterCapped = retryAfterHeader > retryMaxDelayMs;
+            if (retryAfterHeader > retryMaxDelayMs) {
+              // Issue #705: surface the cap. Only the parsed millisecond
+              // values are logged, never the raw header string.
+              logger.info(
+                `Horizon Retry-After capped: requested ${Math.round(retryAfterHeader)}ms exceeds retry_max_delay_ms (${retryMaxDelayMs}ms); sleeping ${retryAfter}ms.`,
+                safeHorizonContext({
+                  component: "horizon",
+                  stellarAddress,
+                  horizonUrl: targetHorizonUrl,
+                  endpointKind,
+                  status: response.status,
+                  attempt,
+                  retryAfterRequestedMs: Math.round(retryAfterHeader),
+                  retryMaxDelayMs,
+                }),
+              );
+            }
           } else {
             retryAfter = Math.min(
               retryBaseDelayMs * 2 ** attempt,
               retryMaxDelayMs,
             );
+            retryAfterCapped = retryBaseDelayMs * 2 ** attempt > retryMaxDelayMs;
           }
 
           if (totalWaitMs + retryAfter > retryMaxTotalWaitMs) {
+            logger.horizonRetry({
+              phase: "exhausted",
+              reason: "wait_budget",
+              attempt,
+              maxAttempts: maxRetries + 1,
+              status: response.status,
+              delayMs: 0,
+              capped: retryAfterCapped,
+              kind: "http",
+              endpointKind,
+              horizonUrl: normalizedHorizonUrl,
+              stellarAddress,
+              retryAfterFromHeader: retryAfterHeader !== null,
+            });
             throw new HorizonRateLimitError(
-              `Horizon retry wait budget exhausted (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`,
+              `Horizon rate limit exceeded (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`,
               retryAfter,
             );
           }
@@ -691,27 +612,30 @@ async function fetchAccountOnce(
               nextAttempt: attempt + 1,
             }),
           );
-          await cancellableSleep(retryAfter, parentSignal);
+          if (retryAfter > 0) {
+            await cancellableSleep(retryAfter, parentSignal);
+          }
           // If the job was cancelled during the sleep, bail out on the next
           // iteration's pre-flight check rather than issuing another request.
           attempt += 1;
           continue;
         }
 
-        logger.debug(
-          "Horizon non-retryable HTTP error (exhausted retries)",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            status: response.status,
-            retryable,
-            latencyMs,
+        if (retryable) {
+          logger.horizonRetry({
+            phase: "exhausted",
+            reason: "max_retries",
             attempt,
-            final: true,
-          }),
-        );
+            maxAttempts: maxRetries + 1,
+            status: response.status,
+            delayMs: 0,
+            capped: false,
+            kind: "http",
+            endpointKind,
+            horizonUrl: normalizedHorizonUrl,
+            stellarAddress,
+          });
+        }
 
         throw new HorizonError(
           `Horizon request failed (${response.status}): ${detail}`,
@@ -721,19 +645,17 @@ async function fetchAccountOnce(
       }
 
       const parsed = (await response.json()) as HorizonAccount;
-      logger.debug(
-        "Horizon fetch success",
-        safeHorizonContext({
-          component: "horizon",
-          stellarAddress,
-          horizonUrl: targetHorizonUrl,
-          endpointKind,
-          status: response.status,
-          latencyMs,
-          attempt,
-          ...safeAccountSummary(parsed),
-        }),
-      );
+      logger.debug('Horizon fetch success', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl: targetHorizonUrl,
+        endpointKind,
+        status: response.status,
+        latencyMs,
+        attempt,
+        ...safeAccountSummary(parsed),
+      }));
+      globalHorizonHistogram.record(endpointKind, latencyMs);
       return {
         account: parsed,
         statusCode: response.status,
@@ -741,10 +663,7 @@ async function fetchAccountOnce(
         attempts: attempt + 1,
       };
     } catch (error) {
-      if (
-        error instanceof HorizonError ||
-        (error instanceof Error && error.name === "RateBudgetExhaustedError")
-      ) {
+      if (error instanceof HorizonError || (error instanceof Error && error.name === 'RateBudgetExhaustedError')) {
         throw error;
       }
 
@@ -752,74 +671,67 @@ async function fetchAccountOnce(
       // Treat as non-retryable — the breaker will transition to half-open
       // after its recovery timeout.
       if (error instanceof CircuitOpenError) {
-        logger.debug(
-          "Horizon request blocked by circuit breaker",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            attempt,
-            final: true,
-          }),
-        );
-        throw new HorizonCircuitOpenError(
+        logger.debug('Horizon request blocked by circuit breaker', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          attempt,
+          final: true,
+        }));
+        throw new HorizonError(
           `Horizon request blocked by circuit breaker: ${error.message}`,
+          0,
+          false,
         );
       }
 
       const tlsCode = tlsErrorCode(error);
       if (tlsCode) {
         const tlsLatencyMs = Date.now() - requestStartedAt;
-        logger.debug(
-          "Horizon TLS/certificate verification failed",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            tlsErrorCode: tlsCode,
-            latencyMs: tlsLatencyMs,
-            attempt,
-            final: true,
-          }),
-        );
+        logger.debug('Horizon TLS/certificate verification failed', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          tlsErrorCode: tlsCode,
+          latencyMs: tlsLatencyMs,
+          attempt,
+          final: true,
+        }));
         // Not retryable: retrying against the same endpoint cannot fix a
         // bad certificate, so fail fast instead of burning the retry budget.
         throw new HorizonTlsError(
-          "TLS/certificate verification failed while connecting to the configured Horizon endpoint. " +
-            "This is a transport-layer problem with the endpoint itself, not with the Stellar account being checked.",
+          'TLS/certificate verification failed while connecting to the configured Horizon endpoint. ' +
+            'This is a transport-layer problem with the endpoint itself, not with the Stellar account being checked.',
           tlsCode,
         );
       }
 
-      const isAbort = error instanceof Error && error.name === "AbortError";
+      const isAbort = error instanceof Error && error.name === 'AbortError';
       // If the parent job signal fired, propagate as a non-retryable cancellation.
-      const isJobCancelled = isAbort && parentSignal?.aborted;
+      const isJobCancelled = isAbort && externalSignal?.aborted;
       const message = isJobCancelled
-        ? "Horizon request aborted (job cancelled)."
+        ? 'Horizon request aborted (job cancelled).'
         : isAbort
           ? `Horizon request timed out after ${timeoutMs}ms`
           : error instanceof Error
             ? error.message
-            : "Unknown Horizon error";
+            : 'Unknown Horizon error';
 
       const latencyMs = Date.now() - requestStartedAt;
 
-      logger.debug(
-        "Horizon transport error",
-        safeHorizonContext({
-          component: "horizon",
-          stellarAddress,
-          horizonUrl: targetHorizonUrl,
-          endpointKind,
-          kind: isJobCancelled ? "cancelled" : isAbort ? "timeout" : "network",
-          latencyMs,
-          attempt,
-          timeoutMs,
-          errorMessage: redactString(message),
-        }),
-      );
+      logger.debug('Horizon transport error', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl: targetHorizonUrl,
+        endpointKind,
+        kind: isJobCancelled ? 'cancelled' : isAbort ? 'timeout' : 'network',
+        latencyMs,
+        attempt,
+        timeoutMs,
+        errorMessage: redactString(message),
+      }));
 
       // Job cancellation is non-retryable — throw immediately.
       if (isJobCancelled) {
@@ -828,13 +740,29 @@ async function fetchAccountOnce(
 
       lastError = new HorizonError(message, isAbort ? 408 : 0, true);
 
+      const transportKind = isAbort ? "timeout" : "network";
+
       if (attempt < maxRetries) {
         const backoffMs = Math.min(
           retryBaseDelayMs * 2 ** attempt,
           retryMaxDelayMs,
         );
+        const backoffCapped = retryBaseDelayMs * 2 ** attempt > retryMaxDelayMs;
 
         if (totalWaitMs + backoffMs > retryMaxTotalWaitMs) {
+          logger.horizonRetry({
+            phase: "exhausted",
+            reason: "wait_budget",
+            attempt,
+            maxAttempts: maxRetries + 1,
+            status: 0,
+            delayMs: 0,
+            capped: backoffCapped,
+            kind: transportKind,
+            endpointKind,
+            horizonUrl: normalizedHorizonUrl,
+            stellarAddress,
+          });
           throw lastError;
         }
 
@@ -854,7 +782,9 @@ async function fetchAccountOnce(
             nextAttempt: attempt + 1,
           }),
         );
-        await cancellableSleep(backoffMs, parentSignal);
+        if (backoffMs > 0) {
+          await cancellableSleep(backoffMs, parentSignal);
+        }
         // If the job was cancelled during the backoff sleep, bail out on the
         // next iteration's pre-flight check rather than issuing another request.
         attempt += 1;
@@ -868,37 +798,45 @@ async function fetchAccountOnce(
           stellarAddress,
           horizonUrl: targetHorizonUrl,
           endpointKind,
-          kind: isAbort ? "timeout" : "network",
+          kind: transportKind,
           latencyMs,
           attempt,
           final: true,
         }),
       );
 
+      logger.horizonRetry({
+        phase: "exhausted",
+        reason: "max_retries",
+        attempt,
+        maxAttempts: maxRetries + 1,
+        status: 0,
+        delayMs: 0,
+        capped: false,
+        kind: transportKind,
+        endpointKind,
+        horizonUrl: normalizedHorizonUrl,
+        stellarAddress,
+      });
+
       throw lastError;
     } finally {
       clearTimeout(timer);
-      if (externalSignal) {
-        externalSignal.removeEventListener('abort', onExternalAbort);
+      if (parentSignal && parentAbortHandler) {
+        parentSignal.removeEventListener("abort", parentAbortHandler);
       }
     }
   }
 
-  logger.debug(
-    "Horizon retry loop exited without result (fallback throw)",
-    safeHorizonContext({
-      component: "horizon",
-      stellarAddress,
-      horizonUrl: targetHorizonUrl,
-      endpointKind,
-      maxAttempts: maxRetries + 1,
-    }),
-  );
+  logger.debug('Horizon retry loop exited without result (fallback throw)', safeHorizonContext({
+    component: 'horizon',
+    stellarAddress,
+    horizonUrl: targetHorizonUrl,
+    endpointKind,
+    maxAttempts: maxRetries + 1,
+  }));
 
-  throw (
-    lastError ??
-    new HorizonError("Horizon request failed after retries", 0, true)
-  );
+  throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
 }
 
 export async function fetchAccount(
@@ -906,43 +844,94 @@ export async function fetchAccount(
   stellarAddress: string,
   options: FetchAccountOptions = {},
 ): Promise<HorizonAccount> {
-  return traceHorizonFetch(horizonUrl, stellarAddress, async () => {
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
-    const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
-    const cache = options.cache ?? defaultCache;
-    const horizonMaxRequests = options.horizonMaxRequests ?? 0;
-    const rateBudgetTracker = options.rateBudgetTracker ?? new RateBudgetTracker(horizonMaxRequests);
-    const signal = options.signal;
-    const allowCrossNetwork =
-      options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
-    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-    const candidateFallbacks = [
-      options.secondaryHorizonUrl,
-      options.horizonUrlFallback,
-      ...(options.fallbackUrls ?? []),
-    ].filter((u): u is string => Boolean(u && u.trim()));
-    const fallbackCandidate = candidateFallbacks[0];
-    const normalizedFallbackUrl = fallbackCandidate
-      ? normalizeHorizonUrl(fallbackCandidate)
-      : '';
+  const fetch: FetchLike =
+    options.fetchFn ?? (await import('node-fetch')).default;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+  const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+  const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
+  const cache = options.cache ?? defaultCache;
+  const horizonMaxRequests = options.horizonMaxRequests ?? 0;
+  const rateBudgetTracker = options.rateBudgetTracker ?? new RateBudgetTracker(horizonMaxRequests);
+  const signal = options.signal;
+  const allowCrossNetwork =
+    options.allowCrossNetworkFallback === true || options.allowCrossNetworkFailover === true;
+  const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+  const candidateFallbacks = [
+    options.secondaryHorizonUrl,
+    options.horizonUrlFallback,
+    ...(options.fallbackUrls ?? []),
+  ].filter((u): u is string => Boolean(u && u.trim()));
+  const fallbackCandidate = candidateFallbacks[0];
+  const normalizedFallbackUrl = fallbackCandidate
+    ? normalizeHorizonUrl(fallbackCandidate)
+    : '';
 
-    if (!normalizedHorizonUrl) {
-      throw new HorizonError('horizon_url is required.', 0, false);
+  if (!normalizedHorizonUrl) {
+    throw new HorizonError('horizon_url is required.', 0, false);
+  }
+
+  // Bail out immediately if the job was already cancelled before we start.
+  if (signal?.aborted) {
+    throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
+  }
+
+  const cachingEnabled = cacheTtlMs > 0;
+  const cacheKey = cachingEnabled
+    ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+    : '';
+
+  if (cachingEnabled) {
+    const cacheStatsBefore = redactCacheStats(cache.getStats());
+    logger.debug('Horizon cache lookup start', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheKey,
+      cacheTtlMs,
+      cacheSizeBefore: cacheStatsBefore.size,
+      cacheEntryCountBefore: cacheStatsBefore.entries.length,
+    }));
+
+    const cached = cache.get<HorizonAccount>(cacheKey);
+    if (cached) {
+      logger.debug('Horizon cache hit', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheKey,
+        cacheTtlMs,
+        ...safeAccountSummary(cached),
+      }));
+      recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+      return cached;
     }
 
-    const fetch: FetchLike =
-      options.fetchFn ?? (await import('node-fetch')).default;
-
-  // Consume rate budget for the primary request (after cache miss)
-  if (options.rateBudgetTracker) {
-    options.rateBudgetTracker.recordRequest();
+    logger.debug('Horizon cache miss', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheKey,
+      cacheTtlMs,
+    }));
+    recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
+  } else {
+    logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      cacheTtlMs: 0,
+    }));
   }
 
   let primaryError: HorizonError | undefined;
+  const circuitBreaker = options.circuitBreaker;
 
   try {
     const result = await fetchAccountOnce(
@@ -952,123 +941,85 @@ export async function fetchAccount(
       timeoutMs,
       maxRetries,
       'primary',
-      options.signal,
+      retryMaxDelayMs,
+      retryMaxTotalWaitMs,
+      signal,
+      rateBudgetTracker,
+      circuitBreaker,
+      retryBaseDelayMs,
     );
 
+    result.account._servedByUrl = normalizedHorizonUrl;
+
     if (cachingEnabled) {
-      const cacheStatsBefore = redactCacheStats(cache.getStats());
-      logger.debug('Horizon cache lookup start', safeHorizonContext({
+      cache.set(cacheKey, result.account, cacheTtlMs);
+      const cacheStatsAfter = redactCacheStats(cache.getStats());
+      logger.debug('Horizon cache populate after primary success', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,
         horizonUrlFallback: normalizedFallbackUrl,
         cacheKey,
         cacheTtlMs,
-        cacheSizeBefore: cacheStatsBefore.size,
-        cacheEntryCountBefore: cacheStatsBefore.entries.length,
-      }));
-
-      const cached = (await cache.restoreAsync<HorizonAccount>(cacheKey)) ?? cache.get<HorizonAccount>(cacheKey);
-      if (cached) {
-        logger.debug('Horizon cache hit', safeHorizonContext({
-          component: 'horizon',
-          stellarAddress,
-          horizonUrl,
-          horizonUrlFallback: normalizedFallbackUrl,
-          cacheKey,
-          cacheTtlMs,
-          ...safeAccountSummary(cached),
-        }));
-        recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
-        return cached;
-      }
-
-      logger.debug('Horizon cache miss', safeHorizonContext({
-        component: 'horizon',
-        stellarAddress,
-        horizonUrl,
-        horizonUrlFallback: normalizedFallbackUrl,
-        cacheKey,
-        cacheTtlMs,
-      }));
-      recordCacheMetric('miss', normalizedHorizonUrl, stellarAddress);
-    } else {
-      logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
-        component: 'horizon',
-        stellarAddress,
-        horizonUrl,
-        horizonUrlFallback: normalizedFallbackUrl,
-        cacheTtlMs: 0,
+        cacheSizeAfter: cacheStatsAfter.size,
+        cacheEntryCountAfter: cacheStatsAfter.entries.length,
+        source: 'primary',
+        ...safeAccountSummary(result.account),
       }));
     }
 
-    let primaryError: HorizonError | undefined;
-    const circuitBreaker = options.circuitBreaker;
-
-    try {
-      const result = await fetchAccountOnce(
-        fetch,
-        normalizedHorizonUrl,
-        stellarAddress,
-        timeoutMs,
-        maxRetries,
-        'primary',
-        retryMaxDelayMs,
-        retryMaxTotalWaitMs,
-        signal,
-        rateBudgetTracker,
-        circuitBreaker,
-        retryBaseDelayMs,
-      );
-
-      result.account._servedByUrl = normalizedHorizonUrl;
-
-      if (cachingEnabled) {
-        cache.set(cacheKey, result.account, cacheTtlMs);
-        const cacheStatsAfter = redactCacheStats(cache.getStats());
-        logger.debug('Horizon cache populate after primary success', safeHorizonContext({
-          component: 'horizon',
-          stellarAddress,
-          horizonUrl,
-          horizonUrlFallback: normalizedFallbackUrl,
-          cacheKey,
-          cacheTtlMs,
-          cacheSizeAfter: cacheStatsAfter.size,
-          cacheEntryCountAfter: cacheStatsAfter.entries.length,
-          source: 'primary',
-          ...safeAccountSummary(result.account),
-        }));
-      }
-
-      return result.account;
-    } catch (error) {
-      if (error instanceof HorizonError) {
-        primaryError = error;
-        if (error.statusCode === 404) {
-          throw error;
-        }
-      } else {
+    return result.account;
+  } catch (error) {
+    if (error instanceof HorizonError) {
+      primaryError = error;
+      if (error.statusCode === 404) {
         throw error;
       }
+    } else {
+      throw error;
     }
-
-    if (!normalizedFallbackUrl) {
-      throw primaryError;
-    }
-
-    // Network binding rule: a G-address is valid on every Stellar network, so
-    // a fallback URL that resolves to a different network than the primary
-    // could silently return funded/trustline/reserve data for the *wrong*
-    // ledger instead of failing loudly. Compare the inferred networks and
-    // refuse the fallback unless the caller explicitly opted in.
-    const primaryNetwork = inferStellarNetwork(normalizedHorizonUrl);
-    const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
-    const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
-
-  // Consume rate budget for the fallback request
-  if (options.rateBudgetTracker) {
-    options.rateBudgetTracker.recordRequest();
   }
+
+  if (!normalizedFallbackUrl) {
+    throw primaryError;
+  }
+
+  // Network binding rule: a G-address is valid on every Stellar network, so
+  // a fallback URL that resolves to a different network than the primary
+  // could silently return funded/trustline/reserve data for the *wrong*
+  // ledger instead of failing loudly. Compare the inferred networks and
+  // refuse the fallback unless the caller explicitly opted in.
+  const primaryNetwork = inferStellarNetwork(normalizedHorizonUrl);
+  const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
+  const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
+
+  if (crossNetworkFallback && !allowCrossNetwork) {
+    logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl,
+      horizonUrlFallback: normalizedFallbackUrl,
+      primaryNetwork,
+      fallbackNetwork,
+      primaryStatusCode: primaryError?.statusCode,
+      primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+    }));
+    throw primaryError;
+  }
+
+  logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+    component: 'horizon',
+    stellarAddress,
+    horizonUrl,
+    horizonUrlFallback: normalizedFallbackUrl,
+    cacheKey: cachingEnabled ? cacheKey : undefined,
+    primaryNetwork,
+    fallbackNetwork,
+    crossNetworkFallback,
+    primaryStatusCode: primaryError?.statusCode,
+    primaryRetryable: primaryError?.retryable,
+    primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+  }));
 
   try {
     const fallbackResult = await fetchAccountOnce(
@@ -1078,8 +1029,15 @@ export async function fetchAccount(
       timeoutMs,
       maxRetries,
       'fallback',
-      options.signal,
+      retryMaxDelayMs,
+      retryMaxTotalWaitMs,
+      signal,
+      rateBudgetTracker,
+      circuitBreaker,
+      retryBaseDelayMs,
     );
+
+    fallbackResult.account._servedByUrl = normalizedFallbackUrl;
 
     if (cachingEnabled) {
       cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
@@ -1089,89 +1047,68 @@ export async function fetchAccount(
         stellarAddress,
         horizonUrl,
         horizonUrlFallback: normalizedFallbackUrl,
-        primaryNetwork,
-        fallbackNetwork,
-        primaryStatusCode: primaryError?.statusCode,
-        primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+        cacheKey,
+        cacheTtlMs,
+        cacheSizeAfter: cacheStatsAfter.size,
+        cacheEntryCountAfter: cacheStatsAfter.entries.length,
+        source: 'fallback',
+        ...safeAccountSummary(fallbackResult.account),
       }));
-      throw primaryError;
     }
 
-    logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+    logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
       component: 'horizon',
       stellarAddress,
       horizonUrl,
       horizonUrlFallback: normalizedFallbackUrl,
-      cacheKey: cachingEnabled ? cacheKey : undefined,
-      primaryNetwork,
-      fallbackNetwork,
-      crossNetworkFallback,
-      primaryStatusCode: primaryError?.statusCode,
-      primaryRetryable: primaryError?.retryable,
-      primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+      fallbackAttempts: fallbackResult.attempts,
+      fallbackLatencyMs: fallbackResult.latencyMs,
     }));
 
-    try {
-      const fallbackResult = await fetchAccountOnce(
-        fetch,
-        normalizedFallbackUrl,
-        stellarAddress,
-        timeoutMs,
-        maxRetries,
-        'fallback',
-        retryMaxDelayMs,
-        retryMaxTotalWaitMs,
-        signal,
-        rateBudgetTracker,
-        circuitBreaker,
-        retryBaseDelayMs,
-      );
-
-      fallbackResult.account._servedByUrl = normalizedFallbackUrl;
-
-      if (cachingEnabled) {
-        cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
-        const cacheStatsAfter = redactCacheStats(cache.getStats());
-        logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
-          component: 'horizon',
-          stellarAddress,
-          horizonUrl,
-          horizonUrlFallback: normalizedFallbackUrl,
-          cacheKey,
-          cacheTtlMs,
-          cacheSizeAfter: cacheStatsAfter.size,
-          cacheEntryCountAfter: cacheStatsAfter.entries.length,
-          source: 'fallback',
-          ...safeAccountSummary(fallbackResult.account),
-        }));
-      }
-
-      logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+    return fallbackResult.account;
+  } catch (fallbackError) {
+    if (fallbackError instanceof HorizonError) {
+      logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,
         horizonUrlFallback: normalizedFallbackUrl,
-        fallbackAttempts: fallbackResult.attempts,
-        fallbackLatencyMs: fallbackResult.latencyMs,
+        primaryStatusCode: primaryError?.statusCode,
+        primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
+        fallbackStatusCode: fallbackError.statusCode,
+        fallbackErrorMessage: redactString(fallbackError.message),
       }));
-
-      return fallbackResult.account;
-    } catch (fallbackError) {
-      if (fallbackError instanceof HorizonError) {
-        logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
-          component: 'horizon',
-          stellarAddress,
-          horizonUrl,
-          horizonUrlFallback: normalizedFallbackUrl,
-          primaryStatusCode: primaryError?.statusCode,
-          primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
-          fallbackStatusCode: fallbackError.statusCode,
-          fallbackErrorMessage: redactString(fallbackError.message),
-        }));
-      }
-      throw fallbackError;
     }
-  });
+    throw fallbackError;
+  }
+}
+
+/**
+ * Fetch the asset issuer account for the SEP-0001 home domain check (Issue
+ * #708). Returns `null` when the issuer is not a classic G-address (Soroban
+ * contract issuers have no `home_domain`) or when Horizon can't return it,
+ * so the check reports "missing" instead of failing the whole run.
+ */
+export async function fetchHomeDomainIssuerAccount(
+  horizonUrl: string,
+  assetIssuer: string,
+  options: FetchAccountOptions = {},
+): Promise<HorizonAccount | null> {
+  const issuer = assetIssuer.trim();
+  if (!/^G[A-Z2-7]{55}$/.test(issuer)) {
+    return null;
+  }
+  try {
+    return await fetchAccount(horizonUrl, issuer, options);
+  } catch (error) {
+    logger.debug('Home domain issuer account unavailable', {
+      component: 'horizon',
+      assetIssuer: issuer,
+      horizonUrl,
+      errorMessage: error instanceof Error ? redactString(error.message) : 'unknown error',
+    });
+    return null;
+  }
 }
 
 export interface WaitForFundedAccountOptions {
@@ -1216,7 +1153,7 @@ export async function waitForFundedAccount(
   for (;;) {
     // Bail out cleanly if the job was cancelled — no misleading error message.
     if (signal?.aborted) {
-      throw new HorizonError("Polling aborted (job cancelled).", 0, false);
+      throw new HorizonError('Polling aborted (job cancelled).', 0, false);
     }
 
     attempt += 1;
@@ -1242,193 +1179,11 @@ export async function waitForFundedAccount(
       }
 
       options.onPoll?.(attempt, elapsedMs);
-      await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, timeoutMs - elapsedMs)));
+
+      // Sleep for the poll interval, but abort immediately if the job is cancelled.
+      const sleepMs = Math.min(pollIntervalMs, timeoutMs - elapsedMs);
+      await cancellableSleep(sleepMs, signal);
     }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Friendbot integration for testnet (Issue #4)
-
-// ---------------------------------------------------------------------------
-
-export interface FriendbotOptions {
-  /** Friendbot URL. Must be HTTPS and on the allowlist. */
-  friendbotUrl: string;
-  /** Request timeout in milliseconds. */
-  timeoutMs?: number;
-  /** Override fetch function (for testing). */
-  fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
-}
-
-const DEFAULT_FRIENDBOT_TIMEOUT_MS = 15_000;
-
-const ALLOWED_FRIENDBOT_HOSTS = new Set([
-  'friendbot.stellar.org',
-  'friendbot-testnet.stellar.org',
-  'horizon-testnet.stellar.org',
-  'friendbot-futurenet.stellar.org',
-  'horizon-futurenet.stellar.org',
-]);
-
-/**
- * Check if a friendbot URL is on the allowlist and safe to use.
- * Prevents SSRF attacks by only allowing known testnet friendbot endpoints.
- */
-export function isFriendbotAllowed(friendbotUrl: string): boolean {
-  if (!friendbotUrl || !friendbotUrl.trim()) {
-    return false;
-  }
-  const raw = friendbotUrl.trim();
-  if (raw.includes('..')) {
-    return false;
-  }
-  try {
-    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
-    const url = new URL(hasScheme ? raw : `https://${raw}`);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return false;
-    }
-    // Disallow non-HTTPS when explicit scheme provided, except allow normalization
-    if (hasScheme && url.protocol !== 'https:') {
-      return false;
-    }
-    const hostname = url.hostname.toLowerCase();
-    if (!ALLOWED_FRIENDBOT_HOSTS.has(hostname)) {
-      return false;
-    }
-    const pathname = url.pathname.replace(/\/+$/, '');
-    if (pathname !== '' && pathname !== '/friendbot') {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Detect whether a Horizon URL points to testnet or mainnet.
- * Used to enforce friendbot safety rules (never call friendbot on mainnet).
- */
-export function isTestnetHorizon(horizonUrl: string): boolean {
-  const normalized = horizonUrl.toLowerCase().trim();
-  if (normalized.includes('public.stellar.org') || normalized.includes('mainnet')) {
-    return false;
-  }
-  try {
-    const url = new URL(normalized.startsWith('http') ? normalized : `https://${normalized}`);
-    if (url.hostname === 'horizon.stellar.org') {
-      return false;
-    }
-  } catch {}
-  return normalized.includes('testnet') || normalized.includes('test') || normalized.includes('futurenet');
-}
-
-export interface FriendbotResult {
-  success: boolean;
-  message: string;
-  transactionHash?: string;
-}
-
-/**
- * Call Stellar Friendbot to fund a testnet account.
- * 
- * Safety rules:
- * - Only works with allowlisted friendbot URLs (SSRF protection)
- * - Only callable when Horizon URL indicates testnet
- * - Fails fast with clear error on mainnet or unknown networks
- * 
- * @param stellarAddress The G-address to fund
- * @param options Friendbot configuration
- * @param horizonUrl The Horizon URL (used for network safety check)
- * @returns FriendbotResult with success status and transaction details
- */
-export async function callFriendbot(
-  stellarAddress: string,
-  options: FriendbotOptions,
-  horizonUrl: string,
-): Promise<FriendbotResult> {
-  const { friendbotUrl, timeoutMs = DEFAULT_FRIENDBOT_TIMEOUT_MS, fetchFn } = options;
-  
-  // Safety check 1: Only allow testnet
-  if (!isTestnetHorizon(horizonUrl)) {
-    return {
-      success: false,
-      message: 'Friendbot is only available for testnet. Cannot fund accounts on public/mainnet.',
-    };
-  }
-  
-  // Safety check 2: SSRF allowlist
-  if (!isFriendbotAllowed(friendbotUrl)) {
-    return {
-      success: false,
-      message: `Friendbot URL "${friendbotUrl}" is not on the allowlist. Only official Stellar friendbot endpoints are supported.`,
-    };
-  }
-  
-  // Normalize URL
-  let fullUrl = friendbotUrl.trim();
-  if (!fullUrl.startsWith('http')) {
-    fullUrl = `https://${fullUrl}`;
-  }
-  
-  // Ensure /friendbot path if missing
-  if (!fullUrl.includes('/friendbot')) {
-    fullUrl = fullUrl.replace(/\/$/, '') + '/friendbot';
-  }
-  
-  // Add address parameter
-  const urlWithParam = `${fullUrl}?addr=${encodeURIComponent(stellarAddress)}`;
-  
-  const fetch = fetchFn ?? ((globalThis as unknown as { fetch?: typeof globalThis.fetch }).fetch
-    ?? (await import('node-fetch')).default as unknown as typeof globalThis.fetch);
-  
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  
-  try {
-    const response = await fetch(urlWithParam, {
-      method: 'GET',
-      signal: controller.signal as AbortSignal,
-    });
-    
-    clearTimeout(timer);
-    
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      return {
-        success: false,
-        message: `Friendbot returned HTTP ${response.status}: ${errorText}`,
-      };
-    }
-    
-    const data = await response.json() as { hash?: string; id?: string };
-    const txHash = data.hash || data.id;
-    
-    return {
-      success: true,
-      message: 'Account funded successfully via Friendbot',
-      transactionHash: txHash,
-    };
-  } catch (error) {
-    clearTimeout(timer);
-    
-    if (
-      (error instanceof Error && (error.name === 'AbortError' || error.message.includes('AbortError') || error.name === 'TimeoutError')) ||
-      (error as any)?.name === 'AbortError'
-    ) {
-      return {
-        success: false,
-        message: `Friendbot request timed out after ${timeoutMs}ms`,
-      };
-    }
-    
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      success: false,
-      message: `Friendbot request failed: ${message}`,
-    };
   }
 }
 
@@ -1441,18 +1196,13 @@ export async function callFriendbot(
  * since that would let a same-shaped LP entry slip through a naive
  * trustline match.
  */
-export function isCreditBalance(
-  balance: HorizonBalance,
-): balance is HorizonBalanceCredit {
-  return (
-    balance.asset_type === "credit_alphanum4" ||
-    balance.asset_type === "credit_alphanum12"
-  );
+export function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit {
+  return balance.asset_type === 'credit_alphanum4' || balance.asset_type === 'credit_alphanum12';
 }
 
 export function getNativeBalance(account: HorizonAccount): string {
-  const native = account.balances.find((b) => b.asset_type === "native");
-  return native?.balance ?? "0";
+  const native = account.balances.find((b) => b.asset_type === 'native');
+  return native?.balance ?? '0';
 }
 
 export function hasTrustline(
@@ -1505,7 +1255,7 @@ export function getAssetBalance(
   assetCode: string,
   assetIssuer: string,
 ): string {
-  return findTrustlineBalance(account, assetCode, assetIssuer)?.balance ?? "0";
+  return findTrustlineBalance(account, assetCode, assetIssuer)?.balance ?? '0';
 }
 
 /**
@@ -1518,7 +1268,7 @@ export function getTrustlineLimit(
   assetIssuer: string,
 ): string {
   const balance = findTrustlineBalance(account, assetCode, assetIssuer);
-  return balance?.limit ? balance.limit : "0";
+  return balance?.limit ? balance.limit : '0';
 }
 
 export function parseHorizonBalance(balance: string): number {
@@ -1533,12 +1283,12 @@ export function formatStroops(stroops: bigint): string {
   const isNegative = stroops < 0n;
   const absStroops = isNegative ? -stroops : stroops;
 
-  const str = absStroops.toString().padStart(8, "0");
+  const str = absStroops.toString().padStart(8, '0');
   const intPart = str.slice(0, -7);
   const fracPart = str.slice(-7);
 
-  const cleanFrac = fracPart.replace(/0+$/, "");
-  return `${isNegative ? "-" : ""}${intPart}.${cleanFrac.padEnd(7, "0")}`;
+  const cleanFrac = fracPart.replace(/0+$/, '');
+  return `${isNegative ? '-' : ''}${intPart}.${cleanFrac.padEnd(7, '0')}`;
 }
 
 export interface HorizonFetchOptions {
@@ -1569,9 +1319,7 @@ export async function fetchClaimableBalanceCount(
   fetchFn?: FetchLike,
   timeoutMs: number = 5000,
 ): Promise<number> {
-  const validation = validateHorizonUrl(horizonUrl, "horizon_url", {
-    allowHttp: true,
-  });
+  const validation = validateHorizonUrl(horizonUrl, 'horizon_url', { allowHttp: true });
   if (!validation.valid) {
     return 0;
   }
@@ -1582,16 +1330,16 @@ export async function fetchClaimableBalanceCount(
     return 0;
   }
   const url = `${normalized}/claimable_balances?claimant=${encodeURIComponent(stellarAddress)}&limit=5`;
-  const fetcher = fetchFn ?? createProxiedFetch() ?? (await import('node-fetch')).default;
+  const fetcher = fetchFn ?? (await import('node-fetch')).default;
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetcher(url, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        signal:
-          controller.signal as unknown as import("node-fetch").RequestInit["signal"],
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal as unknown as import('node-fetch').RequestInit['signal'],
       });
       if (!response.ok) {
         return 0;
@@ -1628,22 +1376,22 @@ export async function fetchClaimableBalanceCount(
  * - `wallet: horizon-error`    — Horizon returned a non-404 error; state unknown.
  */
 export type WalletLabel =
-  | "wallet: funded"
-  | "wallet: unfunded"
-  | "wallet: trustline-missing"
-  | "wallet: reserve-low"
-  | "wallet: horizon-error";
+  | 'wallet: funded'
+  | 'wallet: unfunded'
+  | 'wallet: trustline-missing'
+  | 'wallet: reserve-low'
+  | 'wallet: horizon-error';
 
 /**
  * All wallet label strings — useful for bulk removal before re-applying
  * the current state so stale labels never linger on an issue.
  */
 export const ALL_WALLET_LABELS: WalletLabel[] = [
-  "wallet: funded",
-  "wallet: unfunded",
-  "wallet: trustline-missing",
-  "wallet: reserve-low",
-  "wallet: horizon-error",
+  'wallet: funded',
+  'wallet: unfunded',
+  'wallet: trustline-missing',
+  'wallet: reserve-low',
+  'wallet: horizon-error',
 ];
 
 export interface WalletLabelInput {
@@ -1668,11 +1416,11 @@ export interface WalletLabelInput {
  * 5. `wallet: funded`           — all checks passed.
  */
 export function deriveWalletLabel(input: WalletLabelInput): WalletLabel {
-  if (input.horizonError) return "wallet: horizon-error";
-  if (!input.accountFunded) return "wallet: unfunded";
-  if (!input.trustlineExists) return "wallet: trustline-missing";
-  if (!input.xlmReserveMet) return "wallet: reserve-low";
-  return "wallet: funded";
+  if (input.horizonError) return 'wallet: horizon-error';
+  if (!input.accountFunded) return 'wallet: unfunded';
+  if (!input.trustlineExists) return 'wallet: trustline-missing';
+  if (!input.xlmReserveMet) return 'wallet: reserve-low';
+  return 'wallet: funded';
 }
 
 /**
@@ -1687,8 +1435,68 @@ export interface ApplyWalletLabelsOptions {
 }
 
 /**
+ * Paginate through all labels on an issue, collecting every page until
+ * the API returns fewer than `perPage` results (last page).
+ *
+ * Uses a fixed page size of 100 (GitHub's maximum) to minimise round-trips.
+ * Stops automatically when a page returns fewer items than requested so
+ * issues with >100 labels are handled correctly without an extra request.
+ */
+async function listAllLabelsOnIssue(
+  octokit: {
+    rest: {
+      issues: {
+        listLabelsOnIssue: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          per_page: number;
+          page: number;
+        }) => Promise<{ data: Array<{ name: string }> }>;
+      };
+    };
+  },
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<string[]> {
+  const PER_PAGE = 100;
+  const names: string[] = [];
+  let page = 1;
+
+  for (;;) {
+    const response = await octokit.rest.issues.listLabelsOnIssue({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: PER_PAGE,
+      page,
+    });
+    for (const label of response.data) {
+      names.push(label.name);
+    }
+    if (response.data.length < PER_PAGE) {
+      break;
+    }
+    page += 1;
+  }
+
+  return names;
+}
+
+/**
  * Apply the appropriate wallet label to a GitHub issue via Octokit,
  * optionally removing stale wallet labels first.
+ *
+ * Conflict resolution: when multiple wallet state labels are present
+ * (e.g. from a previous interrupted run), all stale labels are removed
+ * before the new one is applied. The target label is derived
+ * deterministically by `deriveWalletLabel` using a fixed priority order
+ * (horizon-error > unfunded > trustline-missing > reserve-low > funded),
+ * so concurrent runs always converge to the same label.
+ *
+ * Pagination: `listLabelsOnIssue` is paginated in 100-item pages so
+ * issues with more than 100 labels are handled correctly.
  *
  * Errors are non-fatal: label failures are caught and returned as a
  * descriptive string so the main check result is never blocked by a
@@ -1706,24 +1514,9 @@ export async function applyWalletLabels(
   octokit: {
     rest: {
       issues: {
-        addLabels: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          labels: string[];
-        }) => Promise<unknown>;
-        removeLabel: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          name: string;
-        }) => Promise<unknown>;
-        listLabelsOnIssue: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          per_page: number;
-        }) => Promise<{ data: Array<{ name: string }> }>;
+        addLabels: (params: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<unknown>;
+        removeLabel: (params: { owner: string; repo: string; issue_number: number; name: string }) => Promise<unknown>;
+        listLabelsOnIssue: (params: { owner: string; repo: string; issue_number: number; per_page: number; page: number }) => Promise<{ data: Array<{ name: string }> }>;
       };
     };
   },
@@ -1739,20 +1532,22 @@ export async function applyWalletLabels(
 
   try {
     if (removeStale) {
-      // Fetch current labels to avoid 404s on removeLabel for non-present labels.
-      const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue(
-        {
-          owner,
-          repo,
-          issue_number: issueNumber,
-          per_page: 100,
-        },
-      );
-      const currentNames = currentLabelsResponse.data.map((l) => l.name);
+      // Paginate through all labels to handle issues with >100 labels.
+      const currentNames = await listAllLabelsOnIssue(octokit, owner, repo, issueNumber);
 
       const stale = ALL_WALLET_LABELS.filter(
         (l) => l !== targetLabel && currentNames.includes(l),
       );
+
+      // Deterministic conflict resolution: log when multiple stale wallet
+      // labels are present so operators can diagnose interrupted prior runs.
+      if (stale.length > 1) {
+        logger.debug('auto_wallet_labels: multiple stale wallet labels found — removing all before applying target', {
+          component: 'horizon',
+          staleLabels: stale,
+          targetLabel,
+        });
+      }
 
       for (const label of stale) {
         try {
@@ -1763,8 +1558,15 @@ export async function applyWalletLabels(
             name: label,
           });
           removed.push(label);
-        } catch {
-          // Ignore individual remove failures — the add still proceeds.
+        } catch (removeErr) {
+          // Non-fatal: log the specific label that failed to remove so
+          // operators can diagnose permission issues without the run failing.
+          const msg = removeErr instanceof Error ? removeErr.message : String(removeErr);
+          logger.debug('auto_wallet_labels: failed to remove stale label (non-fatal)', {
+            component: 'horizon',
+            label,
+            error: msg,
+          });
         }
       }
     }
@@ -1783,98 +1585,6 @@ export async function applyWalletLabels(
   }
 }
 
-export interface ReadyLabelInput {
-  ready: boolean;
-  passLabel?: string;
-  failLabel?: string;
-}
-
-export async function applyReadyLabels(
-  octokit: {
-    rest: {
-      issues: {
-        addLabels: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          labels: string[];
-        }) => Promise<unknown>;
-        removeLabel: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          name: string;
-        }) => Promise<unknown>;
-        listLabelsOnIssue: (params: {
-          owner: string;
-          repo: string;
-          issue_number: number;
-          per_page: number;
-        }) => Promise<{ data: Array<{ name: string }> }>;
-      };
-    };
-  },
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  input: ReadyLabelInput,
-): Promise<{ applied?: string; removed: string[]; error?: string }> {
-  const passLabel = (input.passLabel ?? "").trim();
-  const failLabel = (input.failLabel ?? "").trim();
-  const targetLabel = input.ready ? passLabel : failLabel;
-  const staleLabel = input.ready ? failLabel : passLabel;
-  const removed: string[] = [];
-
-  if (!targetLabel && !staleLabel) {
-    return { removed: [] };
-  }
-
-  try {
-    const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      per_page: 100,
-    });
-    const currentNames = new Set(currentLabelsResponse.data.map((l) => l.name));
-
-    if (
-      staleLabel &&
-      staleLabel !== targetLabel &&
-      currentNames.has(staleLabel)
-    ) {
-      try {
-        await octokit.rest.issues.removeLabel({
-          owner,
-          repo,
-          issue_number: issueNumber,
-          name: staleLabel,
-        });
-        removed.push(staleLabel);
-      } catch {
-        // Ignore individual removal errors — label state is best-effort.
-      }
-    }
-
-    if (!targetLabel) {
-      return { applied: undefined, removed };
-    }
-
-    if (!currentNames.has(targetLabel)) {
-      await octokit.rest.issues.addLabels({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        labels: [targetLabel],
-      });
-    }
-
-    return { applied: targetLabel, removed };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { applied: targetLabel || undefined, removed, error: message };
-  }
-}
 
 /**
  * Fetch the Stellar network passphrase from a Horizon root endpoint.
@@ -1883,11 +1593,12 @@ export async function fetchNetworkPassphrase(
   horizonUrl: string,
   options: FetchAccountOptions = {},
 ): Promise<string> {
-  const fetchImpl = options.fetchFn ?? createProxiedFetch() ?? (await import('node-fetch')).default;  const timeoutMs = options.timeoutMs || 15000;
+  const fetchImpl = options.fetchFn ?? (await import('node-fetch')).default;
+  const timeoutMs = options.timeoutMs || 15000;
   const maxRetries = options.maxRetries ?? 3;
 
   let attempt = 0;
-  const normalizedUrl = horizonUrl.replace(/\/$/, "");
+  const normalizedUrl = horizonUrl.replace(/\/$/, '');
 
   while (attempt <= maxRetries) {
     const controller = new AbortController();
@@ -1895,10 +1606,9 @@ export async function fetchNetworkPassphrase(
 
     try {
       const response = await fetchImpl(normalizedUrl, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        signal:
-          controller.signal as unknown as import("node-fetch").RequestInit["signal"],
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal as unknown as import('node-fetch').RequestInit['signal'],
       });
       clearTimeout(timeoutId);
 
@@ -1907,15 +1617,11 @@ export async function fetchNetworkPassphrase(
         if (data.network_passphrase) {
           return data.network_passphrase;
         }
-        throw new Error(
-          "network_passphrase not found in Horizon root response",
-        );
+        throw new Error('network_passphrase not found in Horizon root response');
       }
 
       if (response.status !== 429 && response.status < 500) {
-        throw new Error(
-          `Horizon returned ${response.status} ${response.statusText}`,
-        );
+        throw new Error(`Horizon returned ${response.status} ${response.statusText}`);
       }
     } catch (error) {
       clearTimeout(timeoutId);

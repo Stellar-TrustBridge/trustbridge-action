@@ -176,3 +176,28 @@ export const config = {
   matcher: '/about/:path*',
 }
 ```
+
+## Local mocked Horizon runs
+
+The same helpers work from plain JavaScript test files (Jest with `ts-jest` compiles the TypeScript example). See [`docs/examples/mocked-horizon.ts`](examples/mocked-horizon.ts) and the TypeScript variants in [typescript-snippets.md](typescript-snippets.md#local-mocked-horizon-runs) (Issue #789).
+
+### `mhz` - mockedHorizonTest
+
+```js
+const { createMockHorizon, fetchMockedAccount, loadAccountFixture } = require('../docs/examples/mocked-horizon');
+
+jest.mock('@actions/core');
+
+it('reads a funded account', async () => {
+  const funded = loadAccountFixture('account-funded');
+  const horizon = createMockHorizon({ [funded.account_id]: funded });
+  const account = await fetchMockedAccount(horizon.fetchFn, funded.account_id);
+  expect(account.account_id).toBe(funded.account_id);
+});
+
+it('treats a missing account as unfunded (404)', async () => {
+  const horizon = createMockHorizon({});
+  await expect(fetchMockedAccount(horizon.fetchFn, 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'))
+    .rejects.toMatchObject({ statusCode: 404 });
+});
+```

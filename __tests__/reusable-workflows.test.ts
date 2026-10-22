@@ -964,3 +964,91 @@ describe('Issue #554 — workflow_dispatch smoke trigger: trustbridge-reusable.y
     expect(smokeContent).toContain('steps.trustbridge.outputs.ready');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #713 — USAGE.md documents every trustbridge-reusable.yml input
+//
+// Parses the workflow_call inputs block and asserts the USAGE.md matrix lists
+// each input once, with the same default, and that every forwarded key exists
+// in action.yml. Renaming a reusable input without updating the docs fails.
+// ---------------------------------------------------------------------------
+
+describe('Issue #713 — reusable workflow inputs matrix in USAGE.md', () => {
+  const reusablePath = path.join(__dirname, '../.github/workflows/trustbridge-reusable.yml');
+  const usagePath = path.join(__dirname, '../docs/USAGE.md');
+  const actionPath = path.join(__dirname, '../action.yml');
+
+  let callInputs: Map<string, string>;
+  let matrixSection: string;
+  let actionContent: string;
+  let reusableContent: string;
+
+  beforeAll(() => {
+    reusableContent = fs.readFileSync(reusablePath, 'utf8');
+    const usage = fs.readFileSync(usagePath, 'utf8');
+    actionContent = fs.readFileSync(actionPath, 'utf8');
+
+    const callBlock = reusableContent.slice(
+      reusableContent.indexOf('workflow_call:'),
+      reusableContent.indexOf('\n    outputs:'),
+    );
+    callInputs = new Map();
+    let current: string | null = null;
+    for (const line of callBlock.split('\n')) {
+      const name = line.match(/^ {6}([a-z_]+):\s*$/);
+      if (name) {
+        current = name[1];
+        callInputs.set(current, '');
+        continue;
+      }
+      const def = line.match(/^ {8}default:\s*(.*)$/);
+      if (def && current) callInputs.set(current, def[1].trim());
+    }
+
+    const start = usage.indexOf('### Reusable workflow inputs matrix (Issue #713)');
+    const end = usage.indexOf('### Configuring as a Required Status Check');
+    matrixSection = usage.slice(start, end);
+  });
+
+  it('parses the workflow_call inputs', () => {
+    expect(callInputs.size).toBeGreaterThanOrEqual(10);
+    expect(callInputs.has('min_xlm_reserve')).toBe(true);
+    expect(callInputs.has('clawback_strict_mode')).toBe(true);
+  });
+
+  it('USAGE.md has the matrix section', () => {
+    expect(matrixSection.length).toBeGreaterThan(0);
+  });
+
+  it('documents exactly as many matrix rows as workflow_call inputs', () => {
+    const groups = matrixSection.slice(0, matrixSection.indexOf('#### Values the workflow sets for you'));
+    const rows = groups.split('\n').filter((l) => /^\| `[a-z_]+` \| (string|boolean|number) \|/.test(l));
+    expect(rows).toHaveLength(callInputs.size);
+  });
+
+  it('lists every input with its YAML default', () => {
+    for (const [name, def] of callInputs) {
+      const row = matrixSection.split('\n').find((l) => l.startsWith(`| \`${name}\` |`));
+      expect({ name, row: Boolean(row) }).toEqual({ name, row: true });
+      expect({ name, hasDefault: row!.includes(`\`${def}\``) }).toEqual({ name, hasDefault: true });
+    }
+  });
+
+  it('every reusable input is forwarded to an existing action.yml key', () => {
+    for (const name of callInputs.keys()) {
+      expect(reusableContent).toContain(`${name}: \${{ inputs.${name} }}`);
+      expect(actionContent).toMatch(new RegExp(`^  ${name}:`, 'm'));
+    }
+  });
+
+  it('shows a caller using secrets inheritance', () => {
+    expect(matrixSection).toContain('secrets: inherit');
+    expect(matrixSection).toContain('trustbridge-reusable.yml@v1');
+  });
+
+  it('calls out fork pull request token limits and cross-links the label gate', () => {
+    expect(matrixSection).toMatch(/Fork pull requests/);
+    expect(matrixSection).toContain('trustbridge-label-gate');
+    expect(matrixSection).toContain('GHES_COMPATIBILITY.md');
+  });
+});

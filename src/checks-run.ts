@@ -19,6 +19,9 @@ import { ValidationResult } from './checks';
 import { logger } from './logger';
 import { getOctokitProxyOptions } from './proxy';
 
+/** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
+export const HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
+
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 
 /**
@@ -44,6 +47,18 @@ export interface CheckRunResult {
    * Optional error message if creation failed.
    */
   error?: string;
+
+  /**
+   * True when the run was cancelled (via `options.signal`) before the Check
+   * Run was written. No Check Run exists in that case — never a partial one.
+   */
+  cancelled?: boolean;
+}
+
+function cancelledResult(): CheckRunResult {
+  const message = 'Check Run creation cancelled before completion; no Check Run was written.';
+  logger.warn(message, { component: 'checks-run' });
+  return { success: false, cancelled: true, message };
 }
 
 /**
@@ -78,9 +93,20 @@ export function buildCheckAnnotations(
   message: string;
 }> {
   const annotations = [];
+  // Issue #708: a warn-mode home domain problem keeps its row passing, but it
+  // should still stand out in the Check Run instead of rendering as a notice.
+  const homeDomainWarning =
+    result.homeDomainCheck !== undefined &&
+    result.homeDomainCheck.outcome !== 'valid' &&
+    result.homeDomainCheck.outcome !== 'skipped' &&
+    !result.homeDomainCheck.blocksValid;
 
   for (const check of result.checks) {
-    const level: 'notice' | 'warning' | 'failure' = check.passed ? 'notice' : 'failure';
+    const level: 'notice' | 'warning' | 'failure' = !check.passed
+      ? 'failure'
+      : homeDomainWarning && check.label === HOME_DOMAIN_CHECK_LABEL
+        ? 'warning'
+        : 'notice';
     annotations.push({
       path: 'trustbridge-validation',
       start_line: 1,
@@ -95,6 +121,19 @@ export function buildCheckAnnotations(
 }
 
 /**
+ * Summary text for the Check Run. Failing runs include the `reason_code` so
+ * the Checks UI matches the action output (e.g. `HOME_DOMAIN_MISMATCH`).
+ */
+export function buildCheckRunSummary(result: ValidationResult): string {
+  if (result.valid) {
+    return 'All TrustBridge validation checks passed.';
+  }
+  const failed = result.checks.filter((c) => !c.passed).length;
+  const reason = result.reasonCode ? ` reason_code: ${result.reasonCode}.` : '';
+  return `TrustBridge validation failed. ${failed} of ${result.checks.length} checks did not pass.${reason}`;
+}
+
+/**
  * Create a GitHub Check Run for the validation result.
  *
  * Wraps the Octokit Checks API with:
@@ -105,13 +144,17 @@ export function buildCheckAnnotations(
  * @param result        The ValidationResult from running checks.
  * @param token         GitHub API token (requires checks: write permission).
  * @param options       Additional options (e.g. stellar address for annotation context).
+ *                      `signal` cancels the run: if it is aborted before or
+ *                      during the API call, no Check Run is written and the
+ *                      result has `cancelled: true` (Issue #783).
  * @returns             CheckRunResult with success flag and details.
  */
 export async function createCheckRun(
   result: ValidationResult,
   token: string,
-  options: { stellarAddress?: string } = {},
+  options: { stellarAddress?: string; signal?: AbortSignal } = {},
 ): Promise<CheckRunResult> {
+  if (options.signal?.aborted) return cancelledResult();
   try {
     // Fail gracefully if we're not in a GitHub Actions context.
     if (!github.context.runId || !github.context.repo.owner || !github.context.repo.repo) {
@@ -121,13 +164,18 @@ export async function createCheckRun(
       };
     }
 
-    const octokit = github.getOctokit(token, getOctokitProxyOptions());    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(token, getOctokitProxyOptions());
+    const { owner, repo } = github.context.repo;
     const conclusion = determineCheckConclusion(result);
     const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
 
     // Octokit Checks API supports up to 50 annotations per request.
     // For simplicity, we truncate to the first 50 checks.
     const annotationsSlice = annotations.slice(0, 50);
+
+    // Annotations are built synchronously, but re-check so a cancel that
+    // landed while preparing never reaches the API.
+    if (options.signal?.aborted) return cancelledResult();
 
     core.info(`Creating Check Run with conclusion="${conclusion}", ${annotationsSlice.length} annotations`);
 
@@ -140,11 +188,10 @@ export async function createCheckRun(
       conclusion,
       output: {
         title: 'Stellar Account Validation',
-        summary: result.valid
-          ? 'All TrustBridge validation checks passed.'
-          : `TrustBridge validation failed. ${result.checks.filter((c) => !c.passed).length} of ${result.checks.length} checks did not pass.`,
+        summary: buildCheckRunSummary(result),
         annotations: annotationsSlice,
       },
+      ...(options.signal ? { request: { signal: options.signal } } : {}),
     });
 
     const checkRunId = response.data.id;
@@ -161,6 +208,7 @@ export async function createCheckRun(
       message: `Check Run #${checkRunId} created with conclusion=${conclusion}`,
     };
   } catch (error) {
+    if (options.signal?.aborted || (error as any)?.name === 'AbortError') return cancelledResult();
     const httpError = error as any;
     const status = httpError?.status;
     const message = error instanceof Error ? error.message : String(error);

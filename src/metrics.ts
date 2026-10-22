@@ -447,7 +447,9 @@ export class MetricsCollector {
    *
    * Safe to call at any time; never throws.
    */
-  buildJobSummary(): JobSummaryReport {
+  buildJobSummary(
+    horizonHistogram?: HorizonLatencyHistogram,
+  ): JobSummaryReport {
     // Latency: average of all *_duration metrics
     const durationPoints = this.metrics.filter((m) => m.name.endsWith('_duration'));
     const latencyMs =
@@ -466,7 +468,7 @@ export class MetricsCollector {
 
     // JSON artifact (tags stripped to avoid leaking contract addresses)
     const summary = this.getSummary();
-    const safeArtifact = {
+    const safeArtifact: Record<string, unknown> = {
       totalMetrics: summary.totalMetrics,
       counters: summary.counters,
       metrics: summary.metrics.map((m) => ({
@@ -477,12 +479,19 @@ export class MetricsCollector {
       })),
     };
 
+    // Include the Horizon fetch latency histogram when provided.
+    const histogramSnapshot = horizonHistogram?.toSnapshot();
+    if (histogramSnapshot) {
+      safeArtifact.horizonFetchLatencyHistogram = histogramSnapshot;
+    }
+
     return {
       latencyMs,
       failureCodes,
       totalRuns: this.counters.get('runs') ?? 0,
       totalErrors: this.counters.get('errors') ?? 0,
       jsonArtifact: JSON.stringify(safeArtifact, null, 2),
+      horizonFetchLatencyHistogram: histogramSnapshot,
     };
   }
 }
@@ -505,6 +514,12 @@ export interface JobSummaryReport {
   totalErrors: number;
   /** Sanitised JSON artifact — no tags, no contract addresses. */
   jsonArtifact: string;
+  /**
+   * Bucketed Horizon fetch latency histogram, labelled by endpoint kind
+   * (`primary` / `fallback`). Present when a `HorizonLatencyHistogram` was
+   * passed to `buildJobSummary()`; `undefined` otherwise.
+   */
+  horizonFetchLatencyHistogram?: HorizonLatencyHistogramSnapshot;
 }
 
 /**
@@ -559,7 +574,140 @@ export async function writeJobSummary(
   }
 }
 
+// ---------------------------------------------------------------------------
+// HorizonLatencyHistogram (Issue #703)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixed bucket upper-bounds (ms) for the Horizon fetch latency histogram.
+ * Chosen to cover the typical Horizon response-time distribution:
+ * fast cache-warm hits (<50 ms), normal responses (50–500 ms), slow/retried
+ * responses (500 ms–5 s), and pathological cases (>5 s).
+ */
+export const LATENCY_BUCKETS_MS = [50, 100, 250, 500, 1000, 2500, 5000, Infinity] as const;
+
+export type LatencyBucketMs = (typeof LATENCY_BUCKETS_MS)[number];
+
+/**
+ * Aggregated stats for one endpoint kind (`primary` or `fallback`).
+ */
+export interface LatencyStats {
+  count: number;
+  totalMs: number;
+  minMs: number;
+  maxMs: number;
+  /** Average latency in ms, or 0 when count is 0. */
+  avgMs: number;
+  /** Histogram bucket counts keyed by upper-bound label (e.g. `"<=250ms"`). */
+  buckets: Record<string, number>;
+}
+
+/**
+ * Full histogram export shape included in the metrics JSON artifact.
+ * Tags carry only the endpoint kind (`primary` / `fallback`) — never raw
+ * Stellar addresses or full Horizon URLs.
+ */
+export interface HorizonLatencyHistogramSnapshot {
+  primary: LatencyStats;
+  fallback: LatencyStats;
+}
+
+/**
+ * Collects bucketed Horizon fetch latency samples, labelled by endpoint kind
+ * (`primary` vs `fallback`). Privacy-safe: no raw addresses or full URLs are
+ * stored — only the endpoint kind tag and the numeric latency value.
+ *
+ * Usage (called from `horizon.ts` after each fetch attempt):
+ * ```ts
+ * globalHorizonHistogram.record('primary', latencyMs);
+ * ```
+ *
+ * Export via `toSnapshot()` for inclusion in the metrics JSON artifact.
+ */
+export class HorizonLatencyHistogram {
+  private samples: Map<'primary' | 'fallback', number[]> = new Map([
+    ['primary', []],
+    ['fallback', []],
+  ]);
+
+  /**
+   * Record a single latency observation for the given endpoint kind.
+   * @param endpointKind  `'primary'` or `'fallback'`
+   * @param latencyMs     Wall-clock milliseconds for the fetch attempt
+   */
+  record(endpointKind: 'primary' | 'fallback', latencyMs: number): void {
+    const list = this.samples.get(endpointKind);
+    if (list !== undefined) {
+      list.push(latencyMs);
+    }
+  }
+
+  private buildStats(values: number[]): LatencyStats {
+    const buckets: Record<string, number> = {};
+    for (const bound of LATENCY_BUCKETS_MS) {
+      buckets[bound === Infinity ? '+Inf' : `<=${bound}ms`] = 0;
+    }
+
+    if (values.length === 0) {
+      return { count: 0, totalMs: 0, minMs: 0, maxMs: 0, avgMs: 0, buckets };
+    }
+
+    let total = 0;
+    let min = Infinity;
+    let max = -Infinity;
+
+    for (const v of values) {
+      total += v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+      for (const bound of LATENCY_BUCKETS_MS) {
+        if (v <= bound) {
+          const key = bound === Infinity ? '+Inf' : `<=${bound}ms`;
+          buckets[key] += 1;
+          break;
+        }
+      }
+    }
+
+    return {
+      count: values.length,
+      totalMs: total,
+      minMs: min,
+      maxMs: max,
+      avgMs: Math.round(total / values.length),
+      buckets,
+    };
+  }
+
+  /**
+   * Export a privacy-safe snapshot for the metrics JSON artifact.
+   * Contains only aggregated stats and bucket counts — no raw addresses.
+   */
+  toSnapshot(): HorizonLatencyHistogramSnapshot {
+    return {
+      primary: this.buildStats(this.samples.get('primary') ?? []),
+      fallback: this.buildStats(this.samples.get('fallback') ?? []),
+    };
+  }
+
+  /** Total number of recorded samples across all endpoint kinds. */
+  get totalSamples(): number {
+    let n = 0;
+    for (const list of this.samples.values()) n += list.length;
+    return n;
+  }
+
+  /** Reset all recorded samples. */
+  reset(): void {
+    this.samples.set('primary', []);
+    this.samples.set('fallback', []);
+  }
+}
+
 export const globalMetrics = new MetricsCollector();
+
+/** Global Horizon fetch latency histogram — wired into `fetchAccountOnce` in `horizon.ts`. */
+export const globalHorizonHistogram = new HorizonLatencyHistogram();
 
 /** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
 export const globalOctokitMetrics = new OctokitMetrics();

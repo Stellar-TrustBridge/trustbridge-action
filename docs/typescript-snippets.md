@@ -200,3 +200,52 @@ export const config = {
   matcher: '/about/:path*',
 }
 ```
+
+## Local mocked Horizon runs
+
+Unit-test Horizon clients against recorded, production-shaped account JSON instead of a live Horizon — no network, no Docker. The helpers live in [`docs/examples/mocked-horizon.ts`](examples/mocked-horizon.ts) and are exercised by `__tests__/typescript-snippets-mocked-horizon.test.ts` (Issue #789).
+
+### `mhz` - mockedHorizonTest
+
+```ts
+import { createMockHorizon, fetchMockedAccount, loadAccountFixture } from '../docs/examples/mocked-horizon';
+
+jest.mock('@actions/core');
+
+it('reads a funded account with a USDC trustline', async () => {
+  const funded = loadAccountFixture('account-funded'); // fixtures/account-funded.json
+  const horizon = createMockHorizon({ [funded.account_id]: funded });
+
+  const account = await fetchMockedAccount(horizon.fetchFn, funded.account_id);
+
+  expect(account.balances.some((b) => 'asset_code' in b && b.asset_code === 'USDC')).toBe(true);
+  expect(horizon.calls).toHaveLength(1);
+});
+```
+
+### `mhz404` - mockedHorizonUnfunded
+
+Accounts missing from the route map get Horizon's real `404` problem JSON, so the unfunded path behaves like production:
+
+```ts
+it('treats a missing account as unfunded', async () => {
+  const horizon = createMockHorizon({});
+  await expect(fetchMockedAccount(horizon.fetchFn, 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'))
+    .rejects.toMatchObject({ statusCode: 404 });
+});
+```
+
+### `mhzerr` - mockedHorizonOutage
+
+```ts
+it('surfaces a Horizon outage', async () => {
+  const horizon = createMockHorizon({ [id]: { status: 503, body: { title: 'Service Unavailable' } } });
+  await expect(fetchMockedAccount(horizon.fetchFn, id)).rejects.toBeInstanceOf(HorizonError);
+});
+```
+
+Notes:
+
+- `fetchMockedAccount` disables the cache and retries so each test is deterministic and fast.
+- Build variations with `makeHorizonAccount()` from `__tests__/helpers/horizon-account.ts` (balances, trustlines, flags) and pass them as routes.
+- `loadAccountFixture` rejects path-like names and non-account JSON with clear errors. Fixtures contain only public test addresses — never commit real user accounts.

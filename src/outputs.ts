@@ -53,6 +53,13 @@ export interface ActionOutputExtras {
    */
   checkRunId?: string;
   checkRunConclusion?: string;
+  /**
+   * #696 — Numeric REST id of the issue comment TrustBridge created or
+   * updated this run, as a string. Absent when no comment was posted
+   * (`posting_mode: dry-run` / `off`, no issue context, or a failed post),
+   * which publishes `comment_id` as an empty string.
+   */
+  commentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +188,11 @@ export interface ActionOutputs {
   xlm_balance: string;
   account_funded: string;
   comment_url: string;
+  /**
+   * #696 — Numeric REST id of the created or updated issue comment, as a
+   * string. Empty when no comment was posted.
+   */
+  comment_id: string;
   full_report_path: string;
   // Extended audit / timing outputs
   ready: string;
@@ -300,6 +312,7 @@ export function toActionOutputs(
     xlm_balance: result.xlmBalance,
     account_funded: String(result.accountFunded),
     comment_url: commentUrl ?? '',
+    comment_id: extras.commentId ?? '',
     full_report_path: fullReportPath ?? '',
     ready: String(result.valid),
     validated_at: validatedAt,

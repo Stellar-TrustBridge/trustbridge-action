@@ -71,6 +71,9 @@ jobs:
       - name: Check dependency licenses
         run: npm run license:check
 
+      - name: Check docs/LICENSE_REPORT.md is up to date with package-lock.json
+        run: npm run license:report:check
+
   check-unpinned-actions:
     name: Check unpinned actions
     runs-on: ubuntu-latest

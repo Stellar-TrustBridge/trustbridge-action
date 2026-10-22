@@ -96,6 +96,52 @@
           }
         }
       }
+    },
+    "assets": {
+      "type": "array",
+      "maxItems": 100,
+      "description": "Optional, additive (Issue #676). Per-asset trustline and clawback outcome for the primary asset_code/asset_issuer pair (first, primary: true) and every assets_json entry. Omitted when the action was not given per-asset evaluations. Receivers on schema_version '1' that ignore unknown fields are unaffected.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "asset_code",
+          "asset_issuer",
+          "primary",
+          "trustline_exists",
+          "clawback_enabled",
+          "reason_code"
+        ],
+        "properties": {
+          "asset_code": {
+            "type": "string",
+            "description": "Asset code, e.g. 'USDC'."
+          },
+          "asset_issuer": {
+            "type": "string",
+            "pattern": "^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$",
+            "description": "Redacted issuer (first-4…last-4). Covers classic G-accounts and Soroban C-contract issuers; the full id is never sent.",
+            "examples": ["GA5Z...KZVN", "CAAA...D2KM"]
+          },
+          "primary": {
+            "type": "boolean",
+            "description": "true for the primary asset_code/asset_issuer pair, false for assets_json entries."
+          },
+          "trustline_exists": {
+            "type": "boolean",
+            "description": "true when the account holds a trustline for this code:issuer pair."
+          },
+          "clawback_enabled": {
+            "type": "boolean",
+            "description": "true when the trustline has is_clawback_enabled set. Reported in both warn and strict clawback modes."
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": ["SUCCESS", "TRUSTLINE_MISSING", "CLAWBACK_BLOCKED"],
+            "description": "Per-asset reason code from schemas/reason-codes.json. TRUSTLINE_MISSING outranks CLAWBACK_BLOCKED; CLAWBACK_BLOCKED is only emitted under clawback_strict_mode: true."
+          }
+        }
+      }
     }
   },
   "examples": [
@@ -117,6 +163,52 @@
           { "label": "XLM reserve", "passed": true }
         ]
       }
+    },
+    {
+      "schema_version": "1",
+      "event": "validation_complete",
+      "timestamp": "2026-10-19T09:12:44.512Z",
+      "repository": "my-org/my-repo",
+      "issue_number": 43,
+      "stellar_address": "GA5Z...KZVN",
+      "result": {
+        "valid": false,
+        "account_funded": true,
+        "trustline_exists": true,
+        "xlm_balance": "10.5000000",
+        "checks": [
+          { "label": "Account funded", "passed": true },
+          { "label": "USDC trustline", "passed": true },
+          { "label": "XLM reserve", "passed": true },
+          { "label": "EURC trustline (extra)", "passed": false }
+        ]
+      },
+      "assets": [
+        {
+          "asset_code": "USDC",
+          "asset_issuer": "GA5Z...KZVN",
+          "primary": true,
+          "trustline_exists": true,
+          "clawback_enabled": false,
+          "reason_code": "SUCCESS"
+        },
+        {
+          "asset_code": "EURC",
+          "asset_issuer": "GDHU...ARCC",
+          "primary": false,
+          "trustline_exists": false,
+          "clawback_enabled": false,
+          "reason_code": "TRUSTLINE_MISSING"
+        },
+        {
+          "asset_code": "TOKEN",
+          "asset_issuer": "CAAA...D2KM",
+          "primary": false,
+          "trustline_exists": true,
+          "clawback_enabled": true,
+          "reason_code": "CLAWBACK_BLOCKED"
+        }
+      ]
     }
   ]
 }
