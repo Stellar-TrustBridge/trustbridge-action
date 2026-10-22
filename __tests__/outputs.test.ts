@@ -808,6 +808,123 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
     expect(extras).toEqual([]);
   });
 
+  it('publishes every single-address success output with its documented value', () => {
+    const successResult: ValidationResult = {
+      ...result,
+      assetBalance: '25.0000000',
+    };
+    const validatedAt = '2024-01-15T10:00:00Z';
+    const commentUrl = 'https://github.com/o/r/issues/1#issuecomment-1';
+    const fullReportPath = '/workspace/trustbridge-report.md';
+    const extras = {
+      horizonUrl: 'https://horizon.stellar.org',
+      assetCode: 'USDC',
+      assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      validatedAt,
+      timings: {
+        input_parse_ms: 10,
+        horizon_fetch_ms: 100,
+        checks_ms: 5,
+        comment_post_ms: 20,
+        total_ms: 135,
+      },
+      assigneeLogin: 'alice',
+      stellarAddress: 'GALICE123...',
+      assetsTrustlineStatus: [
+        {
+          assetCode: 'EURC',
+          assetIssuer: 'GEURC...',
+          trustlineExists: true,
+          balance: '12.0000000',
+        },
+      ],
+    };
+    const expectedOutputs = {
+      trustline_exists: 'true',
+      xlm_balance: '5.0000000',
+      account_funded: 'true',
+      comment_url: commentUrl,
+      full_report_path: fullReportPath,
+      ready: 'true',
+      validated_at: validatedAt,
+      reason_code: 'SUCCESS',
+      horizon_url: 'https://horizon.stellar.org',
+      asset_code: 'USDC',
+      asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      checks_json:
+        '[{"label":"Account funded","passed":true,"detail":"Funded"},{"label":"USDC trustline","passed":true,"detail":"Trustline exists"}]',
+      asset_balance: '25.0000000',
+      native_balance: '5.0000000',
+      badge_markdown:
+        '[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)',
+      badge_url: 'https://img.shields.io/badge/trustbridge-Ready-brightgreen',
+      timings_json:
+        '{"input_parse_ms":10,"horizon_fetch_ms":100,"checks_ms":5,"comment_post_ms":20,"total_ms":135}',
+      timing_input_parse_ms: '10',
+      timing_horizon_fetch_ms: '100',
+      timing_checks_ms: '5',
+      timing_comment_post_ms: '20',
+      timing_total_ms: '135',
+      num_sponsoring: '0',
+      num_sponsored: '0',
+      conflict_report: '',
+      has_conflicts: 'false',
+      network_passphrase_mismatch: 'false',
+      expected_network_passphrase: '',
+      actual_network_passphrase: '',
+      assignee_results_json:
+        '{"alice":{"ready":true,"stellar_address":"GALICE123...","xlm_balance":"5.0000000","account_funded":true,"trustline_exists":true,"reason_code":"SUCCESS","validated_at":"2024-01-15T10:00:00Z"}}',
+      matrix_ready_map: '{"alice":true}',
+      check_run_id: '',
+      check_run_conclusion: '',
+      friendbot_called: 'false',
+      friendbot_success: 'false',
+      friendbot_transaction_hash: '',
+      assets_trustline_status:
+        '[{"asset_code":"EURC","asset_issuer":"GEURC...","trustline_exists":true,"balance":"12.0000000"}]',
+      trustlines_summary: '1 of 1 additional trustlines present',
+      batch_summary_json: '',
+      batch_passed_count: '',
+      batch_failed_count: '',
+    };
+
+    setValidationOutputs(successResult, commentUrl, fullReportPath, extras);
+
+    const actionYml = fs.readFileSync(
+      path.join(path.resolve(__dirname, '..'), 'action.yml'),
+      'utf8',
+    );
+    expect([...parseActionYmlOutputs(actionYml)].sort()).toEqual(
+      Object.keys(expectedOutputs).sort(),
+    );
+    expect(Object.fromEntries(outputsByName())).toEqual(expectedOutputs);
+  });
+
+  it('publishes failure readiness and reason while keeping the full output contract', () => {
+    const failResult: ValidationResult = {
+      valid: false,
+      accountFunded: false,
+      trustlineExists: false,
+      xlmBalance: '0',
+      xlmReserveMet: false,
+      checks: [],
+      reasonCode: 'ACCOUNT_NOT_FUNDED',
+    };
+
+    setValidationOutputs(failResult);
+
+    const written = outputsByName();
+    const actionYml = fs.readFileSync(
+      path.join(path.resolve(__dirname, '..'), 'action.yml'),
+      'utf8',
+    );
+    expect([...written.keys()].sort()).toEqual([...parseActionYmlOutputs(actionYml)].sort());
+    expect(written.get('ready')).toBe('false');
+    expect(written.get('reason_code')).toBe('ACCOUNT_NOT_FUNDED');
+    expect(written.get('account_funded')).toBe('false');
+    expect(written.get('trustline_exists')).toBe('false');
+  });
+
   it('publishes each declared output exactly once', () => {
     setValidationOutputs(result);
 
