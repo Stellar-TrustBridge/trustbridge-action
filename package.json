@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "GitHub Action to verify Stellar account trustlines and XLM reserve before issue assignment workflows",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc --noEmit && ncc build src/index.ts -o dist --source-map --license licenses.txt",
     "typecheck": "tsc --noEmit",
@@ -12,6 +17,7 @@
     "license:check": "node scripts/check-licenses.js",
     "license:report": "node scripts/generate-license-report.js",
     "license:report:check": "node scripts/generate-license-report.js --check",
+    "verify:dist": "node scripts/verify-dist-manifest.js",
     "prepare": "npm run build"
   },
   "repository": {
