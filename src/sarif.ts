@@ -21,7 +21,16 @@
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 
-import type { HomeDomainCheckMode, HomeDomainOutcome, ValidationResult } from './checks';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import type {
+  CheckResultItem,
+  HomeDomainCheckMode,
+  HomeDomainOutcome,
+  ValidationResult,
+} from './checks';
+import { loadSarifJsonSchema, validateAgainstJsonSchema } from './sarifSchema';
 
 export const SARIF_SCHEMA =
   'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json';
@@ -68,6 +77,10 @@ export interface SarifRule {
   shortDescription: SarifMessage;
   fullDescription?: SarifMessage;
   helpUri?: string;
+  properties?: {
+    tags?: string[];
+    precision?: string;
+  };
   /** Rich help shown by Code Scanning; `markdown` is rendered when present. */
   help?: { text: string; markdown?: string };
 }
