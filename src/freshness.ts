@@ -223,3 +223,49 @@ export async function checkLedgerFreshness(
     status: 'ok',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cached-payload TTL helpers (Issue #759)
+// ---------------------------------------------------------------------------
+
+/** Cache-write stamp for a Horizon account payload. */
+export interface FreshnessStamp {
+  /** Epoch milliseconds when the payload was cached. */
+  cachedAt: number;
+  /** Time-to-live in milliseconds. */
+  ttlMs: number;
+}
+
+function stampAgeMs(stamp: FreshnessStamp, nowMs: number): number | null {
+  if (!stamp || !Number.isFinite(stamp.cachedAt) || !Number.isFinite(stamp.ttlMs) || stamp.ttlMs < 0) {
+    return null;
+  }
+  const age = nowMs - stamp.cachedAt;
+  // Backward clock skew must never read as "fresh forever".
+  if (!Number.isFinite(age) || age < 0) {
+    return null;
+  }
+  return age;
+}
+
+/**
+ * True when a cached payload is still within its TTL.
+ * Boundary-exact (`age === ttlMs`), expired, skewed and malformed stamps
+ * are all stale so Wave rechecks always refetch instead of trusting them.
+ */
+export function isFresh(stamp: FreshnessStamp, nowMs: number): boolean {
+  const age = stampAgeMs(stamp, nowMs);
+  return age !== null && age < stamp.ttlMs;
+}
+
+/**
+ * Milliseconds of TTL remaining, clamped to zero for stale, skewed or
+ * malformed stamps.
+ */
+export function freshnessRemainingMs(stamp: FreshnessStamp, nowMs: number): number {
+  const age = stampAgeMs(stamp, nowMs);
+  if (age === null) {
+    return 0;
+  }
+  return Math.max(0, stamp.ttlMs - age);
+}
