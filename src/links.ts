@@ -140,7 +140,12 @@ export function buildFaqLinkForCheck(
 export type StellarNetwork = 'public' | 'testnet';
 
 export function inferStellarNetwork(horizonUrl: string): StellarNetwork {
-  return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
+  const lower = horizonUrl.toLowerCase();
+  // 'testnet' substring covers Horizon URLs; the standalone word 'test'
+  // covers network passphrases ('Test SDF Network ; ...') without matching
+  // words like 'latest' or 'protest'.
+  if (lower.includes('testnet') || /\btest\b/.test(lower)) return 'testnet';
+  return 'public';
 }
 
 /**
@@ -445,6 +450,11 @@ export interface Sep0010ChallengeOptions {
 /**
  * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
  * private targets, no credentials.
+ *
+ * Additionally, `dashboard.stellar.org` is explicitly rejected: it is not a
+ * recognized Stellar dashboard endpoint, and SEP-0010 proofs must reference
+ * either the Stellar Laboratory builders or an explicitly trusted dashboard
+ * host — never a plausible-looking but unrecognized one.
  */
 export function isValidDashboardUrl(url: string): boolean {
   try {
@@ -465,6 +475,7 @@ export function isValidDashboardUrl(url: string): boolean {
       if (pat.test(host)) return false;
     }
     if (host === 'metadata.google.internal') return false;
+    if (host.toLowerCase() === 'dashboard.stellar.org') return false;
     return true;
   } catch {
     return false;

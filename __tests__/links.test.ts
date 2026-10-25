@@ -67,17 +67,23 @@ describe('FAQ anchor map completeness', () => {
   const faqPath = path.join(__dirname, '..', 'docs', 'FAQ.md');
   const faq = fs.readFileSync(faqPath, 'utf8');
 
+  // Strip explicit `{#custom-anchor}` suffixes before slugifying: the
+  // slug must match the heading text, not the anchor directive. A heading
+  // with an explicit anchor is reachable via that anchor; otherwise the
+  // GitHub auto-generated slug must appear as an explicit anchor or link.
   const headings = faq
     .split('\n')
     .filter((line) => /^#{1,6}\s+/.test(line))
-    .map((line) =>
-      line
+    .map((line) => {
+      const explicit = line.match(/\{#([^}]+)\}\s*$/);
+      if (explicit) return explicit[1].toLowerCase();
+      return line
         .replace(/^#{1,6}\s+/, '')
         .trim()
         .toLowerCase()
         .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-'),
-    );
+        .replace(/\s+/g, '-');
+    });
 
   it('exposes an anchor for every FAQ heading', () => {
     expect(headings.length).toBeGreaterThan(0);
