@@ -732,6 +732,10 @@ describe('postIssueComment', () => {
 
   it('creates a new comment when sticky and no prior comment exists', async () => {
     const octokit = makeOctokit();
+    // GraphQL-first lookup (Issue #579): empty comment nodes, no match.
+    octokit.graphql.mockResolvedValue({
+      repository: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    });
     octokit.paginate.mockResolvedValue([]);
     octokit.rest.issues.createComment.mockResolvedValue({
       data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
@@ -744,7 +748,7 @@ describe('postIssueComment', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ issue_number: 7, body: 'new body' }),
     );
-    expect(octokit.graphql).not.toHaveBeenCalled();
+    expect(octokit.graphql).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(mockedGithub.getOctokit).toHaveBeenCalledWith('token', {
       baseUrl: 'https://api.github.com',
