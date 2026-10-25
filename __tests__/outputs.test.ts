@@ -869,6 +869,7 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       xlm_balance: '5.0000000',
       account_funded: 'true',
       comment_url: 'https://github.com/o/r/issues/1#issuecomment-9',
+      comment_id: '',
       full_report_path: '/report.md',
       ready: 'true',
       validated_at: '2024-01-15T10:00:00Z',

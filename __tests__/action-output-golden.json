@@ -4,6 +4,7 @@
   "asset_balance",
   "asset_code",
   "asset_issuer",
+  "assets_trustline_status",
   "assignee_results_json",
   "batch_failed_count",
   "batch_passed_count",
