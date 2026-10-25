@@ -1363,6 +1363,25 @@ export async function postIssueComment(
   body: string,
   options: UpsertCommentOptions = {},
 ): Promise<string | undefined> {
+  const posted = await upsertIssueComment(token, body, options);
+  return posted?.url;
+}
+
+/**
+ * Post or update the TrustBridge issue comment (Issue #696).
+ *
+ * Returns both the comment URL and its numeric REST id, taken from the
+ * `createComment` / `updateComment` response that actually wrote the body.
+ * When `updateComment` fails after a successful sticky lookup the run falls
+ * back to `createComment`, so the id of the stale comment is never returned.
+ *
+ * @returns `undefined` when there is no issue or pull-request context.
+ */
+export async function upsertIssueComment(
+  token: string,
+  body: string,
+  options: UpsertCommentOptions = {},
+): Promise<PostedIssueComment | undefined> {
   body = fitCommentBodyToLimit(body);
 
   // Resolve effective comment mode (#322): commentMode input takes precedence

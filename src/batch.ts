@@ -410,7 +410,7 @@ export async function runBatchValidation(
       let isBudgetExhausted = error instanceof RateBudgetExhaustedError;
 
       if (isBudgetExhausted) {
-        failureReason = `Rate budget exhausted: ${error.message}`;
+        failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
         globalMetrics.incrementCounter('rate_budget_exhausted');
         globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
       } else if (error instanceof HorizonError && error.statusCode === 404) {

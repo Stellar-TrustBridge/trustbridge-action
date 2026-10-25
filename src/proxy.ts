@@ -23,7 +23,7 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { URL } from 'url';
 import { logger } from './logger';
-import { isBlockedHost } from './ssrf';
+import { isSSRFBlocked } from './ssrf';
 
 /**
  * Resolved proxy configuration from environment variables.
@@ -107,7 +107,7 @@ export function validateProxyUrl(proxyUrl: string): string | null {
     return 'Proxy URL hostname must not be percent-encoded';
   }
 
-  if (isBlockedHost(hostname)) {
+  if (isSSRFBlocked(hostname).blocked) {
     return `Proxy URL host is blocked by SSRF policy: ${hostname}`;
   }
 

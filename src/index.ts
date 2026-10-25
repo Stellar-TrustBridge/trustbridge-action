@@ -21,12 +21,13 @@ import {
   isTestnetHorizon,
   waitForFundedAccount,
 } from './horizon';
-import { formatCommentBody, postIssueComment } from './comment';
+import { formatCommentBody, resolvePostingMode, upsertIssueComment } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
 import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
+import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { readTrustbridgeConfig } from './configReader';
@@ -101,11 +102,7 @@ async function run(): Promise<void> {
     max: 600000,
   });
 
-  // SEP-0001 home domain + optional stellar.toml fetch (Issue #709).
-  const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
-  const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim();
-  const homeDomainCheckMode =
-    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
+  // SEP-0001 optional stellar.toml fetch (Issue #709).
   const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
   const stellarTomlCacheTtlMs = parseNumberInput(
     core.getInput('stellar_toml_cache_ttl_ms'),
@@ -117,7 +114,6 @@ async function run(): Promise<void> {
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
-  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Friendbot testnet onboarding (Issue #4 / #699). See docs/USAGE.md#friendbot-testnet-funding.
   const useFriendbot = parseBooleanInput(core.getInput('use_friendbot'), false);
@@ -219,6 +215,8 @@ async function run(): Promise<void> {
       waitUntilFundedIntervalMs,
       horizonCacheTtlMs,
       useCache,
+      horizonMaxRequests,
+      retryMaxDelayMs,
       logInputs,
     });
   }
@@ -247,7 +245,7 @@ async function run(): Promise<void> {
 
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
-    minXlmReserve,
+    minXlmReserve: Number(minXlmReserve),
     horizonUrl,
     homeDomainCheckEnabled,
     expectedHomeDomain: expectedHomeDomain || undefined,

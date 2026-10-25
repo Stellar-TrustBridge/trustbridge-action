@@ -311,7 +311,7 @@ export function redactHorizonUrl(url: string): string {
  * `[REDACTED]`; all other string values are passed through
  * {@link redactString} so embedded addresses never leak.
  */
-export function redactContext(context: LogContext): LogContext {
+export function redactContext(context: LogContext = {}): LogContext {
   const redacted: LogContext = {};
   for (const [key, value] of Object.entries(context)) {
     if (value === undefined || value === null) {
@@ -704,4 +704,95 @@ export function error(message: string, context?: LogContext): void {
   } else {
     core.error(safeMessage);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Action inputs structured log record (log_inputs, Issue #771)
+// ---------------------------------------------------------------------------
+
+/**
+ * Represents the full set of resolved action inputs that may be logged
+ * as a structured JSON artifact when `log_inputs` is enabled.
+ *
+ * Every field that could carry a Stellar address or sensitive URL is typed
+ * as `string` so the redaction helpers can process it uniformly before the
+ * record reaches any log output.
+ */
+export interface ActionInputsLogRecord {
+  horizonUrl: string;
+  horizonUrlFallback: string;
+  rpcFallbackUrl: string;
+  assetCode: string;
+  assetIssuer: string;
+  minXlmReserve: string;
+  /** Optional minimum trustline limit (Issue #140). */
+  minTrustlineLimit?: string;
+  stellarAddress: string;
+  failOnMissing: boolean;
+  debugMode: boolean;
+  horizonTimeoutMs: number;
+  stickyComment: boolean;
+  waitUntilFunded: boolean;
+  waitUntilFundedTimeoutMs: number;
+  waitUntilFundedIntervalMs: number;
+  horizonCacheTtlMs: number;
+  useCache: boolean;
+  horizonMaxRequests: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs: number;
+  logInputs: boolean;
+  allowCrossNetworkFallback?: boolean;
+}
+
+/**
+ * Build a redacted copy of the resolved action inputs suitable for writing
+ * to structured log output.  All Stellar addresses and Horizon/RPC URLs are
+ * masked before the record is returned; no value is emitted verbatim.
+ *
+ * The returned object is plain JSON-serialisable — every value is a
+ * primitive (string, number, boolean) so `JSON.stringify` produces a
+ * deterministic, machine-readable artifact.
+ */
+export function buildInputsLogRecord(inputs: ActionInputsLogRecord): ActionInputsLogRecord {
+  return {
+    horizonUrl: redactHorizonUrl(inputs.horizonUrl),
+    horizonUrlFallback: inputs.horizonUrlFallback ? redactHorizonUrl(inputs.horizonUrlFallback) : '',
+    rpcFallbackUrl: inputs.rpcFallbackUrl ? redactString(inputs.rpcFallbackUrl) : '',
+    assetCode: inputs.assetCode,
+    assetIssuer: redactStellarAddress(inputs.assetIssuer) || redactString(inputs.assetIssuer),
+    minXlmReserve: inputs.minXlmReserve,
+    minTrustlineLimit: inputs.minTrustlineLimit ?? '',
+    stellarAddress: redactStellarAddress(inputs.stellarAddress),
+    failOnMissing: inputs.failOnMissing,
+    debugMode: inputs.debugMode,
+    horizonTimeoutMs: inputs.horizonTimeoutMs,
+    stickyComment: inputs.stickyComment,
+    waitUntilFunded: inputs.waitUntilFunded,
+    waitUntilFundedTimeoutMs: inputs.waitUntilFundedTimeoutMs,
+    waitUntilFundedIntervalMs: inputs.waitUntilFundedIntervalMs,
+    horizonCacheTtlMs: inputs.horizonCacheTtlMs,
+    useCache: inputs.useCache,
+    horizonMaxRequests: inputs.horizonMaxRequests,
+    maxRetries: inputs.maxRetries ?? 3,
+    retryBaseDelayMs: inputs.retryBaseDelayMs ?? 1000,
+    retryMaxDelayMs: inputs.retryMaxDelayMs ?? 30000,
+    logInputs: inputs.logInputs,
+    allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,
+  };
+}
+
+/**
+ * Emit a structured JSON log record of all resolved action inputs to GitHub
+ * Actions log output.  The record is built via `buildInputsLogRecord` so
+ * every address/URL field is already redacted before it is written.
+ *
+ * The record is emitted with `core.info` so it is always visible (not gated
+ * on debug mode) whenever the caller opts in via `log_inputs: true`.
+ *
+ * @param inputs  The raw resolved inputs from `src/index.ts`.
+ */
+export function emitInputsLogRecord(inputs: ActionInputsLogRecord): void {
+  const redacted = buildInputsLogRecord(inputs);
+  core.info(`[TrustBridge] action inputs: ${JSON.stringify(redacted)}`);
 }

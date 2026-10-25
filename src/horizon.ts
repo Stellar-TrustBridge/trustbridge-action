@@ -1636,3 +1636,187 @@ export async function fetchNetworkPassphrase(
 
   throw new Error(`Unable to fetch network passphrase from ${normalizedUrl}`);
 }
+
+// ---------------------------------------------------------------------------
+// Friendbot integration for testnet (Issue #4)
+// ---------------------------------------------------------------------------
+
+export interface FriendbotOptions {
+  /** Friendbot URL. Must be HTTPS and on the allowlist. */
+  friendbotUrl: string;
+  /** Request timeout in milliseconds. */
+  timeoutMs?: number;
+  /** Override fetch function (for testing). */
+  fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+const DEFAULT_FRIENDBOT_TIMEOUT_MS = 15_000;
+
+const ALLOWED_FRIENDBOT_HOSTS = new Set([
+  'friendbot.stellar.org',
+  'friendbot-testnet.stellar.org',
+  'horizon-testnet.stellar.org',
+  'friendbot-futurenet.stellar.org',
+  'horizon-futurenet.stellar.org',
+]);
+
+/**
+ * Check if a friendbot URL is on the allowlist and safe to use.
+ * Prevents SSRF attacks by only allowing known testnet friendbot endpoints.
+ */
+export function isFriendbotAllowed(friendbotUrl: string): boolean {
+  if (!friendbotUrl || !friendbotUrl.trim()) {
+    return false;
+  }
+  const raw = friendbotUrl.trim();
+  if (raw.includes('..')) {
+    return false;
+  }
+  try {
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+    const url = new URL(hasScheme ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return false;
+    }
+    // Disallow non-HTTPS when explicit scheme provided, except allow normalization
+    if (hasScheme && url.protocol !== 'https:') {
+      return false;
+    }
+    const hostname = url.hostname.toLowerCase();
+    if (!ALLOWED_FRIENDBOT_HOSTS.has(hostname)) {
+      return false;
+    }
+    const pathname = url.pathname.replace(/\/+$/, '');
+    if (pathname !== '' && pathname !== '/friendbot') {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect whether a Horizon URL points to testnet or mainnet.
+ * Used to enforce friendbot safety rules (never call friendbot on mainnet).
+ */
+export function isTestnetHorizon(horizonUrl: string): boolean {
+  const normalized = horizonUrl.toLowerCase().trim();
+  if (normalized.includes('public.stellar.org') || normalized.includes('mainnet')) {
+    return false;
+  }
+  try {
+    const url = new URL(normalized.startsWith('http') ? normalized : `https://${normalized}`);
+    if (url.hostname === 'horizon.stellar.org') {
+      return false;
+    }
+  } catch {}
+  return normalized.includes('testnet') || normalized.includes('test') || normalized.includes('futurenet');
+}
+
+export interface FriendbotResult {
+  success: boolean;
+  message: string;
+  transactionHash?: string;
+}
+
+/**
+ * Call Stellar Friendbot to fund a testnet account.
+ *
+ * Safety rules:
+ * - Only works with allowlisted friendbot URLs (SSRF protection)
+ * - Only callable when Horizon URL indicates testnet
+ * - Fails fast with clear error on mainnet or unknown networks
+ *
+ * @param stellarAddress The G-address to fund
+ * @param options Friendbot configuration
+ * @param horizonUrl The Horizon URL (used for network safety check)
+ * @returns FriendbotResult with success status and transaction details
+ */
+export async function callFriendbot(
+  stellarAddress: string,
+  options: FriendbotOptions,
+  horizonUrl: string,
+): Promise<FriendbotResult> {
+  const { friendbotUrl, timeoutMs = DEFAULT_FRIENDBOT_TIMEOUT_MS, fetchFn } = options;
+
+  // Safety check 1: Only allow testnet
+  if (!isTestnetHorizon(horizonUrl)) {
+    return {
+      success: false,
+      message: 'Friendbot is only available for testnet. Cannot fund accounts on public/mainnet.',
+    };
+  }
+
+  // Safety check 2: SSRF allowlist
+  if (!isFriendbotAllowed(friendbotUrl)) {
+    return {
+      success: false,
+      message: `Friendbot URL "${friendbotUrl}" is not on the allowlist. Only official Stellar friendbot endpoints are supported.`,
+    };
+  }
+
+  // Normalize URL
+  let fullUrl = friendbotUrl.trim();
+  if (!fullUrl.startsWith('http')) {
+    fullUrl = `https://${fullUrl}`;
+  }
+
+  // Ensure /friendbot path if missing
+  if (!fullUrl.includes('/friendbot')) {
+    fullUrl = fullUrl.replace(/\/$/, '') + '/friendbot';
+  }
+
+  // Add address parameter
+  const urlWithParam = `${fullUrl}?addr=${encodeURIComponent(stellarAddress)}`;
+
+  const fetch = fetchFn ?? ((globalThis as unknown as { fetch?: typeof globalThis.fetch }).fetch
+    ?? (await import('node-fetch')).default as unknown as typeof globalThis.fetch);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(urlWithParam, {
+      method: 'GET',
+      signal: controller.signal as AbortSignal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unknown error');
+      return {
+        success: false,
+        message: `Friendbot returned HTTP ${response.status}: ${errorText}`,
+      };
+    }
+
+    const data = await response.json() as { hash?: string; id?: string };
+    const txHash = data.hash || data.id;
+
+    return {
+      success: true,
+      message: 'Account funded successfully via Friendbot',
+      transactionHash: txHash,
+    };
+  } catch (error) {
+    clearTimeout(timer);
+
+    if (
+      (error instanceof Error && (error.name === 'AbortError' || error.message.includes('AbortError') || error.name === 'TimeoutError')) ||
+      (error as { name?: string })?.name === 'AbortError'
+    ) {
+      return {
+        success: false,
+        message: `Friendbot request timed out after ${timeoutMs}ms`,
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      message: `Friendbot request failed: ${message}`,
+    };
+  }
+}
