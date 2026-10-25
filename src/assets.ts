@@ -249,7 +249,7 @@ export function assertValidSacAssetCode(assetIssuer: string, assetCode: string):
     assertValidAssetCode(assetCode);
   } catch {
     throw new Error(
-      `asset_code "${assetCode}" is invalid for Soroban contract issuer ${assetIssuer}: asset codes must be 1-12 uppercase alphanumeric characters.`,
+      `asset_code "${assetCode}" is invalid for Soroban SAC contract issuer ${assetIssuer}: asset codes must be 1-12 uppercase alphanumeric characters.`,
     );
   }
 }
