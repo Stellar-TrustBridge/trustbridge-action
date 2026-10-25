@@ -1672,12 +1672,15 @@ export async function applyWalletLabels(
   const removed: string[] = [];
 
   try {
+    // List every current label (paginated) so labels on pages after the
+    // first 100 are never missed on heavily-labelled issues (Issue #694).
+    const currentNameList = await listAllLabelsOnIssue(octokit, owner, repo, issueNumber);
+    const currentNames = new Set(currentNameList);
+
     if (removeStale) {
-      // Paginate through all labels to handle issues with >100 labels.
-      const currentNames = await listAllLabelsOnIssue(octokit, owner, repo, issueNumber);
 
       const stale = ALL_WALLET_LABELS.filter(
-        (l) => l !== targetLabel && currentNames.includes(l),
+        (l) => l !== targetLabel && currentNames.has(l),
       );
 
       // Deterministic conflict resolution: log when multiple stale wallet
@@ -1712,12 +1715,17 @@ export async function applyWalletLabels(
       }
     }
 
-    await octokit.rest.issues.addLabels({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      labels: [targetLabel],
-    });
+    // Skip re-adding an already-applied label so the operation stays
+    // idempotent and never issues a duplicate label attempt for a label that
+    // already exists on the issue (Issue #694).
+    if (!currentNames.has(targetLabel)) {
+      await octokit.rest.issues.addLabels({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: [targetLabel],
+      });
+    }
 
     return { applied: targetLabel, removed };
   } catch (err) {
@@ -1774,13 +1782,9 @@ export async function applyReadyLabels(
   }
 
   try {
-    const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      per_page: 100,
-    });
-    const currentNames = new Set(currentLabelsResponse.data.map((l) => l.name));
+    // Paginated: stale labels on later pages must still be found (Issue #694).
+    const currentNameList = await listAllLabelsOnIssue(octokit, owner, repo, issueNumber);
+    const currentNames = new Set(currentNameList);
 
     if (
       staleLabel &&
