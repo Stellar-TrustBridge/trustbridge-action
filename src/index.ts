@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as github from '@actions/github';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -21,9 +22,21 @@ import {
   HorizonError,
   isTestnetHorizon,
   waitForFundedAccount,
+  applyWalletLabels,
+  applyReadyLabels,
 } from './horizon';
-import { formatCommentBody, resolvePostingMode, upsertIssueComment } from './comment';
+import { formatCommentBody, postIssueComment, upsertIssueComment, writeFullReport, COMMENT_SIZE_LIMIT_BYTES } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
+import {
+  parseBatchAddresses,
+  runBatchValidation,
+  buildBatchSummary,
+  formatBatchSummaryMarkdown,
+  BatchSummary,
+} from './batch';
+import { createCheckRun, determineCheckConclusion } from './checks-run';
+import { getOctokitProxyOptions } from './proxy';
+import { updateProjectV2Status } from './projects';
 import { getErrorMessage, parseBooleanInput, parseNumberInput, resolveReadyLabelInputs } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
@@ -341,6 +354,35 @@ export async function run(): Promise<void> {
     // Runner without signal handlers (e.g. non-Node test harness) — continue without them.
   }
 
+  // Milestone gating (Issue #230): skip the run before any Horizon traffic
+  // when the event milestone is not allowlisted.
+  const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
+  const milestoneFailOnSkip = parseBooleanInput(
+    core.getInput('milestone_fail_on_skip'),
+    false,
+  );
+
+  const milestoneDecision = evaluateMilestoneGate(
+    milestoneAllowlistRaw,
+    milestoneFailOnSkip,
+    github.context.payload as Record<string, unknown>,
+  );
+
+  if (milestoneDecision.shouldSkip) {
+    const fullMessage = milestoneDecision.fullMessage;
+    if (milestoneFailOnSkip) {
+      core.setFailed(fullMessage);
+    } else {
+      core.info(fullMessage);
+    }
+
+    core.setOutput('ready', 'false');
+    core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+    core.setOutput('checks_json', '[]');
+
+    return;
+  }
+
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
@@ -355,10 +397,6 @@ export async function run(): Promise<void> {
     max: 60000,
   });
   const stickyComment = parseBooleanInput(core.getInput('sticky_comment'), true);
-  const postingMode = resolvePostingMode(
-    core.getInput('posting_mode'),
-    core.getInput('comment_mode'),
-  );
   const waitUntilFunded = parseBooleanInput(core.getInput('wait_until_funded'), false);
   const waitUntilFundedTimeoutMs = parseNumberInput(
     core.getInput('wait_until_funded_timeout_ms'),
@@ -432,6 +470,34 @@ export async function run(): Promise<void> {
   const homeDomainCheckMode: HomeDomainCheckMode =
     (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
   const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
+
+  // Comment threading + batch inputs.
+  const { postingMode, commentThreadingMode } = resolveCommentModes(
+    core.getInput('posting_mode'),
+    core.getInput('comment_mode'),
+  );
+  const forceComment = parseBooleanInput(core.getInput('force_comment'), false);
+  const snoozeWindowMinutes = parseNumberInput(core.getInput('snooze_window_minutes'), 0, {
+    min: 0,
+    max: 60 * 24 * 30,
+  });
+  const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
+  const issueNumberInputRaw = core.getInput('issue_number') || '';
+  const issueNumberInput = issueNumberInputRaw.trim()
+    ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
+    : undefined;
+  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+
+  // Check runs, labels, unassign, Projects v2 (Issues #228, #222, #200, #421).
+  const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
+  const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
+  const unassignOnNotReady = parseBooleanInput(core.getInput('unassign_on_not_ready'), false);
+  const projectId = core.getInput('project_id') || '';
+  const projectStatusField = core.getInput('project_status_field') || '';
+  const projectStatusPass = core.getInput('project_status_pass') || '';
+  const projectStatusFail = core.getInput('project_status_fail') || '';
+  const projectToken = core.getInput('project_token') || '';
+  const reportOutputPath = core.getInput('report_output_path') || '';
 
   // Create RateBudgetTracker if horizon_max_requests > 0
   const rateBudgetTracker = horizonMaxRequests > 0 ? new RateBudgetTracker(horizonMaxRequests) : undefined;
@@ -736,15 +802,81 @@ export async function run(): Promise<void> {
     }
   }
 
-  setValidationOutputs(result, undefined, undefined, {
-    horizonUrl,
-    assetCode: normalizedAsset.assetCode,
-    assetIssuer: normalizedAsset.assetIssuer,
-    assetsTrustlineStatus: assetsTrustlineStatusExtras,
-    friendbotCalled,
-    friendbotSuccess,
-    friendbotTransactionHash,
-  });
+  // (Single-address outputs are published once at the end of the run —
+  // see below — so batch and comment results are final first.)
+
+  // Batch mode (Issue #105 / #537): validate a list of addresses and post one
+  // summary comment. Batch outputs are published after the single-address
+  // outputs below so they are never clobbered by the defaults.
+  let batchSummary: BatchSummary | undefined;
+  if (stellarAddressesRaw.trim()) {
+    const batchAddresses = parseBatchAddresses(stellarAddressesRaw);
+    core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
+
+    const batchCheckConfig: CheckConfig = {
+      ...normalizedAsset,
+      minXlmReserve: Number(minXlmReserve),
+      horizonUrl,
+      homeDomainCheckEnabled,
+      stellarTomlFetchEnabled,
+      stellarTomlCacheTtlMs,
+      stellarTomlHashPin: stellarTomlHashPin || undefined,
+      clawbackStrictMode: checkConfig.clawbackStrictMode,
+    };
+
+    const batchResults = await runBatchValidation(
+      batchAddresses,
+      batchCheckConfig,
+      horizonUrl,
+      {
+        fetchOptions: {
+          timeoutMs: horizonTimeoutMs,
+          maxRetries,
+          retryBaseDelayMs,
+          retryMaxDelayMs,
+        },
+      },
+    );
+
+    const batchSummaryLocal = buildBatchSummary(batchResults, {
+      clawbackStrictMode: checkConfig.clawbackStrictMode,
+    });
+    batchSummary = batchSummaryLocal;
+    const batchMarkdown = formatBatchSummaryMarkdown(
+      batchSummaryLocal,
+      normalizedAsset.assetCode,
+    );
+
+    if (postingMode === 'post') {
+      try {
+        const batchCommentUrl = await postIssueComment(
+          githubToken,
+          batchMarkdown,
+          {
+            sticky: stickyComment,
+            commentMode: commentThreadingMode,
+            forceComment,
+            snoozeWindowMs,
+            issueNumber: issueNumberInput,
+          },
+        );
+        if (batchCommentUrl) {
+          logger.info('Batch comment created', {
+            component: 'index',
+            commentUrl: batchCommentUrl,
+          });
+        }
+      } catch (commentError) {
+        const message =
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError);
+        core.warning(`Failed to post batch comment (non-fatal): ${message}`);
+      }
+    } else {
+      core.info(`posting_mode is "${postingMode}" — skipping batch comment post (outputs still set).`);
+    }
+  }
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
@@ -781,7 +913,52 @@ export async function run(): Promise<void> {
     core.info(`posting_mode is "${postingMode}" — skipping issue comment.`);
   }
 
-  setValidationOutputs(result, commentUrl, undefined, {
+  // Issue #535 — publish every action output exactly once, at the end of the
+  // run. Comment URL, full report path and check-run values are only final
+  // at this point, so this call replaces the earlier partial call.
+  // ---------------------------------------------------------------------------
+  // GitHub Checks API integration (Wave #26 / Issue #421). When
+  // use_check_runs is true, creates a Check Run with check annotations. The
+  // check_run_id / check_run_conclusion outputs are published through
+  // setValidationOutputs below (Issue #550) so it remains the single
+  // publisher of every action.yml output.
+  // ---------------------------------------------------------------------------
+  let checkRunId: string | undefined;
+  let checkRunConclusion: string | undefined;
+  if (useCheckRuns) {
+    if (!githubToken) {
+      core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
+    } else {
+      try {
+        const checkRun = await createCheckRun(result, githubToken, {
+          stellarAddress,
+        });
+        checkRunId = checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : undefined;
+        checkRunConclusion = checkRun.success ? determineCheckConclusion(result) : undefined;
+      } catch (checkRunError) {
+        const message =
+          checkRunError instanceof Error ? checkRunError.message : String(checkRunError);
+        core.warning(`Failed to create Check Run (non-fatal): ${message}`);
+      }
+    }
+  }
+
+  // Full-report overflow: when the comment body exceeds GitHub's comment size
+  // limit, write the full report to report_output_path and publish its path.
+  let fullReportPath: string | undefined;
+  if (reportOutputPath) {
+    const commentBytes = Buffer.byteLength(commentBody, 'utf8');
+    if (commentBytes > COMMENT_SIZE_LIMIT_BYTES) {
+      core.warning(
+        `Comment body is ${commentBytes} bytes, which exceeds GitHub's ${COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
+          `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`,
+      );
+      fullReportPath = writeFullReport(commentBody, reportOutputPath) ?? undefined;
+    }
+  }
+
+  const validatedAt = new Date().toISOString();
+  setValidationOutputs(result, commentUrl, fullReportPath, {
     horizonUrl,
     assetCode: normalizedAsset.assetCode,
     assetIssuer: normalizedAsset.assetIssuer,
@@ -789,7 +966,149 @@ export async function run(): Promise<void> {
     friendbotCalled,
     friendbotSuccess,
     friendbotTransactionHash,
+    validatedAt,
+    timings: globalMetrics.getTimingBreakdown(),
+    checkRunId,
+    checkRunConclusion,
   });
+
+  // Batch outputs last so the single-address defaults above never clobber
+  // the real batch summary (Issue #537).
+  if (batchSummary) {
+    core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
+    core.setOutput('batch_passed_count', String(batchSummary.passed));
+    core.setOutput('batch_failed_count', String(batchSummary.failed));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wallet labels (Issue #200)
+  // When auto_wallet_labels is true and we're in an issue context, apply
+  // the appropriate wallet state label to the issue.
+  // ---------------------------------------------------------------------------
+  if (autoWalletLabels) {
+    const issueNumber = github.context.payload.issue?.number;
+    if (issueNumber) {
+      const { owner, repo } = github.context.repo;
+      try {
+        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
+        const labelResult = await applyWalletLabels(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+          {
+            accountFunded: result.accountFunded,
+            trustlineExists: result.trustlineExists,
+            xlmReserveMet: result.xlmReserveMet,
+          },
+          { removeStale: true },
+        );
+        if (labelResult.error) {
+          core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
+        } else {
+          core.info(`Applied wallet label: ${labelResult.applied}`);
+        }
+      } catch (labelError) {
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
+        core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
+      }
+    }
+  }
+
+  // Ready labels (Issue #669): pass/fail label sync on the issue.
+  const readyLabels = resolveConfiguredReadyLabels();
+  if ((readyLabels.passLabel || readyLabels.failLabel)) {
+    const issueNumber = github.context.payload.issue?.number;
+    if (issueNumber) {
+      const { owner, repo } = github.context.repo;
+      try {
+        const octokit = github.getOctokit(githubToken);
+        const readyLabelResult = await applyReadyLabels(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+          {
+            ready: result.valid,
+            passLabel: readyLabels.passLabel,
+            failLabel: readyLabels.failLabel,
+          },
+        );
+        if (readyLabelResult.error) {
+          core.warning(
+            `Ready label update failed (non-fatal): ${readyLabelResult.error}`,
+          );
+        } else if (readyLabelResult.applied) {
+          core.info(`Applied ready label: ${readyLabelResult.applied}`);
+        }
+      } catch (labelError) {
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
+        core.warning(`Failed to apply ready label (non-fatal): ${msg}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-unassign on not-ready (Issue #228)
+  // When unassign_on_not_ready is true and readiness checks fail,
+  // automatically unassign the GitHub assignee(s) from the issue.
+  // ---------------------------------------------------------------------------
+  if (unassignOnNotReady && !result.valid) {
+    const issueNumber = github.context.payload.issue?.number;
+    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
+    await handleAutoUnassign({
+      octokit,
+      owner,
+      repo,
+      issueNumber: issueNumberInput ?? issueNumber,
+      payload: github.context.payload,
+      result,
+      unassignOnNotReady,
+    });
+  }
+
+  // GitHub Projects v2 integration (Issue #222)
+  const targetProjectStatus = result.valid
+    ? projectStatusPass
+    : projectStatusFail;
+  if (projectId.trim() && targetProjectStatus.trim()) {
+    const contentNodeId =
+      github.context.payload.issue?.node_id ??
+      github.context.payload.pull_request?.node_id ??
+      '';
+
+    if (!projectToken) {
+      core.warning(
+        "[Projects v2] A project status is configured, but no GitHub token is available; skipping status update.",
+      );
+    } else if (!contentNodeId) {
+      core.warning(
+        "[Projects v2] A project status is configured, but this event has no issue or pull request node ID; skipping status update.",
+      );
+    } else {
+      try {
+        const octokit = github.getOctokit(projectToken, getOctokitProxyOptions());
+        await updateProjectV2Status({
+          octokit,
+          projectId,
+          contentNodeId,
+          statusFieldName: projectStatusField,
+          targetStatusValue: targetProjectStatus,
+        });
+      } catch (projectError) {
+        const message =
+          projectError instanceof Error
+            ? projectError.message
+            : String(projectError);
+        core.warning(
+          `[Projects v2] Failed to initialize status update (non-fatal): ${message}`,
+        );
+      }
+    }
+  }
 
   // SARIF 2.1.0 output (Issue #197). Includes rule TB004 for the home domain
   // check when home_domain_check_enabled is true (Issue #708).
@@ -856,6 +1175,9 @@ function writeSarifOutput(
   }
 }
 
-run().catch((error) => {
-  core.setFailed(getErrorMessage(error));
-});
+// Skip auto-run under Jest so performance / integration tests can import `run`.
+if (process.env.JEST_WORKER_ID === undefined) {
+  run().catch((error) => {
+    core.setFailed(getErrorMessage(error));
+  });
+}

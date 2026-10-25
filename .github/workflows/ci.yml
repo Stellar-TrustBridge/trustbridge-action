@@ -42,7 +42,9 @@ jobs:
         run: npm run build
 
       - name: Verify action bundle exists
-        run: test -f dist/index.js
+        run: |
+          test -f dist/index.js
+          test -f action.yml
 
       - name: Verify dist/ matches src/
         run: |
