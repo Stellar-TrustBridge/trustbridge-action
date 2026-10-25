@@ -332,7 +332,9 @@ export function redactContext(context: LogContext = {}): LogContext {
       }
       continue;
     }
-    redacted[key] = value;
+    // Deep-redact nested objects/arrays (Issue #225) so tokens embedded in
+    // structured context values can never reach the Actions log unmasked.
+    redacted[key] = redactValue(value);
   }
   return redacted;
 }
