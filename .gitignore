@@ -6,6 +6,11 @@ coverage/
 .env.*
 !.env.example
 
+# ncc declaration maps embed absolute build-machine paths, so they can
+# never match across machines and always fail the dist-sync CI check.
+# The self-contained JS bundle does not need them.
+dist/**/*.d.ts.map
+
 # Local scratch / issue drafts
 push_issues.sh
 issues.md
