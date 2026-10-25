@@ -76,6 +76,9 @@ jobs:
       - name: Check docs/LICENSE_REPORT.md is up to date with package-lock.json
         run: npm run license:report:check
 
+      - name: Check reason-codes docs table is up to date with schemas/reason-codes.json
+        run: npm run reason-codes:check
+
   check-unpinned-actions:
     name: Check unpinned actions
     runs-on: ubuntu-latest
