@@ -31,8 +31,8 @@ import * as path from 'path';
 /**
  * Maximum allowed size for dist/index.js in bytes.
  *
- * CURRENT BASELINE: 1,688,671 bytes (as of 2024-12-29)
- * BUDGET:           2,097,152 bytes (2 MB — 24% headroom)
+ * CURRENT BASELINE: ~4,513,385 bytes (as of 2026-10-25)
+ * BUDGET:           5,242,880 bytes (5 MB — ~14% headroom)
  *
  * When to increase this budget:
  *  1. A legitimate feature adds a necessary dependency (e.g., a new Stellar
@@ -42,8 +42,16 @@ import * as path from 'path';
  *  4. Update this comment block with the new baseline and reason.
  *
  * See CONTRIBUTING.md § "Bundle size budget" for the full checklist.
+ *
+ * 2026-10-25: budget raised 2 MB → 5 MB during repository stabilization.
+ * The restored feature set (batch validation, milestone gate, check runs,
+ * Projects v2, wallet/ready labels, friendbot, SARIF) bundles to ~4.5 MB,
+ * of which ~2 MB is `@azure/ms-rest-js` pulled in by `@actions/cache@4`.
+ * Follow-up: upgrade `@actions/cache` ^4 → ^6 (modular storage-blob,
+ * same reserveCache/restoreCache/saveCache surface) to reclaim ~2 MB and
+ * drop the deprecated Azure SDK. Until then this budget stands.
  */
-const MAX_BUNDLE_SIZE_BYTES = 2_097_152; // 2 MB
+const MAX_BUNDLE_SIZE_BYTES = 5_242_880; // 5 MB
 
 /**
  * Threshold at which to warn (but not fail) about approaching the budget.
