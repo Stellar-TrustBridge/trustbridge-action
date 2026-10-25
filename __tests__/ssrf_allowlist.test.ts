@@ -481,8 +481,12 @@ describe('Issue #702: DNS rebinding guard', () => {
   });
 
   it('fetchSSRFSafe refuses to send the request when DNS resolves to a private IP', async () => {
+    // NOTE: the fixture hostname must NOT embed an IP literal (unlike
+    // *.nip.io): embedded-IP hostnames are rejected by the static
+    // hostname check before DNS is ever consulted, so they cannot exercise
+    // the DNS-rebinding path this test targets.
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(makeResponse(200, {}, 'secret'));
-    const result = await fetchSSRFSafe('https://127.0.0.1.nip.io/.well-known/stellar.toml', {
+    const result = await fetchSSRFSafe('https://attacker.example.com/.well-known/stellar.toml', {
       dnsLookup: async () => ['127.0.0.1'],
     });
     expect(result.ok).toBe(false);

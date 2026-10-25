@@ -723,7 +723,7 @@ async function fetchAccountOnce(
               retryAfterFromHeader: retryAfterHeader !== null,
             });
             throw new HorizonRateLimitError(
-              `Horizon rate limit exceeded (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`,
+              `Horizon retry wait budget exhausted (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`,
               retryAfter,
             );
           }
