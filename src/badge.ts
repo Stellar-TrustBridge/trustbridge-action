@@ -11,7 +11,7 @@ import { ValidationResult } from './checks';
 /**
  * Badge state representing the outcome of validation checks.
  */
-export type BadgeState = 'pass' | 'fail' | 'pending';
+export type BadgeState = 'pass' | 'fail' | 'pending' | 'skipped';
 
 /**
  * Shields.io badge configuration for rendering validation status.
@@ -26,6 +26,10 @@ export interface BadgeConfig {
  * - 'pass': All checks passed (valid === true)
  * - 'fail': One or more checks failed (valid === false)
  * - 'pending': Result is unknown or in-progress (never set by normal flow, but available for consumer use)
+ *
+ * Note: the 'skipped' state (every check detail is 'Skipped') is detected by
+ * {@link generateBadgeSnippets}, not here — a skipped run is still
+ * `valid === false`, so this function reports 'fail' for it.
  */
 export function determineBadgeState(result: ValidationResult): BadgeState {
   return result.valid ? 'pass' : 'fail';
@@ -42,6 +46,8 @@ function getBadgeColor(state: BadgeState): string {
       return 'red';
     case 'pending':
       return 'yellow';
+    case 'skipped':
+      return 'lightgrey';
   }
 }
 
@@ -56,6 +62,8 @@ function getBadgeLabel(state: BadgeState): string {
       return 'Not Ready';
     case 'pending':
       return 'Pending';
+    case 'skipped':
+      return 'Skipped';
   }
 }
 
@@ -109,7 +117,12 @@ export function generateBadgeSnippets(
   result: ValidationResult,
   label: string = 'trustbridge',
 ): { markdown: string; url: string } {
-  const state = determineBadgeState(result);
+  // A run where every check was skipped (e.g. dry-run short-circuit) renders
+  // the neutral 'skipped' badge instead of the red 'fail' badge, even though
+  // the result itself is not valid.
+  const skipped =
+    result.checks.length > 0 && result.checks.every((check) => check.detail === 'Skipped');
+  const state = skipped ? 'skipped' : determineBadgeState(result);
   return {
     markdown: generateBadgeMarkdown(state, label),
     url: generateBadgeUrl(state, label),
