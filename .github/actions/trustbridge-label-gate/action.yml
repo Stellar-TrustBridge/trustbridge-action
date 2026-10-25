@@ -219,6 +219,10 @@ outputs:
     description: 'URL of the created or updated issue comment, when run in an issue context'
     value: ${{ steps.run-trustbridge.outputs.comment_url }}
 
+  comment_id:
+    description: 'Numeric REST id of the created or updated issue comment, when run in an issue context'
+    value: ${{ steps.run-trustbridge.outputs.comment_id }}
+
   asset_balance:
     description: 'Current configured asset (e.g. USDC) balance as reported by Horizon, or 0 / unknown'
     value: ${{ steps.run-trustbridge.outputs.asset_balance }}

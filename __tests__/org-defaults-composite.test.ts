@@ -515,8 +515,10 @@ describe('trustbridge-org-defaults composite action wiring (#693)', () => {
       ['sticky_comment', 'org_sticky_comment'],
     ];
     for (const [override, orgDefault] of resolvePairs) {
+      // Bash invocation syntax: resolve "<override>" "<org_default>"
+      // (NOT resolve("<override>" ...) — that would not be valid shell).
       const expectedCall =
-        'resolve("' +
+        'resolve "' +
         inputsExpr(override) +
         '" "' +
         inputsExpr(orgDefault) +

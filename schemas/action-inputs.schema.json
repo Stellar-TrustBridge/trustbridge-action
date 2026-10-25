@@ -694,7 +694,7 @@
         "true",
         "false"
       ],
-      "default": "false"
+      "default": ""
     },
     "maintainers_allowlist": {
       "type": "string",

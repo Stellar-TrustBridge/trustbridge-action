@@ -454,3 +454,131 @@ export function resolveReadyLabelInputs(
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Canonical action input surface (Issue #769)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every input declared in `action.yml`, keyed by its exact snake_case name.
+ *
+ * `inputs-schema-parity.test.ts` locks this list to `action.yml`: adding,
+ * removing or renaming an action input without updating this interface
+ * fails CI. All inputs arrive as strings via `core.getInput`; only
+ * `github_token` is required.
+ */
+export interface Inputs {
+  max_retries?: string;
+  retry_base_delay_ms?: string;
+  horizon_url?: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  min_xlm_reserve?: string;
+  min_trustline_limit?: string;
+  min_asset_balance?: string;
+  stellar_address_input?: string;
+  assignee_address_map?: string;
+  fail_on_missing?: string;
+  preflight_only?: string;
+  issue_number?: string;
+  debug_mode?: string;
+  horizon_timeout_ms?: string;
+  sticky_comment?: string;
+  comment_mode?: string;
+  wait_until_funded?: string;
+  wait_until_funded_timeout_ms?: string;
+  wait_until_funded_interval_ms?: string;
+  horizon_url_fallback?: string;
+  horizon_cache_ttl_ms?: string;
+  rpc_fallback_url?: string;
+  horizon_max_requests?: string;
+  retry_max_delay_ms?: string;
+  retry_max_total_wait_ms?: string;
+  use_cache?: string;
+  use_actions_cache_backend?: string;
+  allow_cross_network_fallback?: string;
+  log_inputs?: string;
+  trustbridge_config_path?: string;
+  milestone_allowlist?: string;
+  milestone_fail_on_skip?: string;
+  github_token: string;
+  github_app_token?: string;
+  assets_json?: string;
+  sep0007_deep_links?: string;
+  auto_wallet_labels?: string;
+  pass_label?: string;
+  fail_label?: string;
+  sep0007_origin_domain?: string;
+  snooze_window_minutes?: string;
+  force_comment?: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+  webhook_secret_previous?: string;
+  webhook_timeout_ms?: string;
+  webhook_auth_mode?: string;
+  webhook_oidc_audience?: string;
+  docs_base_url?: string;
+  network?: string;
+  preset?: string;
+  posting_mode?: string;
+  use_check_runs?: string;
+  use_friendbot?: string;
+  friendbot_url?: string;
+  friendbot_timeout_ms?: string;
+  fixture_mode?: string;
+  fixture_path?: string;
+  dashboard_webhook_url?: string;
+  onboarding_checklist?: string;
+  check_ledger_freshness?: string;
+  max_ledger_lag_seconds?: string;
+  ledger_freshness_fail_on_stale?: string;
+  network_passphrase?: string;
+  home_domain_check_enabled?: string;
+  expected_home_domain?: string;
+  home_domain_check_mode?: string;
+  stellar_toml_fetch_enabled?: string;
+  stellar_toml_cache_ttl_ms?: string;
+  stellar_toml_hash_pin?: string;
+  write_validation_json?: string;
+  validation_json_path?: string;
+  trustbridge_plugins_path?: string;
+  sarif_output_path?: string;
+  use_plugin_runner?: string;
+  locale?: string;
+  stellar_addresses?: string;
+  unassign_on_not_ready?: string;
+  project_id?: string;
+  project_status_field?: string;
+  project_status_pass?: string;
+  project_status_fail?: string;
+  project_token?: string;
+  claimable_balance_policy?: string;
+  sep0010_challenge_xdr?: string;
+  sep0010_dashboard_url?: string;
+  unauthorized_trustline_policy?: string;
+  clawback_strict_mode?: string;
+  skip_for_maintainers?: string;
+  skip_if_maintainer?: string;
+  maintainers_allowlist?: string;
+  horizon_pin_fingerprint?: string;
+  federation_resolution_enabled?: string;
+  horizon_url_allowlist?: string;
+  dashboard_roster_url?: string;
+  dashboard_roster_secret?: string;
+  dashboard_roster_timeout_ms?: string;
+  dashboard_roster_allow_http?: string;
+  soroban_full_roster?: string;
+  soroban_roster_page_limit?: string;
+  custom_comment_template_path?: string;
+  ready_pass_label?: string;
+  ready_label_pass?: string;
+  ready_fail_label?: string;
+  ready_label_fail?: string;
+  codeowners_path?: string;
+  github_username?: string;
+  previous_validation_path?: string;
+  report_output_path?: string;
+  privacy_mode?: string;
+  soroban_rpc_url?: string;
+  contract_id?: string;
+}

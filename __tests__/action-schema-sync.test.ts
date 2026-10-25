@@ -529,7 +529,9 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
  */
 function extractGetInputKeys(sourceText: string): Set<string> {
   const keys = new Set<string>();
-  const pattern = /core\.getInput\(\s*['"]([^'"]+)['"]\s*\)/g;
+  // Matches both core.getInput('name') and the two-argument form
+  // core.getInput('name', { required: true }).
+  const pattern = /core\.getInput\(\s*['"]([^'"]+)['"]\s*(?:,|\))/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(sourceText)) !== null) {
     keys.add(match[1]!);
