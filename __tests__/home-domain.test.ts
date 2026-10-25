@@ -719,7 +719,9 @@ describe('home domain SARIF and Check Run integration (Issue #708)', () => {
 
 describe('home domain in batch validation (Issue #708)', () => {
   const ADDR_A = TEST_ADDRESS;
-  const ADDR_B = `G${'B'.repeat(52)}WHF`;
+  // Must be checksum-valid: rows with malformed addresses short-circuit
+  // with INVALID_ADDRESS before the home-domain check ever runs.
+  const ADDR_B = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGO6V';
 
   afterEach(() => {
     jest.restoreAllMocks();

@@ -805,7 +805,9 @@ async function fetchAccountOnce(
 
       // Issue #209: CircuitOpenError means the circuit breaker is open.
       // Treat as non-retryable — the breaker will transition to half-open
-      // after its recovery timeout.
+      // after its recovery timeout. Surfaced as HorizonCircuitOpenError
+      // (Issue #434) so comment rendering shows the dedicated
+      // circuit-breaker banner instead of a generic account error.
       if (error instanceof CircuitOpenError) {
         logger.debug('Horizon request blocked by circuit breaker', safeHorizonContext({
           component: 'horizon',
@@ -815,10 +817,8 @@ async function fetchAccountOnce(
           attempt,
           final: true,
         }));
-        throw new HorizonError(
+        throw new HorizonCircuitOpenError(
           `Horizon request blocked by circuit breaker: ${error.message}`,
-          0,
-          false,
         );
       }
 
@@ -1999,19 +1999,20 @@ export async function callFriendbot(
     };
   }
 
-  // Normalize URL
+  // Normalize URL: ensure the /friendbot path is present. Match on the URL
+  // path specifically — a substring check misfires for allowlisted hosts
+  // whose names contain 'friendbot' (e.g. friendbot-futurenet.stellar.org).
   let fullUrl = friendbotUrl.trim();
   if (!fullUrl.startsWith('http')) {
     fullUrl = `https://${fullUrl}`;
   }
-
-  // Ensure /friendbot path if missing
-  if (!fullUrl.includes('/friendbot')) {
-    fullUrl = fullUrl.replace(/\/$/, '') + '/friendbot';
+  const parsedFriendbot = new URL(fullUrl);
+  if (parsedFriendbot.pathname === '/' || parsedFriendbot.pathname === '') {
+    parsedFriendbot.pathname = '/friendbot';
   }
 
   // Add address parameter
-  const urlWithParam = `${fullUrl}?addr=${encodeURIComponent(stellarAddress)}`;
+  const urlWithParam = `${parsedFriendbot.origin}${parsedFriendbot.pathname}?addr=${encodeURIComponent(stellarAddress)}`;
 
   const fetch = fetchFn ?? ((globalThis as unknown as { fetch?: typeof globalThis.fetch }).fetch
     ?? (await import('node-fetch')).default as unknown as typeof globalThis.fetch);
