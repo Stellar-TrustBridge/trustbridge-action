@@ -27,8 +27,9 @@ import {
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
-import { HorizonAccount } from '../src/horizon';
+import { HorizonAccount, fetchClaimableBalanceCount } from '../src/horizon';
 import { formatCommentBody, CommentConfig } from '../src/comment';
+import { toActionOutputs } from '../src/outputs';
 import {
   buildSarifOutput,
   unauthorizedTrustlineSarifSeverity,

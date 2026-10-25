@@ -1221,6 +1221,10 @@ export function runAccountChecks(
         // `balances` array, so "trustline missing" would be a false accusation
         // against a contract issuer. Report the contract-specific code instead.
         if (sacIssuer && !trustlineExists) return "SAC_ISSUER_NOT_VERIFIABLE";
+        // Issue #665: `clawback_strict_mode: true` blocking a clawback-enabled
+        // trustline is a policy block on an existing trustline — surface the
+        // documented CLAWBACK_BLOCKED code instead of the generic FAILED.
+        if (clawbackBlocks) return "CLAWBACK_BLOCKED";
         if (!trustlineExists) return "TRUSTLINE_MISSING";
         if (!xlmReserveMet) return "RESERVE_TOO_LOW";
         if (config.minTrustlineLimit && !trustlineLimitMet)
