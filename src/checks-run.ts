@@ -83,7 +83,7 @@ export function determineCheckConclusion(result: ValidationResult): CheckConclus
  */
 export function buildCheckAnnotations(
   result: ValidationResult,
-  options: { stellarAddress: string } = { stellarAddress: '' },
+  _options: { stellarAddress: string } = { stellarAddress: '' },
 ): Array<{
   path: string;
   start_line: number;
@@ -208,8 +208,8 @@ export async function createCheckRun(
       message: `Check Run #${checkRunId} created with conclusion=${conclusion}`,
     };
   } catch (error) {
-    if (options.signal?.aborted || (error as any)?.name === 'AbortError') return cancelledResult();
-    const httpError = error as any;
+    if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) return cancelledResult();
+    const httpError = error as { status?: unknown };
     const status = httpError?.status;
     const message = error instanceof Error ? error.message : String(error);
 

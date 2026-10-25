@@ -24,7 +24,6 @@ import {
 import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
-import { fetchTomlWithCache } from './toml';
 import { validateContractAddress, validateHorizonUrl } from './validation';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
@@ -951,7 +950,6 @@ export function runAccountChecks(
 
   // Detect issuer flags for enhanced messaging (Issue #248)
   const issuerAuthRevocable = account.flags?.auth_revocable ?? false;
-  const issuerAuthClawback = account.flags?.auth_clawback_enabled ?? false;
 
   const clawbackStrictMode = config.clawbackStrictMode ?? false;
   const clawbackBlocks =

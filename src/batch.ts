@@ -9,7 +9,7 @@
 import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult, HomeDomainOutcome } from './checks';
 import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
-import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
+import { RateBudgetExhaustedError } from './resilience';
 import { globalMetrics } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 
@@ -300,7 +300,6 @@ export async function runBatchValidation(
   const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
   const fetchOptions = options.fetchOptions ?? {};
   const extraAssets = options.extraAssets ?? [];
-  const clawbackStrictMode = config.clawbackStrictMode ?? false;
 
   globalMetrics.incrementCounter('batch_run_start');
   globalMetrics.recordMetric('batch_size', addresses.length, 'count');
@@ -407,7 +406,7 @@ export async function runBatchValidation(
     } catch (error) {
       let failureReason: string;
       let isFunded = false;
-      let isBudgetExhausted = error instanceof RateBudgetExhaustedError;
+      const isBudgetExhausted = error instanceof RateBudgetExhaustedError;
 
       if (isBudgetExhausted) {
         failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;

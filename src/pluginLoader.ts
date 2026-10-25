@@ -166,7 +166,6 @@ export async function loadPlugin(
   try {
     const fileUrl = new URL(`file://${absolutePath}`).href;
     // On Windows, file:// URLs need special handling; node's import() handles this
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
     moduleExport = (await import(fileUrl)) as Record<string, unknown>;
     if (debugMode) {
       logger.debug(`Module imported successfully`, {

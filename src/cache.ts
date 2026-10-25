@@ -152,7 +152,9 @@ export class GitHubActionsCacheBackend implements PersistentCacheBackend {
         } else {
           try {
             fs.unlinkSync(filePath);
-          } catch {}
+          } catch {
+            // Best-effort stale-cache cleanup; failure is non-fatal.
+          }
           return null;
         }
       } catch {
@@ -234,7 +236,9 @@ export class GitHubActionsCacheBackend implements PersistentCacheBackend {
       if (fs.existsSync(this.cacheDir)) {
         fs.rmSync(this.cacheDir, { recursive: true, force: true });
       }
-    } catch {}
+    } catch {
+      // Best-effort cache directory reset; failure is non-fatal.
+    }
   }
 }
 
@@ -337,7 +341,7 @@ export class SimpleCache {
         });
         return data;
       }
-    } catch (error) {
+    } catch {
       // Silently fail on restore errors; continue with fresh fetch
     }
 
@@ -382,7 +386,7 @@ export class SimpleCache {
         this.backend.saveCache(key, serialized, ttlMs).catch(() => {
           // Silently ignore backend write failures; in-memory cache remains
         });
-      } catch (error) {
+      } catch {
         // Serialization or other errors are silently ignored
       }
     }

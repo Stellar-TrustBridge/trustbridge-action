@@ -10,7 +10,6 @@
  */
 
 import fetch from 'node-fetch';
-import { classifyAssetIssuer, isSorobanContractIssuer, type AssetIssuerKind } from './assets';
 
 /** Errors thrown by the contract registry client. */
 export class ContractLookupError extends Error {

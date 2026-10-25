@@ -6,7 +6,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const report = require('../scripts/generate-license-report.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');

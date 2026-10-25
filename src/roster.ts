@@ -125,9 +125,9 @@ export async function fetchDashboardRoster(
   let receivedBytes = 0;
   const chunks: Uint8Array[] = [];
 
-  if (body && typeof (body as any).getReader === 'function') {
+  if (body && typeof body.getReader === 'function') {
     // Web Streams API
-    const reader = (body as any).getReader();
+    const reader = body.getReader();
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -143,10 +143,10 @@ export async function fetchDashboardRoster(
     } finally {
       reader.releaseLock();
     }
-  } else if (body && typeof (body as any)[Symbol.asyncIterator] === 'function') {
+  } else if (body && typeof (body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function') {
     // Node streams or other AsyncIterables
-    for await (const chunk of (body as any)) {
-      const data = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk as any);
+    for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+      const data = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk);
       receivedBytes += data.length;
       if (receivedBytes > MAX_ROSTER_SIZE_BYTES) {
         throw new Error('Response exceeded size limit');

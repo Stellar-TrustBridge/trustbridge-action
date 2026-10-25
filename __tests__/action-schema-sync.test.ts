@@ -261,7 +261,7 @@ describe('action.yml ↔ schemas/action-inputs.schema.json sync', () => {
 
   it('schema properties contain no duplicate JSON keys', () => {
     const schemaText = fs.readFileSync(SCHEMA_PATH, 'utf8');
-    const propertyNames = [...schemaText.matchAll(/^    "([^\"]+)":\s*\{/gm)]
+    const propertyNames = [...schemaText.matchAll(/^    "([^"]+)":\s*\{/gm)]
       .map((match) => match[1]!);
 
     expect(propertyNames.filter((name) => name === 'comment_mode')).toHaveLength(1);

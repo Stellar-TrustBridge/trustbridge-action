@@ -19,6 +19,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { inflateSync } from 'zlib';
 
 import { CheckResultItem, ValidationGate, ValidationResult, buildValidationGate } from './checks';
 import { redactStellarAddress, redactString } from './logger';
@@ -471,7 +472,6 @@ export function extractFromZip(
 
     const compressionMethod = zipBuffer.readUInt16LE(offset + 8);
     const compressedSize = zipBuffer.readUInt32LE(offset + 18);
-    const uncompressedSize = zipBuffer.readUInt32LE(offset + 22);
     const fileNameLength = zipBuffer.readUInt16LE(offset + 26);
     const extraFieldLength = zipBuffer.readUInt16LE(offset + 28);
     const fileName = zipBuffer.toString('utf8', offset + 30, offset + 30 + fileNameLength);
@@ -486,7 +486,6 @@ export function extractFromZip(
       } else if (compressionMethod === 8) {
         // Deflate
         try {
-          const { inflateSync } = require('zlib');
           const decompressed = inflateSync(compressedData);
           return decompressed.toString('utf8');
         } catch {

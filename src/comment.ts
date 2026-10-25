@@ -33,7 +33,6 @@ import { MetricsCollector } from './metrics';
 import {
   formatSnoozeMarker,
   parseSnoozeMarker,
-  evaluateSnoozeState,
   evaluateCombinedSnoozeState,
   CommentReaction,
 } from './snooze';

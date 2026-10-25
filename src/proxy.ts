@@ -246,7 +246,7 @@ export function createProxiedFetch(config?: ProxyConfig) {
       return fetch(url, init);
     }
     const { default: fetch } = await import('node-fetch');
-    return fetch(url, { ...init, agent } as any);
+    return fetch(url, { ...init, agent });
   };
 }
 

@@ -100,7 +100,6 @@ describe('parseLocaleInput', () => {
 
   it('falls back to English for undefined and null', () => {
     expect(parseLocaleInput(undefined)).toBe('en');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(parseLocaleInput(null as any)).toBe('en');
   });
 });
