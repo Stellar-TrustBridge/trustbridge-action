@@ -253,7 +253,12 @@ export class SimpleCache {
     // Issue #462: unsupported backend values must not fail the workflow, but
     // they must emit a clear warning so the misconfiguration is visible.
     if (options.selectedBackend !== undefined && options.selectedBackend !== '') {
-      if (!SUPPORTED_NAMED_BACKENDS.has(options.selectedBackend)) {
+      // 'actions' is accepted as a short alias for 'github-actions'.
+      if (options.selectedBackend === 'actions') {
+        options = { ...options, selectedBackend: 'github-actions' };
+      }
+      const backendName = options.selectedBackend as string;
+      if (!SUPPORTED_NAMED_BACKENDS.has(backendName)) {
         try {
           core.warning(
             `[TrustBridge] cache: unsupported backend "${options.selectedBackend}" ` +

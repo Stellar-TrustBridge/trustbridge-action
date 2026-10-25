@@ -319,17 +319,17 @@ function validateSep0007PayLinkOptions(options: Sep0007PayOptions): void {
 
   if (assetCode || assetIssuer) {
     if (!assetCode) {
-      throw new Error('assetCode is required when assetIssuer is provided.');
+      throw new Error('asset_code is required when asset_issuer is provided.');
     }
     if (!assetIssuer) {
-      throw new Error('assetIssuer is required when assetCode is provided.');
+      throw new Error('asset_issuer is required when assetCode is provided.');
     }
     assertValidAssetCode(assetCode);
     assertValidAssetIssuer(assetIssuer);
   }
 
   if (options.networkPassphrase !== undefined && !options.networkPassphrase.trim()) {
-    throw new Error('networkPassphrase must be a non-empty string when provided.');
+    throw new Error('network passphrase must be a non-empty string when provided.');
   }
 }
 

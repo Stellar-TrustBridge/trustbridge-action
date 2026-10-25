@@ -602,11 +602,15 @@ export function redactHorizonBaseUrl(url: string): string {
   if (!url) return url;
   try {
     const parsed = new URL(url);
+    const hadPath = parsed.pathname !== '/';
     parsed.username = '';
     parsed.password = '';
     parsed.search = '';
     parsed.hash = '';
-    return redactHorizonUrl(parsed.toString().replace(/\/$/, ''));
+    const base = redactHorizonUrl(parsed.toString().replace(/\/$/, ''));
+    // URL normalisation re-adds a trailing slash for a bare origin; strip it
+    // so the base URL stays canonical (no trailing slash unless a path exists).
+    return !hadPath && base.endsWith('/') ? base.slice(0, -1) : base;
   } catch {
     return redactHorizonUrl(url.split(/[?#]/)[0]);
   }
