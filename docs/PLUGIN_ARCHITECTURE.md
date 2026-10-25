@@ -42,6 +42,18 @@ reordering a core plugin fails CI until this table is updated too.
 User plugins must not reuse a `trustbridge/` id; the `trustbridge/` prefix is
 reserved for built-in checks.
 
+<!-- core-plugins:start -->
+| Export | Plugin id | Label |
+|---|---|---|
+| `accountFundedPlugin` | `trustbridge/account-funded` | Account funded |
+| `trustlinePlugin` | `trustbridge/trustline` | Trustline |
+| `xlmReservePlugin` | `trustbridge/xlm-reserve` | XLM reserve |
+| `homeDomainPlugin` | `trustbridge/home-domain` | SEP-0001 home domain |
+<!-- core-plugins:end -->
+
+Table above is machine-checked by `__tests__/plugin.test.ts`: export names
+must resolve to the same plugin objects as `corePlugins`, in order.
+
 ## Timeout behavior
 
 When a plugin exceeds its configured timeout, the runner:

@@ -160,13 +160,20 @@ export async function loadPlugin(
     );
   }
 
-  // Step 4: dynamically import the module
-  // Use file:// URL to ensure cross-platform compatibility
+  // Step 4: dynamically load the module. CommonJS plugins load through a
+  // plain absolute path (transpiled to require(), which resolves temp
+  // workspace paths under both plain Node and Jest). file:// URLs do not
+  // survive Jest's transpiled require, so they are only used for ESM (.mjs)
+  // plugins, which native import() resolves directly in production.
   let moduleExport: Record<string, unknown> | undefined;
   try {
-    const fileUrl = new URL(`file://${absolutePath}`).href;
-    // On Windows, file:// URLs need special handling; node's import() handles this
-    moduleExport = (await import(fileUrl)) as Record<string, unknown>;
+    if (absolutePath.endsWith('.cjs')) {
+      moduleExport = (await import(absolutePath)) as Record<string, unknown>;
+    } else {
+      const fileUrl = new URL(`file://${absolutePath}`).href;
+      // On Windows, file:// URLs need special handling; node's import() handles this
+      moduleExport = (await import(fileUrl)) as Record<string, unknown>;
+    }
     if (debugMode) {
       logger.debug(`Module imported successfully`, {
         component: 'pluginLoader',
@@ -306,11 +313,11 @@ export async function loadPluginsFromAllowlist(
 
     const existingPath = pathById.get(plugin.id);
     if (existingPath !== undefined) {
-      logger.warn(
-        `Skipping plugin ${pluginPath}: duplicate plugin id "${plugin.id}" already loaded from ${existingPath}`,
-        { component: 'pluginLoader', pluginPath, pluginId: plugin.id },
+      throw new PluginLoadError(
+        `Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existingPath}. Plugin ids must be unique.`,
+        pluginPath,
+        'duplicate_id',
       );
-      continue;
     }
 
     pathById.set(plugin.id, pluginPath);
