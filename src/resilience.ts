@@ -57,6 +57,15 @@ export class RateBudgetTracker {
   get requestsMade(): number {
     return this.count;
   }
+
+  /**
+   * True when another request can be recorded without exceeding the budget.
+   * Lets batch loops mark remaining rows as exhausted without attempting a
+   * fetch that is guaranteed to fail closed. Never consumes budget itself.
+   */
+  hasRemainingBudget(): boolean {
+    return this.maxRequests === 0 || this.count < this.maxRequests;
+  }
 }
 
 // ---------------------------------------------------------------------------

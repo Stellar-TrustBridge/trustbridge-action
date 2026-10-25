@@ -344,6 +344,14 @@ export async function runBatchValidation(
     }
 
     try {
+      // Stop early when the shared rate budget is already spent: marking the
+      // row exhausted without attempting a fetch that must fail closed.
+      const tracker = fetchOptions?.rateBudgetTracker;
+      if (tracker && !tracker.hasRemainingBudget()) {
+        throw new RateBudgetExhaustedError(
+          'Rate budget exhausted before checking this address',
+        );
+      }
       const account = await fetchAccount(horizonUrl, address, fetchOptions);
       const result = await runAccountChecks(account, config, issuerAccount);
       const homeDomainStrictFailure =

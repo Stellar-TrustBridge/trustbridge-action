@@ -328,10 +328,18 @@ describe('runBatchValidation', () => {
 
   it('stops batch early and emits RATE_BUDGET_EXHAUSTED when rate budget is exceeded', async () => {
     const tracker = new RateBudgetTracker(1);
-    mockFetchAccount.mockResolvedValue(FUNDED_ACCOUNT as any);
+    // Faithful emulation of the real fetchAccount: each attempt consumes
+    // budget, so the second row fails closed without a network round-trip.
+    mockFetchAccount.mockImplementation(async () => {
+      tracker.recordRequest();
+      return FUNDED_ACCOUNT as any;
+    });
 
+    // All three addresses must be checksum-valid: rows that fail address
+    // validation short-circuit with INVALID_ADDRESS before the rate budget
+    // is consulted, so only valid addresses can exercise budget exhaustion.
     const results = await runBatchValidation(
-      [VALID_ADDR, VALID_ADDR_2, VALID_ADDR_3],
+      [VALID_ADDR, VALID_ADDR_UNFUNDED, VALID_ADDR_MISSING_ON_HORIZON],
       DEFAULT_CONFIG,
       'https://horizon.stellar.org',
       {
