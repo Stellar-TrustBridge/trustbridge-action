@@ -11,12 +11,14 @@ rules:
   unpinned-uses:
     # The check-unpinned-actions.sh script and the check-unpinned-actions CI job
     # enforce SHA pinning for all third-party actions. zizmor's own unpinned-uses
-    # rule provides a second layer of defence but may flag patterns already
-    # covered by our script (e.g. the local ./.github/actions/* paths).
-    ignore:
-      # Local composite action paths are not subject to supply-chain pinning;
-      # they are always resolved from the repository's own checked-out code.
-      - './.github/actions/**'
+    # rule provides a second layer of defence.
+    #
+    # NOTE: zizmor `ignore` entries must be workflow filenames
+    # (`file.yml[:line[:column]]`) — glob paths such as `./.github/actions/**`
+    # are invalid syntax and cause a configuration error ("no audit was
+    # performed"). Local composite actions (`uses: ./...`) need no ignore
+    # entry: both the repo script and zizmor's unpinned-uses audit skip them.
+    ignore: []
 
   template-injection:
     # No template injection suppressions are needed for this repository.
