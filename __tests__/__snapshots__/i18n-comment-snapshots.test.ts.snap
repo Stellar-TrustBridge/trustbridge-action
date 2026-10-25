@@ -1,4 +1,91 @@
-// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`i18n comment golden snapshots (issue #291) locale: en multi-asset failure path renders correctly for locale "en" 1`] = `
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
+<!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
+## TrustBridge — Stellar Account Check
+
+Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
+Horizon: \`https://horizon.stellar.org\`
+Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Results
+
+- ✅ **Account funded** — Account is active on the Stellar network.
+- ❌ **USDC trustline** — Account has trustlines, but not for USDC issued by the configured issuer. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing)
+- ❌ **XLM reserve** — Balance 0.8 XLM is below the required 1.5 XLM. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low)
+
+### Onboarding checklist
+
+_Complete these steps in order. Boxes update automatically from live Horizon checks._
+
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
+
+### Validation gate
+
+- Blocked by: USDC trustline, XLM reserve
+- Passed checks: 1/3
+- Failed checks: 2
+- Ready: \`false\`
+- Reason code: \`FAILED\`
+
+### Balances
+
+- **Native XLM balance:** \`0.8 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`0 USDC\` — no trustline configured
+
+### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| EURC | ❌ missing | \`0\` — no trustline | \`GA5Z…KZVN\` |
+| PYUSD | ✅ exists | \`18.7500000\` | \`GBBD…HEX2\` |
+
+### Setup cost estimate
+
+- Stellar minimum account balance: **1 XLM**
+- Base reserve per trustline (ledger entry): **0.5 XLM**
+- Typical minimum to fund account + one trustline: **~1.5 XLM**
+
+### Add a trustline
+
+- [View account on Stellar Laboratory](https://laboratory.stellar.org/#account-viewer?network=public&account=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF)
+- [Open Transaction Builder (Change Trust)](https://laboratory.stellar.org/#txbuilder?network=public)
+- [LOBSTR wallet](https://lobstr.co/) — add asset **USDC** from issuer \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Remediation
+
+Add missing trustlines and fund the account with XLM.
+
+### Configuration summary
+
+| Input | Value |
+| --- | --- |
+| \`fail_on_missing\` | _default (true)_ |
+| \`sticky_comment\` | _default (true)_ |
+| \`wait_until_funded\` | \`false\` (default) |
+| \`onboarding_checklist\` | \`true\` |
+
+### Action outputs reference
+
+_Use these output names in downstream workflow steps via \`steps.<id>.outputs.<name>\`._
+
+| Output | Value in this run | Description |
+| --- | --- | --- |
+| \`account_funded\` | \`true\` | Whether the account exists on the Stellar network (from \`action.yml\`) |
+| \`trustline_exists\` | \`false\` | Whether the **USDC** trustline is configured (from \`action.yml\`) |
+| \`xlm_balance\` | \`0.8\` | Native XLM balance reported by Horizon (from \`action.yml\`) |
+| \`native_balance\` | \`0.8\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
+| \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |
+
+---
+_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_"
+`;
 
 exports[`i18n comment golden snapshots (issue #291) locale: en success path renders correctly for locale "en" 1`] = `
 "<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
@@ -156,6 +243,93 @@ _Use these output names in downstream workflow steps via \`steps.<id>.outputs.<n
 _Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_"
 `;
 
+exports[`i18n comment golden snapshots (issue #291) locale: es multi-asset failure path renders correctly for locale "es" 1`] = `
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
+<!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
+## TrustBridge — Stellar Account Check
+
+Cuenta verificada: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
+Horizon: \`https://horizon.stellar.org\`
+Activo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Resultados
+
+- ✅ **Account funded** — Account is active on the Stellar network.
+- ❌ **USDC trustline** — Account has trustlines, but not for USDC issued by the configured issuer. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing)
+- ❌ **XLM reserve** — Balance 0.8 XLM is below the required 1.5 XLM. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low)
+
+### Lista de incorporación
+
+_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
+
+- [x] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
+
+### Puerta de validación
+
+- Bloqueado por: USDC trustline, XLM reserve
+- Comprobaciones pasadas: 1/3
+- Comprobaciones fallidas: 2
+- Listo: \`false\`
+- Código de razón: \`FAILED\`
+
+### Saldos
+
+- **Native XLM balance:** \`0.8 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`0 USDC\` — no trustline configured
+
+### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| EURC | ❌ missing | \`0\` — no trustline | \`GA5Z…KZVN\` |
+| PYUSD | ✅ exists | \`18.7500000\` | \`GBBD…HEX2\` |
+
+### Estimación del costo de configuración
+
+- Saldo mínimo de cuenta Stellar: **1 XLM**
+- Reserva base por línea de confianza (entrada del libro mayor): **0.5 XLM**
+- Mínimo típico para financiar cuenta + una línea de confianza: **~1.5 XLM**
+
+### Agregar una línea de confianza
+
+- [Ver cuenta en Stellar Laboratory](https://laboratory.stellar.org/#account-viewer?network=public&account=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF)
+- [Abrir Transaction Builder (Change Trust)](https://laboratory.stellar.org/#txbuilder?network=public)
+- [Billetera LOBSTR](https://lobstr.co/) — agregar activo **USDC** from issuer \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Remediación
+
+Add missing trustlines and fund the account with XLM.
+
+### Resumen de configuración
+
+| Entrada | Valor |
+| --- | --- |
+| \`fail_on_missing\` | _default (true)_ |
+| \`sticky_comment\` | _default (true)_ |
+| \`wait_until_funded\` | \`false\` (predeterminado) |
+| \`onboarding_checklist\` | \`true\` |
+
+### Referencia de salidas de acción
+
+_Use estos nombres de salida en pasos de flujo de trabajo posteriores a través de \`steps.<id>.outputs.<name>\`._
+
+| Salida | Valor en esta ejecución | Descripción |
+| --- | --- | --- |
+| \`account_funded\` | \`true\` | Si la cuenta existe en la red Stellar (de \`action.yml\`) |
+| \`trustline_exists\` | \`false\` | Si la línea de confianza **USDC** está configurada (de \`action.yml\`) |
+| \`xlm_balance\` | \`0.8\` | Saldo de XLM nativo reportado por Horizon (de \`action.yml\`) |
+| \`native_balance\` | \`0.8\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
+| \`comment_url\` | _set after posting_ | URL del comentario de problema (de \`action.yml\`) |
+
+---
+_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_"
+`;
+
 exports[`i18n comment golden snapshots (issue #291) locale: es success path renders correctly for locale "es" 1`] = `
 "<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
 <!-- trustbridge-action:schema-version:1.1.0 -->
@@ -307,6 +481,93 @@ _Use estos nombres de salida en pasos de flujo de trabajo posteriores a través 
 | \`native_balance\` | \`0\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
 | \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
 | \`comment_url\` | _set after posting_ | URL del comentario de problema (de \`action.yml\`) |
+
+---
+_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_"
+`;
+
+exports[`i18n comment golden snapshots (issue #291) locale: pt multi-asset failure path renders correctly for locale "pt" 1`] = `
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
+<!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
+## TrustBridge — Stellar Account Check
+
+Conta verificada: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
+Horizon: \`https://horizon.stellar.org\`
+Ativo: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Resultados
+
+- ✅ **Account funded** — Account is active on the Stellar network.
+- ❌ **USDC trustline** — Account has trustlines, but not for USDC issued by the configured issuer. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing)
+- ❌ **XLM reserve** — Balance 0.8 XLM is below the required 1.5 XLM. [→ FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low)
+
+### Lista de integração
+
+_Conclua estes passos por ordem. As caixas são atualizadas automaticamente a partir das verificações do Horizon._
+
+- [x] **Financiar a conta** — Ative a conta com XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Adicionar linha de confiança USDC** — Configure a linha de confiança do ativo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Atinja a reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))
+
+### Portão de validação
+
+- Bloqueado por: USDC trustline, XLM reserve
+- Verificações aprovadas: 1/3
+- Verificações falhadas: 2
+- Pronto: \`false\`
+- Código de motivo: \`FAILED\`
+
+### Saldos
+
+- **Native XLM balance:** \`0.8 XLM\`
+- **Minimum required (XLM reserve):** \`1.5 XLM\`
+- **USDC trustline balance:** \`0 USDC\` — no trustline configured
+
+### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| EURC | ❌ missing | \`0\` — no trustline | \`GA5Z…KZVN\` |
+| PYUSD | ✅ exists | \`18.7500000\` | \`GBBD…HEX2\` |
+
+### Estimativa de custo de configuração
+
+- Saldo mínimo de conta Stellar: **1 XLM**
+- Reserva base por linha de confiança (entrada de ledger): **0.5 XLM**
+- Mínimo típico para financiar conta + uma linha de confiança: **~1.5 XLM**
+
+### Adicionar uma linha de confiança
+
+- [Ver conta no Stellar Laboratory](https://laboratory.stellar.org/#account-viewer?network=public&account=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF)
+- [Abrir Transaction Builder (Change Trust)](https://laboratory.stellar.org/#txbuilder?network=public)
+- [Carteira LOBSTR](https://lobstr.co/) — adicionar ativo **USDC** from issuer \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
+
+### Remediação
+
+Add missing trustlines and fund the account with XLM.
+
+### Resumo da configuração
+
+| Entrada | Valor |
+| --- | --- |
+| \`fail_on_missing\` | _default (true)_ |
+| \`sticky_comment\` | _default (true)_ |
+| \`wait_until_funded\` | \`false\` (padrão) |
+| \`onboarding_checklist\` | \`true\` |
+
+### Referência de saídas de ação
+
+_Use esses nomes de saída em etapas de fluxo de trabalho posteriores via \`steps.<id>.outputs.<name>\`._
+
+| Saída | Valor nesta execução | Descrição |
+| --- | --- | --- |
+| \`account_funded\` | \`true\` | Se a conta existe na rede Stellar (de \`action.yml\`) |
+| \`trustline_exists\` | \`false\` | Se a linha de confiança **USDC** está configurada (de \`action.yml\`) |
+| \`xlm_balance\` | \`0.8\` | Saldo de XLM nativo relatado pelo Horizon (de \`action.yml\`) |
+| \`native_balance\` | \`0.8\` | Native XLM balance (alias of \`xlm_balance\`, 7-decimal string) |
+| \`asset_balance\` | \`0\` | USDC trustline balance (7-decimal string, \`0\` if no trustline, \`unknown\` on Horizon error) |
+| \`comment_url\` | _set after posting_ | URL do comentário de problema (de \`action.yml\`) |
 
 ---
 _Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_"
