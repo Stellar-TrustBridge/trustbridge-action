@@ -11,6 +11,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
   postIssueComment,
+  upsertIssueComment,
   reconcileDuplicateStickyComment,
   STICKY_COMMENT_MARKER,
 } from '../src/comment';
@@ -116,9 +117,12 @@ describe('postIssueComment idempotency across duplicate workflow_dispatch runs (
       return (realPaginate as (...a: unknown[]) => Promise<StoredComment[]>)(...args);
     });
 
+    // upsertIssueComment returns the full posted-comment record (id + url)
+    // so both racers can be checked against the surviving comment id.
+    // postIssueComment delegates to the same sequence and returns only the URL.
     const [a, b] = await Promise.all([
-      postIssueComment('token', trustBridgeBody('run A'), { issueNumber: ISSUE }),
-      postIssueComment('token', trustBridgeBody('run B'), { issueNumber: ISSUE }),
+      upsertIssueComment('token', trustBridgeBody('run A'), { issueNumber: ISSUE }),
+      upsertIssueComment('token', trustBridgeBody('run B'), { issueNumber: ISSUE }),
     ]);
 
     expect(thread.octokit.rest.issues.createComment).toHaveBeenCalledTimes(2);
