@@ -34,12 +34,14 @@ import { readTrustbridgeConfig } from './configReader';
 import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 import { runStellarTomlCheck, DEFAULT_STELLAR_TOML_CACHE_TTL_MS, MAX_STELLAR_TOML_CACHE_TTL_MS } from './toml';
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   const jobController = new AbortController();
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
-  } catch {}
+  } catch {
+    // Runner without signal handlers (e.g. non-Node test harness) — continue without them.
+  }
 
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
