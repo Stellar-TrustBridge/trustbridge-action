@@ -803,7 +803,7 @@ describe('Horizon debug log redaction', () => {
   describe('RPC fallback network binding rule', () => {
     const TESTNET_FALLBACK_HORIZON = 'https://horizon-testnet.stellar.org';
 
-    it('skips a cross-network fallback by default and rethrows the primary error', async () => {
+    it('refuses a cross-network fallback by default with an explicit blocked error', async () => {
       const { calls, restore } = captureDebugCalls();
       const primaryErrBody = { type: 'server_error', title: 'Bad Gateway', status: 502, detail: 'primary down' };
       const mock = makeMockFetch(async (url) => {
@@ -816,12 +816,14 @@ describe('Horizon debug log redaction', () => {
       loggerModule.logger.setDebugMode(true);
 
       try {
+        // Issue #687: the refusal is fail-closed with an explicit
+        // cross-network error (synthetic status 0), not the primary error.
         await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
           maxRetries: 0,
           cacheTtlMs: 0,
           horizonUrlFallback: TESTNET_FALLBACK_HORIZON,
           fetchFn: mock,
-        })).rejects.toMatchObject({ statusCode: 502 });
+        })).rejects.toMatchObject({ statusCode: 0 });
 
         // Only the primary request was made — the mismatched-network
         // fallback was never attempted.

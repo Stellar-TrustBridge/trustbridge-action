@@ -730,24 +730,19 @@ async function fetchAccountOnce(
 
           totalWaitMs += retryAfter;
 
-          logger.debug(
-            "Horizon retry scheduled",
-            safeHorizonContext({
-              component: "horizon",
-              stellarAddress,
-              horizonUrl: targetHorizonUrl,
-              endpointKind,
-              status: response.status,
-              retryable,
-              latencyMs,
-              attempt,
-              retryAfterMs: retryAfter,
-              retryAfterFromHeader: retryAfterHeader !== null,
-              retryAfterCapped:
-                retryAfterHeader !== null && retryAfterHeader > retryMaxDelayMs,
-              nextAttempt: attempt + 1,
-            }),
-          );
+          logger.horizonRetry({
+            phase: 'scheduled',
+            attempt,
+            maxAttempts: maxRetries + 1,
+            status: response.status,
+            delayMs: retryAfter,
+            capped: retryAfterCapped,
+            kind: 'http',
+            endpointKind,
+            horizonUrl: normalizedHorizonUrl,
+            stellarAddress,
+            retryAfterFromHeader: retryAfterHeader !== null,
+          });
           if (retryAfter > 0) {
             await cancellableSleep(retryAfter, parentSignal);
           }
@@ -904,20 +899,18 @@ async function fetchAccountOnce(
 
         totalWaitMs += backoffMs;
 
-        logger.debug(
-          "Horizon transport retry scheduled",
-          safeHorizonContext({
-            component: "horizon",
-            stellarAddress,
-            horizonUrl: targetHorizonUrl,
-            endpointKind,
-            kind: isAbort ? "timeout" : "network",
-            latencyMs,
-            attempt,
-            retryAfterMs: backoffMs,
-            nextAttempt: attempt + 1,
-          }),
-        );
+        logger.horizonRetry({
+          phase: 'scheduled',
+          attempt,
+          maxAttempts: maxRetries + 1,
+          status: 0,
+          delayMs: backoffMs,
+          capped: backoffCapped,
+          kind: transportKind,
+          endpointKind,
+          horizonUrl: normalizedHorizonUrl,
+          stellarAddress,
+        });
         if (backoffMs > 0) {
           await cancellableSleep(backoffMs, parentSignal);
         }
