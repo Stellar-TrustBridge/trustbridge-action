@@ -7,7 +7,7 @@
   "codes": [
     {
       "code": "SUCCESS",
-      "description": "All checks passed — the account is funded, holds the required asset trustline, and meets the minimum XLM reserve.",
+      "description": "All checks passed \u2014 the account is funded, holds the required asset trustline, and meets the minimum XLM reserve.",
       "accountFunded": true,
       "trustlineExists": true,
       "xlmReserveMet": true,
@@ -47,7 +47,7 @@
     },
     {
       "code": "ACCOUNT_NOT_FUNDED",
-      "description": "Horizon returned 404 for the account — the account does not exist on the Stellar network (not yet funded).",
+      "description": "Horizon returned 404 for the account \u2014 the account does not exist on the Stellar network (not yet funded).",
       "accountFunded": false,
       "trustlineExists": false,
       "xlmReserveMet": false,
@@ -176,13 +176,13 @@
       "since": "v1"
     },
     {
-      "code": "MILESTONE_GATE_SKIPPED",
-      "description": "Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed.",
-      "accountFunded": false,
+      "code": "SAC_ISSUER_NOT_VERIFIABLE",
+      "description": "The asset is issued by a Soroban Stellar Asset Contract (C-address). SAC balances are never exposed as classic Horizon trustlines, so the balance cannot be confirmed or denied by this check. Verify the balance on the Stellar Lab contract page or via Soroban RPC `getContractData`.",
+      "accountFunded": true,
       "trustlineExists": false,
-      "xlmReserveMet": false,
+      "xlmReserveMet": true,
       "valid": false,
-      "emittedBy": "src/index.ts",
+      "emittedBy": "src/checks.ts (runAccountChecks, when asset_issuer is a C-address)",
       "since": "v1"
     }
   ]
