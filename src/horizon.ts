@@ -234,7 +234,13 @@ export async function checkCertificatePin(
   const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
 
   return new Promise<void>((resolve, reject) => {
-    const socket = tls.connect({ host, port, servername: host }, () => {
+    // NOTE: chain validation is intentionally disabled here. The configured
+    // SHA-256 fingerprint IS the trust anchor for this probe: connecting only
+    // succeeds when the presented certificate hashes exactly to the expected
+    // value, which an attacker cannot forge without the pinned private key.
+    // Requiring a public chain on top would make pinning unusable for
+    // private mirrors while adding no security once the pin is verified.
+    const socket = tls.connect({ host, port, servername: host, rejectUnauthorized: false }, () => {
       try {
         const cert = socket.getPeerCertificate();
         socket.destroy();
@@ -257,7 +263,11 @@ export async function checkCertificatePin(
 
         const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
 
-        if (normalizedActual !== normalizedExpected) {
+        // Compare separator-insensitively: operators paste fingerprints with
+        // colons, spaces or nothing between octets.
+        const comparableActual = normalizedActual.replace(/:/g, '');
+        const comparableExpected = normalizedExpected.replace(/:/g, '');
+        if (comparableActual !== comparableExpected) {
           reject(new HorizonPinMismatchError(
             `TLS certificate fingerprint mismatch for Horizon endpoint. ` +
             `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +

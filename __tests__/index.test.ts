@@ -741,7 +741,8 @@ describe('Issue #711 — applyWalletLabels: deterministic conflict resolution', 
     const result = await applyWalletLabels(octokit, OWNER, REPO, ISSUE, fundedInput);
     expect(result.removed).toEqual([]);
     expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
-    expect(octokit.rest.issues.addLabels).toHaveBeenCalledTimes(1);
+    // Idempotent sync (Issue #694): the present target is not re-added.
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
   });
 
   it('continues adding the target label when a stale label removal fails (non-fatal)', async () => {
@@ -766,7 +767,9 @@ describe('Issue #711 — applyWalletLabels: deterministic conflict resolution', 
     const octokit = makeOctokit(['wallet: unfunded']);
     const result = await applyWalletLabels(octokit, OWNER, REPO, ISSUE, fundedInput, { removeStale: false });
     expect(result.removed).toEqual([]);
-    expect(octokit.rest.issues.listLabelsOnIssue).not.toHaveBeenCalled();
+    // Presence is still checked (one paginated list) so an existing target
+    // is not duplicated; only the removal pass is skipped (Issue #694).
+    expect(octokit.rest.issues.listLabelsOnIssue).toHaveBeenCalledTimes(1);
     expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
     expect(octokit.rest.issues.addLabels).toHaveBeenCalledTimes(1);
   });
