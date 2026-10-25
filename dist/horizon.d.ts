@@ -91,6 +91,44 @@ export declare class HorizonTlsError extends HorizonError {
     readonly originalCode?: string | undefined;
     constructor(message: string, originalCode?: string | undefined);
 }
+/**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+export declare class HorizonPinMismatchError extends HorizonError {
+    readonly expectedFingerprint: string;
+    readonly actualFingerprint: string;
+    constructor(message: string, expectedFingerprint: string, actualFingerprint: string);
+}
+/**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+export declare class HorizonCircuitOpenError extends HorizonError {
+    constructor(message: string);
+}
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
+/**
+ * Verify the TLS certificate fingerprint of a Horizon endpoint against an
+ * expected SHA-256 fingerprint (Issue #303).
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...').
+ *   Pass an empty string to skip the pin check and rely on standard WebPKI validation.
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ */
+export declare function checkCertificatePin(horizonUrl: string, expectedFingerprint: string): Promise<void>;
 export type FetchLike = (url: string | import('node-fetch').Request, init?: import('node-fetch').RequestInit) => Promise<import('node-fetch').Response>;
 export interface FetchAccountOptions {
     timeoutMs?: number;
@@ -107,35 +145,44 @@ export interface FetchAccountOptions {
      * immediately; no misleading "account not funded" result is produced.
      */
     signal?: AbortSignal;
-    horizonMaxRequests?: number;
-    retryBaseDelayMs?: number;
-    retryMaxDelayMs?: number;
-    retryMaxTotalWaitMs?: number;
-    rateBudgetTracker?: RateBudgetTracker;
     /**
-     * Optional circuit breaker for Horizon fetches (Issue #209).
-     * When the circuit is open, requests are fast-failed without reaching
-     * the network. Cache hits bypass the circuit breaker.
+     * Base delay for exponential backoff (`retry_base_delay_ms`). The n-th
+     * retry waits `retryBaseDelayMs * 2^n`, capped at `retryMaxDelayMs`.
      */
+    retryBaseDelayMs?: number;
+    /**
+     * Hard cap on any single retry sleep (`retry_max_delay_ms`), applied to
+     * both `Retry-After` values and exponential backoff. 0 disables sleeping
+     * between retries while still honoring `maxRetries`.
+     */
+    retryMaxDelayMs?: number;
+    /**
+     * Cumulative sleep budget across all retries of one endpoint
+     * (`retry_max_total_wait_ms`). When the next sleep would exceed it the
+     * retry loop aborts with a `HorizonRateLimitError` (429) or the last
+     * transport error instead of sleeping.
+     */
+    retryMaxTotalWaitMs?: number;
+    /** Per-run Horizon request budget (`horizon_max_requests`). */
+    horizonMaxRequests?: number;
+    rateBudgetTracker?: RateBudgetTracker;
+    /** Optional circuit breaker for Horizon fetches (Issue #209). */
     circuitBreaker?: CircuitBreaker;
     /**
-     * By default, a fallback URL that resolves to a *different* Stellar
-     * network than the primary `horizon_url` (public vs testnet, inferred
-     * from the URL) is never used — a G-address is valid on every network,
-     * so a cross-network fallback can silently return funded/trustline/
-     * reserve data for the wrong ledger instead of failing loudly. Set this
-     * to `true` to opt into cross-network fallback anyway (e.g. deliberate
-     * multi-network setups).
+     * Opt into a fallback URL on a different Stellar network than the primary
+     * `horizon_url`. Off by default: a G-address is valid on every network, so
+     * a cross-network fallback could silently report data from the wrong ledger.
      */
     allowCrossNetworkFallback?: boolean;
-    /**
-     * Alias for `allowCrossNetworkFallback` kept for older call sites / tests.
-     * Prefer `allowCrossNetworkFallback`.
-     */
+    /** Alias for `allowCrossNetworkFallback` kept for older call sites / tests. */
     allowCrossNetworkFailover?: boolean;
     /** Optional secondary Horizon URL used for same-network failover. */
     secondaryHorizonUrl?: string;
+    /** Optional SHA-256 TLS certificate fingerprint pin (Issue #303). */
+    pinFingerprint?: string;
 }
+export declare const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
+export declare const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 /**
  * Produce a representation of a configured Horizon URL that is safe to
@@ -149,6 +196,13 @@ export declare function displayHorizonUrl(url: string, revealHost: boolean): str
 export declare function isRetryableStatus(status: number): boolean;
 export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
+/**
+ * Fetch the asset issuer account for the SEP-0001 home domain check (Issue
+ * #708). Returns `null` when the issuer is not a classic G-address (Soroban
+ * contract issuers have no `home_domain`) or when Horizon can't return it,
+ * so the check reports "missing" instead of failing the whole run.
+ */
+export declare function fetchHomeDomainIssuerAccount(horizonUrl: string, assetIssuer: string, options?: FetchAccountOptions): Promise<HorizonAccount | null>;
 export interface WaitForFundedAccountOptions {
     /** Total time budget to keep polling before giving up, in milliseconds. */
     timeoutMs?: number;
@@ -337,7 +391,81 @@ export declare function applyWalletLabels(octokit: {
     removed: string[];
     error?: string;
 }>;
+export interface ReadyLabelInput {
+    ready: boolean;
+    passLabel?: string;
+    failLabel?: string;
+}
+export declare function applyReadyLabels(octokit: {
+    rest: {
+        issues: {
+            addLabels: (params: {
+                owner: string;
+                repo: string;
+                issue_number: number;
+                labels: string[];
+            }) => Promise<unknown>;
+            removeLabel: (params: {
+                owner: string;
+                repo: string;
+                issue_number: number;
+                name: string;
+            }) => Promise<unknown>;
+            listLabelsOnIssue: (params: {
+                owner: string;
+                repo: string;
+                issue_number: number;
+                per_page: number;
+            }) => Promise<{
+                data: Array<{
+                    name: string;
+                }>;
+            }>;
+        };
+    };
+}, owner: string, repo: string, issueNumber: number, input: ReadyLabelInput): Promise<{
+    applied?: string;
+    removed: string[];
+    error?: string;
+}>;
 /**
  * Fetch the Stellar network passphrase from a Horizon root endpoint.
  */
 export declare function fetchNetworkPassphrase(horizonUrl: string, options?: FetchAccountOptions): Promise<string>;
+export interface FriendbotOptions {
+    /** Friendbot URL. Must be HTTPS and on the allowlist. */
+    friendbotUrl: string;
+    /** Request timeout in milliseconds. */
+    timeoutMs?: number;
+    /** Override fetch function (for testing). */
+    fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+/**
+ * Check if a friendbot URL is on the allowlist and safe to use.
+ * Prevents SSRF attacks by only allowing known testnet friendbot endpoints.
+ */
+export declare function isFriendbotAllowed(friendbotUrl: string): boolean;
+/**
+ * Detect whether a Horizon URL points to testnet or mainnet.
+ * Used to enforce friendbot safety rules (never call friendbot on mainnet).
+ */
+export declare function isTestnetHorizon(horizonUrl: string): boolean;
+export interface FriendbotResult {
+    success: boolean;
+    message: string;
+    transactionHash?: string;
+}
+/**
+ * Call Stellar Friendbot to fund a testnet account.
+ *
+ * Safety rules:
+ * - Only works with allowlisted friendbot URLs (SSRF protection)
+ * - Only callable when Horizon URL indicates testnet
+ * - Fails fast with clear error on mainnet or unknown networks
+ *
+ * @param stellarAddress The G-address to fund
+ * @param options Friendbot configuration
+ * @param horizonUrl The Horizon URL (used for network safety check)
+ * @returns FriendbotResult with success status and transaction details
+ */
+export declare function callFriendbot(stellarAddress: string, options: FriendbotOptions, horizonUrl: string): Promise<FriendbotResult>;

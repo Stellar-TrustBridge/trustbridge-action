@@ -79,6 +79,7 @@ export interface DiagnosticsConfig {
 export declare function buildSafeInputsSnapshot(inputs: DiagnosticsInputSnapshot): Record<string, unknown>;
 declare const DIAGNOSTICS_OPEN_MARKER = "<!-- trustbridge-action:diagnostics-start -->";
 declare const DIAGNOSTICS_CLOSE_MARKER = "<!-- trustbridge-action:diagnostics-end -->";
+export { DIAGNOSTICS_OPEN_MARKER, DIAGNOSTICS_CLOSE_MARKER };
 /**
  * Build the expert diagnostics collapsible Markdown block.
  *
@@ -114,4 +115,3 @@ export declare function buildSponsorshipDiagnostics(sponsorshipInfo?: {
     met: boolean;
     subentryCount: number;
 }): string;
-export { DIAGNOSTICS_OPEN_MARKER, DIAGNOSTICS_CLOSE_MARKER };

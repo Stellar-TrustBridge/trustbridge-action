@@ -18,6 +18,13 @@
  *  - Full SEP-0002 client functionality is explicitly out of scope
  */
 /**
+ * Stable error codes surfaced by federation resolution failures.
+ *
+ * These are intentionally stable strings so callers and tests can assert on
+ * them without depending on human-readable message wording.
+ */
+export type FederationErrorCode = 'INVALID_ADDRESS' | 'INVALID_USERNAME' | 'INVALID_DOMAIN' | 'TOML_FETCH_FAILED' | 'TOML_NXDOMAIN' | 'TOML_TRUNCATED' | 'TOML_TIMEOUT' | 'NO_FEDERATION_SERVER' | 'FEDERATION_FETCH_FAILED' | 'FEDERATION_NXDOMAIN' | 'FEDERATION_TRUNCATED' | 'FEDERATION_TIMEOUT' | 'INVALID_ACCOUNT_ID';
+/**
  * Result of a federation address resolution.
  */
 export interface FederationResolution {
@@ -77,7 +84,19 @@ export declare function validateFederationDomain(domain: string): {
  *  6. Parse JSON response for account_id
  *  7. Validate account_id is a valid G-address
  *
+ * NXDOMAIN, truncated responses, and timeouts are surfaced as stable error
+ * codes (see {@link FederationErrorCode}) and never hang the job.
+ *
  * @param input The federation address (e.g., "user*domain.com")
  * @returns Resolution result or null on failure
  */
 export declare function resolveFederationAddress(input: string): Promise<FederationResolution | null>;
+/**
+ * Parses the [[FEDERATION_SERVER]] forward_url from stellar.toml content.
+ *
+ * @param tomlContent Raw stellar.toml text
+ * @returns The federation server descriptor or null if not found
+ */
+export declare function parseFederationServerFromToml(tomlContent: string): {
+    forward_url: string;
+} | null;

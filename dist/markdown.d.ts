@@ -45,6 +45,43 @@ export declare function buildAssetTrustlineTable(rows: AssetTrustlineRow[], opti
     heading?: string;
 }): string;
 /**
+ * A single per-asset checklist entry for {@link buildAssetChecklist}
+ * (Issue #717).
+ *
+ * Extends {@link AssetTrustlineRow} with the optional per-asset hints that
+ * the `assets_json` validation surfaces (clawback-enabled assets and
+ * unauthorized trustlines).
+ */
+export interface AssetChecklistRow extends AssetTrustlineRow {
+    /** Whether the asset issuer has clawback enabled. */
+    clawbackEnabled?: boolean;
+    /** Whether the trustline exists but is not authorized by the issuer. */
+    trustlineAuthorized?: boolean;
+    /** Optional deep link (e.g. stellar.expert) for the asset. */
+    deepLink?: string;
+}
+/**
+ * Render a per-asset checklist for the `assets_json` input (Issue #717).
+ *
+ * Each asset becomes its own task-list line so assignees managing portfolios
+ * can scan pass/fail state per asset instead of reading aggregate prose. The
+ * ordering of `rows` is preserved verbatim (stable ordering) and duplicate
+ * `assetCode`/`assetIssuer` pairs are deduped so a repeated entry never
+ * produces a duplicate row.
+ *
+ * The layout follows the existing markdown conventions used elsewhere in
+ * this module: a `###` heading, `- [x]`/`- [ ]` task items, `inlineCode` for
+ * asset codes and issuers, and `escapeMarkdownInline` for free-form text.
+ *
+ * @param rows Per-asset results. When empty, returns `''` so callers can
+ *             skip the section entirely (no empty headings in comments).
+ * @param options.heading Section heading (defaults to "Asset checklist").
+ * @returns Markdown section (heading + checklist), or `''` when `rows` is empty.
+ */
+export declare function buildAssetChecklist(rows: AssetChecklistRow[], options?: {
+    heading?: string;
+}): string;
+/**
  * Canonical (locale-independent) keys used in the Map returned by
  * `extractChecklistState` and accepted by `buildOnboardingChecklist` via
  * `options.previousChecks`.

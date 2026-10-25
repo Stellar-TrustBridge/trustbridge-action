@@ -4,6 +4,7 @@
  * #145 — issues:write preflight check
  * #220 — extended to `pull_request` / `pull_request_target` events
  * #443 — optional Horizon fallback health probe
+ * #732 — cataloged reason_code for missing issues:write
  *
  * Verifies that the supplied GitHub token has sufficient permission to post
  * issue/PR comments **before** any expensive Horizon calls are made.  Failing
@@ -56,7 +57,15 @@
  *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
  *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
  *   workflows.
+ * - #732 — a 403 on the permission probe is tagged with the cataloged
+ *   `reason_code` `issues_write_missing` so `index.ts` can emit it as an
+ *   output before `core.setFailed`.
  */
+/**
+ * #732 — cataloged reason code emitted when the token lacks `issues: write`.
+ * Must match the entry in `schemas/reason-codes.json`.
+ */
+export declare const REASON_CODE_ISSUES_WRITE_MISSING = "issues_write_missing";
 export interface PreflightResult {
     /**
      * `true` when there is no issue context and comment posting should simply
@@ -98,6 +107,18 @@ export interface PreflightOptions {
     warn?: (message: string) => void;
 }
 /**
+ * #732 — error thrown by the preflight when the token demonstrably lacks the
+ * required permission.  Carries a cataloged `reasonCode` so callers can emit
+ * it as an output before failing the job.
+ */
+export declare class PreflightError extends Error {
+    readonly status: number;
+    /** Alias of `status`, kept for callers that read `statusCode`. */
+    readonly statusCode: number;
+    readonly reasonCode?: string;
+    constructor(message: string, status: number, reasonCode?: string);
+}
+/**
  * Run the issues:write preflight sequence.
  *
  * @param token   The `github_token` input value (used to build Octokit).
@@ -110,6 +131,17 @@ export interface PreflightOptions {
  *         to `core.setFailed`.
  */
 export declare function runIssuesPreflight(token: string, options?: PreflightOptions): Promise<PreflightResult>;
+/** Workflow permissions the preflight can report as missing. */
+export type PreflightPermission = 'issues: write' | 'id-token: write';
+/**
+ * Build the exact log/comment text a dry-run preflight emits when the job is
+ * missing `issues: write` and/or `id-token: write`. Output is deterministic
+ * (permissions are de-duplicated and sorted) so it can be snapshot-tested and
+ * copy-pasted into a workflow. Returns an empty string when nothing is missing.
+ *
+ * @throws When an unknown permission name is supplied.
+ */
+export declare function formatMissingPermissionsDryRun(missing: readonly string[]): string;
 /**
  * Probe the Horizon root on the primary and (when set) fallback URLs.
  *
@@ -121,11 +153,9 @@ export declare function runIssuesPreflight(token: string, options?: PreflightOpt
  * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
  */
 export declare function runHorizonHealthProbe(options: PreflightOptions): Promise<void>;
-/**
- * Thrown by `runIssuesPreflight` when the token is missing permission or the
- * issue context is invalid.  Callers should surface this via `core.setFailed`.
- */
-export declare class PreflightError extends Error {
-    readonly statusCode: number;
-    constructor(message: string, statusCode: number);
+export interface ProbeResult {
+    ok: boolean;
+    reason: string;
+    status?: number;
 }
+export declare function probeHorizonUrl(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<ProbeResult>;

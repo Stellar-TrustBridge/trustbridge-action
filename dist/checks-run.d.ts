@@ -13,6 +13,8 @@
  * GitHub App / token configuration guidance.
  */
 import { ValidationResult } from './checks';
+/** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
+export declare const HOME_DOMAIN_CHECK_LABEL = "SEP-0001 home domain";
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 /**
  * Result of attempting to create a Check Run.
@@ -34,6 +36,11 @@ export interface CheckRunResult {
      * Optional error message if creation failed.
      */
     error?: string;
+    /**
+     * True when the run was cancelled (via `options.signal`) before the Check
+     * Run was written. No Check Run exists in that case — never a partial one.
+     */
+    cancelled?: boolean;
 }
 /**
  * Determine the Check Run conclusion from a ValidationResult.
@@ -49,7 +56,7 @@ export declare function determineCheckConclusion(result: ValidationResult): Chec
  * Each check becomes one annotation in the Check Run, allowing operators to
  * see per-check results directly in the Actions UI without requiring debug logs.
  */
-export declare function buildCheckAnnotations(result: ValidationResult, options?: {
+export declare function buildCheckAnnotations(result: ValidationResult, _options?: {
     stellarAddress: string;
 }): Array<{
     path: string;
@@ -59,6 +66,11 @@ export declare function buildCheckAnnotations(result: ValidationResult, options?
     title: string;
     message: string;
 }>;
+/**
+ * Summary text for the Check Run. Failing runs include the `reason_code` so
+ * the Checks UI matches the action output (e.g. `HOME_DOMAIN_MISMATCH`).
+ */
+export declare function buildCheckRunSummary(result: ValidationResult): string;
 /**
  * Create a GitHub Check Run for the validation result.
  *
@@ -70,8 +82,12 @@ export declare function buildCheckAnnotations(result: ValidationResult, options?
  * @param result        The ValidationResult from running checks.
  * @param token         GitHub API token (requires checks: write permission).
  * @param options       Additional options (e.g. stellar address for annotation context).
+ *                      `signal` cancels the run: if it is aborted before or
+ *                      during the API call, no Check Run is written and the
+ *                      result has `cancelled: true` (Issue #783).
  * @returns             CheckRunResult with success flag and details.
  */
 export declare function createCheckRun(result: ValidationResult, token: string, options?: {
     stellarAddress?: string;
+    signal?: AbortSignal;
 }): Promise<CheckRunResult>;

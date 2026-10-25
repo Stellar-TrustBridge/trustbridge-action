@@ -15,7 +15,7 @@ export interface ProjectV2Node {
 }
 export interface UpdateProjectV2StatusOptions {
     octokit: {
-        graphql: <T = any>(query: string, parameters?: Record<string, any>) => Promise<T>;
+        graphql: <T = unknown>(query: string, parameters?: Record<string, unknown>) => Promise<T>;
     };
     projectId: string;
     contentNodeId: string;

@@ -9,7 +9,7 @@ import { ValidationResult } from './checks';
 /**
  * Badge state representing the outcome of validation checks.
  */
-export type BadgeState = 'pass' | 'fail' | 'pending';
+export type BadgeState = 'pass' | 'fail' | 'pending' | 'skipped';
 /**
  * Shields.io badge configuration for rendering validation status.
  */
@@ -22,8 +22,19 @@ export interface BadgeConfig {
  * - 'pass': All checks passed (valid === true)
  * - 'fail': One or more checks failed (valid === false)
  * - 'pending': Result is unknown or in-progress (never set by normal flow, but available for consumer use)
+ *
+ * Note: the 'skipped' state (every check detail is 'Skipped') is detected by
+ * {@link generateBadgeSnippets}, not here — a skipped run is still
+ * `valid === false`, so this function reports 'fail' for it.
  */
 export declare function determineBadgeState(result: ValidationResult): BadgeState;
+/**
+ * Get the accessibility-friendly alt text for a badge state.
+ *
+ * The alt text is used in Markdown embeds so screen readers and
+ * text-only renderers convey the badge meaning without the image.
+ */
+export declare function getBadgeAltText(state: BadgeState): string;
 /**
  * Generate a Shields.io badge URL for the given state.
  *

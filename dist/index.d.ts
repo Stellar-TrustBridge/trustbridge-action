@@ -43,5 +43,28 @@ export interface AutoUnassignOptions {
  * - Safely skips when there is no issue context (e.g. workflow_dispatch).
  */
 export declare function handleAutoUnassign(options: AutoUnassignOptions): Promise<string[] | undefined>;
-declare function run(): Promise<void>;
-export { run };
+/**
+ * Result of evaluating the milestone gate (Issue #230).
+ */
+export interface MilestoneGateDecision {
+    /** True when the issue/PR should be skipped because of the milestone gate. */
+    shouldSkip: boolean;
+    /** Human-readable reason for the skip (empty when shouldSkip is false). */
+    reason: string;
+    /** Full message including the "Skipping validation." suffix. */
+    fullMessage: string;
+    /** The raw milestone title from the event payload (empty if none). */
+    milestoneTitle: string;
+}
+/**
+ * Evaluate the milestone gate for the given event payload.
+ *
+ * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
+ * is checked against the allowlist. If the milestone is missing or not in the
+ * list, the result indicates the step should be skipped (with the reason).
+ *
+ * This function is side-effect-free so it can be unit-tested without mocking
+ * `@actions/core`.
+ */
+export declare function evaluateMilestoneGate(milestoneAllowlistRaw: string, _milestoneFailOnSkip: boolean, payload: Record<string, unknown>): MilestoneGateDecision;
+export declare function run(): Promise<void>;

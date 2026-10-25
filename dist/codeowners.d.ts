@@ -11,6 +11,35 @@ export declare function parseCodeowners(content: string): Set<string>;
  * Normalize an owner handle from CODEOWNERS or allowlist (lowercase, strip leading @).
  */
 export declare function normalizeOwnerHandle(handle: string): string;
+export interface CodeownersRule {
+    /** Raw pattern token from the CODEOWNERS line (e.g. `src/payments/**`). */
+    pattern: string;
+    /** Normalized owner handles for this rule. */
+    owners: string[];
+}
+/**
+ * Parse CODEOWNERS content into ordered rules (pattern + owners).
+ * Comments and empty lines are ignored. Rules with no owners are skipped.
+ */
+export declare function parseCodeownersRules(content: string): CodeownersRule[];
+/**
+ * Determine whether a given file path is covered by any CODEOWNERS rule.
+ * Returns the matching rule (last match wins, per GitHub semantics) or null.
+ */
+export declare function findCoveringRule(filePath: string, rules: CodeownersRule[]): CodeownersRule | null;
+export interface CodeownersCoverageResult {
+    /** Paths that have at least one owner. */
+    covered: string[];
+    /** Paths with no matching CODEOWNERS rule (or a rule with no owners). */
+    uncovered: string[];
+    /** True when no CODEOWNERS rules were loaded at all. */
+    missingCodeowners: boolean;
+}
+/**
+ * Check reviewer coverage for a set of TrustBridge-touched paths against parsed
+ * CODEOWNERS rules. Used by preflight to surface missing reviewer coverage.
+ */
+export declare function checkCodeownersCoverage(touchedPaths: string[], rules: CodeownersRule[]): CodeownersCoverageResult;
 export interface LoadCodeownersOptions {
     workspaceRoot?: string;
     customPath?: string;
@@ -28,6 +57,11 @@ export interface LoadCodeownersOptions {
  * - When running in a trusted context (push, default branch, or workflow_dispatch), reads from local workspace.
  */
 export declare function loadCodeowners(options?: LoadCodeownersOptions): Promise<Set<string>>;
+/**
+ * Load CODEOWNERS rules (pattern + owners) using the same branch-safety guarantees
+ * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found.
+ */
+export declare function loadCodeownersRules(options?: LoadCodeownersOptions): Promise<CodeownersRule[]>;
 /**
  * Check if the given actor is a maintainer according to CODEOWNERS or an explicit maintainers list.
  */

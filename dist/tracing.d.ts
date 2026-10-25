@@ -87,6 +87,20 @@ export interface TraceOptions {
     parentName?: string;
 }
 /**
+ * Options for tracing a Horizon fetch operation (issue #757).
+ * Emits OTel-compatible span attributes for latency and retry counts.
+ */
+export interface HorizonSpanOptions {
+    /** Horizon endpoint URL (path is stripped before recording). */
+    horizonUrl: string;
+    /** Stellar account being fetched (redacted before recording). */
+    accountId?: string;
+    /** Number of retry attempts made before the fetch resolved. */
+    retryCount?: number;
+    /** Parent span name for nesting context. */
+    parentName?: string;
+}
+/**
  * Whether tracing is enabled.
  * Reads `OTEL_TRACES_ENABLED` environment variable.
  * Default: false.
@@ -127,6 +141,25 @@ export declare function redactSpanAttributes(attrs: Record<string, string | numb
  * @returns     The resolved value from `fn`.
  */
 export declare function withSpan<T>(opts: TraceOptions, fn: () => Promise<T>): Promise<T>;
+/**
+ * Execute a Horizon fetch operation within an OTel-compatible span
+ * (issue #757). Emits consistent span attributes for latency and retry
+ * counts so operators can correlate Wave CI flakes without scraping logs.
+ *
+ * Attributes recorded on the span:
+ * - `horizon.url`        — host-only Horizon endpoint (path stripped).
+ * - `stellar_address`    — redacted account id (first4…last4), when provided.
+ * - `horizon.retry_count`— number of retries performed (default 0).
+ * - `horizon.latency_ms` — wall-clock latency of the fetch in milliseconds.
+ *
+ * When tracing is disabled, `fn` is called directly with zero overhead and
+ * existing auth/pause/happy-path semantics are preserved.
+ *
+ * @param opts  Horizon span options (url, account, retryCount, parentName).
+ * @param fn    The async Horizon fetch operation to trace.
+ * @returns     The resolved value from `fn`.
+ */
+export declare function withHorizonSpan<T>(opts: HorizonSpanOptions, fn: () => Promise<T>): Promise<T>;
 /**
  * Record a synchronous operation within a named trace span.
  *

@@ -33,6 +33,16 @@ export interface CommentStrings {
     circuitBreakerOpen: string;
     circuitBreakerRecoveryHint: string;
     circuitBreakerReasonCode: string;
+    /** Heading shown when the trustline is not authorized by the issuer. */
+    unauthorizedTrustlineHeading: string;
+    /** Body copy for `unauthorized_trustline_policy: warn` (non-blocking). */
+    unauthorizedTrustlineWarn: string;
+    /** Body copy for `unauthorized_trustline_policy: fail` (blocking). */
+    unauthorizedTrustlineFail: string;
+    /** Trailing note clarifying that warn mode does not block the run. */
+    unauthorizedTrustlineWarnNote: string;
+    /** Trailing note clarifying that fail mode blocks the run. */
+    unauthorizedTrustlineFailNote: string;
     checklistHeading: string;
     checklistIntro: string;
     checklistFundAccountLabel: string;

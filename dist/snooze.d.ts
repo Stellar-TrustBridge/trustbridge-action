@@ -47,6 +47,11 @@ export interface SnoozeState {
     elapsedMs?: number;
 }
 /**
+ * Stable reason_code emitted when validation is skipped because the issue is
+ * within an active snooze window (Issue #754).
+ */
+export declare const SNOOZE_REASON_CODE: "snoozed";
+/**
  * Extract snooze marker from a comment body. Returns undefined if marker
  * not found (backward compatible with older comments).
  */
@@ -102,3 +107,38 @@ export declare function evaluateReactionSnooze(currentPassed: boolean, reactions
  * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
  */
 export declare function evaluateCombinedSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number): SnoozeState;
+/**
+ * Result of enforcing a snooze window at the validation call site (Issue #754).
+ *
+ * When `skipValidation` is true, the caller must NOT run validation and must
+ * NOT fail the assignee; instead it should surface `reasonCode` in outputs and
+ * post the `commentNotice` so the user understands why nothing happened.
+ */
+export interface SnoozeEnforcement {
+    /** Whether validation should be skipped for this run. */
+    skipValidation: boolean;
+    /** Stable reason_code to emit in outputs when validation is skipped. */
+    reasonCode?: typeof SNOOZE_REASON_CODE;
+    /** User-visible comment notice to post when validation is skipped. */
+    commentNotice?: string;
+    /** Underlying snooze state that produced this decision. */
+    state: SnoozeState;
+}
+/**
+ * Format a human-readable duration for snooze notices (e.g. "2h 15m").
+ */
+export declare function formatSnoozeDuration(ms: number | undefined): string;
+/**
+ * Enforce a snooze window at the validation call site (Issue #754).
+ *
+ * Wraps {@link evaluateCombinedSnoozeState} and, when the issue is within an
+ * active snooze window, returns a stable `reason_code` (`snoozed`) plus a
+ * user-visible comment notice. Callers should skip validation and post the
+ * notice instead of failing the assignee.
+ *
+ * `forceComment` bypasses enforcement so maintainers can force a run.
+ */
+export declare function enforceSnoozeWindow(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, options?: {
+    forceComment?: boolean;
+    now?: number;
+}): SnoozeEnforcement;

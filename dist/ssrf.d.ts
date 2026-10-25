@@ -9,8 +9,18 @@
  * - Request size and timeout limits
  * - No redirect chains to different origins
  *
- * CURRENT SCOPE: Used by Horizon fetches. Future enhancements may use this
- * for SEP-0001 stellar.toml fetches when opted in by workflows.
+ * - Host normalization before matching (Issue #702): decimal / octal / hex
+ *   IPv4 encodings, IDNA full-width digits, trailing dots, IPv6 zone IDs and
+ *   IPv4-mapped / NAT64 / 6to4 IPv6 forms are canonicalized first, so
+ *   `https://2130706433/`, `https://0x7f.1/` and `https://[::ffff:7f00:1]/`
+ *   are all rejected exactly like `https://127.0.0.1/`.
+ * - DNS rebinding mitigation: hostnames are resolved before each request
+ *   (and before each redirect hop) and rejected when any resolved address
+ *   falls inside a blocked range.
+ *
+ * SCOPE: Shared by Horizon URL validation (`validation.ts`), SEP-0001
+ * stellar.toml fetches (`toml.ts`) and federation lookups (`federation.ts`)
+ * so every outbound fetch goes through the same SSRF gate.
  */
 /**
  * SSRF blocklist: IP ranges that should never be fetched from inside a
@@ -30,7 +40,25 @@ export declare const SSRF_BLOCKED_RANGES: {
     pattern: RegExp;
 }[];
 /**
+ * Canonicalize a hostname before SSRF matching.
+ *
+ * - lowercases and trims
+ * - strips IPv6 brackets and zone IDs (`fe80::1%eth0`, `fe80::1%25eth0`)
+ * - strips trailing dots (`localhost.` → `localhost`)
+ * - runs the WHATWG URL host parser, which applies IDNA mapping
+ *   (full-width digits, ideographic full stops) and canonicalizes
+ *   decimal / octal / hex IPv4 encodings (`2130706433`, `0177.0.0.1`,
+ *   `0x7f.1`) to dotted-quad form, and compresses IPv6 addresses.
+ *
+ * Returns the normalized host (no brackets) or the best-effort lowercase
+ * input when the URL parser rejects it.
+ */
+export declare function normalizeHostForSSRF(host: string): string;
+/**
  * Check if a hostname/IP is in the SSRF blocklist.
+ *
+ * The host is normalized first (see {@link normalizeHostForSSRF}) so
+ * alternate encodings of private addresses cannot slip through.
  *
  * Returns `{ blocked: true, reason }` if the host should be rejected,
  * or `{ blocked: false }` if it's safe to fetch from.
@@ -41,6 +69,29 @@ export declare function isSSRFBlocked(host: string): {
 } | {
     blocked: false;
 };
+/**
+ * Resolve a hostname to the list of IP addresses it currently points at.
+ * Injectable so tests (and callers with their own resolver) never touch
+ * real DNS.
+ */
+export type SSRFDnsLookup = (hostname: string) => Promise<string[]>;
+/** Default resolver backed by the OS resolver (`getaddrinfo`). */
+export declare const defaultSSRFDnsLookup: SSRFDnsLookup;
+/**
+ * DNS rebinding guard: resolve `hostname` and reject when any returned
+ * address is in a blocked range (e.g. `127.0.0.1.nip.io`, or an attacker
+ * domain whose A record flips to `169.254.169.254`).
+ *
+ * IP literals are skipped (they were already checked by
+ * {@link isSSRFBlocked}). Resolver failures are treated as "no answer":
+ * the subsequent fetch cannot connect to an unresolvable name either.
+ */
+export declare function checkResolvedAddresses(hostname: string, lookup?: SSRFDnsLookup): Promise<{
+    blocked: true;
+    reason: string;
+} | {
+    blocked: false;
+}>;
 export interface SSRFFetchOptions {
     /**
      * Maximum allowed response body size in bytes. Default: 256 KB.
@@ -61,6 +112,12 @@ export interface SSRFFetchOptions {
      * Prevents redirect loops and chained exfiltration attempts.
      */
     maxRedirects?: number;
+    /**
+     * DNS resolver used for the rebinding guard. Defaults to the OS resolver.
+     * Pass `false` to skip resolution (only when the caller already pins the
+     * connection to a vetted address).
+     */
+    dnsLookup?: SSRFDnsLookup | false;
 }
 /**
  * Validate that a URL is safe for SSRF-protected HTTP fetch.
@@ -79,10 +136,14 @@ export declare function validateSSRFSafeUrl(urlStr: string): {
     errors: string[];
 };
 /**
- * Example SSRF-safe fetch wrapper (for future use with stellar.toml).
+ * SSRF-safe fetch wrapper used for SEP-0001 stellar.toml and federation
+ * lookups.
  *
- * NOT currently called by TrustBridge, but available for future enhancements
- * that need to safely fetch HTTP resources from URLs in Horizon data.
+ * Every hop (the initial URL and each redirect target) is validated with
+ * {@link validateSSRFSafeUrl} and its hostname is resolved through
+ * {@link checkResolvedAddresses} before the request is sent. Redirects are
+ * refused unless `followRedirects` is explicitly enabled, and even then must
+ * stay same-origin and HTTPS.
  *
  * Usage:
  * ```ts

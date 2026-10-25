@@ -40,6 +40,13 @@ export interface ActionOutputExtras {
      */
     checkRunId?: string;
     checkRunConclusion?: string;
+    /**
+     * #696 — Numeric REST id of the issue comment TrustBridge created or
+     * updated this run, as a string. Absent when no comment was posted
+     * (`posting_mode: dry-run` / `off`, no issue context, or a failed post),
+     * which publishes `comment_id` as an empty string.
+     */
+    commentId?: string;
 }
 /**
  * A single source that provided a value for a given field.
@@ -97,6 +104,11 @@ export interface ActionOutputs {
     xlm_balance: string;
     account_funded: string;
     comment_url: string;
+    /**
+     * #696 — Numeric REST id of the created or updated issue comment, as a
+     * string. Empty when no comment was posted.
+     */
+    comment_id: string;
     full_report_path: string;
     ready: string;
     validated_at: string;
@@ -146,6 +158,18 @@ export interface ActionOutputs {
     friendbot_transaction_hash: string;
     assets_trustline_status: string;
     trustlines_summary: string;
+    /**
+     * Batch-mode outputs (Issue #670).
+     *
+     * Published on the batch code path in index.ts, which returns before
+     * `setValidationOutputs` runs. Single-address runs publish empty strings here
+     * so the action.yml output contract stays total: every declared output has a
+     * value in every mode, and a consumer never has to distinguish "unset" from
+     * "empty string".
+     */
+    batch_summary_json: string;
+    batch_passed_count: string;
+    batch_failed_count: string;
 }
 export declare function toActionOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): ActionOutputs;
 export declare function setValidationOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): void;

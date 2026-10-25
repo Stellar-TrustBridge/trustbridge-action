@@ -14,6 +14,10 @@
  *   - Proxy URLs containing userinfo (username:password) are redacted in logs.
  *   - SSRF protections are NOT disabled when using a proxy.
  *   - Only HTTPS proxies are supported for Horizon requests.
+ *   - Proxy URLs are validated against the same SSRF rules as `ssrf.ts`
+ *     (Issue #758): loopback, link-local, private ranges, and cloud
+ *     metadata endpoints are rejected, as are scheme-smuggling forms
+ *     (non-http(s) schemes, embedded credentials, non-canonical hosts).
  */
 import { HttpsProxyAgent } from 'https-proxy-agent';
 /**
@@ -31,6 +35,22 @@ export interface ProxyConfig {
  * `http://user:pass@proxy:8080` → `http://proxy:8080`
  */
 export declare function redactProxyUrl(url: string): string;
+/**
+ * Validate a proxy URL against SSRF pivots and scheme-smuggling forms.
+ *
+ * Returns `null` when the URL is acceptable, or a stable error message
+ * describing why it was rejected. The checks mirror `ssrf.ts` so that
+ * proxy-derived Horizon traffic is subject to the same guard as direct
+ * Horizon URLs.
+ *
+ * Rejected forms:
+ *   - empty / malformed URLs
+ *   - non-http(s) schemes (e.g. `file:`, `ftp:`, `gopher:`)
+ *   - embedded credentials (`user:pass@host`)
+ *   - loopback, link-local, private ranges, and metadata endpoints
+ *   - non-canonical / obfuscated hosts (e.g. `0x7f.0.0.1`, `2130706433`)
+ */
+export declare function validateProxyUrl(proxyUrl: string): string | null;
 /**
  * Read proxy configuration from environment variables.
  *
@@ -50,7 +70,7 @@ export declare function shouldBypassProxy(hostname: string, noProxyHosts: string
  * Returns `undefined` when:
  *   - No proxy is configured
  *   - The target hostname is in the NO_PROXY list
- *   - The proxy URL is invalid
+ *   - The proxy URL is invalid or fails SSRF validation
  *
  * The returned agent is an `https-proxy-agent` instance that can be passed
  * as the `agent` option to `node-fetch` or Octokit's `httpAgent`.

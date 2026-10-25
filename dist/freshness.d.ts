@@ -80,3 +80,21 @@ export declare function fetchHorizonRoot(horizonUrl: string, options?: {
  * callers decide how to surface the result (warn vs. fail).
  */
 export declare function checkLedgerFreshness(horizonUrl: string, options?: FreshnessOptions): Promise<FreshnessCheckResult>;
+/** Cache-write stamp for a Horizon account payload. */
+export interface FreshnessStamp {
+    /** Epoch milliseconds when the payload was cached. */
+    cachedAt: number;
+    /** Time-to-live in milliseconds. */
+    ttlMs: number;
+}
+/**
+ * True when a cached payload is still within its TTL.
+ * Boundary-exact (`age === ttlMs`), expired, skewed and malformed stamps
+ * are all stale so Wave rechecks always refetch instead of trusting them.
+ */
+export declare function isFresh(stamp: FreshnessStamp, nowMs: number): boolean;
+/**
+ * Milliseconds of TTL remaining, clamped to zero for stale, skewed or
+ * malformed stamps.
+ */
+export declare function freshnessRemainingMs(stamp: FreshnessStamp, nowMs: number): number;
