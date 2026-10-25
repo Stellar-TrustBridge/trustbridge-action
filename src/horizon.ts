@@ -1,8 +1,10 @@
+import * as tls from 'tls';
+import * as crypto from 'crypto';
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
 import { inferStellarNetwork } from './links';
 import { globalMetrics, globalHorizonHistogram } from './metrics';
-import { RateBudgetTracker, RateBudgetExhaustedError, CircuitBreaker, CircuitOpenError } from './resilience';
+import { RateBudgetTracker, CircuitBreaker, CircuitOpenError } from './resilience';
 import { validateHorizonUrl } from './validation';
 export interface HorizonBalanceNative {
   balance: string;
@@ -122,6 +124,52 @@ export class HorizonTlsError extends HorizonError {
 }
 
 /**
+ * Thrown when the Horizon TLS certificate fingerprint does not match the
+ * configured `horizon_pin_fingerprint` value (Issue #303).
+ */
+export class HorizonPinMismatchError extends HorizonError {
+  constructor(
+    message: string,
+    public readonly expectedFingerprint: string,
+    public readonly actualFingerprint: string,
+  ) {
+    super(message, 0, false);
+    this.name = 'HorizonPinMismatchError';
+  }
+}
+
+/**
+ * Thrown when a Horizon request was short-circuited by the circuit breaker
+ * (Issue #209) and surfaced for comment rendering (Issue #434).
+ *
+ * Distinct from a plain `HorizonError` because the failure says nothing about
+ * the account: no request reached the network, so the account was never
+ * checked. The sticky comment renders a dedicated "circuit breaker open"
+ * banner for this case so a resilience safeguard is not mistaken for an
+ * account-level failure.
+ *
+ * Extends `HorizonError` so existing `instanceof HorizonError` handling keeps
+ * working unchanged.
+ */
+export class HorizonCircuitOpenError extends HorizonError {
+  constructor(message: string) {
+    super(message, 0, false);
+    this.name = "HorizonCircuitOpenError";
+  }
+}
+
+/** Is this error a circuit-breaker fast-fail (Issue #434)? */
+export function isCircuitOpenError(
+  error: unknown,
+): error is HorizonCircuitOpenError {
+  return (
+    error instanceof HorizonCircuitOpenError ||
+    error instanceof CircuitOpenError ||
+    (error instanceof Error && error.name === "HorizonCircuitOpenError")
+  );
+}
+
+/**
  * Node/OpenSSL error codes that indicate a TLS handshake or certificate
  * verification failure, as opposed to a generic connection/network error.
  */
@@ -153,6 +201,94 @@ function tlsErrorCode(error: unknown): string | undefined {
     if (causeCode && TLS_ERROR_CODES.has(causeCode)) return causeCode;
   }
   return undefined;
+}
+
+/**
+ * Verify the TLS certificate fingerprint of a Horizon endpoint against an
+ * expected SHA-256 fingerprint (Issue #303).
+ *
+ * @param horizonUrl - The Horizon URL to check (must be https:)
+ * @param expectedFingerprint - SHA-256 fingerprint in colon-separated uppercase hex (e.g. 'AA:BB:...').
+ *   Pass an empty string to skip the pin check and rely on standard WebPKI validation.
+ * @throws {HorizonPinMismatchError} When the actual fingerprint does not match `expectedFingerprint`.
+ * @throws {HorizonTlsError} When the TLS connection or certificate retrieval fails.
+ */
+export async function checkCertificatePin(
+  horizonUrl: string,
+  expectedFingerprint: string,
+): Promise<void> {
+  const parsed = new URL(horizonUrl);
+  if (parsed.protocol !== 'https:') {
+    // Only HTTPS connections have TLS certificates to pin
+    return;
+  }
+
+  // When pinFingerprint is empty (not configured), skip the pin check
+  // and rely on standard WebPKI certificate validation.
+  if (!expectedFingerprint || expectedFingerprint.trim() === '') {
+    return;
+  }
+
+  const host = parsed.hostname;
+  const port = parseInt(parsed.port || '443', 10);
+  const normalizedExpected = expectedFingerprint.toUpperCase().replace(/\s/g, '');
+
+  return new Promise<void>((resolve, reject) => {
+    const socket = tls.connect({ host, port, servername: host }, () => {
+      try {
+        const cert = socket.getPeerCertificate();
+        socket.destroy();
+
+        if (!cert || !cert.raw) {
+          reject(new HorizonTlsError(
+            'Could not retrieve server certificate for fingerprint check.',
+          ));
+          return;
+        }
+
+        // Compute SHA-256 fingerprint over the raw DER-encoded certificate
+        const fingerprint = crypto
+          .createHash('sha256')
+          .update(cert.raw)
+          .digest('hex')
+          .toUpperCase()
+          .match(/.{2}/g)!
+          .join(':');
+
+        const normalizedActual = fingerprint.toUpperCase().replace(/\s/g, '');
+
+        if (normalizedActual !== normalizedExpected) {
+          reject(new HorizonPinMismatchError(
+            `TLS certificate fingerprint mismatch for Horizon endpoint. ` +
+            `Expected: ${normalizedExpected}, Got: ${normalizedActual}. ` +
+            `The Horizon host certificate may have changed — update horizon_pin_fingerprint or investigate MITM.`,
+            normalizedExpected,
+            normalizedActual,
+          ));
+          return;
+        }
+
+        resolve();
+      } catch (err) {
+        socket.destroy();
+        reject(err instanceof Error ? err : new HorizonTlsError('Certificate pin check failed.'));
+      }
+    });
+
+    socket.on('error', (err) => {
+      const tlsCode = (err as NodeJS.ErrnoException).code;
+      reject(new HorizonTlsError(
+        'TLS connection failed during certificate pin check.',
+        tlsCode,
+      ));
+    });
+
+    // 10 second timeout for the TLS probe
+    socket.setTimeout(10000, () => {
+      socket.destroy();
+      reject(new HorizonTlsError('TLS certificate pin check timed out.'));
+    });
+  });
 }
 
 export type FetchLike = (
@@ -1586,6 +1722,99 @@ export async function applyWalletLabels(
 }
 
 
+export interface ReadyLabelInput {
+  ready: boolean;
+  passLabel?: string;
+  failLabel?: string;
+}
+
+export async function applyReadyLabels(
+  octokit: {
+    rest: {
+      issues: {
+        addLabels: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          labels: string[];
+        }) => Promise<unknown>;
+        removeLabel: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          name: string;
+        }) => Promise<unknown>;
+        listLabelsOnIssue: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          per_page: number;
+        }) => Promise<{ data: Array<{ name: string }> }>;
+      };
+    };
+  },
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  input: ReadyLabelInput,
+): Promise<{ applied?: string; removed: string[]; error?: string }> {
+  const passLabel = (input.passLabel ?? "").trim();
+  const failLabel = (input.failLabel ?? "").trim();
+  const targetLabel = input.ready ? passLabel : failLabel;
+  const staleLabel = input.ready ? failLabel : passLabel;
+  const removed: string[] = [];
+
+  if (!targetLabel && !staleLabel) {
+    return { removed: [] };
+  }
+
+  try {
+    const currentLabelsResponse = await octokit.rest.issues.listLabelsOnIssue({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100,
+    });
+    const currentNames = new Set(currentLabelsResponse.data.map((l) => l.name));
+
+    if (
+      staleLabel &&
+      staleLabel !== targetLabel &&
+      currentNames.has(staleLabel)
+    ) {
+      try {
+        await octokit.rest.issues.removeLabel({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          name: staleLabel,
+        });
+        removed.push(staleLabel);
+      } catch {
+        // Ignore individual removal errors — label state is best-effort.
+      }
+    }
+
+    if (!targetLabel) {
+      return { applied: undefined, removed };
+    }
+
+    if (!currentNames.has(targetLabel)) {
+      await octokit.rest.issues.addLabels({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: [targetLabel],
+      });
+    }
+
+    return { applied: targetLabel, removed };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { applied: targetLabel || undefined, removed, error: message };
+  }
+}
+
 /**
  * Fetch the Stellar network passphrase from a Horizon root endpoint.
  */
@@ -1710,7 +1939,9 @@ export function isTestnetHorizon(horizonUrl: string): boolean {
     if (url.hostname === 'horizon.stellar.org') {
       return false;
     }
-  } catch {}
+  } catch {
+    // URL parsing failed — not a testnet host pattern, treat as non-testnet.
+  }
   return normalized.includes('testnet') || normalized.includes('test') || normalized.includes('futurenet');
 }
 
