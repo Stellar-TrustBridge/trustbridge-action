@@ -336,11 +336,20 @@ const ROTATED_TOML = FIXTURE_TOML + 'ORG_URL="https://anchor.example"\n';
 const publicLookup = async () => ['93.184.216.34'];
 
 function tomlResponse(body: string, headers: Record<string, string> = {}) {
+  // Emulate a real fetch Response: fetchSSRFSafe streams the body through
+  // response.body with a byte cap, so the mock must provide a ReadableStream.
+  const bytes = new TextEncoder().encode(body);
   return {
     status: 200,
     ok: true,
     headers: new Headers(headers),
     text: async () => body,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
   } as any;
 }
 

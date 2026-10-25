@@ -519,6 +519,18 @@ export async function fetchSSRFSafe(
         return { ok: false, error: `HTTP ${response.status}`, status: response.status };
       }
 
+      // Reject up front when the declared size already exceeds the cap, so a
+      // hostile Content-Length cannot force a full download before the
+      // streaming guard trips.
+      const declaredLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBodyBytes) {
+        return {
+          ok: false,
+          error: `Response body too large: declared content-length ${declaredLength} bytes exceeds limit of ${maxBodyBytes} bytes`,
+          status: response.status,
+        };
+      }
+
       const reader = response.body?.getReader();
       if (!reader) {
         return { ok: false, error: 'Response body is not readable', status: response.status };
