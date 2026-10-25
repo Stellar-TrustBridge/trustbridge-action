@@ -11,6 +11,7 @@ import {
   unfundedAccountResult,
   validateStellarAddress,
   rateBudgetExhaustedResult,
+  ValidationResult,
 } from './checks';
 import {
   callFriendbot,
@@ -23,7 +24,7 @@ import {
 } from './horizon';
 import { formatCommentBody, resolvePostingMode, upsertIssueComment } from './comment';
 import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
-import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
+import { getErrorMessage, parseBooleanInput, parseNumberInput, resolveReadyLabelInputs } from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -33,6 +34,303 @@ import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { readTrustbridgeConfig } from './configReader';
 import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 import { runStellarTomlCheck, DEFAULT_STELLAR_TOML_CACHE_TTL_MS, MAX_STELLAR_TOML_CACHE_TTL_MS } from './toml';
+
+export type PostingMode = 'post' | 'dry-run' | 'off';
+export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
+export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
+const VALID_COMMENT_THREADING_MODES: CommentThreadingMode[] = ['sticky', 'new', 'reply'];
+
+export function resolveCommentModes(
+  postingModeInput: string,
+  commentModeInput: string,
+): { postingMode: PostingMode; commentThreadingMode?: CommentThreadingMode } {
+  const normalizedPostingMode = postingModeInput.trim().toLowerCase();
+  const normalizedCommentMode = commentModeInput.trim().toLowerCase();
+  const legacyPostingMode = VALID_POSTING_MODES.includes(
+    normalizedCommentMode as PostingMode,
+  )
+    ? (normalizedCommentMode as PostingMode)
+    : undefined;
+  const postingModeRaw =
+    normalizedPostingMode || legacyPostingMode || 'post';
+
+  if (!VALID_POSTING_MODES.includes(postingModeRaw as PostingMode)) {
+    throw new Error(
+      `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
+    );
+  }
+
+  const commentThreadingMode = VALID_COMMENT_THREADING_MODES.includes(
+    normalizedCommentMode as CommentThreadingMode,
+  )
+    ? (normalizedCommentMode as CommentThreadingMode)
+    : undefined;
+
+  return {
+    postingMode: postingModeRaw as PostingMode,
+    commentThreadingMode,
+  };
+}
+
+/**
+ * Options for `handleAutoUnassign` (Issue #228).
+ */
+export interface AutoUnassignOptions {
+  octokit: {
+    rest: {
+      issues: {
+        removeAssignees: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          assignees: string[];
+        }) => Promise<unknown>;
+      };
+    };
+  };
+  owner: string;
+  repo: string;
+  issueNumber?: number;
+  payload: unknown;
+  result: ValidationResult;
+  unassignOnNotReady: boolean;
+}
+
+/**
+ * Automatically unassigns the assignee(s) from the GitHub issue when
+ * readiness checks fail (ready is false) and the policy input is enabled.
+ *
+ * Safe guards:
+ * - Default off (requires opt-in via unassign_on_not_ready: true).
+ * - Only runs when ready is false (result.valid === false).
+ * - Never unassigns on transient Horizon infrastructure/connectivity errors
+ *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
+ * - Filters out bot assignees (e.g. app/bot accounts).
+ * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
+ * - Safely skips when there is no issue context (e.g. workflow_dispatch).
+ */
+export async function handleAutoUnassign(
+  options: AutoUnassignOptions,
+): Promise<string[] | undefined> {
+  if (!options.unassignOnNotReady) {
+    return undefined;
+  }
+
+  if (options.result.valid) {
+    logger.debug(
+      "Skipping auto-unassign: readiness checks passed (valid is true)",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
+  if (
+    options.result.reasonCode === 'HORIZON_ERROR' ||
+    options.result.reasonCode === 'HORIZON_TIMEOUT' ||
+    options.result.reasonCode === 'TLS_ERROR' ||
+    options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED'
+  ) {
+    core.info(
+      "Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.",
+    );
+    return undefined;
+  }
+
+  const payload = options.payload as
+    | {
+        assignee?: { login?: string; type?: string };
+        issue?: {
+          number?: number;
+          assignees?: Array<{ login?: string; type?: string }>;
+        };
+      }
+    | null
+    | undefined;
+
+  const issueNumber = options.issueNumber ?? payload?.issue?.number;
+  if (!issueNumber) {
+    logger.debug(
+      "Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  const isBot = (login?: string, type?: string): boolean => {
+    if (!login) return false;
+    return type === "Bot" || login.endsWith("[bot]");
+  };
+
+  const targetAssignees: string[] = [];
+
+  // Case 1: Specific assignee from issues.assigned event
+  const eventAssignee = payload?.assignee;
+  if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
+    targetAssignees.push(eventAssignee.login);
+  } else if (Array.isArray(payload?.issue?.assignees)) {
+    // Case 2: All non-bot assignees on the issue
+    for (const assignee of payload.issue.assignees) {
+      if (assignee?.login && !isBot(assignee.login, assignee.type)) {
+        if (!targetAssignees.includes(assignee.login)) {
+          targetAssignees.push(assignee.login);
+        }
+      }
+    }
+  }
+
+  if (targetAssignees.length === 0) {
+    logger.debug(
+      "Skipping auto-unassign: no eligible human assignees found on issue",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  try {
+    await options.octokit.rest.issues.removeAssignees({
+      owner: options.owner,
+      repo: options.repo,
+      issue_number: issueNumber,
+      assignees: targetAssignees,
+    });
+    core.info(
+      `Auto-unassigned ${targetAssignees.join(", ")} from issue #${issueNumber} because readiness checks failed.`,
+    );
+    return targetAssignees;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Failed to unassign ${targetAssignees.join(", ")} from issue #${issueNumber} (non-fatal): ${msg}`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the ready-state label pair, honouring the deprecated aliases that
+ * action.yml still declares. See `resolveReadyLabelInputs` for the precedence
+ * rules and the whitespace-only-as-unset rationale. (Issue #669)
+ */
+function resolveConfiguredReadyLabels(): {
+  passLabel: string;
+  failLabel: string;
+} {
+  const resolved = resolveReadyLabelInputs({
+    passLabel: core.getInput("pass_label"),
+    readyPassLabel: core.getInput("ready_pass_label"),
+    readyLabelPass: core.getInput("ready_label_pass"),
+    failLabel: core.getInput("fail_label"),
+    readyFailLabel: core.getInput("ready_fail_label"),
+    readyLabelFail: core.getInput("ready_label_fail"),
+  });
+
+  if (resolved.usedDeprecatedAlias) {
+    logger.warn(
+      "Using a deprecated ready-label input alias. Migrate to pass_label/fail_label; " +
+        "the aliases (ready_pass_label, ready_label_pass, ready_fail_label, " +
+        "ready_label_fail) are retained for backward compatibility and may be removed.",
+    );
+  }
+
+  return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
+}
+
+/**
+ * Result of evaluating the milestone gate (Issue #230).
+ */
+export interface MilestoneGateDecision {
+  /** True when the issue/PR should be skipped because of the milestone gate. */
+  shouldSkip: boolean;
+  /** Human-readable reason for the skip (empty when shouldSkip is false). */
+  reason: string;
+  /** Full message including the "Skipping validation." suffix. */
+  fullMessage: string;
+  /** The raw milestone title from the event payload (empty if none). */
+  milestoneTitle: string;
+}
+
+/**
+ * Evaluate the milestone gate for the given event payload.
+ *
+ * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
+ * is checked against the allowlist. If the milestone is missing or not in the
+ * list, the result indicates the step should be skipped (with the reason).
+ *
+ * This function is side-effect-free so it can be unit-tested without mocking
+ * `@actions/core`.
+ */
+export function evaluateMilestoneGate(
+  milestoneAllowlistRaw: string,
+  _milestoneFailOnSkip: boolean,
+  payload: Record<string, unknown>,
+): MilestoneGateDecision {
+  const empty: MilestoneGateDecision = {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: '',
+  };
+
+  const raw = milestoneAllowlistRaw.trim();
+  if (!raw) {
+    return empty;
+  }
+
+  const allowedMilestones = raw
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowedMilestones.length === 0) {
+    return empty;
+  }
+
+  const p = payload as Record<string, unknown>;
+  const isIssueContext = p.issue !== undefined;
+  const isPullRequest = p.pull_request !== undefined;
+
+  let currentMilestoneRaw = '';
+  if (isIssueContext) {
+    const issue = p.issue as { milestone?: { title?: unknown } | null } | undefined;
+    // Numeric org-level milestone titles coerce via String(); nullish stays ''.
+    currentMilestoneRaw = String(issue?.milestone?.title ?? '');
+  } else if (isPullRequest) {
+    const pr = p.pull_request as { milestone?: { title?: unknown } | null } | undefined;
+    currentMilestoneRaw = String(pr?.milestone?.title ?? '');
+  }
+  const currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+
+  let skipReason = '';
+  if (!currentMilestone) {
+    skipReason =
+      'Milestone gate: No milestone found on this event, but milestone_allowlist is active.';
+  } else if (!allowedMilestones.includes(currentMilestone)) {
+    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+  }
+
+  if (skipReason) {
+    return {
+      shouldSkip: true,
+      reason: skipReason,
+      fullMessage: `${skipReason} Skipping validation.`,
+      milestoneTitle: currentMilestoneRaw,
+    };
+  }
+
+  return {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: currentMilestoneRaw,
+  };
+}
 
 export async function run(): Promise<void> {
   const jobController = new AbortController();
