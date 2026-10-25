@@ -1140,7 +1140,19 @@ export async function fetchAccount(
       primaryStatusCode: primaryError?.statusCode,
       primaryErrorMessage: primaryError ? redactString(primaryError.message) : undefined,
     }));
-    throw primaryError;
+    // Fail closed with an explicit cross-network error (Issue #687) rather
+    // than surfacing the primary error, so operators can tell a blocked
+    // fallback apart from a plain primary outage. The status is synthetic
+    // (0): this error describes a policy refusal, not an HTTP response.
+    throw new HorizonError(
+      `Cross-network fallback from ${primaryNetwork} to ${fallbackNetwork} is blocked: ` +
+      `primary ${primaryNetwork} Horizon (${normalizedHorizonUrl}) failed and ` +
+      `allow_cross_network_fallback is not enabled, so the ${fallbackNetwork} ` +
+      `fallback (${normalizedFallbackUrl}) was not attempted. ` +
+      `Primary error: ${primaryError ? redactString(primaryError.message) : 'unknown'}`,
+      0,
+      false,
+    );
   }
 
   logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({

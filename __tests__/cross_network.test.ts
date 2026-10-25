@@ -17,6 +17,15 @@
 import { detectNetworkMismatch, unfundedAccountResult, NetworkMismatchHint, buildNetworkMismatchDetail } from '../src/checks';
 import { inferStellarNetwork, canonicalHorizonUrl, oppositeNetwork } from '../src/links';
 import { fetchAccount, HorizonError } from '../src/horizon';
+import { defaultCache } from '../src/cache';
+
+// Each fetch test configures its own mock endpoint map. The module-level
+// Horizon response cache persists across tests in this file, so clear it
+// before every test — otherwise a fallback success cached under an earlier
+// test's primary URL leaks into later tests.
+beforeEach(async () => {
+  await defaultCache.clear();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers / fixtures
@@ -284,17 +293,17 @@ describe('unfundedAccountResult with NetworkMismatchHint', () => {
 // ---------------------------------------------------------------------------
 // fetchAccount — allow_cross_network_fallback guard
 // ---------------------------------------------------------------------------
-
-import { fetchAccount, HorizonError } from '../src/horizon';
-import { inferStellarNetwork } from '../src/links';
+// NOTE: shared imports (fetchAccount, HorizonError, inferStellarNetwork) and
+// TESTNET_HORIZON come from the header above; do not redeclare them here.
 
 const PRIMARY_HORIZON = 'https://horizon.stellar.org';
-const TESTNET_HORIZON = 'https://horizon-testnet.stellar.org';
 const SECONDARY_MAINNET = 'https://horizon2.stellar.org';
 const VALID_ADDRESS_2 = 'G' + 'B'.repeat(55);
 
 function makeMockFetch(responses: Map<string, { status: number; body: unknown }>) {
-  return async (url: string, init?: RequestInit) => {
+  // Wrapped in jest.fn so tests can assert how many times each endpoint
+  // was hit (primary-only on blocked fallback, primary+fallback on allow).
+  return jest.fn(async (url: string, init?: RequestInit) => {
     for (const [prefix, response] of responses.entries()) {
       if (url.startsWith(prefix)) {
         return {
@@ -313,7 +322,7 @@ function makeMockFetch(responses: Map<string, { status: number; body: unknown }>
       json: async () => ({ title: 'Not Found' }),
       headers: new Headers({ 'content-type': 'application/json' }),
     } as Response;
-  };
+  });
 }
 
 describe('fetchAccount — allow_cross_network_fallback guard', () => {
