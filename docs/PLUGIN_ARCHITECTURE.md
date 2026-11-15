@@ -79,3 +79,37 @@ boundary (a plugin that hangs fails closed with a stable error), and the
 isolation boundary (a failing or timing-out plugin does not abort or corrupt
 results for unrelated validation). When changing runner behavior, keep
 `src/pluginRunner.ts`, `src/plugin.ts`, and the tests consistent.
+
+## Sandbox resource limits (CPU, memory, and wall-clock)
+
+`src/pluginRunner.ts` executes plugins synchronously against a read-only `CheckPluginContext` snapshot (`account`, `config`, `stellarAddress`) after Horizon account pre-fetching completes. Because plugins run in-process on the GitHub Actions Node.js runner, resource consumption is bounded across three dimensions:
+
+| Resource | Limit / Enforcement Mechanism | Source / Constant | Fail-Closed Behavior When Exceeded |
+|---|---|---|---|
+| **Wall-clock time** | `5000 ms` per plugin by default (configurable via `RunPluginsOptions.timeoutMs`) | `DEFAULT_PLUGIN_TIMEOUT_MS = 5000` in `src/pluginRunner.ts` (`runWithTimeout`) | `runWithTimeout` measures elapsed wall-clock time (`Date.now() - startedAt > timeoutMs`) around `plugin.run(ctx)` and replaces the plugin's output with `{ passed: false, detail: "Plugin `<id>` timed out after <timeoutMs>ms.", remediation: "Contact the plugin author to fix `<id>`." }`. Overall `ValidationResult.valid` becomes `false`. |
+| **CPU** | Synchronous single-turn execution bounded by the per-plugin wall-clock budget (`timeoutMs`) | `CheckPlugin.run(ctx): CheckPluginResult` (synchronous ABI in `src/plugin.ts`) | Because `CheckPlugin.run` is synchronous (no `Promise` / background timer leaks), any CPU-bound loop that runs longer than `timeoutMs` breaches the wall-clock check and fails closed with the stable timeout result above. Subsequent plugins still execute. |
+| **Memory** | Read-only shared `CheckPluginContext` (no network/Horizon payload cloning) within the Node.js V8 heap | `CheckPluginContext` (`readonly` fields in `src/plugin.ts`) + `try/catch` in `runPlugins` | If a plugin throws an allocation or runtime error (e.g. `RangeError` / unexpected `Error`), `runPlugins` catches it in its per-plugin `try/catch` and fails closed with `{ passed: false, detail: "Plugin `<id>` threw an unexpected error: <message>", remediation: "Contact the plugin author to fix `<id>`." }` without aborting other plugins. |
+
+### Fail-closed examples
+
+#### 1. Wall-clock / CPU budget exceeded (`elapsed > timeoutMs`)
+
+When a third-party plugin `acme/slow-check` takes `5200 ms` under the default `DEFAULT_PLUGIN_TIMEOUT_MS` (`5000 ms`), `runPlugins` discards the late return value and records a failed check (with Markdown special characters escaped for non-`trustbridge/` plugin IDs):
+
+```json
+{
+  "passed": false,
+  "label": "Slow check",
+  "detail": "Plugin \\`acme/slow\\-check\\` timed out after 5000ms."
+}
+```
+
+And appends the escaped remediation to `ValidationResult.remediation`:
+
+```text
+Contact the plugin author to fix \`acme/slow\-check\`.
+```
+
+#### 2. Runtime / memory error thrown (`try/catch` isolation boundary)
+
+When a plugin `acme/bad-alloc` throws `new RangeError('Invalid array length')`, `runPlugins` catches the exception, records a failed check for `acme/bad-alloc`, and continues evaluating the remaining registered plugins (such as `trustbridge/account-funded`, `trustbridge/trustline`, and `trustbridge/xlm-reserve`) so core account diagnostics are never lost.

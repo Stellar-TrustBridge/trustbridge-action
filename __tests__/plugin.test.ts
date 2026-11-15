@@ -3,7 +3,7 @@
  * and the three corePlugins reference implementations.
  */
 import { CheckPlugin, CheckPluginContext, PluginRegistry, defaultRegistry } from '../src/plugin';
-import { runPlugins } from '../src/pluginRunner';
+import { runPlugins, DEFAULT_PLUGIN_TIMEOUT_MS } from '../src/pluginRunner';
 import {
   accountFundedPlugin,
   trustlinePlugin,
@@ -679,5 +679,84 @@ describe('security: plugin context isolation', () => {
 
     expect(result.checks[0].detail).toBe('Core **detail**');
     expect(result.remediation).toBe('Core [link](https://example.com)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sandbox resource limits — wall-clock timeout & fail-closed isolation (#797)
+// ---------------------------------------------------------------------------
+
+describe('sandbox resource limits: wall-clock timeout and fail-closed isolation (#797)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('exports DEFAULT_PLUGIN_TIMEOUT_MS = 5000 as documented in PLUGIN_ARCHITECTURE.md', () => {
+    expect(DEFAULT_PLUGIN_TIMEOUT_MS).toBe(5000);
+  });
+
+  it('passes when a plugin completes within the configured timeoutMs budget (happy path)', () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+
+    const fastPlugin: CheckPlugin = {
+      id: 'custom/fast-check',
+      label: 'Fast check',
+      run: () => {
+        now += 25; // 25ms elapsed <= 100ms timeoutMs
+        return { passed: true, detail: 'Completed within budget' };
+      },
+    };
+
+    const r = makeRegistry(fastPlugin);
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 100 });
+
+    expect(result.valid).toBe(true);
+    expect(result.checks).toHaveLength(1);
+    expect(result.checks[0]).toEqual({
+      passed: true,
+      label: 'Fast check',
+      detail: 'Completed within budget',
+    });
+    expect(result.remediation).toBeUndefined();
+  });
+
+  it('fails closed when a plugin exceeds timeoutMs and still runs subsequent plugins (failure path)', () => {
+    let now = 10_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+
+    const slowPlugin: CheckPlugin = {
+      id: 'acme/slow-check',
+      label: 'Slow check',
+      run: () => {
+        now += 150; // 150ms elapsed > 50ms timeoutMs
+        return { passed: true, detail: 'Should be discarded on timeout' };
+      },
+    };
+
+    const healthyPlugin: CheckPlugin = {
+      id: 'trustbridge/account-funded',
+      label: 'Account funded',
+      run: () => {
+        now += 5; // 5ms elapsed <= 50ms timeoutMs
+        return { passed: true, detail: 'Account is funded.' };
+      },
+    };
+
+    const r = makeRegistry(slowPlugin, healthyPlugin);
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 50 });
+
+    expect(result.valid).toBe(false);
+    expect(result.checks).toHaveLength(2);
+    expect(result.checks[0].passed).toBe(false);
+    expect(result.checks[0].detail).toContain('timed out after 50ms');
+    expect(result.remediation).toContain('Contact the plugin author to fix');
+    // Isolation boundary: subsequent core plugin still runs and passes
+    expect(result.checks[1]).toEqual({
+      passed: true,
+      label: 'Account funded',
+      detail: 'Account is funded.',
+    });
+    expect(result.accountFunded).toBe(true);
   });
 });
