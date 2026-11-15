@@ -26,6 +26,11 @@ import {
   buildWebhookSignatureHeaders,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_PREVIOUS_SIGNATURE_HEADER,
+  DEFAULT_OIDC_AUDIENCE,
+  OIDC_REQUIRED_PERMISSION,
+  GITHUB_COM_OIDC_ISSUER,
+  GHES_OIDC_ISSUER_PATH,
+  resolveOidcIssuer,
   WebhookConfig,
   WebhookPayload,
 } from '../src/webhook';
@@ -797,5 +802,141 @@ describe('webhook HMAC secret rotation dual-key accept window (#795)', () => {
       expect(verifyWebhookSignatureWithRotation(BODY, ['md5=abc'], [NEW_KEY]).reason).toBe('MALFORMED_SIGNATURE');
       expect(verifyWebhookSignatureWithRotation(BODY, [sigNew], ['', undefined]).reason).toBe('NO_SECRETS');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #673 — Unit tests for webhook_auth_mode: oidc token delivery
+// ---------------------------------------------------------------------------
+
+describe('webhook_auth_mode: oidc token delivery (Issue #673)', () => {
+  const MOCK_OIDC_JWT = 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJjdXN0b20tYXVkIn0.c2lnbmF0dXJl';
+  let origFetch: typeof fetch;
+  let fetchMock: jest.Mock;
+  let setFailedSpy: jest.SpyInstance;
+  let setSecretSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    origFetch = global.fetch;
+    fetchMock = jest.fn().mockResolvedValue({ status: 202 });
+    (global as any).fetch = fetchMock;
+    setFailedSpy = jest.spyOn(core, 'setFailed').mockImplementation(() => {});
+    setSecretSpy = jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.spyOn(core, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    (global as any).fetch = origFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('mints token with default audience (trustbridge-dashboard) when permissions: id-token: write is granted', async () => {
+    const getIDTokenSpy = jest.spyOn(core, 'getIDToken').mockResolvedValue(MOCK_OIDC_JWT);
+
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      {
+        webhookUrl: 'https://dashboard.example.com/webhook',
+        authMode: 'oidc',
+        webhookSecret: 'unused-hmac-secret',
+        webhookSecretPrevious: 'unused-prev-hmac-secret',
+      },
+      'owner/repo',
+      7,
+    );
+
+    expect(getIDTokenSpy).toHaveBeenCalledTimes(1);
+    expect(getIDTokenSpy).toHaveBeenCalledWith(DEFAULT_OIDC_AUDIENCE);
+    expect(setSecretSpy).toHaveBeenCalledWith(MOCK_OIDC_JWT);
+    expect(setFailedSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Authorization']).toBe(`Bearer ${MOCK_OIDC_JWT}`);
+    expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+    expect(headers[WEBHOOK_PREVIOUS_SIGNATURE_HEADER]).toBeUndefined();
+    expect(headers['X-TrustBridge-Schema-Version']).toBe('1');
+  });
+
+  it('forwards custom webhook_oidc_audience to core.getIDToken when permissions: id-token: write is configured', async () => {
+    const getIDTokenSpy = jest.spyOn(core, 'getIDToken').mockResolvedValue(MOCK_OIDC_JWT);
+
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      {
+        webhookUrl: 'https://dashboard.example.com/webhook',
+        authMode: 'oidc',
+        oidcAudience: 'https://trustbridge.internal.example',
+      },
+      'owner/repo',
+      42,
+    );
+
+    expect(getIDTokenSpy).toHaveBeenCalledWith('https://trustbridge.internal.example');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Authorization']).toBe(`Bearer ${MOCK_OIDC_JWT}`);
+    expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+  });
+
+  it('uses pre-supplied oidcToken directly without calling core.getIDToken', async () => {
+    const getIDTokenSpy = jest.spyOn(core, 'getIDToken');
+
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      {
+        webhookUrl: 'https://dashboard.example.com/webhook',
+        authMode: 'oidc',
+        oidcToken: MOCK_OIDC_JWT,
+        webhookSecret: 'must-not-sign',
+      },
+      'owner/repo',
+      10,
+    );
+
+    expect(getIDTokenSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Authorization']).toBe(`Bearer ${MOCK_OIDC_JWT}`);
+    expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBeUndefined();
+  });
+
+  it('fails closed on invalid or rejected custom audience without sending webhook', async () => {
+    jest
+      .spyOn(core, 'getIDToken')
+      .mockRejectedValue(new Error('Audience "bad-aud" is not permitted by OIDC provider'));
+
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      {
+        webhookUrl: 'https://dashboard.example.com/webhook',
+        authMode: 'oidc',
+        oidcAudience: 'bad-aud',
+        webhookSecret: 'fallback-must-not-trigger',
+      },
+      'owner/repo',
+      11,
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setFailedSpy).toHaveBeenCalledTimes(1);
+    const errText = String(setFailedSpy.mock.calls[0][0]);
+    expect(errText).toContain('bad-aud');
+    expect(errText).toContain(OIDC_REQUIRED_PERMISSION);
+  });
+
+  it('resolves OIDC issuer host-agnostically across github.com and GHES endpoints', () => {
+    expect(resolveOidcIssuer('https://github.com')).toBe(GITHUB_COM_OIDC_ISSUER);
+    expect(resolveOidcIssuer('https://www.github.com/')).toBe(GITHUB_COM_OIDC_ISSUER);
+    expect(resolveOidcIssuer('https://ghes.example.internal/')).toBe(
+      `https://ghes.example.internal${GHES_OIDC_ISSUER_PATH}`,
+    );
+    expect(resolveOidcIssuer('not-a-valid-url')).toBe(GITHUB_COM_OIDC_ISSUER);
   });
 });
