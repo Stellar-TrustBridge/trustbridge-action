@@ -1631,6 +1631,40 @@ Usernames are matched **case-insensitively**. When the map is set, `stellar_addr
 
 > **Security:** Do **not** commit private or sensitive rosters to a public repository. Prefer GitHub Actions secrets / org variables, a private repo path, or a checkout of a restricted artifact. Public exposure of username↔wallet links can deanonymize contributors.
 
+### CSV roster import (Issue #798)
+
+`parseRosterCsv` (`src/roster.ts`) accepts a CSV of logins and/or Stellar addresses and returns a validated, de-duplicated roster plus a rejection summary — useful when a roster is maintained as a spreadsheet export rather than hand-written JSON, and you want bad rows caught *before* a batch validation run instead of surfacing as confusing per-row failures mid-run.
+
+Accepted shapes (a header row is optional and detected automatically by column name):
+
+```csv
+login,address
+alice,GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+bob,GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+```
+
+A single-column CSV of addresses only (no `login`) is also accepted — each row becomes an entry in the `addresses` array only (no `addressMap` key, since there is no login to key by).
+
+Validation rules:
+
+- **Invalid addresses are rejected**, not just flagged: a row whose address column fails StrKey validation (G-address checksum, or C-address structural validation — the same `isValidStellarAddress` check used everywhere else) is excluded from the usable roster and reported in `invalid`.
+- **Duplicate addresses are rejected**: the first row to claim an address wins; every later row with the same address (after trimming) is excluded and reported in `duplicates`, rather than being silently kept or silently dropped.
+- **One bad row never blocks the rest of the roster** — a typo on one line does not prevent validating everyone else; only a CSV with no data rows at all, or a header that does not name a recognised address column, throws.
+- The result's `summaryMarkdown` field renders rows-read / valid / duplicate / invalid counts plus up to 20 example rows per rejected category — post it as a job log line or PR/issue comment so a Wave operator sees exactly which rows need fixing before addresses are dropped into the normal `stellar_addresses` / `assignee_address_map` batch inputs.
+
+```ts
+import { parseRosterCsv } from './roster';
+
+const { addresses, addressMap, summaryMarkdown, summary } = parseRosterCsv(csvFileContents);
+if (summary.invalidCount > 0 || summary.duplicateCount > 0) {
+  core.warning(summaryMarkdown);
+}
+// addresses is ready for runBatchValidation(addresses, ...) / parseBatchAddresses-style consumers;
+// addressMap is ready for resolveAddressFromAssigneeMap / filterRosterAddressMap.
+```
+
+This is a library function for workflow authors who maintain a CSV roster upstream of TrustBridge (e.g. in a separate preparation step) — it is not wired to a dedicated `*_csv` action input, so pair it with `stellar_addresses` (for `addresses`) or `assignee_address_map` (for `addressMap`) in your own workflow step.
+
 ---
 
 ## Per-check named outputs (fine-grained gating)
@@ -3075,6 +3109,38 @@ jobs:
 - **Opt-in only:** When `project_id` is omitted or empty, no GraphQL project operations run.
 - **Automatic Item Enrollment:** If the issue is not yet an item on the project board, TrustBridge will automatically add it before updating the status field.
 - **Fail-open:** Missing permissions or Project API errors emit clear warnings (e.g. reminding maintainers about the required `project` scope) and will **never** fail the workflow step or wallet validation checks.
+
+---
+
+## Multi-repo allowlist matching for org-wide Wave runs (Issue #855)
+
+`matchesRepoAllowlist` (`src/projects.ts`) is a pure, dependency-free function a reusable workflow or wrapper script can call to decide whether a calling repository's `owner/repo` string (e.g. `${{ github.repository }}`) is in scope for org-wide Wave automation, before it validates anything. It is a library function — call it from your own `workflow_call` wrapper or a pre-step; it is not itself wired to an `action.yml` input.
+
+**Supported pattern forms** (one per allowlist entry):
+
+| Pattern | Matches |
+|---|---|
+| `"owner/repo"` | That exact repository only |
+| `"owner"` | Every repository under that org |
+| `"owner/*"` | Every repository under that org (equivalent to the bare `"owner"` form) |
+
+Matching is case-insensitive on both segments. Any other pattern shape — `"*"`, `"*/repo"`, `"owner/re*po"`, `"owner/**"`, a pattern with more than one `/`, etc. — is an **ambiguous glob** and is rejected outright: it is reported in the result's `rejectedPatterns` and can never match anything, so a malformed or overly broad pattern only ever narrows access, never accidentally widens it.
+
+**Fail-closed by default:** an empty allowlist (or an allowlist where every pattern was rejected as invalid) denies every repository. This is intentionally the opposite of `filterRosterAddressMap`'s "empty allowlist means allow all" — that function filters an already-trusted roster, while this one is the primary boundary deciding whether org-wide automation may touch a repository at all. An operator who wants "every repo in the org" must say so explicitly with `"owner"` or `"owner/*"`.
+
+**What it does not do:** this is a pure string match against `owner/repo`, not a GitHub API call. It cannot detect that a repository was renamed (an allowlist entry for the old name simply fails closed — there is no fuzzy or historical matching) or that a repository is archived (archival status is not encoded in `owner/repo`; check `github.context.payload.repository.archived` separately if you need to exclude archived repos).
+
+```ts
+import { matchesRepoAllowlist } from './projects';
+
+const result = matchesRepoAllowlist(process.env.GITHUB_REPOSITORY!, [
+  'Stellar-TrustBridge', // every repo in this org
+  'some-partner-org/specific-repo', // one specific repo in another org
+]);
+if (!result.allowed) {
+  core.setFailed(`Repository not in the Wave allowlist: ${result.reason}`);
+}
+```
 
 ---
 
