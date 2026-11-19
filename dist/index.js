@@ -59024,7 +59024,7 @@ function emitInputsLogRecord(inputs) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = void 0;
+exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = exports.MAX_ASSET_TABLE_ROWS = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
 exports.buildAssetTrustlineTable = buildAssetTrustlineTable;
@@ -59061,11 +59061,19 @@ function inlineCode(value) {
  * @param options.heading Section heading (defaults to "Asset trustlines").
  * @returns Markdown section (heading + table), or `''` when `rows` is empty.
  */
+/**
+ * Default cap on rows rendered by {@link buildAssetTrustlineTable} before it
+ * truncates with a summary line (Issue #860). Matches the long-standing
+ * `DIGEST_MAX_LISTED_ISSUES` cap in `src/summary.ts` so every multi-row
+ * section in a TrustBridge comment truncates at the same threshold.
+ */
+exports.MAX_ASSET_TABLE_ROWS = 50;
 function buildAssetTrustlineTable(rows, options = {}) {
     if (!Array.isArray(rows) || rows.length === 0) {
         return '';
     }
     const heading = options.heading ?? 'Asset trustlines';
+    const maxRows = options.maxRows ?? exports.MAX_ASSET_TABLE_ROWS;
     const shortenIssuer = (issuer) => {
         if (issuer.length <= 12)
             return issuer;
@@ -59084,11 +59092,26 @@ function buildAssetTrustlineTable(rows, options = {}) {
         '| Asset | Trustline | Balance | Issuer |',
         '| --- | --- | --- | --- |',
     ];
-    for (const row of rows) {
+    // Issue #860: a table with hundreds of assets_json entries can exceed
+    // GitHub's comment size limit and bury the rows an assignee actually
+    // needs to act on. Render only the first `maxRows` — the Trustline
+    // (status) column stays intact for every visible row — and summarize the
+    // rest in a plain sentence *after* the table (not an extra table row,
+    // which would either break the column count or need a colspan GitHub
+    // Markdown does not support). A trailing paragraph reads correctly for
+    // screen readers and keeps the table itself well-formed.
+    const visibleRows = maxRows > 0 ? rows.slice(0, maxRows) : rows;
+    const hiddenCount = rows.length - visibleRows.length;
+    for (const row of visibleRows) {
         const asset = escapeMarkdownInline(row.assetCode);
         const status = row.trustlineExists ? '✅ exists' : '❌ missing';
         const issuer = inlineCode(shortenIssuer(row.assetIssuer));
         lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
+    }
+    if (hiddenCount > 0) {
+        lines.push('', `_…and **${hiddenCount}** more asset${hiddenCount === 1 ? '' : 's'} not shown ` +
+            `(showing ${visibleRows.length} of ${rows.length}). See the ` +
+            '`assets_trustline_status` / `trustlines_summary` action outputs for the full list._');
     }
     return lines.join('\n');
 }
@@ -59424,10 +59447,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.globalOctokitMetrics = exports.globalHorizonHistogram = exports.globalMetrics = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.hashAddressForMetrics = hashAddressForMetrics;
 exports.classifyOctokitStatus = classifyOctokitStatus;
 exports.writeJobSummary = writeJobSummary;
 exports.normalizeMetricHost = normalizeMetricHost;
 const core = __importStar(__nccwpck_require__(37484));
+const crypto = __importStar(__nccwpck_require__(76982));
 const validation_1 = __nccwpck_require__(24344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -59436,6 +59461,27 @@ const validation_1 = __nccwpck_require__(24344);
  * makes it into the JSON metrics artifact (see toJSON()).
  */
 exports.CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+/**
+ * Length, in hex characters, of a hashed address label (see `hashAddressForMetrics`).
+ * Fixed and short so the resulting tag value cannot be reversed to the
+ * original address and does not itself blow up series cardinality.
+ */
+const ADDRESS_HASH_LABEL_LENGTH = 12;
+/**
+ * Derive a bounded, non-reversible metric label for a Stellar address
+ * (`G...`/`C...`/`M...`).
+ *
+ * Tagging a metric with a raw address turns every distinct account into its
+ * own Prometheus series (unbounded cardinality) and leaks the address itself
+ * into any scraper or JSON artifact that reads the metric — see
+ * docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy. Hashing
+ * collapses the tag to a fixed-width token that is still useful for
+ * correlating repeated runs against the *same* address without exposing or
+ * bounding on the raw value.
+ */
+function hashAddressForMetrics(address) {
+    return crypto.createHash('sha256').update(address).digest('hex').slice(0, ADDRESS_HASH_LABEL_LENGTH);
+}
 /**
  * Classify an HTTP status code into an `OctokitOutcome`.
  */
@@ -59596,17 +59642,14 @@ class MetricsCollector {
         this.timers = new Map();
     }
     /**
-     * Record a numeric metric. If a `contractAddress` tag is present, it is
-     * validated against the Soroban C-address policy first; an invalid
-     * address throws rather than being silently recorded.
+     * Record a numeric metric. A `contractAddress` tag is rejected outright:
+     * callers must go through `recordContractMetric()`, which validates the
+     * address and replaces it with a bounded hash before it ever reaches a
+     * tag value (see docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy).
      */
     recordMetric(name, value, unit = '', tags) {
-        const contractAddress = tags?.[exports.CONTRACT_ADDRESS_TAG_KEY];
-        if (contractAddress !== undefined) {
-            const result = (0, validation_1.validateContractAddress)(contractAddress);
-            if (!result.valid) {
-                throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
-            }
+        if (tags && exports.CONTRACT_ADDRESS_TAG_KEY in tags) {
+            throw new Error(`recordMetric() tag "${exports.CONTRACT_ADDRESS_TAG_KEY}" on metric "${name}" must be set via recordContractMetric(), never with a raw address.`);
         }
         this.metrics.push({
             name,
@@ -59617,13 +59660,26 @@ class MetricsCollector {
         });
     }
     /**
-     * Convenience wrapper for recording a metric tagged with a Soroban
-     * contract address, enforcing the C-address policy up front.
+     * Convenience wrapper for recording a metric correlated with a Soroban
+     * contract address. The address is validated against the C-address policy
+     * (an invalid address throws, same as before), but only its bounded hash
+     * — never the raw address — is stored as the `contractAddress` tag, so the
+     * metric cannot become an unbounded, PII-carrying label series.
      */
     recordContractMetric(name, value, contractAddress, unit = '', extraTags) {
-        this.recordMetric(name, value, unit, {
-            ...extraTags,
-            [exports.CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+        const result = (0, validation_1.validateContractAddress)(contractAddress);
+        if (!result.valid) {
+            throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
+        }
+        this.metrics.push({
+            name,
+            value,
+            unit,
+            timestamp: Date.now(),
+            tags: {
+                ...extraTags,
+                [exports.CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(contractAddress),
+            },
         });
     }
     /**

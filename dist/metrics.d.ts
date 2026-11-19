@@ -23,6 +23,19 @@ export interface MetricPoint {
  */
 export declare const CONTRACT_ADDRESS_TAG_KEY = "contractAddress";
 /**
+ * Derive a bounded, non-reversible metric label for a Stellar address
+ * (`G...`/`C...`/`M...`).
+ *
+ * Tagging a metric with a raw address turns every distinct account into its
+ * own Prometheus series (unbounded cardinality) and leaks the address itself
+ * into any scraper or JSON artifact that reads the metric — see
+ * docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy. Hashing
+ * collapses the tag to a fixed-width token that is still useful for
+ * correlating repeated runs against the *same* address without exposing or
+ * bounding on the raw value.
+ */
+export declare function hashAddressForMetrics(address: string): string;
+/**
  * Outcome categories for an Octokit API call.
  *
  * - `success`      — HTTP 2xx; operation completed normally.
@@ -135,14 +148,18 @@ export declare class MetricsCollector {
     private counters;
     private timers;
     /**
-     * Record a numeric metric. If a `contractAddress` tag is present, it is
-     * validated against the Soroban C-address policy first; an invalid
-     * address throws rather than being silently recorded.
+     * Record a numeric metric. A `contractAddress` tag is rejected outright:
+     * callers must go through `recordContractMetric()`, which validates the
+     * address and replaces it with a bounded hash before it ever reaches a
+     * tag value (see docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy).
      */
     recordMetric(name: string, value: number, unit?: string, tags?: Record<string, string>): void;
     /**
-     * Convenience wrapper for recording a metric tagged with a Soroban
-     * contract address, enforcing the C-address policy up front.
+     * Convenience wrapper for recording a metric correlated with a Soroban
+     * contract address. The address is validated against the C-address policy
+     * (an invalid address throws, same as before), but only its bounded hash
+     * — never the raw address — is stored as the `contractAddress` tag, so the
+     * metric cannot become an unbounded, PII-carrying label series.
      */
     recordContractMetric(name: string, value: number, contractAddress: string, unit?: string, extraTags?: Record<string, string>): void;
     /**

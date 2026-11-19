@@ -25,6 +25,7 @@ import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
 import { validateContractAddress, validateHorizonUrl } from './validation';
+import { type ReasonCode } from './reasonCodes';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -308,8 +309,8 @@ export interface ValidationResult {
   trustlineLimit?: string; // Actual trustline limit for the asset (Issue #140)
   checks: CheckResultItem[];
   remediation?: string;
-  /** Machine-readable failure reason for gating / metrics. */
-  reasonCode?: string;
+  /** Machine-readable failure reason for gating / metrics. Frozen catalog: src/reasonCodes.ts. */
+  reasonCode?: ReasonCode;
   /**
    * Issuer flavour of the configured asset (Issue #730). `soroban-contract`
    * means `asset_issuer` is a Stellar Asset Contract id (C-address), so the
