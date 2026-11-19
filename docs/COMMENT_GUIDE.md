@@ -286,3 +286,22 @@ This never fails the step:
 | Duplicate cannot be deleted (missing `issues: write`) | Original is updated; warning names the missing permission |
 
 `comment_mode: new` and `comment_mode: reply` are unchanged — they intentionally post a new comment on every run.
+
+## Sticky comment selection policy (Issues #867 and #790)
+
+The default `comment_mode: sticky` edits a comment in place only when the
+comment is identified by a TrustBridge marker (current schema marker, legacy
+marker, or TrustBridge footer) and GitHub says the authenticated token may
+update it. When GitHub returns author metadata, a marked comment authored by a
+human is not selected. A missing marker is never inferred from similar prose,
+and a lookup, permission, or update failure has stable behavior: warn and post
+a new comment rather than editing an unrelated comment. `comment_mode: new`
+always creates a new top-level comment; `comment_mode: reply` always creates a
+new chronological reply/reference.
+
+Maintainers should grant the token the permission needed to update issue/PR
+comments (`issues: write`, plus the appropriate PR/discussion permission for
+those targets). A read-only token may find a marker but cannot safely update
+it; the action keeps the existing comment and creates a new result when posting
+is otherwise enabled. `force_comment` bypasses snooze suppression only; it
+does not bypass marker, authorship, or GitHub permission checks.

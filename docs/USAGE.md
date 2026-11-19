@@ -4002,3 +4002,28 @@ No live collector is required at any point.
 ## Wave freeze operations
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
+
+## Combined authorization and clawback states (Issue #865)
+
+Horizon can report several issuer/trustline flags at once. TrustBridge keeps
+the checks independent and uses actionable reason-code precedence:
+
+1. an existing unauthorized trustline blocked by `unauthorized_trustline_policy: fail` yields `TRUSTLINE_UNAUTHORIZED`;
+2. otherwise a clawback-enabled trustline blocked by `clawback_strict_mode: true` yields `CLAWBACK_BLOCKED`;
+3. a missing trustline yields `TRUSTLINE_MISSING`.
+
+`auth_immutable` and `auth_revocable` describe issuer capabilities; they do not
+turn an authorized trustline into an unauthorized one. In `warn` mode an
+unauthorized trustline remains ready but is called out in the comment. In
+`ignore` mode that authorization signal is omitted. See the combined offline
+fixture at [`fixtures/account-auth-required-immutable-clawback.json`](../fixtures/account-auth-required-immutable-clawback.json).
+
+## Label gate force path (Issue #868)
+
+The label-gate composite skips validation when no configured gate label is
+present, before TrustBridge or Horizon is called. Set `force_validation: true`
+for an explicit maintainer override; it opens the gate without evaluating
+labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
+applies only after the gate is open. Label-check failures should fail open and
+run validation, while an optional skip comment is best effort and must not
+block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).

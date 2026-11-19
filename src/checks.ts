@@ -945,6 +945,10 @@ export function runAccountChecks(
   const sacIssuer = isSorobanContractIssuer(config.assetIssuer);
 
   const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
+  // Horizon only reports `is_authorized: false` for a trustline that is
+  // currently unauthorized. Keep this independent from clawback and from the
+  // issuer's immutable/revocable flags: those flags describe future state,
+  // while this policy evaluates the account's present authorization state.
   const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
   const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
 
@@ -1216,6 +1220,9 @@ export function runAccountChecks(
         // missing trustline — the trustline exists on-chain. Reporting
         // TRUSTLINE_MISSING here sent triage to the wrong remediation step
         // ("add a trustline") when the real fix is an issuer SetTrustLineFlags.
+        // Combined auth_required/auth_immutable/clawback states still use
+        // authorization precedence: the actionable fix is issuer approval,
+        // not adding a second trustline or changing clawback policy.
         if (authorizationBlocks) return "TRUSTLINE_UNAUTHORIZED";
         // Issue #730: a Soroban SAC issuer never appears in a Horizon account's
         // `balances` array, so "trustline missing" would be a false accusation
