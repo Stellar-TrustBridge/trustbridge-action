@@ -54,11 +54,20 @@ export interface RunPluginsOptions {
  *
  * Timeout boundary
  * ----------------
- * Each plugin is also bounded by `options.timeoutMs` (default
- * {@link DEFAULT_PLUGIN_TIMEOUT_MS}). A plugin that exceeds the budget is
- * recorded as a failed check with a stable `timed out after Nms` message
- * and the remaining plugins still run. This keeps a hung plugin from
- * stalling the job while preserving isolation between plugins.
+ * Each plugin is bounded by its own `plugin.timeoutMs` when set, or
+ * `options.timeoutMs` (default {@link DEFAULT_PLUGIN_TIMEOUT_MS}) otherwise.
+ * A plugin that exceeds its budget is recorded as a failed check with a
+ * stable `timed out after Nms` message and the remaining plugins still run.
+ *
+ * This boundary is a post-hoc wall-clock measurement around a synchronous
+ * `run()` call, not preemptive cancellation: the runner cannot interrupt a
+ * plugin that is still executing (plugins are synchronous by contract, see
+ * `CheckPlugin.run` in `src/plugin.ts`), so it fails the *check* closed as
+ * soon as the call returns late, rather than stalling the job indefinitely
+ * on a plugin that genuinely hangs forever. There is no separate CPU or
+ * memory limit — plugins run in the same process and share the Actions
+ * runner's own resource ceiling. See "Resource limits" in
+ * `docs/PLUGIN_ARCHITECTURE.md` for the full operator-facing explanation.
  *
  * Composition rules
  * -----------------
@@ -94,7 +103,11 @@ export function runPlugins(
   // cannot silently kill the whole action.
   const pluginOutputs = plugins.map((plugin) => {
     try {
-      return { plugin, result: runWithTimeout(plugin, ctx, timeoutMs) };
+      // A plugin's own `timeoutMs` (see `CheckPlugin.timeoutMs` in
+      // `src/plugin.ts`) overrides the runner-wide default so a plugin
+      // that's known to be slower or faster than average can declare its
+      // own budget without changing the default for every other plugin.
+      return { plugin, result: runWithTimeout(plugin, ctx, plugin.timeoutMs ?? timeoutMs) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {

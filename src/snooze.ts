@@ -49,6 +49,18 @@ export interface SnoozeState {
   lastTimestamp?: number;
   /** Time elapsed since last check (ms). */
   elapsedMs?: number;
+  /**
+   * True when this run's `isSnoozed: false` is specifically because an
+   * active snooze window just lapsed (Issue #799) — i.e. the prior check
+   * had failed, a snooze window was in effect, and enough time has now
+   * passed that the run resumes. This is distinct from "unsnoozed because
+   * the check just started passing" or "unsnoozed because this is the
+   * first failure" (both of those also set `isSnoozed: false` but are not
+   * an *expiry*). Consumers that want to notify a dashboard only when a
+   * snooze window specifically ends — rather than on every un-snoozed
+   * run — should key off this flag, not `!isSnoozed`.
+   */
+  snoozeExpired: boolean;
 }
 
 /**
@@ -98,20 +110,24 @@ export function evaluateSnoozeState(
 ): SnoozeState {
   const now = Date.now();
 
-  // If current check passes, always post (unsnooze).
+  // If current check passes, always post (unsnooze) — not an expiry, the
+  // check itself changed outcome.
   if (currentPassed) {
     return {
       isSnoozed: false,
+      snoozeExpired: false,
       lastStatus: lastMarker?.status,
       lastTimestamp: lastMarker?.timestamp,
     };
   }
 
   // Current check failed.
-  // If no prior marker, this is the first failure — post it.
+  // If no prior marker, this is the first failure — post it. Not an
+  // expiry: there was never an active snooze window to expire.
   if (!lastMarker) {
     return {
       isSnoozed: false,
+      snoozeExpired: false,
       lastStatus: undefined,
       lastTimestamp: undefined,
     };
@@ -120,21 +136,26 @@ export function evaluateSnoozeState(
   // Current failed, prior status known.
   const elapsedMs = now - lastMarker.timestamp;
 
-  // Status changed from pass to fail — post it.
+  // Status changed from pass to fail — post it. Not an expiry: this is a
+  // fresh failure, not a resumed one.
   if (lastMarker.status === 'pass') {
     return {
       isSnoozed: false,
+      snoozeExpired: false,
       lastStatus: lastMarker.status,
       lastTimestamp: lastMarker.timestamp,
       elapsedMs,
     };
   }
 
-  // Status remains failed.
+  // Status remains failed. `withinWindow === false` is the expiry case:
+  // the prior run was (or would have been) snoozed and the window has now
+  // lapsed, so this run resumes normal posting.
   const withinWindow = elapsedMs < snoozeWindowMs;
 
   return {
     isSnoozed: withinWindow,
+    snoozeExpired: !withinWindow,
     lastStatus: lastMarker.status,
     lastTimestamp: lastMarker.timestamp,
     elapsedMs,
@@ -187,7 +208,7 @@ export function evaluateReactionSnooze(
   now: number = Date.now(),
 ): SnoozeState {
   if (currentPassed || !reactions || reactions.length === 0) {
-    return { isSnoozed: false };
+    return { isSnoozed: false, snoozeExpired: false };
   }
 
   // Filter out bot reactions and non-snooze emojis
@@ -199,7 +220,7 @@ export function evaluateReactionSnooze(
   });
 
   if (eligibleReactions.length === 0) {
-    return { isSnoozed: false };
+    return { isSnoozed: false, snoozeExpired: false };
   }
 
   // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
@@ -217,6 +238,9 @@ export function evaluateReactionSnooze(
 
   return {
     isSnoozed: withinWindow,
+    // A reaction-based snooze that has lapsed (the reaction is older than
+    // the window) is an expiry in the same sense as the marker-based path.
+    snoozeExpired: !withinWindow,
     lastTimestamp: latestTimestamp,
     elapsedMs,
   };
@@ -237,7 +261,7 @@ export function evaluateCombinedSnoozeState(
   now: number = Date.now(),
 ): SnoozeState {
   if (currentPassed) {
-    return { isSnoozed: false };
+    return { isSnoozed: false, snoozeExpired: false };
   }
 
   const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
@@ -250,8 +274,11 @@ export function evaluateCombinedSnoozeState(
     return markerState;
   }
 
+  // Neither mechanism is currently snoozing. It's an expiry if either one
+  // specifically just lapsed (rather than never having been active).
   return {
     isSnoozed: false,
+    snoozeExpired: reactionState.snoozeExpired || markerState.snoozeExpired,
     lastStatus: markerState.lastStatus,
     lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
     elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,

@@ -540,10 +540,23 @@ describe('validateWebhookPayload rejects invalid payloads', () => {
     ['non-array assets', () => ({ ...valid(), assets: {} }), 'assets: must be an array'],
     ['unredacted C-address asset_issuer', () => ({ ...valid(), assets: [{ asset_code: 'TOKEN', asset_issuer: 'C' + 'A'.repeat(55), primary: false, trustline_exists: true, clawback_enabled: true, reason_code: 'CLAWBACK_BLOCKED' }] }), 'assets[0].asset_issuer'],
     ['unknown asset reason_code', () => ({ ...valid(), assets: [{ asset_code: 'USDC', asset_issuer: 'GA5Z...KZVN', primary: true, trustline_exists: true, clawback_enabled: false, reason_code: 'NOPE' }] }), 'assets[0].reason_code'],
+    ['snooze_expired: false (Issue #799 — must be omitted, not false)', () => ({ ...valid(), snooze_expired: false }), 'snooze_expired'],
   ])('%s', (_name, make, expected) => {
     const errors = validateWebhookPayload(make());
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.some((e) => e.includes(expected as string))).toBe(true);
+  });
+});
+
+describe('validateWebhookPayload accepts snooze_expired (Issue #799)', () => {
+  it('happy path: accepts a payload with snooze_expired: true', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, undefined, true);
+    expect(validateWebhookPayload(payload)).toEqual([]);
+  });
+
+  it('happy path: accepts a payload without snooze_expired at all', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+    expect(validateWebhookPayload(payload)).toEqual([]);
   });
 });
 
