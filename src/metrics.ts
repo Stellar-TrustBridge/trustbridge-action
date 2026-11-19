@@ -11,6 +11,7 @@
 
 import * as core from '@actions/core';
 import { validateContractAddress } from './validation';
+import { formatJobSummaryMarkdown } from './summary';
 
 export interface MetricPoint {
   name: string;
@@ -542,32 +543,12 @@ export async function writeJobSummary(
   runLabel?: string,
 ): Promise<void> {
   try {
-    const label = runLabel ? ` — ${runLabel}` : '';
-    core.summary.addHeading(`TrustBridge Metrics${label}`, 2);
-
-    // Overview table
-    core.summary.addTable([
-      [
-        { data: 'Metric', header: true },
-        { data: 'Value', header: true },
-      ],
-      ['Total runs', String(report.totalRuns)],
-      ['Total errors', String(report.totalErrors)],
-      ['Avg latency', report.latencyMs !== null ? `${report.latencyMs.toFixed(1)} ms` : '_none recorded_'],
-      [
-        'Failure codes',
-        report.failureCodes.length > 0
-          ? report.failureCodes.map((c) => `HTTP ${c}`).join(', ')
-          : '_none_',
-      ],
-    ]);
-
-    // JSON artifact in a collapsible details block
-    core.summary.addDetails(
-      'Metrics JSON artifact',
-      `\`\`\`json\n${report.jsonArtifact}\n\`\`\``,
-    );
-
+    const labelledReport = runLabel
+      ? { ...report, jsonArtifact: `Run label: ${runLabel}\n${report.jsonArtifact}` }
+      : report;
+    const rendered = formatJobSummaryMarkdown(labelledReport);
+    if (!process.env.GITHUB_STEP_SUMMARY) return;
+    core.summary.addRaw(rendered.markdown);
     await core.summary.write();
   } catch {
     // Never let Job Summary I/O fail the action — it is observability-only.

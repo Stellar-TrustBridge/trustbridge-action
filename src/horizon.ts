@@ -4,7 +4,7 @@ import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
 import { inferStellarNetwork } from './links';
 import { globalMetrics, globalHorizonHistogram } from './metrics';
-import { RateBudgetTracker, CircuitBreaker, CircuitOpenError } from './resilience';
+import { RateBudgetTracker, CircuitBreaker, CircuitOpenError, addJitter } from './resilience';
 import { validateHorizonUrl } from './validation';
 export interface HorizonBalanceNative {
   balance: string;
@@ -364,6 +364,7 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
 export const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
 export const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
+export const RETRY_AFTER_JITTER_PERCENT = 10;
 
 export function normalizeHorizonUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim();
@@ -426,6 +427,16 @@ export function parseRetryAfterMs(response: import('node-fetch').Response): numb
     return Math.max(0, date - Date.now());
   }
   return null;
+}
+
+/** Apply bounded jitter so concurrent Wave jobs do not retry in lockstep. */
+export function jitteredRetryDelayMs(delayMs: number, ceilingMs: number): number {
+  if (!Number.isFinite(delayMs) || delayMs < 0) return 0;
+  if (!Number.isFinite(ceilingMs) || ceilingMs < 0) return 0;
+  return Math.min(
+    Math.max(0, Math.round(addJitter(Math.min(delayMs, ceilingMs), RETRY_AFTER_JITTER_PERCENT))),
+    ceilingMs,
+  );
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -690,7 +701,7 @@ async function fetchAccountOnce(
           let retryAfter: number;
           let retryAfterCapped = false;
           if (retryAfterHeader !== null) {
-            retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
+            retryAfter = jitteredRetryDelayMs(retryAfterHeader, retryMaxDelayMs);
             retryAfterCapped = retryAfterHeader > retryMaxDelayMs;
             if (retryAfterHeader > retryMaxDelayMs) {
               // Issue #705: surface the cap. Only the parsed millisecond
@@ -710,7 +721,7 @@ async function fetchAccountOnce(
               );
             }
           } else {
-            retryAfter = Math.min(
+            retryAfter = jitteredRetryDelayMs(
               retryBaseDelayMs * 2 ** attempt,
               retryMaxDelayMs,
             );
@@ -739,6 +750,12 @@ async function fetchAccountOnce(
           }
 
           totalWaitMs += retryAfter;
+
+          if (retryAfterHeader !== null) {
+            globalMetrics.incrementCounter('horizon_retry_after_waits');
+            globalMetrics.incrementCounter('horizon_retry_after_wait_ms', Math.round(retryAfter));
+            globalMetrics.recordMetric('horizon_retry_after_wait', retryAfter, 'ms');
+          }
 
           logger.horizonRetry({
             phase: 'scheduled',
@@ -884,7 +901,7 @@ async function fetchAccountOnce(
       const transportKind = isAbort ? "timeout" : "network";
 
       if (attempt < maxRetries) {
-        const backoffMs = Math.min(
+        const backoffMs = jitteredRetryDelayMs(
           retryBaseDelayMs * 2 ** attempt,
           retryMaxDelayMs,
         );

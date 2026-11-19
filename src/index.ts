@@ -37,7 +37,13 @@ import {
 import { createCheckRun, determineCheckConclusion } from './checks-run';
 import { getOctokitProxyOptions } from './proxy';
 import { updateProjectV2Status } from './projects';
-import { getErrorMessage, parseBooleanInput, parseNumberInput, resolveReadyLabelInputs } from './inputs';
+import {
+  getErrorMessage,
+  parseBooleanInput,
+  parseNumberInput,
+  resolveReadyLabelInputs,
+  listDeprecatedInputAliases,
+} from './inputs';
 import { formatFailureSummary } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -52,6 +58,23 @@ export type PostingMode = 'post' | 'dry-run' | 'off';
 export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
 export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
 const VALID_COMMENT_THREADING_MODES: CommentThreadingMode[] = ['sticky', 'new', 'reply'];
+
+/** Emit legacy input migration guidance once for the current action run. */
+export function emitDeprecatedInputWarnings(): void {
+  const aliases = listDeprecatedInputAliases({
+    maintainerAlias: core.getInput('skip_if_maintainer'),
+    readyPassAlias: core.getInput('ready_pass_label'),
+    readyLabelPassAlias: core.getInput('ready_label_pass'),
+    readyFailAlias: core.getInput('ready_fail_label'),
+    readyLabelFailAlias: core.getInput('ready_label_fail'),
+  });
+  if (aliases.length === 0) return;
+
+  core.warning(
+    `[TrustBridge] Deprecated input alias${aliases.length === 1 ? '' : 'es'} detected: ${aliases.join(', ')}. ` +
+      'Use the canonical input names; aliases remain supported for this major version but may be removed in a future release.',
+  );
+}
 
 export function resolveCommentModes(
   postingModeInput: string,
@@ -347,6 +370,7 @@ export function evaluateMilestoneGate(
 
 export async function run(): Promise<void> {
   const jobController = new AbortController();
+  emitDeprecatedInputWarnings();
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
@@ -925,7 +949,7 @@ export async function run(): Promise<void> {
   // ---------------------------------------------------------------------------
   let checkRunId: string | undefined;
   let checkRunConclusion: string | undefined;
-  if (useCheckRuns) {
+  if (useCheckRuns && postingMode === 'post') {
     if (!githubToken) {
       core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
     } else {
@@ -985,7 +1009,7 @@ export async function run(): Promise<void> {
   // When auto_wallet_labels is true and we're in an issue context, apply
   // the appropriate wallet state label to the issue.
   // ---------------------------------------------------------------------------
-  if (autoWalletLabels) {
+  if (autoWalletLabels && postingMode === 'post') {
     const issueNumber = github.context.payload.issue?.number;
     if (issueNumber) {
       const { owner, repo } = github.context.repo;
@@ -1018,7 +1042,7 @@ export async function run(): Promise<void> {
 
   // Ready labels (Issue #669): pass/fail label sync on the issue.
   const readyLabels = resolveConfiguredReadyLabels();
-  if ((readyLabels.passLabel || readyLabels.failLabel)) {
+  if ((readyLabels.passLabel || readyLabels.failLabel) && postingMode === 'post') {
     const issueNumber = github.context.payload.issue?.number;
     if (issueNumber) {
       const { owner, repo } = github.context.repo;
@@ -1055,7 +1079,7 @@ export async function run(): Promise<void> {
   // When unassign_on_not_ready is true and readiness checks fail,
   // automatically unassign the GitHub assignee(s) from the issue.
   // ---------------------------------------------------------------------------
-  if (unassignOnNotReady && !result.valid) {
+  if (unassignOnNotReady && !result.valid && postingMode === 'post') {
     const issueNumber = github.context.payload.issue?.number;
     const { owner, repo } = github.context.repo;
     const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
@@ -1074,7 +1098,7 @@ export async function run(): Promise<void> {
   const targetProjectStatus = result.valid
     ? projectStatusPass
     : projectStatusFail;
-  if (projectId.trim() && targetProjectStatus.trim()) {
+  if (projectId.trim() && targetProjectStatus.trim() && postingMode === 'post') {
     const contentNodeId =
       github.context.payload.issue?.node_id ??
       github.context.payload.pull_request?.node_id ??

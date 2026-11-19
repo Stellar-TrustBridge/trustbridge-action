@@ -440,3 +440,65 @@ export function guardJobSummaryMarkdown(
 
   return { markdown: head + notice, truncated: true, originalBytes };
 }
+
+/**
+ * Minimal report shape consumed by the Job Summary renderer. Kept structural
+ * so metrics.ts can use this helper without creating a runtime import cycle.
+ */
+export interface JobSummaryReportLike {
+  latencyMs: number | null;
+  failureCodes: number[];
+  totalRuns: number;
+  totalErrors: number;
+  jsonArtifact: string;
+}
+
+/**
+ * Render the metrics report in priority order before applying the byte guard.
+ * The overview is always retained; the JSON artifact is lower priority and is
+ * removed before failure-code detail when the configured budget is tight.
+ */
+export function formatJobSummaryMarkdown(
+  report: JobSummaryReportLike,
+  options: { maxBytes?: number } = {},
+): JobSummaryGuardResult {
+  if (!report || typeof report !== 'object') {
+    throw new Error('summary: Job Summary report must be an object');
+  }
+  if (!Array.isArray(report.failureCodes)) {
+    throw new Error('summary: Job Summary failureCodes must be an array');
+  }
+
+  const overview = [
+    '## TrustBridge Metrics',
+    '',
+    '| Metric | Value |',
+    '| --- | --- |',
+    `| Total runs | ${report.totalRuns} |`,
+    `| Total errors | ${report.totalErrors} |`,
+    `| Average latency | ${report.latencyMs === null ? '_none recorded_' : `${report.latencyMs.toFixed(1)} ms`} |`,
+  ];
+  const failureCodes = report.failureCodes.length > 0
+    ? [`| Failure codes | ${report.failureCodes.map((code) => `HTTP ${code}`).join(', ')} |`]
+    : ['| Failure codes | _none_ |'];
+  const artifact = [
+    '',
+    '<details>',
+    '<summary>Metrics JSON artifact</summary>',
+    '',
+    '```json',
+    report.jsonArtifact,
+    '```',
+    '</details>',
+  ];
+
+  const maxBytes = options.maxBytes ?? JOB_SUMMARY_MAX_BYTES;
+  const full = [...overview, ...failureCodes, ...artifact].join('\n') + '\n';
+  if (Buffer.byteLength(full, 'utf8') <= maxBytes) {
+    return { markdown: full, truncated: false, originalBytes: Buffer.byteLength(full, 'utf8') };
+  }
+
+  // Drop the verbose artifact first, then retain only the compact overview.
+  const compact = [...overview, ...failureCodes].join('\n') + '\n';
+  return guardJobSummaryMarkdown(compact, { maxBytes });
+}

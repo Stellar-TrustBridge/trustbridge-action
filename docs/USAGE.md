@@ -4002,3 +4002,21 @@ No live collector is required at any point.
 ## Wave freeze operations
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
+
+## Wave runtime safeguards (Issues #861–#864)
+
+### Job Summary budget
+
+GitHub Actions Job Summaries have a practical 1 MiB UTF-8 budget. TrustBridge renders the compact metrics overview first and treats the verbose JSON artifact as lower priority. If the complete report would exceed the budget, the JSON details block is omitted before the compact report is line-boundary truncated. The final summary includes a visible `summary-truncated` marker and points operators to workflow logs. This is a soft failure: validation results, action outputs, and the workflow conclusion are unchanged.
+
+### Legacy input aliases
+
+Legacy aliases such as `skip_if_maintainer`, `ready_pass_label`, `ready_label_pass`, `ready_fail_label`, and `ready_label_fail` remain accepted during the deprecation window. The canonical value wins when both forms are supplied. When an alias is explicitly configured, TrustBridge emits one consolidated deprecation warning per run; migrate to `skip_for_maintainers`, `pass_label`, and `fail_label`.
+
+### Dry-run side-effect boundary
+
+`posting_mode: dry-run` computes the same Horizon checks, summaries, outputs, and failure decision as enforce mode, but performs no GitHub mutations. It skips issue comments, check runs, wallet/ready labels, assignee removal, and Projects v2 status updates. Use it for rehearsal workflows and fork pull requests.
+
+### Horizon Retry-After behavior
+
+For HTTP 429, 502, 503, and 504 responses, TrustBridge parses `Retry-After` as either delta-seconds or an HTTP-date. The parsed wait is capped by `retry_max_delay_ms`, receives bounded 10% jitter to avoid synchronized retries, and remains subject to `retry_max_total_wait_ms`. The metrics artifact records `horizon_retry_after_wait` samples and aggregate `horizon_retry_after_waits` / `horizon_retry_after_wait_ms` counters. Malformed, negative, or non-finite headers fall back to jittered exponential backoff.

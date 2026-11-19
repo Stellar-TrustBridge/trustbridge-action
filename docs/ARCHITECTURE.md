@@ -229,3 +229,11 @@ The test suite now includes three test files that benchmark parser resilience:
 ---
 
 [← Back to README](../README.md)
+
+## Wave runtime safeguards (#861–#864)
+
+The runtime keeps validation separate from mutation. `posting_mode: dry-run` runs the same check and output pipeline as enforce mode, while the entrypoint gates every GitHub mutation—comments, check runs, labels, assignee changes, and Projects v2 updates—behind `posting_mode: post`.
+
+Job Summary rendering is budget-aware. The compact overview is higher priority than the verbose metrics JSON artifact; the artifact is removed first, followed by safe line-boundary truncation with a visible marker if the compact report still exceeds the 1 MiB UTF-8 budget.
+
+Horizon retry scheduling accepts both Retry-After encodings, applies a bounded 10% jitter, and enforces both the per-sleep ceiling and cumulative wait budget. Retry-After waits are exported as privacy-safe numeric metrics without addresses, URLs, or response bodies.

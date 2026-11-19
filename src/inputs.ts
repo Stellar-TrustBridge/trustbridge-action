@@ -454,6 +454,28 @@ export function resolveReadyLabelInputs(
   };
 }
 
+/**
+ * Return the deprecated aliases explicitly supplied by a workflow. The action
+ * entrypoint uses this list to emit one consolidated warning per run instead
+ * of repeating warnings for each resolved field.
+ */
+export function listDeprecatedInputAliases(options: {
+  maintainerAlias?: string;
+  readyPassAlias?: string;
+  readyLabelPassAlias?: string;
+  readyFailAlias?: string;
+  readyLabelFailAlias?: string;
+}): string[] {
+  const aliases: Array<[string, string | undefined]> = [
+    ['skip_if_maintainer', options.maintainerAlias],
+    ['ready_pass_label', options.readyPassAlias],
+    ['ready_label_pass', options.readyLabelPassAlias],
+    ['ready_fail_label', options.readyFailAlias],
+    ['ready_label_fail', options.readyLabelFailAlias],
+  ];
+  return aliases.filter(([, value]) => Boolean(value?.trim())).map(([name]) => name);
+}
+
 
 // ---------------------------------------------------------------------------
 // Canonical action input surface (Issue #769)
