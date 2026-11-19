@@ -1287,6 +1287,29 @@ GitHub Actions has a 1MB limit for step outputs. TrustBridge's JSON map approach
 - Use `matrix_ready_map` for gating logic (smaller than full results)
 - Store full results in artifacts for large batches
 
+#### Automatic truncation (Issue #854)
+
+Rather than let a run silently exceed GitHub's per-output size limit (which would either reject the output outright or leave a workflow parsing an incomplete JSON payload with no indication anything was cut), TrustBridge caps every JSON/array output it builds at `MAX_OUTPUT_VALUE_BYTES` (900 KB — kept below the 1MB limit for headroom) and truncates **deterministically**: the earliest entries (in the original, stable order — input order for `assets_json`, the address list, or the assignee list) are kept, later ones are dropped. Only the array itself is capped; summary counts (`trustlines_summary`, `batch_summary_json`'s `total`/`passed`/`failed`/`failureTaxonomy`) always report the true, untruncated totals.
+
+Affected outputs:
+
+| Output | What gets truncated |
+|---|---|
+| `assets_trustline_status` | The per-asset status array, if `assets_json` lists enough assets |
+| `assignee_results_json` / `matrix_ready_map` | The per-assignee maps built by `buildMatrixOutputs`, bounded together so they always agree on which assignees are present |
+| `batch_summary_json` | The `failures` array, if a batch run has enough failed addresses |
+
+**Detecting truncation:** check the `outputs_truncated` output (always `"true"` or `"false"`, never empty) before trusting a JSON array's length as the complete result set:
+
+```yaml
+- name: Check for truncated outputs
+  if: steps.trustbridge.outputs.outputs_truncated == 'true'
+  run: |
+    echo "::warning::TrustBridge outputs were truncated — some entries are missing from the JSON outputs. Split this run into smaller batches, or read batch_passed_count/batch_failed_count for the true totals."
+```
+
+A payout workflow that branches on `batch_summary_json`'s `failures` array (rather than the always-accurate `batch_failed_count`/`batch_passed_count` scalar outputs) should always check `outputs_truncated` first — a truncated `failures` array under-reports who failed, which is exactly the "wrong branch decision" risk this guards against.
+
 ---
 
 ### Example badge output

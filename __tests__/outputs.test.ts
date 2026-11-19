@@ -916,6 +916,7 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       batch_summary_json: '',
       batch_passed_count: '',
       batch_failed_count: '',
+      outputs_truncated: 'false',
     });
   });
 
