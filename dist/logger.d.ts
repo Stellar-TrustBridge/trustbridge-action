@@ -89,12 +89,49 @@ export declare function redactString(value: string): string;
  */
 export declare function redactHorizonUrl(url: string): string;
 /**
+ * Base allowlist of structured log context keys (Issue #858).
+ *
+ * Includes every key `LogContext` itself declares, every key in
+ * {@link ADDRESS_CONTEXT_KEYS} (already individually redacted, so safe to
+ * admit), and the generic operational metadata keys documented in
+ * docs/ARCHITECTURE.md's "Context key allowlist" section (`operation`,
+ * `status`, `count`, `durationMs`).
+ *
+ * This is the allowlist {@link redactContext}'s `strict` option enforces.
+ * It is intentionally **not** applied by default — see that option's
+ * docstring for why — so adding a key here only ever affects callers that
+ * explicitly opt into strict mode.
+ */
+export declare const LOG_CONTEXT_KEY_ALLOWLIST: ReadonlySet<string>;
+/** True when `key` is in {@link LOG_CONTEXT_KEY_ALLOWLIST} or `extraAllowedKeys`. */
+export declare function isAllowedLogContextKey(key: string, extraAllowedKeys?: readonly string[]): boolean;
+export interface RedactContextOptions {
+    /**
+     * When `true`, any top-level context key that is not in
+     * {@link LOG_CONTEXT_KEY_ALLOWLIST} (or `extraAllowedKeys`) is dropped
+     * entirely — not redacted-and-kept, simply absent from the result — so an
+     * unreviewed field can never reach the log even in redacted form.
+     *
+     * Defaults to `false`: every existing call site keeps its current
+     * behavior (every key processed, values redacted, nothing dropped)
+     * unless it explicitly opts in. This lets strict mode be adopted
+     * incrementally per call site instead of being a breaking change to
+     * every logger call in the codebase at once.
+     */
+    strict?: boolean;
+    /** Additional keys to accept in strict mode, beyond the base allowlist. */
+    extraAllowedKeys?: readonly string[];
+}
+/**
  * Redacts a log context object. Address-bearing keys are masked with
  * {@link redactStellarAddress}; sensitive secret keys are replaced with
  * `[REDACTED]`; all other string values are passed through
  * {@link redactString} so embedded addresses never leak.
+ *
+ * In `strict` mode (Issue #858), a key not on {@link LOG_CONTEXT_KEY_ALLOWLIST}
+ * is dropped instead of redacted-and-kept — see {@link RedactContextOptions}.
  */
-export declare function redactContext(context?: LogContext): LogContext;
+export declare function redactContext(context?: LogContext, options?: RedactContextOptions): LogContext;
 /**
  * Format a structured log line. Always includes the `reason_code` and
  * `check` fields (Issue #771) so Wave CI failures can be grepped, and

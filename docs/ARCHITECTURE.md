@@ -17,7 +17,9 @@ When a match is found, the address is replaced with a masked placeholder (e.g. `
 
 ### Context key allowlist
 
-The logger accepts a structured context object. Only keys on an explicit allowlist (e.g. `operation`, `status`, `count`, `durationMs`) are serialized verbatim. Unknown keys are dropped rather than stringified, preventing accidental leakage of raw payload fields that may contain addresses.
+The logger accepts a structured context object (`LogContext`). By default, `redactContext` processes every key it is given: address-bearing keys are masked, known secret-shaped keys become `[REDACTED]`, and every other string is passed through the pattern-based redactor — no key is dropped, only values are made safe. This is deliberate so adding a new, ad-hoc context key at a call site never silently loses that field from the log.
+
+**Strict mode (Issue #858):** `redactContext(context, { strict: true })` additionally drops any key not in `LOG_CONTEXT_KEY_ALLOWLIST` (`operation`, `status`, `count`, `durationMs`, the keys `LogContext` itself declares, and every address-bearing key with a defined redaction policy) — an unreviewed field is absent from the log entirely rather than present in redacted form. `extraAllowedKeys` extends the allowlist for a specific call site. Strict mode is opt-in per call, not a global default, so existing call sites are unaffected until a caller deliberately adopts it for a context it has fully audited.
 
 ### Exceptions
 

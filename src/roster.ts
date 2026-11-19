@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import { AssigneeAddressMap } from './inputs';
 import { validateSsrfSafeUrl } from './validation';
+import { isValidStellarAddress } from './checks';
 
 const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
 
@@ -38,6 +39,279 @@ export function filterRosterAddressMap(
     result[key] = value;
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// CSV roster import (Issue #798)
+// ---------------------------------------------------------------------------
+
+/** Maximum rows listed per category in {@link RosterCsvImportResult.summaryMarkdown}. */
+const MAX_SUMMARY_ROWS_LISTED = 20;
+
+/** Header column names recognised as the GitHub login/username column (case-insensitive). */
+const LOGIN_HEADER_NAMES = new Set(['login', 'username', 'github', 'github_username', 'assignee']);
+/** Header column names recognised as the Stellar address column (case-insensitive). */
+const ADDRESS_HEADER_NAMES = new Set(['address', 'stellar_address', 'wallet', 'account', 'g_address']);
+
+/** One rejected duplicate address — kept for the summary, excluded from the usable roster. */
+export interface RosterCsvDuplicateEntry {
+  /** The address as it first appeared (normalization is for matching only). */
+  address: string;
+  /** 1-based line number of the first (kept) occurrence. */
+  firstLineNumber: number;
+  /** 1-based line number of this duplicate occurrence. */
+  lineNumber: number;
+}
+
+/** One rejected row — kept for the summary, excluded from the usable roster. */
+export interface RosterCsvInvalidEntry {
+  /** 1-based line number in the original CSV text. */
+  lineNumber: number;
+  /** Raw, unmodified line content (for operator troubleshooting). */
+  raw: string;
+  /** Stable, human-readable rejection reason. */
+  reason: string;
+}
+
+/** Aggregate counts for {@link RosterCsvImportResult}. */
+export interface RosterCsvImportSummary {
+  totalDataRows: number;
+  validCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+}
+
+export interface RosterCsvImportResult {
+  /**
+   * GitHub login (lowercased) -> Stellar address, for rows that had a login
+   * column. Only valid, first-seen-address rows are included — compatible
+   * with `resolveAddressFromAssigneeMap` / `filterRosterAddressMap`.
+   */
+  addressMap: AssigneeAddressMap;
+  /**
+   * Valid, de-duplicated addresses in first-seen order — the exact shape
+   * `src/batch.ts`'s `runBatchValidation` / `parseBatchAddresses` consume.
+   */
+  addresses: string[];
+  /** Addresses rejected because an earlier row already claimed them. */
+  duplicates: RosterCsvDuplicateEntry[];
+  /** Rows rejected because the address column was not a valid G- or C-address. */
+  invalid: RosterCsvInvalidEntry[];
+  summary: RosterCsvImportSummary;
+  /**
+   * Human-readable Markdown summary (counts plus up to
+   * `MAX_SUMMARY_ROWS_LISTED` example rows per rejected category), suitable
+   * for a job log or an issue/PR comment posted before batch validation runs.
+   */
+  summaryMarkdown: string;
+}
+
+/**
+ * Split one CSV line into trimmed cells.
+ *
+ * Supports plain comma-separated values with optional surrounding double
+ * quotes on a cell (`"G..."`, `"alice"`). Does not support embedded commas,
+ * embedded quotes, or multi-line quoted cells — a roster of usernames and
+ * Stellar addresses never needs them, and a minimal parser here avoids
+ * inventing a parallel CSV-parsing subsystem for a one-off import path.
+ */
+function splitCsvLine(line: string): string[] {
+  return line.split(',').map((cell) => {
+    const trimmed = cell.trim();
+    if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).trim();
+    }
+    return trimmed;
+  });
+}
+
+/** True when `cells` looks like a header row naming known login/address columns. */
+function looksLikeHeaderRow(cells: string[]): boolean {
+  return cells.some(
+    (cell) =>
+      LOGIN_HEADER_NAMES.has(cell.toLowerCase()) || ADDRESS_HEADER_NAMES.has(cell.toLowerCase()),
+  );
+}
+
+/**
+ * Locate the login and address column indices.
+ *
+ * With a recognised header row, columns are matched by name (order-
+ * independent). Without one, a single-column CSV is treated as
+ * address-only; a multi-column CSV assumes `login,address` order, matching
+ * the shape documented in docs/USAGE.md.
+ */
+function resolveColumns(
+  headerCells: string[] | null,
+  columnCount: number,
+): { loginIndex: number | null; addressIndex: number } {
+  if (headerCells) {
+    const lower = headerCells.map((c) => c.toLowerCase());
+    const loginIndex = lower.findIndex((c) => LOGIN_HEADER_NAMES.has(c));
+    const addressIndex = lower.findIndex((c) => ADDRESS_HEADER_NAMES.has(c));
+    if (addressIndex === -1) {
+      throw new Error(
+        'Roster CSV header row does not name an address column. ' +
+          `Expected one of: ${[...ADDRESS_HEADER_NAMES].join(', ')}.`,
+      );
+    }
+    return { loginIndex: loginIndex === -1 ? null : loginIndex, addressIndex };
+  }
+
+  if (columnCount <= 1) {
+    return { loginIndex: null, addressIndex: 0 };
+  }
+  return { loginIndex: 0, addressIndex: 1 };
+}
+
+/**
+ * Parse a CSV roster of Stellar addresses (optionally paired with GitHub
+ * logins) into a validated, de-duplicated roster plus a rejection summary
+ * (Issue #798).
+ *
+ * Accepted shapes (header row optional, detected automatically):
+ * - Single column: one address per line.
+ * - Two columns: `login,address` (or `address,login` via a named header).
+ *
+ * Validation rules:
+ * - Blank lines are skipped.
+ * - A row whose address column fails `isValidStellarAddress` (StrKey
+ *   checksum validation for G-addresses, structural validation for
+ *   C-addresses) is rejected into `invalid` and excluded from the roster.
+ * - A row whose address duplicates an earlier *valid* row's address
+ *   (case-insensitive, matching `normalizeRosterAddress`) is rejected into
+ *   `duplicates` — the first occurrence wins and stays in the roster.
+ * - Only genuinely empty input, or input with zero data rows, throws; a
+ *   roster with some bad rows among good ones still returns a usable
+ *   (partial) roster plus a complete rejection report, so one typo does not
+ *   block an entire Wave payout batch.
+ *
+ * @param csvText Raw CSV file contents.
+ * @throws If `csvText` is empty/whitespace-only, contains no data rows, or
+ *         has a header row that does not name a recognised address column.
+ */
+export function parseRosterCsv(csvText: string): RosterCsvImportResult {
+  const trimmedInput = (csvText ?? '').trim();
+  if (!trimmedInput) {
+    throw new Error('Roster CSV is empty. Provide at least a header row and one address row.');
+  }
+
+  const rawLines = csvText.split(/\r\n|\r|\n/);
+  // (line numbers are 1-based against the original, un-trimmed input)
+  const nonBlankLineNumbers: number[] = [];
+  rawLines.forEach((line, i) => {
+    if (line.trim().length > 0) nonBlankLineNumbers.push(i + 1);
+  });
+
+  if (nonBlankLineNumbers.length === 0) {
+    throw new Error('Roster CSV contains no non-empty lines.');
+  }
+
+  let firstDataLineIndex = 0;
+  const firstCells = splitCsvLine(rawLines[nonBlankLineNumbers[0] - 1]);
+  const hasHeader = looksLikeHeaderRow(firstCells);
+  if (hasHeader) {
+    firstDataLineIndex = 1;
+  }
+
+  const dataLineNumbers = nonBlankLineNumbers.slice(firstDataLineIndex);
+  if (dataLineNumbers.length === 0) {
+    throw new Error('Roster CSV has a header row but no data rows.');
+  }
+
+  const { loginIndex, addressIndex } = resolveColumns(
+    hasHeader ? firstCells : null,
+    splitCsvLine(rawLines[dataLineNumbers[0] - 1]).length,
+  );
+
+  const addressMap: AssigneeAddressMap = {};
+  const addresses: string[] = [];
+  const duplicates: RosterCsvDuplicateEntry[] = [];
+  const invalid: RosterCsvInvalidEntry[] = [];
+  const seenAddresses = new Map<string, { address: string; lineNumber: number }>();
+
+  for (const lineNumber of dataLineNumbers) {
+    const raw = rawLines[lineNumber - 1];
+    const cells = splitCsvLine(raw);
+    const address = (cells[addressIndex] ?? '').trim();
+    const login = loginIndex !== null ? (cells[loginIndex] ?? '').trim() : '';
+
+    if (!address) {
+      invalid.push({ lineNumber, raw, reason: 'Address column is empty.' });
+      continue;
+    }
+
+    if (!isValidStellarAddress(address)) {
+      invalid.push({
+        lineNumber,
+        raw,
+        reason: `"${address}" is not a valid Stellar G- or C-address (StrKey checksum failed).`,
+      });
+      continue;
+    }
+
+    const normalized = normalizeRosterAddress(address);
+    const existing = seenAddresses.get(normalized);
+    if (existing) {
+      duplicates.push({ address, firstLineNumber: existing.lineNumber, lineNumber });
+      continue;
+    }
+    seenAddresses.set(normalized, { address, lineNumber });
+
+    addresses.push(address);
+    if (login) {
+      addressMap[login.toLowerCase()] = address;
+    }
+  }
+
+  const summary: RosterCsvImportSummary = {
+    totalDataRows: dataLineNumbers.length,
+    validCount: addresses.length,
+    duplicateCount: duplicates.length,
+    invalidCount: invalid.length,
+  };
+
+  const summaryMarkdown = buildRosterCsvSummaryMarkdown(summary, duplicates, invalid);
+
+  return { addressMap, addresses, duplicates, invalid, summary, summaryMarkdown };
+}
+
+/** Render the Markdown summary for a parsed roster CSV (Issue #798). */
+function buildRosterCsvSummaryMarkdown(
+  summary: RosterCsvImportSummary,
+  duplicates: RosterCsvDuplicateEntry[],
+  invalid: RosterCsvInvalidEntry[],
+): string {
+  const lines: string[] = [
+    '### Roster CSV import summary',
+    '',
+    `- Rows read: **${summary.totalDataRows}**`,
+    `- Valid, unique addresses: **${summary.validCount}**`,
+    `- Rejected duplicates: **${summary.duplicateCount}**`,
+    `- Rejected invalid addresses: **${summary.invalidCount}**`,
+  ];
+
+  if (duplicates.length > 0) {
+    lines.push('', '**Duplicate addresses (first occurrence kept):**');
+    for (const dup of duplicates.slice(0, MAX_SUMMARY_ROWS_LISTED)) {
+      lines.push(`- Line ${dup.lineNumber}: \`${dup.address}\` already seen at line ${dup.firstLineNumber}`);
+    }
+    if (duplicates.length > MAX_SUMMARY_ROWS_LISTED) {
+      lines.push(`- _…and ${duplicates.length - MAX_SUMMARY_ROWS_LISTED} more duplicate row(s)._`);
+    }
+  }
+
+  if (invalid.length > 0) {
+    lines.push('', '**Invalid rows (excluded from the roster):**');
+    for (const row of invalid.slice(0, MAX_SUMMARY_ROWS_LISTED)) {
+      lines.push(`- Line ${row.lineNumber}: ${row.reason}`);
+    }
+    if (invalid.length > MAX_SUMMARY_ROWS_LISTED) {
+      lines.push(`- _…and ${invalid.length - MAX_SUMMARY_ROWS_LISTED} more invalid row(s)._`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 export async function fetchDashboardRoster(
