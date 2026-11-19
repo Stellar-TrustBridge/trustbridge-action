@@ -6,6 +6,7 @@ import {
   isSnoozeReaction,
   evaluateReactionSnooze,
   evaluateCombinedSnoozeState,
+  enforceSnoozeWindow,
   SnoozeMarker,
   SnoozeState,
   CommentReaction,
@@ -127,6 +128,7 @@ describe('evaluateSnoozeState', () => {
       const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs);
       
       expect(state.isSnoozed).toBe(true);
+      expect(state.snoozeExpired).toBe(false);
       expect(state.lastStatus).toBe('fail');
       expect(state.lastTimestamp).toBe(priorMarker.timestamp);
       expect(state.elapsedMs).toBeLessThan(snoozeWindowMs);
@@ -137,10 +139,11 @@ describe('evaluateSnoozeState', () => {
       const now = Date.now();
       const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 70000 }; // 70s ago
       const snoozeWindowMs = 60000; // 1 minute
-      
+
       const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs);
-      
+
       expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(true);
       expect(state.lastStatus).toBe('fail');
       expect(state.elapsedMs).toBeGreaterThan(snoozeWindowMs);
     });
@@ -345,6 +348,80 @@ describe('Issue #227 — Reaction-based snooze', () => {
 
       const state = evaluateCombinedSnoozeState(true, priorMarker, reactions, snoozeWindowMs, now);
       expect(state.isSnoozed).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // snoozeExpired — Issue #799
+  // -------------------------------------------------------------------------
+
+  describe('snoozeExpired flag (Issue #799)', () => {
+    it('happy path: a window that has lapsed is reported as expired', () => {
+      const now = Date.now();
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 70_000 };
+      const state = evaluateCombinedSnoozeState(false, priorMarker, [], 60_000, now);
+
+      expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(true);
+    });
+
+    it('failure path: a window still active is not reported as expired', () => {
+      const now = Date.now();
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 5_000 };
+      const state = evaluateCombinedSnoozeState(false, priorMarker, [], 60_000, now);
+
+      expect(state.isSnoozed).toBe(true);
+      expect(state.snoozeExpired).toBe(false);
+    });
+
+    it('failure path: the very first failure (no prior marker) is not an expiry', () => {
+      const state = evaluateCombinedSnoozeState(false, undefined, [], 60_000);
+
+      expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(false);
+    });
+
+    it('failure path: a status flip from pass to fail is not an expiry', () => {
+      const now = Date.now();
+      const priorMarker: SnoozeMarker = { status: 'pass', timestamp: now - 70_000 };
+      const state = evaluateCombinedSnoozeState(false, priorMarker, [], 60_000, now);
+
+      expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(false);
+    });
+
+    it('failure path: the check passing is not an expiry, even if a window had lapsed', () => {
+      const now = Date.now();
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 70_000 };
+      const state = evaluateCombinedSnoozeState(true, priorMarker, [], 60_000, now);
+
+      expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(false);
+    });
+
+    it('a lapsed reaction-based snooze is also reported as expired', () => {
+      const now = Date.now();
+      const reactions: CommentReaction[] = [
+        {
+          content: ':zzz:',
+          created_at: new Date(now - 70_000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ];
+      const state = evaluateCombinedSnoozeState(false, undefined, reactions, 60_000, now);
+
+      expect(state.isSnoozed).toBe(false);
+      expect(state.snoozeExpired).toBe(true);
+    });
+
+    it('enforceSnoozeWindow surfaces the expiry on its underlying state', () => {
+      const now = Date.now();
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: now - 70_000 };
+
+      const enforcement = enforceSnoozeWindow(false, priorMarker, [], 60_000, { now });
+
+      expect(enforcement.skipValidation).toBe(false);
+      expect(enforcement.state.snoozeExpired).toBe(true);
     });
   });
 });

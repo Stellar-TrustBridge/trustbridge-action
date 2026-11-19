@@ -7,6 +7,16 @@
  */
 import { ValidationResult } from './checks';
 /**
+ * Default `cacheSeconds` applied to generated Shields.io badge URLs.
+ *
+ * Shields.io defaults to caching a badge response for 300s (and longer for
+ * some sources) unless the caller passes its own `cacheSeconds` query
+ * parameter. A readiness badge embedded in a GitHub issue comment or status
+ * board must reflect the *current* state shortly after a recheck, so
+ * TrustBridge requests a much shorter upstream cache lifetime by default.
+ */
+export declare const DEFAULT_BADGE_CACHE_SECONDS = 60;
+/**
  * Badge state representing the outcome of validation checks.
  */
 export type BadgeState = 'pass' | 'fail' | 'pending' | 'skipped';
@@ -44,7 +54,7 @@ export declare function getBadgeAltText(state: BadgeState): string;
  * The URL is parameterless and contains no sensitive information (no addresses,
  * balances, or asset details).
  */
-export declare function generateBadgeUrl(state: BadgeState, label?: string): string;
+export declare function generateBadgeUrl(state: BadgeState, label?: string, cacheSeconds?: number): string;
 /**
  * Generate a Markdown-formatted badge snippet.
  *
@@ -53,7 +63,25 @@ export declare function generateBadgeUrl(state: BadgeState, label?: string): str
  *
  * The Markdown includes a link to the TrustBridge repository for context.
  */
-export declare function generateBadgeMarkdown(state: BadgeState, label?: string): string;
+export declare function generateBadgeMarkdown(state: BadgeState, label?: string, cacheSeconds?: number): string;
+/**
+ * Generate a stable, content-addressed ETag for a badge's current state.
+ *
+ * This is **not** an HTTP response header this action can set itself — the
+ * badge image is served by Shields.io, not by TrustBridge. It is provided
+ * for a consumer (a status board, or a proxy that mirrors the badge image)
+ * that fronts its own cache for the badge and needs a cheap, deterministic
+ * way to detect "nothing changed since last fetch" without re-downloading
+ * the image: compare the previous ETag to the current one and skip the
+ * refetch/invalidation when they match.
+ *
+ * The value is a weak ETag (`W/"..."`, per RFC 7232 §2.3) derived only from
+ * the rendered badge state and label — the same two inputs that determine
+ * the badge's visual content — so it is stable across reruns that produce
+ * the same badge and changes whenever the badge would actually look
+ * different (e.g. a recheck that flips `fail` to `pass`).
+ */
+export declare function generateBadgeETag(state: BadgeState, label?: string): string;
 /**
  * Generate both Markdown and URL badge snippets from a ValidationResult.
  *
@@ -64,4 +92,5 @@ export declare function generateBadgeMarkdown(state: BadgeState, label?: string)
 export declare function generateBadgeSnippets(result: ValidationResult, label?: string): {
     markdown: string;
     url: string;
+    etag: string;
 };

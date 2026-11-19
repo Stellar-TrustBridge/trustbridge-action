@@ -45,6 +45,18 @@ export interface SnoozeState {
     lastTimestamp?: number;
     /** Time elapsed since last check (ms). */
     elapsedMs?: number;
+    /**
+     * True when this run's `isSnoozed: false` is specifically because an
+     * active snooze window just lapsed (Issue #799) — i.e. the prior check
+     * had failed, a snooze window was in effect, and enough time has now
+     * passed that the run resumes. This is distinct from "unsnoozed because
+     * the check just started passing" or "unsnoozed because this is the
+     * first failure" (both of those also set `isSnoozed: false` but are not
+     * an *expiry*). Consumers that want to notify a dashboard only when a
+     * snooze window specifically ends — rather than on every un-snoozed
+     * run — should key off this flag, not `!isSnoozed`.
+     */
+    snoozeExpired: boolean;
 }
 /**
  * Stable reason_code emitted when validation is skipped because the issue is

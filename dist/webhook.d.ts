@@ -154,6 +154,18 @@ export interface WebhookPayload {
     };
     /** Per-asset trustline / clawback reason codes (Issue #676). Omitted when not supplied. */
     assets?: WebhookAssetEntry[];
+    /**
+     * True when this `validation_complete` event is the first one after an
+     * active snooze window lapsed (Issue #799) — see
+     * `evaluateCombinedSnoozeState`'s `snoozeExpired` flag in `src/snooze.ts`.
+     * Lets a dashboard distinguish "comments resumed because the snooze
+     * window ended" from any other reason this webhook fired, without
+     * polling the issue comment to diff snooze state itself. Omitted
+     * (rather than `false`) when not applicable, matching the `assets`
+     * convention — this keeps the payload byte-for-byte the v1 shape for
+     * every caller that never passes a snooze state.
+     */
+    snooze_expired?: true;
 }
 export interface WebhookDeliveryResult {
     sent: boolean;
@@ -233,14 +245,19 @@ export declare const WEBHOOK_SCHEMA_VERSION: "1";
  * @param assets  Optional per-asset evaluations (Issue #676). When omitted or
  *                empty the `assets` key is left out and the payload is
  *                byte-for-byte the frozen v1 shape.
+ * @param snoozeExpired  Optional (Issue #799): pass `evaluateCombinedSnoozeState(...).snoozeExpired`
+ *                (or `enforceSnoozeWindow(...).state.snoozeExpired`) when the
+ *                caller has that context. Only ever adds `snooze_expired: true`
+ *                to the payload — a falsy value omits the key entirely, so
+ *                existing callers that never pass it are unaffected.
  */
-export declare function buildWebhookPayload(result: ValidationResult, stellarAddress: string, repository: string, issueNumber: number | null, assets?: AssetReasonEvaluation[]): WebhookPayload;
+export declare function buildWebhookPayload(result: ValidationResult, stellarAddress: string, repository: string, issueNumber: number | null, assets?: AssetReasonEvaluation[], snoozeExpired?: boolean): WebhookPayload;
 /** Mirrors `schemas/webhook-payload.schema.json`; kept in sync by webhook-contract tests. */
 export declare const WEBHOOK_PAYLOAD_REQUIRED_FIELDS: readonly ["schema_version", "event", "timestamp", "repository", "issue_number", "stellar_address", "result"];
 export declare const WEBHOOK_RESULT_REQUIRED_FIELDS: readonly ["valid", "account_funded", "trustline_exists", "xlm_balance", "checks"];
 export declare const WEBHOOK_CHECK_REQUIRED_FIELDS: readonly ["label", "passed"];
-/** Optional additive top-level fields (Issue #676). */
-export declare const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS: readonly ["assets"];
+/** Optional additive top-level fields (Issue #676, Issue #799). */
+export declare const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS: readonly ["assets", "snooze_expired"];
 export declare const WEBHOOK_ASSET_REQUIRED_FIELDS: readonly ["asset_code", "asset_issuer", "primary", "trustline_exists", "clawback_enabled", "reason_code"];
 export declare const WEBHOOK_ASSET_REASON_CODES: readonly ["SUCCESS", "TRUSTLINE_MISSING", "CLAWBACK_BLOCKED"];
 export declare const WEBHOOK_REPOSITORY_PATTERN = "^[^/]+/[^/]+$";
@@ -289,6 +306,7 @@ export declare function describeOidcMintFailure(audience: string, error: unknown
  * @param repository    `owner/repo` string from the GitHub context.
  * @param issueNumber   Current issue number, or `null` when not in an issue context.
  * @param assets        Optional per-asset evaluations for the `assets` section (Issue #676).
+ * @param snoozeExpired Optional (Issue #799): forwarded verbatim to {@link buildWebhookPayload}.
  */
-export declare function sendWebhookNotification(result: ValidationResult, stellarAddress: string, config: WebhookConfig, repository: string, issueNumber: number | null, assets?: AssetReasonEvaluation[]): Promise<void>;
+export declare function sendWebhookNotification(result: ValidationResult, stellarAddress: string, config: WebhookConfig, repository: string, issueNumber: number | null, assets?: AssetReasonEvaluation[], snoozeExpired?: boolean): Promise<void>;
 export {};

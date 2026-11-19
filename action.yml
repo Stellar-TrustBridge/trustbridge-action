@@ -904,7 +904,11 @@ outputs:
   badge_markdown:
     description: "Markdown-formatted badge snippet (e.g. for README embeds) linking to TrustBridge repo"
   badge_url:
-    description: "Shields.io badge URL reflecting validation state (pass/fail/pending)"
+    description: "Shields.io badge URL reflecting validation state (pass/fail/pending), with a short cacheSeconds hint so stale images aren't served after a recheck"
+  badge_etag:
+    description: "Weak ETag (RFC 7232) derived from the current badge state/label, for a dashboard that fronts its own cache for the badge image (Issue #796)"
+  snooze_expired:
+    description: "\"true\" when this run's comment was posted specifically because an active snooze window just lapsed, \"false\" otherwise (Issue #799)"
 
   # ── Split balance outputs (Issue #246) ─────────────────────────────────────
   asset_balance:

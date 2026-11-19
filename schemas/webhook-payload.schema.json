@@ -142,6 +142,11 @@
           }
         }
       }
+    },
+    "snooze_expired": {
+      "type": "boolean",
+      "enum": [true],
+      "description": "Optional, additive (Issue #799). Present and true only when this validation_complete event is the first one after an active snooze window lapsed. Omitted (never false) for every other event. Receivers on schema_version '1' that ignore unknown fields are unaffected."
     }
   },
   "examples": [

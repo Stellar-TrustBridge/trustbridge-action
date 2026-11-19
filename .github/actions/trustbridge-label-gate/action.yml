@@ -296,6 +296,16 @@ outputs:
     description: 'Shields.io badge URL reflecting validation state (pass/fail/pending)'
     value: ${{ steps.run-trustbridge.outputs.badge_url }}
 
+  badge_etag:
+    description: 'Weak ETag (RFC 7232) derived from the current badge state/label (Issue #796)'
+    value: ${{ steps.run-trustbridge.outputs.badge_etag }}
+
+  # ── Snooze ──────────────────────────────────────────────────────────────
+
+  snooze_expired:
+    description: "\"true\" when this run's comment was posted because an active snooze window just lapsed (Issue #799)"
+    value: ${{ steps.run-trustbridge.outputs.snooze_expired }}
+
   # ── Timing breakdown ──────────────────────────────────────────────────
 
   timings_json:

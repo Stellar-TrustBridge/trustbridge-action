@@ -379,6 +379,14 @@ export interface PostedIssueComment {
     url: string | undefined;
     /** Numeric REST comment id. */
     id: number;
+    /**
+     * True when this post happened specifically because an active snooze
+     * window on this issue just lapsed (Issue #799) — see
+     * `evaluateCombinedSnoozeState`'s `snoozeExpired` flag in `src/snooze.ts`.
+     * `false`/omitted for every other reason a comment was posted (first
+     * failure, status flip, sticky disabled, snooze disabled, etc.).
+     */
+    snoozeExpired?: boolean;
 }
 /**
  * Post or update the TrustBridge issue comment and return the URL.
