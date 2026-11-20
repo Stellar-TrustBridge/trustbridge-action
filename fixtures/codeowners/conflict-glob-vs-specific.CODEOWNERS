@@ -1,0 +1,21 @@
+# Conflict fixture: broad glob followed by a more-specific path rule.
+#
+# Pattern precedence (GitHub semantics): LAST matching rule wins.
+#
+# For the file `src/payments/invoice.ts`:
+#   1. `*`           matches → owners: @global-owner          (overridden)
+#   2. `src/**`      matches → owners: @backend-team          (overridden)
+#   3. `src/payments` matches → owners: @payments-team        ← WINS
+#
+# For the file `src/horizon.ts`:
+#   1. `*`           matches → owners: @global-owner          (overridden)
+#   2. `src/**`      matches → owners: @backend-team          ← WINS
+#   (rule 3 does not match)
+#
+# For the file `README.md`:
+#   1. `*`           matches → owners: @global-owner          ← WINS
+#   (rules 2 and 3 do not match)
+
+*                 @global-owner
+src/**            @backend-team
+src/payments      @payments-team

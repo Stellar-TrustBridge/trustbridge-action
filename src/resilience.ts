@@ -10,6 +10,16 @@
  * factories (timeout, rate-limit, outage, success) for use in unit tests and
  * local dev without a live Horizon endpoint.
  *
+ * Issue #888: Half-open probe budget — the circuit breaker now enforces a
+ * configurable limit on the number of concurrent probe calls permitted while
+ * the circuit is in half-open state. Without this guard, a burst of parallel
+ * callers (e.g. a Wave batch run) can all pass the half-open gate
+ * simultaneously and stampede a recovering Horizon endpoint. The budget is
+ * enforced by tracking `halfOpenProbesInFlight`; calls beyond the budget
+ * receive a `CircuitOpenError` immediately (fast-fail), identical to full-open
+ * behavior. See `CircuitBreakerOptions.halfOpenMaxProbes` and
+ * `docs/ARCHITECTURE.md#circuit-breaker-half-open-probe-budget`.
+ *
  * Also exposes a local CLI check command that exercises the full resilience
  * pipeline against a live or stubbed Horizon endpoint (with optional secondary
  * Horizon failover).
@@ -316,7 +326,7 @@ export interface CircuitBreakerOptions {
   failureThreshold?: number;
   /**
    * Milliseconds to wait in 'open' state before transitioning to 'half-open'
-   * and allowing a single probe request. Default: 30 000.
+   * and allowing probe requests. Default: 30 000.
    */
   recoveryTimeoutMs?: number;
   /**
@@ -324,6 +334,20 @@ export interface CircuitBreakerOptions {
    * close the circuit again. Default: 2.
    */
   successThreshold?: number;
+  /**
+   * Maximum number of probe calls allowed **concurrently** while the circuit
+   * is in `half-open` state. Default: 1.
+   *
+   * Issue #888 — without this cap, a burst of parallel callers (e.g. a Wave
+   * batch run reaching half-open simultaneously) can stampede a recovering
+   * Horizon endpoint. When the in-flight probe count reaches this limit any
+   * additional callers receive a `CircuitOpenError` immediately (fast-fail),
+   * identical to behavior in the fully-open state. The count is decremented
+   * when each probe resolves (success or failure).
+   *
+   * Set to `Infinity` to restore the pre-#888 behavior (unlimited probes).
+   */
+  halfOpenMaxProbes?: number;
   /**
    * Optional callback fired on every state transition. Receives the previous
    * state, the next state, and a human-readable reason string.
@@ -333,6 +357,14 @@ export interface CircuitBreakerOptions {
    * summary panel without requiring `debug_mode: true`.
    */
   onStateChange?: (from: CircuitState, to: CircuitState, reason: string) => void;
+  /**
+   * Optional callback fired when a half-open probe is rejected because the
+   * probe budget is exhausted. Receives the current in-flight count and the
+   * configured maximum. Useful for metrics emission and observability.
+   *
+   * Issue #888.
+   */
+  onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
 }
 
 /**
@@ -343,12 +375,20 @@ export interface CircuitBreakerOptions {
  * circuit trips and recoveries are always visible as GitHub Check Run
  * annotations in the Actions UI, even without `debug_mode: true`.
  *
+ * Issue #888 — half-open probe budget: `halfOpenMaxProbes` (default: 1)
+ * limits how many concurrent probe calls may be in-flight while the circuit
+ * is in `half-open` state. Additional callers beyond the budget receive a
+ * `CircuitOpenError` immediately (identical to open-state fast-fail) and
+ * the rejection is counted in `halfOpenProbeBudgetExhaustedCount`. This
+ * prevents stampeding retries during Horizon recovery under Wave batch peaks.
+ *
  * States:
  *  - **closed** — normal operation; failures are counted.
  *  - **open**   — requests are short-circuited (fast-fail); a recovery timer
  *                 controls transition to 'half-open'.
- *  - **half-open** — a single probe request is allowed; success closes the
- *                    circuit, failure re-opens it.
+ *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
+ *                    allowed; enough consecutive successes closes the circuit,
+ *                    any failure re-opens it.
  */
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
@@ -357,15 +397,25 @@ export class CircuitBreaker {
   private openedAt: number | null = null;
   private lastErrorClass: string | null = null;
 
+  /** Issue #888: in-flight probe count while in half-open state. */
+  private halfOpenProbesInFlight: number = 0;
+  /** Issue #888: total rejections due to probe budget exhaustion. */
+  private halfOpenProbeBudgetExhaustedCount: number = 0;
+  /** Issue #888: total probes that completed (resolved or rejected) in half-open. */
+  private halfOpenProbesCompleted: number = 0;
+
   private readonly failureThreshold: number;
   private readonly recoveryTimeoutMs: number;
   private readonly successThreshold: number;
+  private readonly halfOpenMaxProbes: number;
   private readonly onStateChange: (from: CircuitState, to: CircuitState, reason: string) => void;
+  private readonly onProbeBudgetExhausted: (inFlight: number, maxProbes: number) => void;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.failureThreshold = options.failureThreshold ?? 5;
     this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30_000;
     this.successThreshold = options.successThreshold ?? 2;
+    this.halfOpenMaxProbes = options.halfOpenMaxProbes ?? 1;
 
     // Wave #26: default handler surfaces state changes as Check Run annotations.
     this.onStateChange =
@@ -385,6 +435,17 @@ export class CircuitBreaker {
           );
         }
       });
+
+    // Issue #888: default probe-budget-exhausted handler emits a warning annotation.
+    this.onProbeBudgetExhausted =
+      options.onProbeBudgetExhausted ??
+      ((inFlight, maxProbes) => {
+        core.warning(
+          `[TrustBridge CircuitBreaker] Half-open probe budget exhausted ` +
+            `(${inFlight}/${maxProbes} probes in flight). ` +
+            `Caller fast-failed without reaching Horizon.`,
+        );
+      });
   }
 
   /**
@@ -398,8 +459,12 @@ export class CircuitBreaker {
   /**
    * Execute `fn` through the circuit breaker.
    *
-   * - **closed / half-open**: delegates to `fn`; records success or failure.
+   * - **closed**: delegates to `fn`; records success or failure.
    * - **open**: throws a `CircuitOpenError` immediately without calling `fn`.
+   * - **half-open**: allows up to `halfOpenMaxProbes` concurrent probes.
+   *   Callers beyond the budget receive `CircuitOpenError` immediately.
+   *   Success closes the circuit after `successThreshold` consecutive wins;
+   *   any failure re-opens it and resets the in-flight count.
    */
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     this._maybeTransitionToHalfOpen();
@@ -410,6 +475,20 @@ export class CircuitBreaker {
       );
     }
 
+    // Issue #888: enforce probe budget in half-open state.
+    if (this.state === 'half-open') {
+      if (this.halfOpenProbesInFlight >= this.halfOpenMaxProbes) {
+        this.halfOpenProbeBudgetExhaustedCount += 1;
+        this.onProbeBudgetExhausted(this.halfOpenProbesInFlight, this.halfOpenMaxProbes);
+        throw new CircuitOpenError(
+          `Circuit breaker is half-open but the probe budget is exhausted ` +
+            `(${this.halfOpenProbesInFlight}/${this.halfOpenMaxProbes} probes in flight). ` +
+            `Request fast-failed to prevent stampeding retries on the recovering endpoint.`,
+        );
+      }
+      this.halfOpenProbesInFlight += 1;
+    }
+
     try {
       const result = await fn();
       this._recordSuccess();
@@ -417,8 +496,28 @@ export class CircuitBreaker {
     } catch (err) {
       this._recordFailure(err);
       throw err;
+    } finally {
+      // Decrement the in-flight count whenever we were tracking a probe.
+      if (this.state === 'half-open' || this._wasHalfOpenBeforeFailure) {
+        // _wasHalfOpenBeforeFailure is a one-shot flag set by _recordFailure
+        // when a probe failure immediately re-opened the circuit; we still
+        // need to decrement the counter.
+        if (this.halfOpenProbesInFlight > 0) {
+          this.halfOpenProbesInFlight -= 1;
+        }
+        this.halfOpenProbesCompleted += 1;
+        this._wasHalfOpenBeforeFailure = false;
+      }
     }
   }
+
+  /**
+   * One-shot flag: set by `_recordFailure` when the circuit was half-open at
+   * the time of the failure (and was re-opened). Used by the `finally` block
+   * in `execute` to know it should still decrement `halfOpenProbesInFlight`
+   * even though `this.state` is now `'open'` by the time `finally` runs.
+   */
+  private _wasHalfOpenBeforeFailure = false;
 
   /**
    * Force-reset the circuit to closed state. Useful in tests and for manual
@@ -430,6 +529,9 @@ export class CircuitBreaker {
     this.consecutiveFailures = 0;
     this.consecutiveSuccesses = 0;
     this.openedAt = null;
+    this.halfOpenProbesInFlight = 0;
+    this.halfOpenProbesCompleted = 0;
+    this.halfOpenProbeBudgetExhaustedCount = 0;
     if (prev !== 'closed') {
       this.onStateChange(prev, 'closed', 'manual reset');
     }
@@ -444,6 +546,12 @@ export class CircuitBreaker {
     consecutiveFailures: number;
     consecutiveSuccesses: number;
     openedAt: number | null;
+    /** Issue #888: probes currently in-flight during half-open. */
+    halfOpenProbesInFlight: number;
+    /** Issue #888: total probes rejected due to budget exhaustion. */
+    halfOpenProbeBudgetExhaustedCount: number;
+    /** Issue #888: configured maximum concurrent probes. */
+    halfOpenMaxProbes: number;
   } {
     this._maybeTransitionToHalfOpen();
     return {
@@ -451,6 +559,9 @@ export class CircuitBreaker {
       consecutiveFailures: this.consecutiveFailures,
       consecutiveSuccesses: this.consecutiveSuccesses,
       openedAt: this.openedAt,
+      halfOpenProbesInFlight: this.halfOpenProbesInFlight,
+      halfOpenProbeBudgetExhaustedCount: this.halfOpenProbeBudgetExhaustedCount,
+      halfOpenMaxProbes: this.halfOpenMaxProbes,
     };
   }
 
@@ -458,6 +569,8 @@ export class CircuitBreaker {
    * Circuit-open metrics for the Job Summary (#788). Reports only the error
    * class name — never the error message — so raw Horizon response bodies
    * cannot leak into the summary.
+   *
+   * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
    */
   getOpenMetrics(now: number = Date.now()): CircuitOpenMetrics {
     const stats = this.getStats();
@@ -469,6 +582,12 @@ export class CircuitBreaker {
           : 0,
       lastErrorClass: this.lastErrorClass,
       consecutiveFailures: stats.consecutiveFailures,
+      halfOpenProbeStats: {
+        inFlight: stats.halfOpenProbesInFlight,
+        maxProbes: stats.halfOpenMaxProbes,
+        budgetExhaustedCount: stats.halfOpenProbeBudgetExhaustedCount,
+        completed: this.halfOpenProbesCompleted,
+      },
     };
   }
 
@@ -483,6 +602,9 @@ export class CircuitBreaker {
       const prev = this.state;
       this.state = 'half-open';
       this.consecutiveSuccesses = 0;
+      this.halfOpenProbesInFlight = 0;
+      this.halfOpenProbesCompleted = 0;
+      this.halfOpenProbeBudgetExhaustedCount = 0;
       this.onStateChange(prev, 'half-open', `recovery timeout of ${this.recoveryTimeoutMs}ms elapsed`);
     }
   }
@@ -496,6 +618,9 @@ export class CircuitBreaker {
         this.consecutiveFailures = 0;
         this.consecutiveSuccesses = 0;
         this.openedAt = null;
+        this.halfOpenProbesInFlight = 0;
+        this.halfOpenProbesCompleted = 0;
+        this.halfOpenProbeBudgetExhaustedCount = 0;
         this.onStateChange(prev, 'closed', `${this.successThreshold} consecutive successes in half-open`);
       }
     } else if (this.state === 'closed') {
@@ -508,6 +633,7 @@ export class CircuitBreaker {
     this.lastErrorClass = errorClassOf(err);
     if (this.state === 'half-open') {
       // Any failure in half-open immediately re-opens the circuit.
+      this._wasHalfOpenBeforeFailure = true;
       const prev = this.state;
       this.state = 'open';
       this.openedAt = Date.now();
@@ -546,6 +672,20 @@ export interface CircuitOpenMetrics {
   /** Class name of the last recorded failure (e.g. 'TypeError'), or null. */
   lastErrorClass: string | null;
   consecutiveFailures: number;
+  /**
+   * Issue #888: half-open probe budget stats. Always present; callers can
+   * read `inFlight` and `budgetExhaustedCount` to populate dashboards.
+   */
+  halfOpenProbeStats: {
+    /** Probes currently in-flight (concurrent) in half-open state. */
+    inFlight: number;
+    /** Configured maximum concurrent probes (`halfOpenMaxProbes`). */
+    maxProbes: number;
+    /** Total calls rejected due to budget exhaustion since last transition to half-open. */
+    budgetExhaustedCount: number;
+    /** Total probes that completed (resolved or rejected) since last transition to half-open. */
+    completed: number;
+  };
 }
 
 const ERROR_CLASS_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
