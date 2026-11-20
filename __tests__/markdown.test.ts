@@ -3,6 +3,7 @@ import {
   inlineCode,
   buildOnboardingChecklist,
   buildAssetTrustlineTable,
+  buildAssetChecklist,
   extractChecklistState,
   CHECKLIST_TRUSTLINE_KEY,
 } from '../src/markdown';
@@ -521,6 +522,107 @@ describe('buildAssetTrustlineTable (Issue #552)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildAssetChecklist deepLink hardening (Issue #853)
+//
+// `deepLink` is rendered as raw, unescaped `[remediation](${deepLink})`
+// Markdown. A malicious or malformed value here is both an open-redirect
+// risk and a Markdown-injection risk (an unescaped `)` ends the link early
+// and lets the remainder of the string inject arbitrary Markdown into the
+// posted comment).
+// ---------------------------------------------------------------------------
+
+describe('buildAssetChecklist (Issue #717)', () => {
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  it('returns empty string for empty/missing rows', () => {
+    expect(buildAssetChecklist([])).toBe('');
+    expect(buildAssetChecklist(undefined as unknown as Parameters<typeof buildAssetChecklist>[0])).toBe('');
+  });
+
+  it('renders a passed and a failed row', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '1.0' },
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0' },
+    ]);
+    expect(md).toContain('### Asset checklist');
+    expect(md).toContain('- [x] ✅ `EURC`');
+    expect(md).toContain('- [ ] ❌ `FOO`');
+  });
+
+  it('renders a remediation link for a failed row with a safe https deepLink', () => {
+    const md = buildAssetChecklist([
+      {
+        assetCode: 'FOO',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/FOO',
+      },
+    ]);
+    expect(md).toContain('[remediation](https://stellar.expert/explorer/public/asset/FOO)');
+  });
+
+  it.each([
+    'javascript:alert(document.cookie)',
+    'data:text/html,<script>alert(1)</script>',
+    'http://evil.example.com/phish',
+    'https://127.0.0.1/internal',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://user:pass@evil.example.com/',
+    'https://evil.example.com/x)[click here](https://also-evil.example.com',
+    'not a url',
+  ])('omits the remediation link entirely for malicious deepLink %j', (maliciousLink) => {
+    const md = buildAssetChecklist([
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0', deepLink: maliciousLink },
+    ]);
+    expect(md).not.toContain('remediation');
+    expect(md).not.toContain('javascript:');
+    expect(md).not.toContain('<script>');
+    expect(md).not.toContain(maliciousLink);
+  });
+
+  it('never renders a remediation link for a passed row, even with a deepLink set', () => {
+    const md = buildAssetChecklist([
+      {
+        assetCode: 'EURC',
+        assetIssuer: issuer,
+        trustlineExists: true,
+        balance: '1.0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/EURC',
+      },
+    ]);
+    expect(md).not.toContain('remediation');
+  });
+
+  it('dedupes repeated assetCode/assetIssuer pairs, keeping the first occurrence', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0' },
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: true, balance: '5.0' },
+    ]);
+    const lines = md.split('\n').filter((l) => l.startsWith('- ['));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('❌');
+  });
+
+  it('matches the golden snapshot for a mixed-outcome checklist with a malicious deepLink', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '1.0' },
+      {
+        assetCode: 'FOO',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'javascript:alert(1)',
+      },
+      {
+        assetCode: 'BAR',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/BAR',
+      },
+    ]);
+
 // buildAssetTrustlineTable long-table truncation (Issue #860)
 // ---------------------------------------------------------------------------
 

@@ -39,7 +39,7 @@ import { getOctokitProxyOptions } from './proxy';
 import { updateProjectV2Status } from './projects';
 import { getErrorMessage, parseBooleanInput, parseNumberInput, resolveReadyLabelInputs } from './inputs';
 import { formatFailureSummary } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus } from './outputs';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
@@ -981,9 +981,23 @@ export async function run(): Promise<void> {
   // Batch outputs last so the single-address defaults above never clobber
   // the real batch summary (Issue #537).
   if (batchSummary) {
-    core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
+    // Issue #854: a Wave payout-week batch of hundreds of addresses can
+    // produce a `failures` array large enough to exceed GitHub's per-output
+    // size limit. Truncate deterministically (keep the earliest failures,
+    // drop the rest) rather than let the runner silently truncate or reject
+    // the output — a matrix workflow parsing an incomplete failures list
+    // would otherwise make the wrong branch decision.
+    const { json: batchSummaryJson, truncated: batchOutputsTruncated } = truncateJsonArray(
+      batchSummary.failures,
+      (failuresSubset) => JSON.stringify({ ...batchSummary, failures: failuresSubset }),
+    );
+    core.setOutput('batch_summary_json', batchSummaryJson);
     core.setOutput('batch_passed_count', String(batchSummary.passed));
     core.setOutput('batch_failed_count', String(batchSummary.failed));
+    // Authoritative for batch mode — overwrites setValidationOutputs's
+    // single-address-derived value above, same precedence as the other
+    // batch outputs.
+    core.setOutput('outputs_truncated', String(batchOutputsTruncated));
   }
 
   // ---------------------------------------------------------------------------

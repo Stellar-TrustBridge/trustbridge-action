@@ -1,5 +1,5 @@
 import { ValidationResult } from './checks';
-import { DEFAULT_FAQ_BASE_URL, FAQ_ANCHORS } from './links';
+import { DEFAULT_FAQ_BASE_URL, FAQ_ANCHORS, isSafeExternalLink } from './links';
 import { Locale, getStrings, SUPPORTED_LOCALES } from './i18n';
 
 export function escapeMarkdownInline(value: string): string {
@@ -199,7 +199,14 @@ export function buildAssetChecklist(
     if (hints.length > 0) {
       line += ` (${hints.map((hint) => escapeMarkdownInline(hint)).join(', ')})`;
     }
-    if (!passed && row.deepLink) {
+    // Issue #853: `deepLink` is caller-supplied (e.g. derived from
+    // `assets_json`). Rendered unvalidated, it would be both an open-
+    // redirect/phishing vector and a Markdown-injection vector — an
+    // unescaped `)` in the URL ends the `[text](url)` link early and lets
+    // the rest of the string inject arbitrary Markdown into the comment.
+    // A link that fails the shared safety check is omitted entirely rather
+    // than rendered broken or malicious.
+    if (!passed && row.deepLink && isSafeExternalLink(row.deepLink)) {
       line += ` — [remediation](${row.deepLink})`;
     }
     lines.push(line);

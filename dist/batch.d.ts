@@ -25,6 +25,13 @@ export declare const BATCH_REASON_CODES: {
     readonly invalidAddress: "INVALID_ADDRESS";
     readonly rateBudgetExhausted: "RATE_BUDGET_EXHAUSTED";
     readonly clawbackStrict: "CLAWBACK_STRICT_MODE";
+    /**
+     * Row never dispatched to Horizon because `options.signal` was aborted
+     * before this address's turn came up in the concurrency-limited queue
+     * (Issue #852). Distinct from `RATE_BUDGET_EXHAUSTED`: no budget was
+     * spent, the run was cancelled by the caller.
+     */
+    readonly cancelled: "CANCELLED";
 };
 /** A single asset that hit `clawback_strict_mode` for one address. */
 export interface BatchAssetFailure {
@@ -121,7 +128,31 @@ export interface BatchRunOptions {
      * fetched once per batch. `null` means the issuer is unavailable.
      */
     issuerAccount?: HorizonAccount | null;
+    /**
+     * Maximum number of addresses validated concurrently against Horizon
+     * (Issue #852). Clamped to `[MIN_BATCH_CONCURRENCY, MAX_BATCH_CONCURRENCY]`.
+     * Defaults to `1`, i.e. the original fully-sequential behavior — every
+     * existing caller that does not set this option is unaffected. Each
+     * concurrent worker still honors `requestDelayMs` between its own
+     * successive requests, so `maxConcurrency` bounds *parallel* Horizon
+     * pressure without defeating the per-worker pacing.
+     */
+    maxConcurrency?: number;
+    /**
+     * Optional cancellation signal (Issue #852). When aborted, no new
+     * addresses are dispatched to Horizon — any not yet started are returned
+     * as `CANCELLED` rows instead of being fetched — and (unless the caller's
+     * own `fetchOptions.signal` is already set) the same signal is threaded
+     * into `fetchAccount` so in-flight requests are aborted too. The function
+     * always resolves with one row per input address; nothing is left
+     * orphaned.
+     */
+    signal?: AbortSignal;
 }
+/** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
+export declare const MIN_BATCH_CONCURRENCY = 1;
+/** Upper bound for {@link BatchRunOptions.maxConcurrency}. */
+export declare const MAX_BATCH_CONCURRENCY = 20;
 /**
  * Parse the `stellar_addresses` input into a deduplicated list of addresses.
  *

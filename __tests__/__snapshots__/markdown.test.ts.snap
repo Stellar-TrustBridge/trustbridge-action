@@ -10,6 +10,13 @@ _Completa estos pasos en orden. Las casillas se actualizan automáticamente con 
 - [ ] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
 `;
 
+exports[`buildAssetChecklist (Issue #717) matches the golden snapshot for a mixed-outcome checklist with a malicious deepLink 1`] = `
+"### Asset checklist
+
+- [x] ✅ \`EURC\` — issuer \`GA5Z…KZVN\` — trustline exists
+- [ ] ❌ \`FOO\` — issuer \`GA5Z…KZVN\` — trustline missing
+- [ ] ❌ \`BAR\` — issuer \`GA5Z…KZVN\` — trustline missing — [remediation](https://stellar.expert/explorer/public/asset/BAR)"
+
 exports[`buildAssetTrustlineTable truncation (Issue #860) matches the golden snapshot for a truncated table 1`] = `
 "### Asset trustlines
 

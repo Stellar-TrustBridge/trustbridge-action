@@ -1,0 +1,9 @@
+{
+  "_comment": "Golden snapshot of src/corePlugins.ts registration order (Issue #851). Verified by __tests__/core-plugins-golden-order.test.ts. Update this file intentionally whenever a core plugin is added, removed, renamed, or reordered -- and update the 'Built-in plugins' table in docs/PLUGIN_ARCHITECTURE.md in the SAME change, since __tests__/core-plugins-freeze.test.ts checks that table against src/corePlugins.ts too.",
+  "plugins": [
+    { "order": 1, "id": "trustbridge/account-funded", "label": "Account funded" },
+    { "order": 2, "id": "trustbridge/trustline", "label": "Trustline" },
+    { "order": 3, "id": "trustbridge/xlm-reserve", "label": "XLM reserve" },
+    { "order": 4, "id": "trustbridge/home-domain", "label": "SEP-0001 home domain" }
+  ]
+}

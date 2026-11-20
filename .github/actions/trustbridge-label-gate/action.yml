@@ -411,6 +411,14 @@ outputs:
       "N of M additional trustlines present"
     value: ${{ steps.run-trustbridge.outputs.trustlines_summary }}
 
+  outputs_truncated:
+    description: >-
+      "true" when a JSON/array output this run produced was truncated to stay
+      under GitHub Actions' per-output size limit; "false" otherwise. Always
+      set — check this before trusting a JSON output's array length as the
+      complete result set (Issue #854).
+    value: ${{ steps.run-trustbridge.outputs.outputs_truncated }}
+
   # ── Batch mode (stellar_addresses) ────────────────────────────────────
 
   batch_summary_json:
