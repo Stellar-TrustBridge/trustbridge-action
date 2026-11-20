@@ -356,7 +356,10 @@ export interface FindStickyCommentOptions {
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
- * for upsert.
+ * for upsert. When GitHub supplies author/updateability metadata, a matching
+ * marker is selected only when the authenticated viewer may update it and it
+ * is not visibly owned by a human user. Older responses without those fields
+ * retain the marker-only compatibility behavior.
  */
 export declare function findStickyComment(octokit: Octokit, owner: string, repo: string, issueNumber: number, options?: FindStickyCommentOptions): Promise<number | undefined>;
 /**
