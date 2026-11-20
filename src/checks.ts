@@ -25,6 +25,7 @@ import { globalMetrics } from './metrics';
 import { getStrings } from './i18n';
 import { UnauthorizedTrustlinePolicy } from './inputs';
 import { validateContractAddress, validateHorizonUrl } from './validation';
+import { type ReasonCode } from './reasonCodes';
 
 /** Stellar public network base reserve per ledger entry (XLM). */
 export const STELLAR_BASE_RESERVE_XLM = 0.5;
@@ -308,8 +309,8 @@ export interface ValidationResult {
   trustlineLimit?: string; // Actual trustline limit for the asset (Issue #140)
   checks: CheckResultItem[];
   remediation?: string;
-  /** Machine-readable failure reason for gating / metrics. */
-  reasonCode?: string;
+  /** Machine-readable failure reason for gating / metrics. Frozen catalog: src/reasonCodes.ts. */
+  reasonCode?: ReasonCode;
   /**
    * Issuer flavour of the configured asset (Issue #730). `soroban-contract`
    * means `asset_issuer` is a Stellar Asset Contract id (C-address), so the
@@ -945,6 +946,10 @@ export function runAccountChecks(
   const sacIssuer = isSorobanContractIssuer(config.assetIssuer);
 
   const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
+  // Horizon only reports `is_authorized: false` for a trustline that is
+  // currently unauthorized. Keep this independent from clawback and from the
+  // issuer's immutable/revocable flags: those flags describe future state,
+  // while this policy evaluates the account's present authorization state.
   const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
   const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
 
@@ -1216,6 +1221,9 @@ export function runAccountChecks(
         // missing trustline — the trustline exists on-chain. Reporting
         // TRUSTLINE_MISSING here sent triage to the wrong remediation step
         // ("add a trustline") when the real fix is an issuer SetTrustLineFlags.
+        // Combined auth_required/auth_immutable/clawback states still use
+        // authorization precedence: the actionable fix is issuer approval,
+        // not adding a second trustline or changing clawback policy.
         if (authorizationBlocks) return "TRUSTLINE_UNAUTHORIZED";
         // Issue #730: a Soroban SAC issuer never appears in a Horizon account's
         // `balances` array, so "trustline missing" would be a false accusation

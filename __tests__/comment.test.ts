@@ -2067,3 +2067,24 @@ describe('Issue #691 — privacy mode redacts C-addresses in comments', () => {
     expect(cBody).toContain(cRedacted);
   });
 });
+
+describe('Issue #867: sticky comment selection safety metadata', () => {
+  it('does not select a human-authored marked comment when GraphQL identifies it', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(issueGraphqlResponse([
+      {
+        id: 'IC_HUMAN', databaseId: 501,
+        body: `${STICKY_COMMENT_MARKER}\nmarked`,
+      } as never,
+    ]));
+    // The production query requests author/viewerCanUpdate; this response shape
+    // models a human comment with no update permission for the lookup contract.
+    octokit.graphql.mockResolvedValue({
+      repository: { issue: { comments: { nodes: [{
+        id: 'IC_HUMAN', databaseId: 501, body: `${STICKY_COMMENT_MARKER}\nmarked`,
+        author: { login: 'maintainer', __typename: 'User' }, viewerCanUpdate: false,
+      }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    });
+    await expect(findStickyComment(octokit as never, 'owner', 'repo', 42)).resolves.toBeUndefined();
+  });
+});

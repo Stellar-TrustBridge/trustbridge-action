@@ -41,8 +41,16 @@ export interface AssetTrustlineRow {
  * @param options.heading Section heading (defaults to "Asset trustlines").
  * @returns Markdown section (heading + table), or `''` when `rows` is empty.
  */
+/**
+ * Default cap on rows rendered by {@link buildAssetTrustlineTable} before it
+ * truncates with a summary line (Issue #860). Matches the long-standing
+ * `DIGEST_MAX_LISTED_ISSUES` cap in `src/summary.ts` so every multi-row
+ * section in a TrustBridge comment truncates at the same threshold.
+ */
+export declare const MAX_ASSET_TABLE_ROWS = 50;
 export declare function buildAssetTrustlineTable(rows: AssetTrustlineRow[], options?: {
     heading?: string;
+    maxRows?: number;
 }): string;
 /**
  * A single per-asset checklist entry for {@link buildAssetChecklist}

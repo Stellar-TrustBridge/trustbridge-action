@@ -842,6 +842,12 @@ export async function run(): Promise<void> {
       clawbackStrictMode: checkConfig.clawbackStrictMode,
     });
     batchSummary = batchSummaryLocal;
+    if (batchSummaryLocal.fatal) {
+      const reasons = (batchSummaryLocal.fatalReasonCodes ?? []).join(', ');
+      core.setFailed(
+        `Batch validation encountered fatal errors (${reasons}). Per-address results remain available in batch_summary_json.`,
+      );
+    }
     const batchMarkdown = formatBatchSummaryMarkdown(
       batchSummaryLocal,
       normalizedAsset.assetCode,

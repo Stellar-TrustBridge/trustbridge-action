@@ -40,6 +40,9 @@ export const BATCH_REASON_CODES = {
   horizonError: 'HORIZON_ERROR',
   invalidAddress: 'INVALID_ADDRESS',
   rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
+  fatalAuth: 'FATAL_AUTH',
+  fatalConfig: 'FATAL_CONFIG',
+  fatalCancellation: 'FATAL_CANCELLED',
   clawbackStrict: CLAWBACK_STRICT_REASON_CODE,
   /**
    * Row never dispatched to Horizon because `options.signal` was aborted
@@ -129,6 +132,10 @@ export interface BatchSummary {
    * clawback row is impossible for this run.
    */
   clawbackStrictMode: boolean;
+  /** True when at least one fatal config/auth/cancellation failure occurred. */
+  fatal?: boolean;
+  /** Stable fatal reason codes for job-level gating. */
+  fatalReasonCodes?: string[];
 }
 
 export interface BatchRunOptions {
@@ -321,6 +328,18 @@ async function validateOneAddress(
     let failureReason: string;
     let isFunded = false;
     const isBudgetExhausted = error instanceof RateBudgetExhaustedError;
+    const statusCode = error instanceof HorizonError ? error.statusCode : 0;
+    const isCancelled =
+      error instanceof Error &&
+      (error.name === 'AbortError' || /cancel|abort/i.test(error.message));
+    const isFatalAuth =
+      error instanceof HorizonError && (statusCode === 401 || statusCode === 403);
+    const isFatalConfig =
+      error instanceof HorizonError &&
+      statusCode >= 400 &&
+      statusCode < 500 &&
+      statusCode !== 404 &&
+      !isFatalAuth;
 
     if (isBudgetExhausted) {
       failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
@@ -329,6 +348,15 @@ async function validateOneAddress(
     } else if (error instanceof HorizonError && error.statusCode === 404) {
       failureReason = 'account not funded';
       globalMetrics.incrementCounter('batch_fail_account_not_funded');
+    } else if (isCancelled) {
+      failureReason = `Batch cancelled: ${error instanceof Error ? error.message : 'cancelled'}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_cancelled');
+    } else if (isFatalAuth) {
+      failureReason = `Fatal Horizon authentication/permission error (${statusCode}): ${error.message}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_auth');
+    } else if (isFatalConfig) {
+      failureReason = `Fatal Horizon configuration error (${statusCode}): ${error.message}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_config');
     } else if (error instanceof HorizonError) {
       failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
       globalMetrics.incrementCounter('batch_fail_horizon_error');
@@ -367,13 +395,19 @@ async function validateOneAddress(
         failureReason,
         reasonCode: isBudgetExhausted
           ? BATCH_REASON_CODES.rateBudgetExhausted
-          : deriveBatchReasonCode(false, {
-              clawbackStrictFailure: false,
-              invalidAddress: false,
-              accountNotFunded:
-                error instanceof HorizonError && error.statusCode === 404,
-              horizonError: true,
-            }),
+          : isCancelled
+            ? BATCH_REASON_CODES.fatalCancellation
+            : isFatalAuth
+              ? BATCH_REASON_CODES.fatalAuth
+              : isFatalConfig
+                ? BATCH_REASON_CODES.fatalConfig
+                : deriveBatchReasonCode(false, {
+                    clawbackStrictFailure: false,
+                    invalidAddress: false,
+                    accountNotFunded:
+                      error instanceof HorizonError && error.statusCode === 404,
+                    horizonError: true,
+                  }),
         clawbackStrictFailure: false,
         clawbackStrictAssets: [],
       },
@@ -683,6 +717,7 @@ export function buildBatchSummary(
 ): BatchSummary {
   const passed = results.filter((r) => r.valid).length;
   const failed = results.length - passed;
+  const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code): code is string => Boolean(code && (code.startsWith('FATAL_') || code === BATCH_REASON_CODES.rateBudgetExhausted)))));
 
   const failures = results
     .filter((r) => !r.valid)
@@ -729,6 +764,8 @@ export function buildBatchSummary(
     clawbackStrictFailures: taxonomy.clawbackStrict,
     clawbackStrictMode:
       options.clawbackStrictMode ?? results.some((r) => r.clawbackStrictFailure === true),
+    fatal: fatalReasonCodes.length > 0,
+    fatalReasonCodes,
   };
 }
 

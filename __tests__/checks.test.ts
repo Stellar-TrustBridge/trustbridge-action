@@ -2462,3 +2462,26 @@ describe('Issue #536: assets_json extra trustline gating', () => {
     expect(result.checks.some((c) => c.label.includes('(extra)'))).toBe(false);
   });
 });
+
+// Issue #865 — combined authorization/clawback fixture precedence.
+describe('Issue #865: combined authorization and clawback policy', () => {
+  it('uses authorization as the actionable reason before strict clawback', async () => {
+    const account = makeAccount({
+      flags: { auth_required: true, auth_immutable: true, auth_clawback_enabled: true },
+      balances: [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '50.0000000', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: USDC_ISSUER,
+          buying_liabilities: '0', selling_liabilities: '0', is_authorized: false, is_clawback_enabled: true,
+        },
+      ],
+    });
+    const result = await runAccountChecks(account, {
+      ...defaultConfig,
+      unauthorizedTrustlinePolicy: 'fail',
+      clawbackStrictMode: true,
+    });
+    expect(result.reasonCode).toBe('TRUSTLINE_UNAUTHORIZED');
+    expect(result.remediation).toMatch(/authorize this trustline/i);
+  });
+});

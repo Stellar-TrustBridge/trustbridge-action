@@ -13,6 +13,13 @@ inputs:
       `issues: write` (to post skip comments). GITHUB_TOKEN is typical.
     required: true
 
+  force_validation:
+    description: >-
+      When true, bypass the label gate and always run TrustBridge. This is an
+      explicit maintainer override; it does not change fail_on_missing.
+    required: false
+    default: 'false'
+
   gate_labels:
     description: >-
       Comma-separated list of label names that open the gate (e.g.
@@ -440,6 +447,7 @@ runs:
       shell: bash
       env:
         GATE_LABELS: ${{ inputs.gate_labels }}
+        FORCE_VALIDATION: ${{ inputs.force_validation }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
         ISSUE_LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
       run: |
@@ -448,6 +456,15 @@ runs:
         # Initialize outputs
         echo "gate_skipped=false" >> "$GITHUB_OUTPUT"
         echo "gate_label_found=" >> "$GITHUB_OUTPUT"
+
+        # An explicit maintainer override always opens the gate and short-circuits
+        # label evaluation, so no label-dependent API work is performed.
+        if [ "${FORCE_VALIDATION,,}" = "true" ]; then
+          echo "::notice::Label gate force path enabled; running trustbridge-action."
+          echo "gate_skipped=false" >> "$GITHUB_OUTPUT"
+          echo "gate_label_found=force" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
 
         # Check if running in an issue context
         if [ -z "$ISSUE_LABELS_JSON" ] || [ "$ISSUE_LABELS_JSON" = "null" ]; then
