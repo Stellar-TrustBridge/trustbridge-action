@@ -832,6 +832,100 @@ These guarantees are verified by comprehensive test matrix in [`__tests__/fail_o
 
 ---
 
+## Federation address resolution and memo requirements (Issue #257 / #883)
+
+TrustBridge can resolve Stellar federation addresses (`user*domain.com`) to G-addresses via the SEP-0002 federation protocol. Enable it with:
+
+```yaml
+with:
+  stellar_address_input: alice*example.com
+  federation_resolution_enabled: true
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+When `federation_resolution_enabled` is `false` (the default), `stellar_address_input` must already be a plain G-address. No network request is made for federation.
+
+### When a memo is mandatory
+
+Federation servers may return a `memo_type` and `memo` alongside the resolved G-address. When present, the memo **must** be attached to every payment sent to that address. Without it, the funds cannot be credited to the correct sub-account and the payment is unroutable.
+
+TrustBridge surfaces this information in the `FederationResolution` object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `gAddress` | `string` | The resolved Stellar G-address. |
+| `memoType` | `"text" \| "id" \| "hash"` | Memo type required by the destination. Present only when a memo is required. |
+| `memo` | `string` | The memo value to attach. Present only when `memoType` is set. |
+| `memoRequired` | `boolean` | `true` when `memoType` is set; `false` when no memo is needed. |
+
+**Gate on `memoRequired` before building a payment:**
+
+```typescript
+const resolution = await resolveFederationAddress('alice*exchange.com');
+if (resolution && resolution.memoRequired) {
+  // Attach resolution.memoType and resolution.memo to the transaction
+  // before submitting. Without the memo, the exchange cannot credit the
+  // funds to Alice's account.
+}
+```
+
+### How missing or malformed memos are reported
+
+If the federation server returns `memo_type` without a `memo` value, or returns a `memo` that is incompatible with the declared `memo_type`, `resolveFederationAddress` returns `null` and logs a warning. The two error codes are:
+
+| Code | Trigger | Remediation |
+|---|---|---|
+| `MEMO_REQUIRED` | `memo_type` is present but `memo` is absent or empty. | The federation server is non-conformant. Contact the domain operator. Do not send funds until the server returns a valid memo pair. |
+| `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized (not `text`, `id`, or `hash`), or the `memo` value is incompatible with the type (e.g. a non-numeric `id`, a non-hex `hash`, or a `text` over 28 bytes). | The federation server is non-conformant. Contact the domain operator. |
+
+### Memo type rules (SEP-0002)
+
+| `memo_type` | Valid `memo` format | Stellar protocol limit |
+|---|---|---|
+| `text` | Any UTF-8 string | At most **28 bytes** (UTF-8 encoded) |
+| `id` | Decimal string of an unsigned integer | 0 – 18446744073709551615 (uint64) |
+| `hash` | Exactly **64 lowercase or uppercase hex characters** | Encodes a 32-byte value |
+
+### Edge cases
+
+- **No memo fields returned** — `memoRequired` is `false`; `memoType` and `memo` are `undefined`. No memo is needed.
+- **`memo_type` present, `memo` absent** — returns `null` with code `MEMO_REQUIRED`. Do not attempt to send funds.
+- **Unrecognized `memo_type`** — returns `null` with code `MEMO_TYPE_MISMATCH`.
+- **`memo` present without `memo_type`** — the `memo` field is ignored (non-standard server behaviour). The resolution succeeds with `memoRequired: false`.
+- **`text` memo over 28 bytes** — returns `null`. The Stellar protocol rejects transactions with text memos over 28 UTF-8 bytes; building one would fail at the network layer anyway.
+
+### Fixtures for testing
+
+The `__tests__/federation-memo-resolution.test.ts` test file contains ready-made JSON fixture shapes for all memo scenarios:
+
+```json
+// No memo (memoRequired: false)
+{ "account_id": "G..." }
+
+// text memo (memoRequired: true, memoType: "text")
+{ "account_id": "G...", "memo_type": "text", "memo": "invoice-99" }
+
+// id memo (memoRequired: true, memoType: "id")
+{ "account_id": "G...", "memo_type": "id", "memo": "12345" }
+
+// hash memo (memoRequired: true, memoType: "hash")
+{ "account_id": "G...", "memo_type": "hash", "memo": "<64 hex chars>" }
+
+// MEMO_REQUIRED: memo_type present, memo absent → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "text" }
+
+// MEMO_TYPE_MISMATCH: bad id format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "id", "memo": "not-a-number" }
+
+// MEMO_TYPE_MISMATCH: bad hash format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "hash", "memo": "tooshort" }
+
+// MEMO_TYPE_MISMATCH: unrecognized type → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "return", "memo": "some-value" }
+```
+
+---
+
 ## Debug mode and timeout
 
 ```yaml

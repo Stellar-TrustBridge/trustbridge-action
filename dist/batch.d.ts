@@ -24,6 +24,9 @@ export declare const BATCH_REASON_CODES: {
     readonly horizonError: "HORIZON_ERROR";
     readonly invalidAddress: "INVALID_ADDRESS";
     readonly rateBudgetExhausted: "RATE_BUDGET_EXHAUSTED";
+    readonly fatalAuth: "FATAL_AUTH";
+    readonly fatalConfig: "FATAL_CONFIG";
+    readonly fatalCancellation: "FATAL_CANCELLED";
     readonly clawbackStrict: "CLAWBACK_STRICT_MODE";
     /**
      * Row never dispatched to Horizon because `options.signal` was aborted
@@ -110,6 +113,10 @@ export interface BatchSummary {
      * clawback row is impossible for this run.
      */
     clawbackStrictMode: boolean;
+    /** True when at least one fatal config/auth/cancellation failure occurred. */
+    fatal?: boolean;
+    /** Stable fatal reason codes for job-level gating. */
+    fatalReasonCodes?: string[];
 }
 export interface BatchRunOptions {
     /** Delay in milliseconds between individual address requests (default: 200 ms). */
