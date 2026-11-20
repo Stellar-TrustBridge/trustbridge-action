@@ -1111,6 +1111,8 @@ interface IssueCommentGraphqlNode {
   id: string;
   databaseId?: number;
   body: string;
+  author?: { login?: string | null; __typename?: string } | null;
+  viewerCanUpdate?: boolean;
 }
 
 interface IssueCommentsGraphqlPage {
@@ -1133,7 +1135,10 @@ interface IssueCommentsGraphqlPage {
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
- * for upsert.
+ * for upsert. When GitHub supplies author/updateability metadata, a matching
+ * marker is selected only when the authenticated viewer may update it and it
+ * is not visibly owned by a human user. Older responses without those fields
+ * retain the marker-only compatibility behavior.
  */
 export async function findStickyComment(
   octokit: Octokit,
@@ -1156,6 +1161,8 @@ export async function findStickyComment(
                   id
                   databaseId
                   body
+                  author { login __typename }
+                  viewerCanUpdate
                 }
                 pageInfo {
                   hasNextPage
@@ -1189,7 +1196,14 @@ export async function findStickyComment(
         graphqlHandled = true;
 
         for (const comment of comments.nodes) {
-          if (isTrustBridgeComment(comment.body)) {
+          const author = comment.author;
+          const authoredByHuman = author?.__typename === 'User' &&
+            Boolean(author.login && !/\[bot\]$/i.test(author.login));
+          if (
+            isTrustBridgeComment(comment.body) &&
+            comment.viewerCanUpdate !== false &&
+            !authoredByHuman
+          ) {
             // databaseId is the numeric REST issue comment id
             lastMatchId = comment.databaseId;
           }
@@ -1226,9 +1240,12 @@ export async function findStickyComment(
       issue_number: issueNumber,
       per_page: 100,
     });
-    const matches = comments.filter((comment) =>
-      isTrustBridgeComment(comment.body),
-    );
+    const matches = comments.filter((comment) => {
+      const author = (comment as { user?: { login?: string; type?: string } }).user;
+      const authoredByHuman = author?.type === 'User' &&
+        Boolean(author.login && !/\[bot\]$/i.test(author.login));
+      return isTrustBridgeComment(comment.body) && !authoredByHuman;
+    });
     return matches.length > 0 ? matches[matches.length - 1]!.id : undefined;
   }
 
