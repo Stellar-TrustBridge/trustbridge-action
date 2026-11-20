@@ -641,3 +641,19 @@ describe('label-gate composite action wiring (#538)', () => {
     }
   });
 });
+
+// Issue #868 — the force path must open before label evaluation, and the
+// closed path must not invoke the downstream action (therefore no Horizon).
+describe('Issue #868: label gate force and skip short-circuit', () => {
+  it('declares force_validation and short-circuits before label parsing', () => {
+    expect(composite.inputs.get('force_validation')?.default).toBe('false');
+    expect(checkGate.run).toContain('FORCE_VALIDATION');
+    expect(checkGate.run).toContain('Label gate force path enabled');
+    expect(checkGate.run.indexOf('FORCE_VALIDATION')).toBeLessThan(
+      checkGate.run.indexOf('Parse gate labels'),
+    );
+  });
+  it('keeps the downstream validation conditional on gate_skipped', () => {
+    expect(runTrustBridge.if).toBe("steps.check-gate.outputs.gate_skipped != 'true'");
+  });
+});

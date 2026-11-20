@@ -10,6 +10,7 @@
  */
 
 import * as core from '@actions/core';
+import * as crypto from 'crypto';
 import { validateContractAddress } from './validation';
 
 export interface MetricPoint {
@@ -27,6 +28,29 @@ export interface MetricPoint {
  * makes it into the JSON metrics artifact (see toJSON()).
  */
 export const CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+
+/**
+ * Length, in hex characters, of a hashed address label (see `hashAddressForMetrics`).
+ * Fixed and short so the resulting tag value cannot be reversed to the
+ * original address and does not itself blow up series cardinality.
+ */
+const ADDRESS_HASH_LABEL_LENGTH = 12;
+
+/**
+ * Derive a bounded, non-reversible metric label for a Stellar address
+ * (`G...`/`C...`/`M...`).
+ *
+ * Tagging a metric with a raw address turns every distinct account into its
+ * own Prometheus series (unbounded cardinality) and leaks the address itself
+ * into any scraper or JSON artifact that reads the metric — see
+ * docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy. Hashing
+ * collapses the tag to a fixed-width token that is still useful for
+ * correlating repeated runs against the *same* address without exposing or
+ * bounding on the raw value.
+ */
+export function hashAddressForMetrics(address: string): string {
+  return crypto.createHash('sha256').update(address).digest('hex').slice(0, ADDRESS_HASH_LABEL_LENGTH);
+}
 
 // ---------------------------------------------------------------------------
 // OctokitOperationResult  (Wave #37)
@@ -268,19 +292,16 @@ export class MetricsCollector {
   private timers: Map<string, number> = new Map();
 
   /**
-   * Record a numeric metric. If a `contractAddress` tag is present, it is
-   * validated against the Soroban C-address policy first; an invalid
-   * address throws rather than being silently recorded.
+   * Record a numeric metric. A `contractAddress` tag is rejected outright:
+   * callers must go through `recordContractMetric()`, which validates the
+   * address and replaces it with a bounded hash before it ever reaches a
+   * tag value (see docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy).
    */
   recordMetric(name: string, value: number, unit: string = '', tags?: Record<string, string>): void {
-    const contractAddress = tags?.[CONTRACT_ADDRESS_TAG_KEY];
-    if (contractAddress !== undefined) {
-      const result = validateContractAddress(contractAddress);
-      if (!result.valid) {
-        throw new Error(
-          `Invalid ${CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`,
-        );
-      }
+    if (tags && CONTRACT_ADDRESS_TAG_KEY in tags) {
+      throw new Error(
+        `recordMetric() tag "${CONTRACT_ADDRESS_TAG_KEY}" on metric "${name}" must be set via recordContractMetric(), never with a raw address.`,
+      );
     }
 
     this.metrics.push({
@@ -293,8 +314,11 @@ export class MetricsCollector {
   }
 
   /**
-   * Convenience wrapper for recording a metric tagged with a Soroban
-   * contract address, enforcing the C-address policy up front.
+   * Convenience wrapper for recording a metric correlated with a Soroban
+   * contract address. The address is validated against the C-address policy
+   * (an invalid address throws, same as before), but only its bounded hash
+   * — never the raw address — is stored as the `contractAddress` tag, so the
+   * metric cannot become an unbounded, PII-carrying label series.
    */
   recordContractMetric(
     name: string,
@@ -303,9 +327,22 @@ export class MetricsCollector {
     unit: string = '',
     extraTags?: Record<string, string>,
   ): void {
-    this.recordMetric(name, value, unit, {
-      ...extraTags,
-      [CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+    const result = validateContractAddress(contractAddress);
+    if (!result.valid) {
+      throw new Error(
+        `Invalid ${CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`,
+      );
+    }
+
+    this.metrics.push({
+      name,
+      value,
+      unit,
+      timestamp: Date.now(),
+      tags: {
+        ...extraTags,
+        [CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(contractAddress),
+      },
     });
   }
 

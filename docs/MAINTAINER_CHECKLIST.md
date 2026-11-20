@@ -25,3 +25,12 @@ Run these steps in order before a Drips Wave opens so every repository in the or
 4. **Unfreeze** — after the Wave closes, reset `snooze_window_minutes`, use `force_comment: true` once if contributors need a fresh comment, and remove the Wave label from unfinished issues.
 
 Contributors who ask why their comment did not update during a Wave should be pointed to the [FAQ](FAQ.md).
+
+## Label gate and comment safety (Issues #867–#868)
+
+- [ ] Confirm `gate_skipped` is checked before any forwarded validation output.
+- [ ] Treat a missing gate label as an intentional short-circuit: no Horizon call and no `fail_on_missing` failure.
+- [ ] Use `force_validation: true` only for an explicit maintainer rerun; record why the override was needed.
+- [ ] Give the token comment update permission and verify sticky comments carry a TrustBridge marker.
+- [ ] Do not rely on marker-like prose or a human-authored comment being edited in place.
+- [ ] Treat skip-comment posting as best effort; a permission failure must not convert a gate skip into a validation failure.
