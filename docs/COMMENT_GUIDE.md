@@ -130,7 +130,9 @@ On a blocked run the first bullet becomes `Blocked by: <failed check labels>` an
 
 The fallback is the same contract the `reason_code` action output uses, so the comment and the output never disagree. `Reason code` is rendered inside a code span, so snake_case values stay literal and copy-pasteable; only backticks are neutralized.
 
-All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`.
+Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code.
+
+All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`. An unrecognized `locale` input (unsupported code, stray whitespace, wrong case, etc.) falls back to the complete English pack rather than throwing or rendering a partial comment — see `getStrings()` in [`src/i18n.ts`](../src/i18n.ts) and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
 
 ---
 
@@ -256,6 +258,13 @@ Rendering rules:
 - Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
 - Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
 - A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+- **Long tables are truncated** (Issue #860): only the first `MAX_ASSET_TABLE_ROWS` (50) rows render. The Trustline status column stays intact for every visible row — truncation only hides rows, never columns. A plain sentence *after* the table (not an extra table row — GitHub Markdown tables have no colspan) summarizes what was cut, e.g.:
+
+  ```markdown
+  _…and **187** more assets not shown (showing 50 of 237). See the `assets_trustline_status` / `trustlines_summary` action outputs for the full list._
+  ```
+
+  Because the summary is ordinary paragraph text after the table rather than a malformed row, it reads correctly for screen readers and does not depend on sighted users noticing a visual cutoff. Use the `assets_trustline_status` / `trustlines_summary` action outputs for the complete, untruncated per-asset list.
 
 Implementation: `buildAssetTrustlineTable` in `src/markdown.ts`, wired into `formatCommentBody` via the `CommentConfig.assets` field (`src/comment.ts`), populated from the `assets_json` multi-asset check in `src/index.ts`.
 

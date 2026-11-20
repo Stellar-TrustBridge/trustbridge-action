@@ -519,3 +519,75 @@ describe('buildAssetTrustlineTable (Issue #552)', () => {
     expect(md).toContain('### Trustlines de activos');
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildAssetTrustlineTable long-table truncation (Issue #860)
+// ---------------------------------------------------------------------------
+
+describe('buildAssetTrustlineTable truncation (Issue #860)', () => {
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  function makeRows(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      assetCode: `A${i}`,
+      assetIssuer: issuer,
+      trustlineExists: i % 2 === 0,
+      balance: i % 2 === 0 ? `${i}.0000000` : '0',
+    }));
+  }
+
+  it('does not truncate when rows are at or under the default cap (50)', () => {
+    const md = buildAssetTrustlineTable(makeRows(50));
+    expect(md).not.toContain('more asset');
+    // All 50 rows present.
+    for (let i = 0; i < 50; i++) {
+      expect(md).toContain(`| A${i} |`);
+    }
+  });
+
+  it('truncates to the default cap (50) and appends an accessible summary line', () => {
+    const md = buildAssetTrustlineTable(makeRows(237));
+    const lines = md.split('\n');
+    const rowLines = lines.filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+
+    expect(rowLines).toHaveLength(50);
+    // First 50 rows (stable order), not an arbitrary subset.
+    expect(rowLines[0]).toContain('| A0 |');
+    expect(rowLines[49]).toContain('| A49 |');
+    expect(md).not.toContain('| A50 |');
+
+    // Summary is a plain paragraph *after* the table — not an extra row —
+    // so it never breaks the table's column count and reads sequentially
+    // for a screen reader.
+    expect(md).toContain('_…and **187** more assets not shown (showing 50 of 237).');
+    const tableEnd = lines.findIndex((l) => l.startsWith('| A49'));
+    const summaryLine = lines.findIndex((l) => l.includes('more assets not shown'));
+    expect(summaryLine).toBeGreaterThan(tableEnd);
+  });
+
+  it('keeps the Trustline (status) column intact for every visible row when truncated', () => {
+    const md = buildAssetTrustlineTable(makeRows(60));
+    const rowLines = md.split('\n').filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+    expect(rowLines).toHaveLength(50);
+    for (const line of rowLines) {
+      expect(line).toMatch(/✅ exists|❌ missing/);
+    }
+  });
+
+  it('uses singular wording for exactly one hidden row', () => {
+    const md = buildAssetTrustlineTable(makeRows(51));
+    expect(md).toContain('_…and **1** more asset not shown (showing 50 of 51).');
+  });
+
+  it('honors a custom maxRows option', () => {
+    const md = buildAssetTrustlineTable(makeRows(10), { maxRows: 3 });
+    const rowLines = md.split('\n').filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+    expect(rowLines).toHaveLength(3);
+    expect(md).toContain('_…and **7** more assets not shown (showing 3 of 10).');
+  });
+
+  it('matches the golden snapshot for a truncated table', () => {
+    const md = buildAssetTrustlineTable(makeRows(4), { maxRows: 2 });
+    expect(md).toMatchSnapshot();
+  });
+});

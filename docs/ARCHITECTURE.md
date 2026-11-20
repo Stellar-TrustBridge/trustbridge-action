@@ -71,6 +71,28 @@ Each `CheckResultItem` maps to one ✅/❌ line in the issue comment.
 
 ---
 
+## Metrics label cardinality and PII policy
+
+`src/metrics.ts` is the only place the Action records numeric metrics (`MetricsCollector.recordMetric`/`recordContractMetric`). Wave orgs scrape or upload its JSON artifact (`toJSON()`, `buildJobSummary().jsonArtifact`) into shared Prometheus instances, so a tag value is effectively a public Prometheus label: it must be drawn from a small, fixed set, never from per-account or per-user data.
+
+### Allowed tag keys
+
+| Tag key | Values | Cardinality |
+|---|---|---|
+| `contractAddress` | A 12-hex-character SHA-256 prefix of the Soroban contract address (`hashAddressForMetrics`), never the raw address | Bounded in practice (one run touches O(1) contracts), and non-reversible even so |
+| `outcome` (home domain check) | `valid` \| `mismatch` \| `missing` \| `skipped` | 4 |
+| `mode` (home domain check) | `warn` \| `strict` \| `fail` | 3 |
+| `preset` / `network` (campaign preset) | Fixed preset ids / `pubnet` \| `testnet` | Small, closed set |
+| `endpointKind` (Horizon latency histogram) | `primary` \| `fallback` | 2 |
+
+No other tag key may carry a Stellar address (`G`/`C`/`M`...) or a GitHub login/actor. `recordMetric()` rejects any call that sets the `contractAddress` tag directly — `MetricsCollector.recordContractMetric()` is the only path that may populate it, and it hashes the address with `hashAddressForMetrics()` (bounded 12-character output, sha256-derived, non-reversible) before the value ever reaches a `MetricPoint`.
+
+### Enforcement
+
+`__tests__/metrics.test.ts` asserts `recordMetric()` throws on a raw `contractAddress` tag (valid or not), that `recordContractMetric()` never stores the raw address, and that neither `toJSON()` nor `buildJobSummary().jsonArtifact` ever contain a raw G-/C-address after a contract metric is recorded.
+
+---
+
 ## Check rules
 
 ### 1. Account funded

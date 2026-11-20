@@ -167,6 +167,8 @@ changes lives in [`docs/BREAKING_CHANGES.md`](BREAKING_CHANGES.md).
 | Webhook payload | `schemas/webhook-payload.schema.json` | `schema_version` (body) and `X-TrustBridge-Schema-Version` (header) | `1` | `WEBHOOK_SCHEMA_VERSION` in `src/webhook.ts` |
 | Reason codes | `schemas/reason-codes.json` | top-level `version`; per-code `since` | `1` | `src/checks.ts` |
 
+The JSON catalog has a compile-time mirror at [`src/reasonCodes.ts`](../src/reasonCodes.ts): the `ReasonCode` union type and `REASON_CODES` tuple. `ValidationResult.reasonCode` (`src/checks.ts`) is typed `ReasonCode`, so a check branch that returns a code outside this union fails `tsc` before it can reach CI or a Wave dashboard. `__tests__/reason-codes-exhaustiveness.test.ts` asserts the union and the JSON catalog list the exact same codes.
+
 ### Compatibility rules
 
 - **Additive (any minor/patch release, no version bump):** new optional
