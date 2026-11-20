@@ -1,0 +1,15 @@
+# Conflict fixture: the same pattern appears twice with different owners.
+# The second occurrence (later in the file) wins.
+#
+# Pattern precedence (GitHub semantics): LAST matching rule wins.
+#
+# For any file `src/**`:
+#   1. `src/**`       matches → owners: @legacy-team          (overridden)
+#   2. `src/**`       matches → owners: @current-team         ← WINS
+#
+# This scenario arises when a CODEOWNERS file is updated in a PR and the
+# author appends a new rule without removing the old one.
+
+src/**            @legacy-team
+# Ownership transferred in PR #42 — supersedes the rule above
+src/**            @current-team

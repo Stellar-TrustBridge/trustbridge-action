@@ -192,6 +192,93 @@ export function checkCodeownersCoverage(
   };
 }
 
+/**
+ * Per-file detail produced by {@link checkCodeownersCoverageWithDetail}.
+ */
+export interface CodeownersCoverageDetail {
+  /** The file path that was checked. */
+  filePath: string;
+  /** Whether the file has at least one owner via a matching rule. */
+  covered: boolean;
+  /**
+   * The CODEOWNERS pattern that won (last-match-wins), or `null` when no rule
+   * matched. This is the value cited in preflight PR comments.
+   */
+  matchedPattern: string | null;
+  /** Owners assigned by the winning rule, or an empty array when uncovered. */
+  owners: string[];
+}
+
+/**
+ * Like {@link checkCodeownersCoverage} but returns per-file detail including
+ * the winning rule's pattern so preflight comments can cite it precisely.
+ *
+ * **Precedence rule (GitHub semantics):** the last matching rule in the
+ * CODEOWNERS file wins. When multiple patterns match a path, the one that
+ * appears latest in the file is authoritative.
+ *
+ * Example — given this CODEOWNERS file:
+ * ```
+ * *            @global-owner
+ * src/**       @backend-team
+ * src/payments @payments-team
+ * ```
+ * The file `src/payments/invoice.ts` matches all three rules; the winning rule
+ * is `src/payments` (last) and the owners are `['payments-team']`.
+ *
+ * @param touchedPaths - File paths relative to the repository root.
+ * @param rules        - Parsed rules in file order (first → last).
+ */
+export function checkCodeownersCoverageWithDetail(
+  touchedPaths: string[],
+  rules: CodeownersRule[],
+): {
+  details: CodeownersCoverageDetail[];
+  covered: string[];
+  uncovered: string[];
+  missingCodeowners: boolean;
+} {
+  const details: CodeownersCoverageDetail[] = [];
+  const covered: string[] = [];
+  const uncovered: string[] = [];
+
+  for (const filePath of touchedPaths) {
+    const rule = findCoveringRule(filePath, rules);
+    if (rule && rule.owners.length > 0) {
+      covered.push(filePath);
+      details.push({ filePath, covered: true, matchedPattern: rule.pattern, owners: rule.owners });
+    } else {
+      uncovered.push(filePath);
+      details.push({ filePath, covered: false, matchedPattern: null, owners: [] });
+    }
+  }
+
+  return { details, covered, uncovered, missingCodeowners: rules.length === 0 };
+}
+
+/**
+ * Build a human-readable note for a preflight PR comment that cites the
+ * winning CODEOWNERS rule for a given file.
+ *
+ * Returns a string like:
+ * ```
+ * src/payments/invoice.ts → matched pattern `src/payments` → owners: @payments-team
+ * ```
+ * or, when the file is uncovered:
+ * ```
+ * src/payments/invoice.ts → no CODEOWNERS rule matched
+ * ```
+ *
+ * @param detail - One entry from {@link checkCodeownersCoverageWithDetail}.
+ */
+export function formatMatchedPatternNote(detail: CodeownersCoverageDetail): string {
+  if (!detail.covered || detail.matchedPattern === null) {
+    return `${detail.filePath} → no CODEOWNERS rule matched`;
+  }
+  const ownerList = detail.owners.map((o) => `@${o}`).join(' ');
+  return `${detail.filePath} → matched pattern \`${detail.matchedPattern}\` → owners: ${ownerList}`;
+}
+
 export interface LoadCodeownersOptions {
   workspaceRoot?: string;
   customPath?: string;

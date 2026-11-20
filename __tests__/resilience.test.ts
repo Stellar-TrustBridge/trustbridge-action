@@ -3,6 +3,7 @@
  *
  * Wave #26: GitHub Check Run annotations + CircuitBreaker
  * Wave #36: Horizon HTTP mock matrix (HttpMockMatrix)
+ * Issue #888: half-open probe budget (stampede prevention)
  */
 
 import * as core from '@actions/core';
@@ -425,6 +426,310 @@ describe('CircuitBreaker', () => {
       restore();
       jest.useRealTimers();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CircuitBreaker — half-open probe budget (Issue #888)
+// ---------------------------------------------------------------------------
+
+describe('CircuitBreaker — half-open probe budget (Issue #888)', () => {
+  /**
+   * Helper: open a circuit then advance time past the recovery timeout so
+   * it transitions to half-open.
+   */
+  async function makeHalfOpenBreaker(opts: {
+    halfOpenMaxProbes?: number;
+    successThreshold?: number;
+    onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
+    onStateChange?: (from: CircuitState, to: CircuitState, reason: string) => void;
+  } = {}): Promise<CircuitBreaker> {
+    jest.useFakeTimers();
+    const cb = new CircuitBreaker({
+      failureThreshold: 1,
+      recoveryTimeoutMs: 1000,
+      successThreshold: opts.successThreshold ?? 1,
+      halfOpenMaxProbes: opts.halfOpenMaxProbes,
+      onStateChange: opts.onStateChange ?? (() => {}),
+      onProbeBudgetExhausted: opts.onProbeBudgetExhausted,
+    });
+    // Trip the circuit; must await so _recordFailure settles before we advance.
+    await cb.execute(() => Promise.reject(new Error('trip'))).catch(() => {});
+    jest.advanceTimersByTime(1001);
+    expect(cb.getState()).toBe('half-open');
+    return cb;
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // ── Happy path ────────────────────────────────────────────────────────────
+
+  it('happy path: single probe allowed when halfOpenMaxProbes=1 (default)', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+    const result = await cb.execute(() => Promise.resolve('probe-ok'));
+    expect(result).toBe('probe-ok');
+    expect(cb.getState()).toBe('closed');
+    jest.useRealTimers();
+  });
+
+  it('happy path: probe budget N allows exactly N concurrent probes', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 3, successThreshold: 3 });
+
+    // Start 3 concurrent probes (they will resolve later).
+    let resolveA!: (v: string) => void;
+    let resolveB!: (v: string) => void;
+    let resolveC!: (v: string) => void;
+    const pA = cb.execute(() => new Promise<string>((r) => { resolveA = r; }));
+    const pB = cb.execute(() => new Promise<string>((r) => { resolveB = r; }));
+    const pC = cb.execute(() => new Promise<string>((r) => { resolveC = r; }));
+
+    // All 3 are in-flight; a 4th must be rejected.
+    await expect(cb.execute(() => Promise.resolve('extra'))).rejects.toBeInstanceOf(CircuitOpenError);
+
+    // Resolve all 3 probes.
+    resolveA('a'); resolveB('b'); resolveC('c');
+    await Promise.all([pA, pB, pC]);
+    expect(cb.getState()).toBe('closed');
+    jest.useRealTimers();
+  });
+
+  it('happy path: getStats reflects halfOpenMaxProbes config', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 2 });
+    const stats = cb.getStats();
+    expect(stats.halfOpenMaxProbes).toBe(2);
+    jest.useRealTimers();
+  });
+
+  it('happy path: probe counter decrements after a successful probe resolves', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+    await cb.execute(() => Promise.resolve('ok'));
+    // Circuit should now be closed (successThreshold=1).
+    expect(cb.getState()).toBe('closed');
+    const stats = cb.getStats();
+    // After closing, in-flight is reset to 0.
+    expect(stats.halfOpenProbesInFlight).toBe(0);
+    jest.useRealTimers();
+  });
+
+  it('happy path: getOpenMetrics includes halfOpenProbeStats', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 2 });
+    const metrics = cb.getOpenMetrics();
+    expect(metrics.halfOpenProbeStats).toBeDefined();
+    expect(metrics.halfOpenProbeStats.maxProbes).toBe(2);
+    expect(metrics.halfOpenProbeStats.inFlight).toBe(0);
+    expect(metrics.halfOpenProbeStats.budgetExhaustedCount).toBe(0);
+    jest.useRealTimers();
+  });
+
+  // ── Failure path 1: budget exhausted → CircuitOpenError ──────────────────
+
+  it('failure path: N+1th concurrent probe throws CircuitOpenError when budget=N', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    // Hold the first probe open.
+    let releaseProbe!: (v: string) => void;
+    const inFlightProbe = cb.execute(() => new Promise<string>((r) => { releaseProbe = r; }));
+
+    // The second concurrent probe must be rejected immediately.
+    await expect(cb.execute(() => Promise.resolve('overload'))).rejects.toBeInstanceOf(CircuitOpenError);
+
+    // Release the original probe so the test can clean up.
+    releaseProbe('done');
+    await inFlightProbe;
+    jest.useRealTimers();
+  });
+
+  it('failure path: rejected call carries the stampede-prevention message', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    let release!: () => void;
+    const held = cb.execute(() => new Promise<void>((r) => { release = r; }));
+
+    const err = await cb.execute(() => Promise.resolve('x')).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CircuitOpenError);
+    expect((err as CircuitOpenError).message).toMatch(/probe budget is exhausted/i);
+
+    release();
+    await held;
+    jest.useRealTimers();
+  });
+
+  it('failure path: budgetExhaustedCount increments for each rejected call', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    let release!: () => void;
+    const held = cb.execute(() => new Promise<void>((r) => { release = r; }));
+
+    // Three callers arrive concurrently while budget (1) is exhausted.
+    await cb.execute(() => Promise.resolve('')).catch(() => {});
+    await cb.execute(() => Promise.resolve('')).catch(() => {});
+    await cb.execute(() => Promise.resolve('')).catch(() => {});
+
+    const stats = cb.getStats();
+    expect(stats.halfOpenProbeBudgetExhaustedCount).toBe(3);
+
+    // getOpenMetrics mirrors the same value.
+    expect(cb.getOpenMetrics().halfOpenProbeStats.budgetExhaustedCount).toBe(3);
+
+    release();
+    await held;
+    jest.useRealTimers();
+  });
+
+  it('failure path: onProbeBudgetExhausted callback fires with correct args', async () => {
+    const exhaustedCalls: Array<{ inFlight: number; maxProbes: number }> = [];
+    const cb = await makeHalfOpenBreaker({
+      halfOpenMaxProbes: 2,
+      onProbeBudgetExhausted: (inFlight, maxProbes) => exhaustedCalls.push({ inFlight, maxProbes }),
+    });
+
+    // Fill 2 slots.
+    let r1!: () => void; let r2!: () => void;
+    const p1 = cb.execute(() => new Promise<void>((r) => { r1 = r; }));
+    const p2 = cb.execute(() => new Promise<void>((r) => { r2 = r; }));
+
+    // 3rd call should trigger the callback.
+    await cb.execute(() => Promise.resolve('')).catch(() => {});
+
+    expect(exhaustedCalls).toHaveLength(1);
+    expect(exhaustedCalls[0]).toEqual({ inFlight: 2, maxProbes: 2 });
+
+    r1(); r2();
+    await Promise.all([p1, p2]);
+    jest.useRealTimers();
+  });
+
+  // ── Failure path 2: probe itself fails → circuit re-opens ────────────────
+
+  it('failure path: probe failure re-opens the circuit', async () => {
+    const transitions: Array<{ from: CircuitState; to: CircuitState }> = [];
+    const cb = await makeHalfOpenBreaker({
+      halfOpenMaxProbes: 1,
+      onStateChange: (from, to) => transitions.push({ from, to }),
+    });
+
+    await expect(cb.execute(() => Promise.reject(new Error('probe-fail')))).rejects.toThrow('probe-fail');
+
+    expect(cb.getState()).toBe('open');
+    expect(transitions.some(t => t.from === 'half-open' && t.to === 'open')).toBe(true);
+    jest.useRealTimers();
+  });
+
+  it('failure path: probe counter decremented even when probe fails and circuit re-opens', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    await expect(cb.execute(() => Promise.reject(new Error('err')))).rejects.toThrow();
+
+    // Circuit is open now; the in-flight count should not be stuck at 1.
+    // We verify by advancing time and confirming a fresh half-open allows a new probe.
+    jest.advanceTimersByTime(1001);
+    expect(cb.getState()).toBe('half-open');
+
+    // A fresh probe should be allowed (not rejected due to leftover in-flight count).
+    const result = await cb.execute(() => Promise.resolve('recovered'));
+    expect(result).toBe('recovered');
+    jest.useRealTimers();
+  });
+
+  it('failure path: budgetExhaustedCount resets on transition back to half-open', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    // Exhaust the budget.
+    let rel!: () => void;
+    const held = cb.execute(() => new Promise<void>((r) => { rel = r; }));
+    await cb.execute(() => Promise.resolve('')).catch(() => {}); // rejected
+    expect(cb.getStats().halfOpenProbeBudgetExhaustedCount).toBe(1);
+    rel();
+    await held;
+
+    // Circuit closes after the held probe resolves (successThreshold=1).
+    // Now trip it again and return to half-open.
+    await expect(cb.execute(() => Promise.reject(new Error('re-trip')))).rejects.toThrow();
+    jest.advanceTimersByTime(1001);
+    expect(cb.getState()).toBe('half-open');
+
+    // Counts should be fresh after re-entering half-open.
+    expect(cb.getStats().halfOpenProbeBudgetExhaustedCount).toBe(0);
+    expect(cb.getStats().halfOpenProbesInFlight).toBe(0);
+    jest.useRealTimers();
+  });
+
+  // ── Edge cases ─────────────────────────────────────────────────────────────
+
+  it('edge: halfOpenMaxProbes=Infinity allows unlimited probes (pre-#888 behavior)', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: Infinity, successThreshold: 5 });
+
+    const probes: Array<Promise<string>> = [];
+    const releases: Array<() => void> = [];
+
+    // Launch 10 concurrent probes — none should be rejected.
+    for (let i = 0; i < 10; i++) {
+      probes.push(cb.execute(() => new Promise<string>((r) => releases.push(() => r('ok')))));
+    }
+
+    // No rejects so far.
+    await expect(Promise.resolve('guard')).resolves.toBe('guard');
+    expect(cb.getStats().halfOpenProbeBudgetExhaustedCount).toBe(0);
+
+    releases.forEach((r) => r());
+    await Promise.all(probes);
+    jest.useRealTimers();
+  });
+
+  it('edge: default halfOpenMaxProbes is 1', async () => {
+    jest.useFakeTimers();
+    const cb = new CircuitBreaker({ failureThreshold: 1, recoveryTimeoutMs: 500, onStateChange: () => {} });
+    await cb.execute(() => Promise.reject(new Error('t'))).catch(() => {});
+    jest.advanceTimersByTime(501);
+    const stats = cb.getStats();
+    expect(stats.halfOpenMaxProbes).toBe(1);
+    jest.useRealTimers();
+  });
+
+  it('edge: reset() clears all probe counters', async () => {
+    const cb = await makeHalfOpenBreaker({ halfOpenMaxProbes: 1 });
+
+    let rel!: () => void;
+    const held = cb.execute(() => new Promise<void>((r) => { rel = r; }));
+    await cb.execute(() => Promise.resolve('')).catch(() => {}); // exhaust
+
+    cb.reset();
+
+    const stats = cb.getStats();
+    expect(stats.halfOpenProbesInFlight).toBe(0);
+    expect(stats.halfOpenProbeBudgetExhaustedCount).toBe(0);
+    expect(stats.state).toBe('closed');
+
+    rel();
+    await held.catch(() => {}); // may reject since circuit was reset
+    jest.useRealTimers();
+  });
+
+  it('edge: default onProbeBudgetExhausted emits a core.warning annotation', async () => {
+    jest.useFakeTimers();
+    const { warnings, restore } = captureCoreCalls();
+    const cb = new CircuitBreaker({
+      failureThreshold: 1,
+      recoveryTimeoutMs: 500,
+      halfOpenMaxProbes: 1,
+      successThreshold: 1,
+      onStateChange: () => {},
+    });
+    await cb.execute(() => Promise.reject(new Error('trip'))).catch(() => {});
+    jest.advanceTimersByTime(501);
+
+    let rel!: () => void;
+    const held = cb.execute(() => new Promise<void>((r) => { rel = r; }));
+    await cb.execute(() => Promise.resolve('')).catch(() => {}); // triggers default callback
+
+    expect(warnings.some(w => w.includes('probe budget exhausted'))).toBe(true);
+
+    rel();
+    await held;
+    restore();
+    jest.useRealTimers();
   });
 });
 
