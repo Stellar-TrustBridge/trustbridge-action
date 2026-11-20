@@ -4005,6 +4005,22 @@ No live collector is required at any point.
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
 
+## Batch failure aggregation and fatal errors (#869)
+
+Batch mode always preserves per-address failures in `batch_summary_json`. Account-level failures such as an unfunded 404, trustline failure, or ordinary Horizon outage remain recoverable rows. Configuration/authentication failures (HTTP 400/401/403), cancellation, and exhausted request budgets are classified with `FATAL_*` reason codes or `RATE_BUDGET_EXHAUSTED` and set `fatal: true`; callers should fail the job rather than treating the batch as a green partial result. No raw response bodies or secrets are included.
+
+## Negative Horizon account caching (#870)
+
+When `horizon_cache_ttl_ms` is enabled, not-found account responses use a separate 15-second negative-cache TTL (`negativeCacheTtlMs` for library callers). Negative entries contain only status and a safe message, never account payloads. Expiry is required so an account funded during a later run becomes visible; set the library option to `0` to disable negative caching.
+
+## Safe roster patterns (#872)
+
+Roster allowlist and denylist entries may be exact addresses or bounded `*` / `?` globs. Patterns are limited to 256 characters and 32 wildcards and are matched by a linear-time matcher rather than user-supplied regular expressions. Denylist entries always take precedence.
+
+## Clock-skew tolerance (#871)
+
+Freshness checks tolerate a ledger close timestamp up to 30 seconds in the future, which covers normal runner/NTP skew. A future timestamp beyond that tolerance is reported as `status: unknown` and remains fail-open; it is never treated as proof that Horizon is fresh. Library callers can override this with `clockSkewToleranceSeconds`. Keep runner clocks synchronized and investigate repeated `freshness_clock_skew_unknown` metrics.
+
 ## Combined authorization and clawback states (Issue #865)
 
 Horizon can report several issuer/trustline flags at once. TrustBridge keeps

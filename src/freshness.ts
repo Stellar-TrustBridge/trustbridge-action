@@ -66,6 +66,8 @@ export interface FreshnessOptions {
    * ledger close cycles at ~5–6 s each).
    */
   maxLagSeconds?: number;
+  /** Future ledger-close tolerance before the clock is considered unreliable. */
+  clockSkewToleranceSeconds?: number;
   /** Request timeout for the root endpoint call, in milliseconds. */
   timeoutMs?: number;
   /** Override fetch function (for testing). */
@@ -124,6 +126,7 @@ export async function checkLedgerFreshness(
   options: FreshnessOptions = {},
 ): Promise<FreshnessCheckResult> {
   const maxLagSeconds = options.maxLagSeconds ?? DEFAULT_MAX_LAG_SECONDS;
+  const clockSkewToleranceSeconds = options.clockSkewToleranceSeconds ?? 30;
 
   let root: HorizonRootResponse;
   try {
@@ -185,7 +188,18 @@ export async function checkLedgerFreshness(
     };
   }
 
-  const lagSeconds = Math.max(0, (Date.now() - closedAtMs) / 1000);
+  const signedLagSeconds = (Date.now() - closedAtMs) / 1000;
+  if (signedLagSeconds < -clockSkewToleranceSeconds) {
+    globalMetrics.incrementCounter('freshness_clock_skew_unknown');
+    return {
+      fresh: true,
+      lagSeconds: signedLagSeconds,
+      latestLedger,
+      message: `Horizon ledger close time is ${Math.abs(signedLagSeconds).toFixed(1)}s in the future, exceeding the allowed clock-skew tolerance of ${clockSkewToleranceSeconds}s. Freshness is unknown; proceeding fail-open.`,
+      status: 'unknown',
+    };
+  }
+  const lagSeconds = Math.max(0, signedLagSeconds);
 
   globalMetrics.recordMetric('freshness_lag_seconds', lagSeconds, 'seconds');
   if (latestLedger !== null) {
