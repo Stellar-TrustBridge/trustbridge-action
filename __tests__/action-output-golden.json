@@ -29,6 +29,7 @@
   "network_passphrase_mismatch",
   "num_sponsored",
   "num_sponsoring",
+  "outputs_truncated",
   "ready",
   "reason_code",
   "timing_checks_ms",

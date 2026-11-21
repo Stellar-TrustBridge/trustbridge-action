@@ -94,27 +94,94 @@ export function getFaqAnchorForCheck(checkLabel: string): FaqAnchor | undefined 
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Link safety (Issue #853) — shared guard for every URL this module renders
+// as a clickable Markdown link.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hosts rejected for any externally-rendered link regardless of scheme:
+ * private/loopback/link-local address ranges and cloud metadata endpoints.
+ * Mirrors the SSRF blocklist already enforced for live Horizon requests —
+ * a link a human clicks should not be able to target internal
+ * infrastructure any more than a request this Action makes itself.
+ */
+const BLOCKED_LINK_HOSTS: RegExp[] = [
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^169\.254\./,
+  /^0\.0\.0\.0$/,
+  /^localhost$/i,
+  /^\[?::1\]?$/,
+];
+
+const BLOCKED_LINK_EXACT_HOSTS = new Set(['metadata.google.internal']);
+
+/**
+ * Validate that `url` is safe to render as a clickable link in a GitHub
+ * comment (Issue #853): deep links into Horizon explorers, docs mirrors,
+ * dashboards, and wallet callbacks all funnel through this check before
+ * being embedded in Markdown.
+ *
+ * Rejects:
+ * - anything that does not parse as an absolute URL
+ * - any scheme other than `https:` — `javascript:`, `data:`, `vbscript:`,
+ *   plain `http:`, and bare/relative strings are all rejected outright, so
+ *   a crafted value can never execute script or escape to a local file
+ * - embedded credentials (`https://user:pass@host/...`)
+ * - private, loopback, link-local, or cloud-metadata hosts (open-redirect-
+ *   to-internal-service guard, same list as the Horizon SSRF policy)
+ *
+ * This check only validates the URL as a whole; it does not percent-encode
+ * anything. Callers that interpolate dynamic path or query segments must
+ * still build them with `URLSearchParams` (as every builder in this file
+ * does), because an unescaped `)` in a raw string would terminate a
+ * Markdown `[text](url)` link early and let the rest of the string inject
+ * arbitrary Markdown.
+ */
+export function isSafeExternalLink(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  if (parsed.username || parsed.password) return false;
+  const host = parsed.hostname.toLowerCase();
+  if (BLOCKED_LINK_EXACT_HOSTS.has(host)) return false;
+  for (const pattern of BLOCKED_LINK_HOSTS) {
+    if (pattern.test(host)) return false;
+  }
+  // Issue #853: every caller in this codebase embeds the URL this check
+  // approves directly as raw `[text](url)` Markdown (buildFaqLink, the
+  // SEP-0010 dashboard proof link, buildAssetChecklist's `deepLink`). An
+  // unescaped `)` ends that link early and lets the remainder of the
+  // string inject arbitrary Markdown; raw whitespace, backticks, angle
+  // brackets, and quotes are rejected too since a well-formed URL never
+  // needs them unencoded — a legitimate URL that needs one of these
+  // characters should percent-encode it (`)` -> `%29`, etc).
+  if (/[()\s`<>"']/.test(url)) return false;
+  return true;
+}
+
 /**
  * Build a full FAQ deep link URL for a given anchor.
  *
  * @param anchor   A value from `FAQ_ANCHORS`.
  * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
- *                 mirror). When the value is not a valid HTTPS URL, the
- *                 default base URL is used silently so comment posting is
- *                 never blocked by an invalid override.
+ *                 mirror). When the value fails {@link isSafeExternalLink}
+ *                 (wrong scheme, credentials, private/metadata host, or
+ *                 simply not a valid URL), the default base URL is used
+ *                 silently so comment posting is never blocked by an
+ *                 invalid or malicious override.
  */
 export function buildFaqLink(anchor: FaqAnchor, baseUrl?: string): string {
   let base = DEFAULT_FAQ_BASE_URL;
-  if (baseUrl) {
-    try {
-      const parsed = new URL(baseUrl);
-      if (parsed.protocol === 'https:') {
-        base = baseUrl.replace(/\/$/, '');
-      }
-      // Non-HTTPS or unparseable → fall through to default
-    } catch {
-      // Invalid URL → fall through to default
-    }
+  if (baseUrl && isSafeExternalLink(baseUrl)) {
+    base = baseUrl.replace(/\/$/, '');
   }
   return `${base}#${anchor}`;
 }
@@ -308,7 +375,12 @@ export function buildSep0007TxLink(options: Sep0007TxOptions): string {
   if (options.msg) {
     params.set('msg', options.msg);
   }
-  if (options.callback) {
+  // Issue #853: `callback` is where a compatible wallet POSTs the signed
+  // XDR. An unvalidated value here is a direct exfiltration vector for a
+  // signed transaction, so a callback that fails isSafeExternalLink (wrong
+  // scheme, credentials, or a private/metadata host) is dropped rather than
+  // included — same silent fail-closed-by-omission pattern as buildFaqLink.
+  if (options.callback && isSafeExternalLink(options.callback)) {
     params.set('callback', options.callback);
   }
   if (options.originDomain) {
@@ -457,25 +529,13 @@ export interface Sep0010ChallengeOptions {
  * host — never a plausible-looking but unrecognized one.
  */
 export function isValidDashboardUrl(url: string): boolean {
+  if (!isSafeExternalLink(url)) return false;
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== 'https:') return false;
-    if (parsed.username || parsed.password) return false;
-    // Block private/loopback/metadata hosts (same list as Horizon SSRF)
-    const blocked = [
-      /^127\./,
-      /^10\./,
-      /^192\.168\./,
-      /^172\.(1[6-9]|2\d|3[01])\./,
-      /^169\.254\./,
-      /^localhost$/i,
-    ];
-    const host = parsed.hostname;
-    for (const pat of blocked) {
-      if (pat.test(host)) return false;
-    }
-    if (host === 'metadata.google.internal') return false;
-    if (host.toLowerCase() === 'dashboard.stellar.org') return false;
+    // `dashboard.stellar.org` is not a recognized Stellar dashboard
+    // endpoint — see the docstring above for why it is explicitly rejected
+    // rather than just "not allowlisted".
+    if (parsed.hostname.toLowerCase() === 'dashboard.stellar.org') return false;
     return true;
   } catch {
     return false;

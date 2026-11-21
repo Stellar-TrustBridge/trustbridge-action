@@ -1,5 +1,5 @@
 import { ValidationResult } from './checks';
-import { DEFAULT_FAQ_BASE_URL, FAQ_ANCHORS } from './links';
+import { DEFAULT_FAQ_BASE_URL, FAQ_ANCHORS, isSafeExternalLink } from './links';
 import { Locale, getStrings, SUPPORTED_LOCALES } from './i18n';
 
 export function escapeMarkdownInline(value: string): string {
@@ -53,15 +53,24 @@ export interface AssetTrustlineRow {
  * @param options.heading Section heading (defaults to "Asset trustlines").
  * @returns Markdown section (heading + table), or `''` when `rows` is empty.
  */
+/**
+ * Default cap on rows rendered by {@link buildAssetTrustlineTable} before it
+ * truncates with a summary line (Issue #860). Matches the long-standing
+ * `DIGEST_MAX_LISTED_ISSUES` cap in `src/summary.ts` so every multi-row
+ * section in a TrustBridge comment truncates at the same threshold.
+ */
+export const MAX_ASSET_TABLE_ROWS = 50;
+
 export function buildAssetTrustlineTable(
   rows: AssetTrustlineRow[],
-  options: { heading?: string } = {},
+  options: { heading?: string; maxRows?: number } = {},
 ): string {
   if (!Array.isArray(rows) || rows.length === 0) {
     return '';
   }
 
   const heading = options.heading ?? 'Asset trustlines';
+  const maxRows = options.maxRows ?? MAX_ASSET_TABLE_ROWS;
 
   const shortenIssuer = (issuer: string): string => {
     if (issuer.length <= 12) return issuer;
@@ -81,11 +90,31 @@ export function buildAssetTrustlineTable(
     '| --- | --- | --- | --- |',
   ];
 
-  for (const row of rows) {
+  // Issue #860: a table with hundreds of assets_json entries can exceed
+  // GitHub's comment size limit and bury the rows an assignee actually
+  // needs to act on. Render only the first `maxRows` — the Trustline
+  // (status) column stays intact for every visible row — and summarize the
+  // rest in a plain sentence *after* the table (not an extra table row,
+  // which would either break the column count or need a colspan GitHub
+  // Markdown does not support). A trailing paragraph reads correctly for
+  // screen readers and keeps the table itself well-formed.
+  const visibleRows = maxRows > 0 ? rows.slice(0, maxRows) : rows;
+  const hiddenCount = rows.length - visibleRows.length;
+
+  for (const row of visibleRows) {
     const asset = escapeMarkdownInline(row.assetCode);
     const status = row.trustlineExists ? '✅ exists' : '❌ missing';
     const issuer = inlineCode(shortenIssuer(row.assetIssuer));
     lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
+  }
+
+  if (hiddenCount > 0) {
+    lines.push(
+      '',
+      `_…and **${hiddenCount}** more asset${hiddenCount === 1 ? '' : 's'} not shown ` +
+        `(showing ${visibleRows.length} of ${rows.length}). See the ` +
+        '`assets_trustline_status` / `trustlines_summary` action outputs for the full list._',
+    );
   }
 
   return lines.join('\n');
@@ -170,7 +199,14 @@ export function buildAssetChecklist(
     if (hints.length > 0) {
       line += ` (${hints.map((hint) => escapeMarkdownInline(hint)).join(', ')})`;
     }
-    if (!passed && row.deepLink) {
+    // Issue #853: `deepLink` is caller-supplied (e.g. derived from
+    // `assets_json`). Rendered unvalidated, it would be both an open-
+    // redirect/phishing vector and a Markdown-injection vector — an
+    // unescaped `)` in the URL ends the `[text](url)` link early and lets
+    // the rest of the string inject arbitrary Markdown into the comment.
+    // A link that fails the shared safety check is omitted entirely rather
+    // than rendered broken or malicious.
+    if (!passed && row.deepLink && isSafeExternalLink(row.deepLink)) {
       line += ` — [remediation](${row.deepLink})`;
     }
     lines.push(line);

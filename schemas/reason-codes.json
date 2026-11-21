@@ -184,6 +184,26 @@
       "valid": false,
       "emittedBy": "src/checks.ts (runAccountChecks, when asset_issuer is a C-address)",
       "since": "v1"
+    },
+    {
+      "code": "HORIZON_WAIT_BUDGET_EXHAUSTED",
+      "description": "Horizon kept returning retryable errors until the configured retry wait budget ran out. Distinct from HORIZON_ERROR/HORIZON_TIMEOUT: retries were attempted and exhausted rather than failing on the first request. The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, when the retry wait budget is exhausted)",
+      "since": "v1"
+    },
+    {
+      "code": "EXTRA_TRUSTLINE_MISSING",
+      "description": "The primary asset_code/asset_issuer check passed (SUCCESS), but assets_json declared one or more additional required trustlines and at least one of them is missing on the account.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/index.ts (assets_json multi-asset gating, when the primary check is SUCCESS)",
+      "since": "v1"
     }
   ]
 }

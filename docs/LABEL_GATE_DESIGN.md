@@ -538,3 +538,36 @@ This design is ready to implement. The composite action is the main deliverable;
 - Related: Least-privilege permissions (docs/USAGE.md)
 - Related: Conditional workflow jobs (GitHub Actions docs)
 - Related: Composite actions (GitHub Actions docs)
+
+## Execution sequence and truth table (Issue #868)
+
+```mermaid
+sequenceDiagram
+  participant W as Workflow
+  participant G as Label gate
+  participant T as TrustBridge
+  participant H as Horizon
+  W->>G: evaluate event labels
+  alt force_validation=true
+    G-->>T: gate open (force)
+  else gate label present
+    G-->>T: gate open (matched label)
+  else no gate label
+    G-->>W: gate_skipped=true
+    Note over G,H: No TrustBridge or Horizon call
+  end
+  T->>H: account validation (only when gate open)
+  H-->>T: account state
+  T-->>W: ready/reason_code outputs
+```
+
+| Force | Matching label | Label lookup outcome | `gate_skipped` | TrustBridge/Horizon | `fail_on_missing` |
+|---|---|---|---|---|---|
+| true | any | any | false | called | applies |
+| false | yes | success | false | called | applies |
+| false | no | success | true | not called | ignored |
+| false | any | 403/network/5xx | false (fail-open) | called | applies |
+| false | outside issue context | not applicable | false | called | applies |
+
+The skip path writes gate outputs before exiting. Forwarded TrustBridge outputs
+are empty when skipped, so downstream jobs must branch on `gate_skipped` first.

@@ -5,6 +5,7 @@ import {
   JobSummaryReport,
   HorizonLatencyHistogram,
   LATENCY_BUCKETS_MS,
+  hashAddressForMetrics,
 } from '../src/metrics';
 import * as core from '@actions/core';
 
@@ -28,31 +29,36 @@ describe('MetricsCollector.recordMetric', () => {
     expect(summary.metrics[0]).toMatchObject({ name: 'latency', value: 42, unit: 'ms' });
   });
 
-  it('records a metric with a valid contractAddress tag', () => {
+  // Issue #857: a raw address tag is an unbounded, PII-carrying Prometheus
+  // label. recordMetric() now refuses the contractAddress tag outright —
+  // callers must go through recordContractMetric(), which hashes it first.
+  it('rejects a raw contractAddress tag, even a structurally valid one', () => {
     const metrics = new MetricsCollector();
-    metrics.recordMetric('trustline_check', 1, 'count', {
-      [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS,
-    });
 
-    const summary = metrics.getSummary();
-    expect(summary.metrics[0].tags?.[CONTRACT_ADDRESS_TAG_KEY]).toBe(VALID_CONTRACT_ADDRESS);
+    expect(() =>
+      metrics.recordMetric('trustline_check', 1, 'count', {
+        [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS,
+      }),
+    ).toThrow(/must be set via recordContractMetric/);
+
+    expect(metrics.getSummary().totalMetrics).toBe(0);
   });
 
-  it('throws when the contractAddress tag fails the C-address policy', () => {
+  it('rejects a raw contractAddress tag that also fails the C-address policy', () => {
     const metrics = new MetricsCollector();
 
     expect(() =>
       metrics.recordMetric('trustline_check', 1, 'count', {
         [CONTRACT_ADDRESS_TAG_KEY]: 'not-a-contract-address',
       }),
-    ).toThrow(/Invalid contractAddress tag/);
+    ).toThrow(/must be set via recordContractMetric/);
 
     expect(metrics.getSummary().totalMetrics).toBe(0);
   });
 });
 
 describe('MetricsCollector.recordContractMetric', () => {
-  it('tags the metric with the given contract address', () => {
+  it('tags the metric with a bounded hash, never the raw contract address', () => {
     const metrics = new MetricsCollector();
     metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
 
@@ -60,8 +66,21 @@ describe('MetricsCollector.recordContractMetric', () => {
     expect(summary.metrics[0]).toMatchObject({
       name: 'asset_issuer_contract_validated',
       value: 1,
-      tags: { [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS },
+      tags: { [CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(VALID_CONTRACT_ADDRESS) },
     });
+    const tagValue = summary.metrics[0].tags?.[CONTRACT_ADDRESS_TAG_KEY];
+    expect(tagValue).not.toBe(VALID_CONTRACT_ADDRESS);
+    expect(tagValue).not.toContain(VALID_CONTRACT_ADDRESS);
+    expect(JSON.stringify(summary)).not.toContain(VALID_CONTRACT_ADDRESS);
+  });
+
+  it('hashes deterministically so repeated calls for the same address correlate', () => {
+    const metrics = new MetricsCollector();
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+
+    const [first, second] = metrics.getSummary().metrics;
+    expect(first.tags?.[CONTRACT_ADDRESS_TAG_KEY]).toBe(second.tags?.[CONTRACT_ADDRESS_TAG_KEY]);
   });
 
   it('rejects an invalid contract address without recording a metric', () => {
@@ -108,6 +127,18 @@ describe('MetricsCollector counters, timers, and export', () => {
     metrics.reset();
     expect(metrics.getSummary().totalMetrics).toBe(0);
     expect(metrics.getCounter('runs')).toBe(0);
+  });
+
+  // Issue #857: toJSON()/buildJobSummary() feed the GITHUB Actions debug log
+  // and Job Summary; neither may ever contain a raw Stellar address even
+  // after a contract-tagged metric is recorded.
+  it('neither toJSON() nor buildJobSummary().jsonArtifact contain a raw contract address', () => {
+    const metrics = new MetricsCollector();
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+    metrics.incrementCounter('runs');
+
+    expect(metrics.toJSON()).not.toContain(VALID_CONTRACT_ADDRESS);
+    expect(metrics.buildJobSummary().jsonArtifact).not.toContain(VALID_CONTRACT_ADDRESS);
   });
 
   it('records campaign preset metrics and counter', () => {

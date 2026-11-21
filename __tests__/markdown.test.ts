@@ -3,6 +3,7 @@ import {
   inlineCode,
   buildOnboardingChecklist,
   buildAssetTrustlineTable,
+  buildAssetChecklist,
   extractChecklistState,
   CHECKLIST_TRUSTLINE_KEY,
 } from '../src/markdown';
@@ -517,5 +518,178 @@ describe('buildAssetTrustlineTable (Issue #552)', () => {
       { heading: 'Trustlines de activos' },
     );
     expect(md).toContain('### Trustlines de activos');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAssetChecklist deepLink hardening (Issue #853)
+//
+// `deepLink` is rendered as raw, unescaped `[remediation](${deepLink})`
+// Markdown. A malicious or malformed value here is both an open-redirect
+// risk and a Markdown-injection risk (an unescaped `)` ends the link early
+// and lets the remainder of the string inject arbitrary Markdown into the
+// posted comment).
+// ---------------------------------------------------------------------------
+
+describe('buildAssetChecklist (Issue #717)', () => {
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  it('returns empty string for empty/missing rows', () => {
+    expect(buildAssetChecklist([])).toBe('');
+    expect(buildAssetChecklist(undefined as unknown as Parameters<typeof buildAssetChecklist>[0])).toBe('');
+  });
+
+  it('renders a passed and a failed row', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '1.0' },
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0' },
+    ]);
+    expect(md).toContain('### Asset checklist');
+    expect(md).toContain('- [x] ✅ `EURC`');
+    expect(md).toContain('- [ ] ❌ `FOO`');
+  });
+
+  it('renders a remediation link for a failed row with a safe https deepLink', () => {
+    const md = buildAssetChecklist([
+      {
+        assetCode: 'FOO',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/FOO',
+      },
+    ]);
+    expect(md).toContain('[remediation](https://stellar.expert/explorer/public/asset/FOO)');
+  });
+
+  it.each([
+    'javascript:alert(document.cookie)',
+    'data:text/html,<script>alert(1)</script>',
+    'http://evil.example.com/phish',
+    'https://127.0.0.1/internal',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://user:pass@evil.example.com/',
+    'https://evil.example.com/x)[click here](https://also-evil.example.com',
+    'not a url',
+  ])('omits the remediation link entirely for malicious deepLink %j', (maliciousLink) => {
+    const md = buildAssetChecklist([
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0', deepLink: maliciousLink },
+    ]);
+    expect(md).not.toContain('remediation');
+    expect(md).not.toContain('javascript:');
+    expect(md).not.toContain('<script>');
+    expect(md).not.toContain(maliciousLink);
+  });
+
+  it('never renders a remediation link for a passed row, even with a deepLink set', () => {
+    const md = buildAssetChecklist([
+      {
+        assetCode: 'EURC',
+        assetIssuer: issuer,
+        trustlineExists: true,
+        balance: '1.0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/EURC',
+      },
+    ]);
+    expect(md).not.toContain('remediation');
+  });
+
+  it('dedupes repeated assetCode/assetIssuer pairs, keeping the first occurrence', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: false, balance: '0' },
+      { assetCode: 'FOO', assetIssuer: issuer, trustlineExists: true, balance: '5.0' },
+    ]);
+    const lines = md.split('\n').filter((l) => l.startsWith('- ['));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('❌');
+  });
+
+  it('matches the golden snapshot for a mixed-outcome checklist with a malicious deepLink', () => {
+    const md = buildAssetChecklist([
+      { assetCode: 'EURC', assetIssuer: issuer, trustlineExists: true, balance: '1.0' },
+      {
+        assetCode: 'FOO',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'javascript:alert(1)',
+      },
+      {
+        assetCode: 'BAR',
+        assetIssuer: issuer,
+        trustlineExists: false,
+        balance: '0',
+        deepLink: 'https://stellar.expert/explorer/public/asset/BAR',
+      },
+    ]);
+
+// buildAssetTrustlineTable long-table truncation (Issue #860)
+// ---------------------------------------------------------------------------
+
+describe('buildAssetTrustlineTable truncation (Issue #860)', () => {
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  function makeRows(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      assetCode: `A${i}`,
+      assetIssuer: issuer,
+      trustlineExists: i % 2 === 0,
+      balance: i % 2 === 0 ? `${i}.0000000` : '0',
+    }));
+  }
+
+  it('does not truncate when rows are at or under the default cap (50)', () => {
+    const md = buildAssetTrustlineTable(makeRows(50));
+    expect(md).not.toContain('more asset');
+    // All 50 rows present.
+    for (let i = 0; i < 50; i++) {
+      expect(md).toContain(`| A${i} |`);
+    }
+  });
+
+  it('truncates to the default cap (50) and appends an accessible summary line', () => {
+    const md = buildAssetTrustlineTable(makeRows(237));
+    const lines = md.split('\n');
+    const rowLines = lines.filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+
+    expect(rowLines).toHaveLength(50);
+    // First 50 rows (stable order), not an arbitrary subset.
+    expect(rowLines[0]).toContain('| A0 |');
+    expect(rowLines[49]).toContain('| A49 |');
+    expect(md).not.toContain('| A50 |');
+
+    // Summary is a plain paragraph *after* the table — not an extra row —
+    // so it never breaks the table's column count and reads sequentially
+    // for a screen reader.
+    expect(md).toContain('_…and **187** more assets not shown (showing 50 of 237).');
+    const tableEnd = lines.findIndex((l) => l.startsWith('| A49'));
+    const summaryLine = lines.findIndex((l) => l.includes('more assets not shown'));
+    expect(summaryLine).toBeGreaterThan(tableEnd);
+  });
+
+  it('keeps the Trustline (status) column intact for every visible row when truncated', () => {
+    const md = buildAssetTrustlineTable(makeRows(60));
+    const rowLines = md.split('\n').filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+    expect(rowLines).toHaveLength(50);
+    for (const line of rowLines) {
+      expect(line).toMatch(/✅ exists|❌ missing/);
+    }
+  });
+
+  it('uses singular wording for exactly one hidden row', () => {
+    const md = buildAssetTrustlineTable(makeRows(51));
+    expect(md).toContain('_…and **1** more asset not shown (showing 50 of 51).');
+  });
+
+  it('honors a custom maxRows option', () => {
+    const md = buildAssetTrustlineTable(makeRows(10), { maxRows: 3 });
+    const rowLines = md.split('\n').filter((l) => l.startsWith('| A') && !l.startsWith('| Asset'));
+    expect(rowLines).toHaveLength(3);
+    expect(md).toContain('_…and **7** more assets not shown (showing 3 of 10).');
+  });
+
+  it('matches the golden snapshot for a truncated table', () => {
+    const md = buildAssetTrustlineTable(makeRows(4), { maxRows: 2 });
+    expect(md).toMatchSnapshot();
   });
 });

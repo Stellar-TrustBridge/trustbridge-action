@@ -5,8 +5,40 @@ import { validateSsrfSafeUrl } from './validation';
 const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
 
 export interface RosterFilterOptions {
+  /** Exact addresses or bounded globs using `*` and `?`. */
   allowlist?: string[];
+  /** Exact addresses or bounded globs using `*` and `?`; deny wins. */
   denylist?: string[];
+}
+
+const MAX_PATTERN_LENGTH = 256;
+const MAX_WILDCARDS = 32;
+
+function validateRosterPattern(pattern: string): string {
+  const normalized = normalizeRosterAddress(pattern);
+  if (normalized.length > MAX_PATTERN_LENGTH) throw new Error('Roster pattern exceeds the 256-character limit.');
+  const wildcards = (normalized.match(/[?*]/g) ?? []).length;
+  if (wildcards > MAX_WILDCARDS) throw new Error('Roster pattern exceeds the 32-wildcard limit.');
+  return normalized;
+}
+
+/** Linear-time glob matcher. It does not compile user input into a RegExp. */
+export function matchesRosterPattern(value: string, pattern: string): boolean {
+  const text = normalizeRosterAddress(value);
+  const glob = validateRosterPattern(pattern);
+  let i = 0; let j = 0; let star = -1; let mark = 0;
+  while (i < text.length) {
+    if (j < glob.length && (glob[j] === '?' || glob[j] === text[i])) { i++; j++; continue; }
+    if (j < glob.length && glob[j] === '*') { star = j++; mark = i; continue; }
+    if (star !== -1) { j = star + 1; i = ++mark; continue; }
+    return false;
+  }
+  while (j < glob.length && glob[j] === '*') j++;
+  return j === glob.length;
+}
+
+function matchesAny(value: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => matchesRosterPattern(value, pattern));
 }
 
 function normalizeRosterAddress(address: string): string {
@@ -27,14 +59,14 @@ export function filterRosterAddressMap(
   addressMap: AssigneeAddressMap,
   options: RosterFilterOptions = {}
 ): AssigneeAddressMap {
-  const allowlist = new Set((options.allowlist ?? []).map(normalizeRosterAddress).filter(Boolean));
-  const denylist = new Set((options.denylist ?? []).map(normalizeRosterAddress).filter(Boolean));
+  const allowlist = (options.allowlist ?? []).map(validateRosterPattern).filter(Boolean);
+  const denylist = (options.denylist ?? []).map(validateRosterPattern).filter(Boolean);
 
   const result: AssigneeAddressMap = {};
   for (const [key, value] of Object.entries(addressMap)) {
     const normalized = normalizeRosterAddress(value);
-    if (denylist.has(normalized)) continue;
-    if (allowlist.size > 0 && !allowlist.has(normalized)) continue;
+    if (matchesAny(normalized, denylist)) continue;
+    if (allowlist.length > 0 && !matchesAny(normalized, allowlist)) continue;
     result[key] = value;
   }
   return result;
