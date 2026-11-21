@@ -16,6 +16,7 @@ exports[`buildAssetChecklist (Issue #717) matches the golden snapshot for a mixe
 - [x] ✅ \`EURC\` — issuer \`GA5Z…KZVN\` — trustline exists
 - [ ] ❌ \`FOO\` — issuer \`GA5Z…KZVN\` — trustline missing
 - [ ] ❌ \`BAR\` — issuer \`GA5Z…KZVN\` — trustline missing — [remediation](https://stellar.expert/explorer/public/asset/BAR)"
+`;
 
 exports[`buildAssetTrustlineTable truncation (Issue #860) matches the golden snapshot for a truncated table 1`] = `
 "### Asset trustlines

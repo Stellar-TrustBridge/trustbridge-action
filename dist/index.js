@@ -49343,6 +49343,9 @@ exports.BATCH_REASON_CODES = {
     horizonError: 'HORIZON_ERROR',
     invalidAddress: 'INVALID_ADDRESS',
     rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
+    fatalAuth: 'FATAL_AUTH',
+    fatalConfig: 'FATAL_CONFIG',
+    fatalCancellation: 'FATAL_CANCELLED',
     clawbackStrict: exports.CLAWBACK_STRICT_REASON_CODE,
     /**
      * Row never dispatched to Horizon because `options.signal` was aborted
@@ -49481,6 +49484,15 @@ async function validateOneAddress(address, config, horizonUrl, fetchOptions, ext
         let failureReason;
         let isFunded = false;
         const isBudgetExhausted = error instanceof resilience_1.RateBudgetExhaustedError;
+        const statusCode = error instanceof horizon_1.HorizonError ? error.statusCode : 0;
+        const isCancelled = error instanceof Error &&
+            (error.name === 'AbortError' || /cancel|abort/i.test(error.message));
+        const isFatalAuth = error instanceof horizon_1.HorizonError && (statusCode === 401 || statusCode === 403);
+        const isFatalConfig = error instanceof horizon_1.HorizonError &&
+            statusCode >= 400 &&
+            statusCode < 500 &&
+            statusCode !== 404 &&
+            !isFatalAuth;
         if (isBudgetExhausted) {
             failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
             metrics_1.globalMetrics.incrementCounter('rate_budget_exhausted');
@@ -49489,6 +49501,18 @@ async function validateOneAddress(address, config, horizonUrl, fetchOptions, ext
         else if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
             failureReason = 'account not funded';
             metrics_1.globalMetrics.incrementCounter('batch_fail_account_not_funded');
+        }
+        else if (isCancelled) {
+            failureReason = `Batch cancelled: ${error instanceof Error ? error.message : 'cancelled'}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_cancelled');
+        }
+        else if (isFatalAuth) {
+            failureReason = `Fatal Horizon authentication/permission error (${statusCode}): ${error.message}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_auth');
+        }
+        else if (isFatalConfig) {
+            failureReason = `Fatal Horizon configuration error (${statusCode}): ${error.message}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_config');
         }
         else if (error instanceof horizon_1.HorizonError) {
             failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
@@ -49523,12 +49547,18 @@ async function validateOneAddress(address, config, horizonUrl, fetchOptions, ext
                 failureReason,
                 reasonCode: isBudgetExhausted
                     ? exports.BATCH_REASON_CODES.rateBudgetExhausted
-                    : deriveBatchReasonCode(false, {
-                        clawbackStrictFailure: false,
-                        invalidAddress: false,
-                        accountNotFunded: error instanceof horizon_1.HorizonError && error.statusCode === 404,
-                        horizonError: true,
-                    }),
+                    : isCancelled
+                        ? exports.BATCH_REASON_CODES.fatalCancellation
+                        : isFatalAuth
+                            ? exports.BATCH_REASON_CODES.fatalAuth
+                            : isFatalConfig
+                                ? exports.BATCH_REASON_CODES.fatalConfig
+                                : deriveBatchReasonCode(false, {
+                                    clawbackStrictFailure: false,
+                                    invalidAddress: false,
+                                    accountNotFunded: error instanceof horizon_1.HorizonError && error.statusCode === 404,
+                                    horizonError: true,
+                                }),
                 clawbackStrictFailure: false,
                 clawbackStrictAssets: [],
             },
@@ -49792,6 +49822,7 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
 function buildBatchSummary(results, options = {}) {
     const passed = results.filter((r) => r.valid).length;
     const failed = results.length - passed;
+    const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code) => Boolean(code && (code.startsWith('FATAL_') || code === exports.BATCH_REASON_CODES.rateBudgetExhausted)))));
     const failures = results
         .filter((r) => !r.valid)
         .map((r) => ({
@@ -49839,6 +49870,8 @@ function buildBatchSummary(results, options = {}) {
         failureTaxonomy: taxonomy,
         clawbackStrictFailures: taxonomy.clawbackStrict,
         clawbackStrictMode: options.clawbackStrictMode ?? results.some((r) => r.clawbackStrictFailure === true),
+        fatal: fatalReasonCodes.length > 0,
+        fatalReasonCodes,
     };
 }
 /**
@@ -50121,6 +50154,7 @@ exports.GitHubActionsCacheBackend = GitHubActionsCacheBackend;
 class SimpleCache {
     constructor(options = {}) {
         this.store = new Map();
+        this.negativeStore = new Map();
         this.useBackend = false;
         // Warn when an unsupported named backend is requested so operators learn
         // immediately instead of silently getting in-memory-only behaviour.
@@ -50222,6 +50256,29 @@ class SimpleCache {
         }
         return null;
     }
+    /** Return a short-lived account-not-found marker, never a positive payload. */
+    getNegative(key) {
+        const entry = this.negativeStore.get(key);
+        if (!entry)
+            return null;
+        if (Date.now() >= entry.expiresAt) {
+            this.negativeStore.delete(key);
+            return null;
+        }
+        return entry.data;
+    }
+    /** Store only a redacted 404 marker; no address or response body is persisted. */
+    setNegative(key, message, ttlMs) {
+        if (!Number.isFinite(ttlMs) || ttlMs <= 0)
+            return;
+        this.negativeStore.set(key, {
+            data: { statusCode: 404, message, cachedAt: Date.now() },
+            expiresAt: Date.now() + ttlMs,
+        });
+    }
+    deleteNegative(key) {
+        return this.negativeStore.delete(key);
+    }
     /**
      * Store a value in the cache with an expiration time.
      *
@@ -50287,6 +50344,7 @@ class SimpleCache {
      */
     async clear() {
         this.store.clear();
+        this.negativeStore.clear();
         if (this.backend?.dispose) {
             await this.backend.dispose();
         }
@@ -51116,6 +51174,10 @@ issuerAccount) {
     const assetIssuerKind = (0, assets_1.classifyAssetIssuer)(config.assetIssuer);
     const sacIssuer = (0, assets_1.isSorobanContractIssuer)(config.assetIssuer);
     const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
+    // Horizon only reports `is_authorized: false` for a trustline that is
+    // currently unauthorized. Keep this independent from clawback and from the
+    // issuer's immutable/revocable flags: those flags describe future state,
+    // while this policy evaluates the account's present authorization state.
     const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
     const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
     // Detect issuer flags for enhanced messaging (Issue #248)
@@ -51332,6 +51394,9 @@ issuerAccount) {
                 // missing trustline — the trustline exists on-chain. Reporting
                 // TRUSTLINE_MISSING here sent triage to the wrong remediation step
                 // ("add a trustline") when the real fix is an issuer SetTrustLineFlags.
+                // Combined auth_required/auth_immutable/clawback states still use
+                // authorization precedence: the actionable fix is issuer approval,
+                // not adding a second trustline or changing clawback policy.
                 if (authorizationBlocks)
                     return "TRUSTLINE_UNAUTHORIZED";
                 // Issue #730: a Soroban SAC issuer never appears in a Horizon account's
@@ -52704,7 +52769,10 @@ exports.MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
- * for upsert.
+ * for upsert. When GitHub supplies author/updateability metadata, a matching
+ * marker is selected only when the authenticated viewer may update it and it
+ * is not visibly owned by a human user. Older responses without those fields
+ * retain the marker-only compatibility behavior.
  */
 async function findStickyComment(octokit, owner, repo, issueNumber, options = {}) {
     const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
@@ -52720,6 +52788,8 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
                   id
                   databaseId
                   body
+                  author { login __typename }
+                  viewerCanUpdate
                 }
                 pageInfo {
                   hasNextPage
@@ -52748,7 +52818,12 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
                 }
                 graphqlHandled = true;
                 for (const comment of comments.nodes) {
-                    if (isTrustBridgeComment(comment.body)) {
+                    const author = comment.author;
+                    const authoredByHuman = author?.__typename === 'User' &&
+                        Boolean(author.login && !/\[bot\]$/i.test(author.login));
+                    if (isTrustBridgeComment(comment.body) &&
+                        comment.viewerCanUpdate !== false &&
+                        !authoredByHuman) {
                         // databaseId is the numeric REST issue comment id
                         lastMatchId = comment.databaseId;
                     }
@@ -52779,7 +52854,12 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
             issue_number: issueNumber,
             per_page: 100,
         });
-        const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
+        const matches = comments.filter((comment) => {
+            const author = comment.user;
+            const authoredByHuman = author?.type === 'User' &&
+                Boolean(author.login && !/\[bot\]$/i.test(author.login));
+            return isTrustBridgeComment(comment.body) && !authoredByHuman;
+        });
         return matches.length > 0 ? matches[matches.length - 1].id : undefined;
     }
     return undefined;
@@ -54501,7 +54581,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
 exports.isCircuitOpenError = isCircuitOpenError;
 exports.checkCertificatePin = checkCertificatePin;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
@@ -54715,6 +54795,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
 const DEFAULT_CACHE_TTL_MS = 60000;
+exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 exports.DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
 function normalizeHorizonUrl(baseUrl) {
@@ -55221,6 +55302,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const negativeCacheTtlMs = options.negativeCacheTtlMs ?? exports.DEFAULT_NEGATIVE_CACHE_TTL_MS;
     const retryMaxDelayMs = options.retryMaxDelayMs ?? exports.DEFAULT_RETRY_MAX_DELAY_MS;
     const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
     const cache = options.cache ?? cache_1.defaultCache;
@@ -55261,6 +55343,11 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
             cacheSizeBefore: cacheStatsBefore.size,
             cacheEntryCountBefore: cacheStatsBefore.entries.length,
         }));
+        const negative = negativeCacheTtlMs > 0 ? cache.getNegative(cacheKey) : null;
+        if (negative) {
+            recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+            throw new HorizonError(negative.message, 404, false);
+        }
         const cached = cache.get(cacheKey);
         if (cached) {
             logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
@@ -55321,6 +55408,9 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
         if (error instanceof HorizonError) {
             primaryError = error;
             if (error.statusCode === 404) {
+                if (cachingEnabled && negativeCacheTtlMs > 0) {
+                    cache.setNegative(cacheKey, error.message, negativeCacheTtlMs);
+                }
                 throw error;
             }
         }
@@ -57315,6 +57405,10 @@ async function run() {
             clawbackStrictMode: checkConfig.clawbackStrictMode,
         });
         batchSummary = batchSummaryLocal;
+        if (batchSummaryLocal.fatal) {
+            const reasons = (batchSummaryLocal.fatalReasonCodes ?? []).join(', ');
+            core.setFailed(`Batch validation encountered fatal errors (${reasons}). Per-address results remain available in batch_summary_json.`);
+        }
         const batchMarkdown = (0, batch_1.formatBatchSummaryMarkdown)(batchSummaryLocal, normalizedAsset.assetCode);
         if (postingMode === 'post') {
             try {
@@ -61921,6 +62015,13 @@ exports.HttpMockMatrix = HttpMockMatrix;
  * (`schemas/sarif-schema-2.1.0.json`, Issue #679) before it is written or
  * uploaded.
  *
+ * Every result carries a `partialFingerprints` entry keyed by
+ * `trustbridge/v1` — a stable hash of the result's identity inputs (Issue
+ * #893). It excludes message text and account data on purpose, so
+ * code-scanning history does not churn when wording or balances move; a
+ * `reason_code` change does move it. See {@link computeSarifFingerprint} and
+ * `docs/SCHEMA.md`.
+ *
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
@@ -61957,7 +62058,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.SARIF_FINGERPRINT_KEY = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.computeSarifFingerprint = computeSarifFingerprint;
+exports.sarifRunReasonCode = sarifRunReasonCode;
+exports.sarifPartialFingerprints = sarifPartialFingerprints;
 exports.buildSarifDocument = buildSarifDocument;
 exports.sarifOutcomeFromResult = sarifOutcomeFromResult;
 exports.serialiseSarif = serialiseSarif;
@@ -61973,6 +62077,7 @@ exports.serializeSarif = serializeSarif;
 exports.getSarifSchemaErrors = getSarifSchemaErrors;
 exports.validateSarifSchema = validateSarifSchema;
 exports.writeSarifFile = writeSarifFile;
+const crypto = __importStar(__nccwpck_require__(76982));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const sarifSchema_1 = __nccwpck_require__(20634);
@@ -61980,6 +62085,42 @@ exports.SARIF_SCHEMA = 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/m
 exports.SARIF_VERSION = '2.1.0';
 exports.TOOL_NAME = 'trustbridge-action';
 exports.TOOL_VERSION = '1.0.0';
+// ---------------------------------------------------------------------------
+// Stable result fingerprints (Issue #893)
+// ---------------------------------------------------------------------------
+/**
+ * `partialFingerprints` key TrustBridge writes on every SARIF result.
+ *
+ * The `v1` suffix versions the fingerprint algorithm: bump it in the same
+ * release as any change to {@link SarifFingerprintInputs}, so GitHub code
+ * scanning treats the new values as a fresh result identity instead of
+ * matching them against values computed from the old inputs.
+ */
+exports.SARIF_FINGERPRINT_KEY = 'trustbridge/v1';
+/**
+ * Compute the stable fingerprint for one SARIF result.
+ *
+ * Deterministic SHA-256 over {@link SarifFingerprintInputs} joined with NUL
+ * separators (so `a` + `bc` cannot collide with `ab` + `c`), truncated to 32
+ * hex characters. The same inputs always yield the same value on every runner,
+ * and a `reason_code` change yields a different one.
+ */
+function computeSarifFingerprint(inputs) {
+    const canonical = [inputs.ruleId, inputs.checkLabel, inputs.assetCode, inputs.reasonCode].join('\u0000');
+    return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 32);
+}
+/**
+ * Normalise a run's reason code exactly the way `runs[0].properties.reasonCode`
+ * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
+ * `FAILED` for a failing one.
+ */
+function sarifRunReasonCode(result) {
+    return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+}
+/** Build the `partialFingerprints` property bag for one result. */
+function sarifPartialFingerprints(inputs) {
+    return { [exports.SARIF_FINGERPRINT_KEY]: computeSarifFingerprint(inputs) };
+}
 /** Stable SARIF rule id for the SEP-0001 home domain check (Issue #708). */
 exports.HOME_DOMAIN_RULE_ID = 'TB004';
 exports.HOME_DOMAIN_HELP_URI = 'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/SEP0001_HOME_DOMAIN.md';
@@ -62020,9 +62161,12 @@ function buildSarifDocument(outcome) {
             helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/lumens',
         },
     ];
+    // `label` is the rule's stable `name`; this document carries no per-check
+    // labels, so it is the identity input for the fingerprint (Issue #893).
     const checks = [
         {
             ruleId: 'TB001',
+            label: 'AccountFunded',
             passed: outcome.accountFunded,
             message: outcome.accountFunded
                 ? `Account ${outcome.stellarAddress} is funded and active.`
@@ -62030,6 +62174,7 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB002',
+            label: 'TrustlineExists',
             passed: outcome.trustlineExists,
             message: outcome.trustlineExists
                 ? `Trustline for ${outcome.assetCode} is present.`
@@ -62037,20 +62182,27 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB003',
+            label: 'XlmReserveMet',
             passed: outcome.xlmReserveMet,
             message: outcome.xlmReserveMet
                 ? 'XLM balance meets the minimum reserve requirement.'
                 : 'XLM balance is below the minimum reserve requirement.',
         },
     ];
-    const results = checks.map(({ ruleId, passed, message }) => ({
+    const results = checks.map(({ ruleId, label, passed, message }) => ({
         ruleId,
         level: passed ? 'none' : 'error',
         message: { text: message },
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: label,
+            assetCode: outcome.assetCode,
+            reasonCode: passed ? 'SUCCESS' : 'FAILED',
+        }),
     }));
     if (outcome.homeDomain && outcome.homeDomain.outcome !== 'skipped') {
         rules.push(buildHomeDomainRule());
-        results.push(buildHomeDomainResult(outcome.homeDomain));
+        results.push(buildHomeDomainResult(outcome.homeDomain, outcome.assetCode));
     }
     return {
         $schema: exports.SARIF_SCHEMA,
@@ -62090,19 +62242,37 @@ function buildHomeDomainRule() {
         },
     };
 }
-function buildHomeDomainResult(homeDomain) {
+/**
+ * Map a home domain outcome to the reason code used for its fingerprint. These
+ * are the `reason_code` values the full validation path records for the same
+ * outcome, so a code rename moves this fingerprint too (Issue #893).
+ */
+const HOME_DOMAIN_OUTCOME_REASON_CODE = {
+    valid: 'SUCCESS',
+    mismatch: 'HOME_DOMAIN_MISMATCH',
+    missing: 'HOME_DOMAIN_MISSING',
+    skipped: 'SUCCESS',
+};
+function buildHomeDomainResult(homeDomain, assetCode) {
+    const partialFingerprints = sarifPartialFingerprints({
+        ruleId: exports.HOME_DOMAIN_RULE_ID,
+        checkLabel: 'HomeDomainAligned',
+        assetCode,
+        reasonCode: HOME_DOMAIN_OUTCOME_REASON_CODE[homeDomain.outcome],
+    });
     if (homeDomain.outcome === 'valid') {
         return {
             ruleId: exports.HOME_DOMAIN_RULE_ID,
             level: 'none',
             message: { text: `Issuer home_domain is ${homeDomain.actualHomeDomain ?? 'set'}.` },
+            partialFingerprints,
         };
     }
     const level = homeDomain.mode === 'strict' ? 'error' : 'warning';
     const text = homeDomain.outcome === 'mismatch'
         ? `Issuer home_domain is ${homeDomain.actualHomeDomain ?? ''} but ${homeDomain.expectedHomeDomain ?? ''} was expected.`
         : 'Issuer account has no home_domain set on-chain (or the issuer account was unavailable).';
-    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text } };
+    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text }, partialFingerprints };
 }
 /**
  * Build a SARIF outcome from a `ValidationResult` (Issue #708), so callers
@@ -62412,7 +62582,7 @@ function unauthorizedTrustlineSarifSeverity(result) {
 /**
  * Build a single SARIF result from a TrustBridge check.
  */
-function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride) {
+function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride, reasonCode = '') {
     const ruleId = severityOverride?.ruleId ?? checkLabelToRuleId(check.label);
     const level = severityOverride?.level ?? checkToSarifLevel(check);
     return {
@@ -62433,6 +62603,12 @@ function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severi
                 },
             },
         ],
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: check.label,
+            assetCode,
+            reasonCode,
+        }),
         properties: {
             assetCode,
             checkLabel: check.label,
@@ -62473,6 +62649,13 @@ function severityOverrideFor(check, result, unauthorizedSeverity) {
  *  - TB007 (`warning`) when the milestone gate skipped validation.
  *  - TB008 (`warning`) when the trustline has clawback enabled but
  *    `clawback_strict_mode` did not block it (strict-mode blocks stay TB005).
+ *
+ * Every result also carries `partialFingerprints['trustbridge/v1']`, hash of
+ * the rule id, check label, asset code and the run's `reason_code`
+ * (Issue #893). Message text, the account address, balances, the Horizon URL
+ * and the run timestamp are excluded, so a purely cosmetic wording change
+ * keeps the same code-scanning alert while a `reason_code` change opens a new
+ * one.
  */
 function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version = '1.0.0') {
     const rules = buildSarifRules();
@@ -62480,7 +62663,11 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
     // for it: `fail` promotes the trustline result to an `error` under TB006,
     // `warn` keeps it at `note` severity, `ignore` omits it entirely.
     const unauthorizedSeverity = unauthorizedTrustlineSarifSeverity(result);
-    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity)));
+    // Issue #893 — every result carries the run's reason code in its stable
+    // fingerprint, so a reason_code change (including a rename) moves the
+    // finding identity while message wording does not.
+    const runReasonCode = sarifRunReasonCode(result);
+    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity), runReasonCode));
     const location = [
         {
             physicalLocation: {
@@ -62501,6 +62688,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: 'Validation was skipped by the milestone gate — the issue milestone is not in milestone_allowlist.',
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.MILESTONE_GATE_RULE_ID,
+                checkLabel: 'Milestone gate',
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: 'Milestone gate',
@@ -62518,6 +62711,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: `Trustline for ${assetCode} has clawback enabled — the issuer can reclaim the asset at any time. Set clawback_strict_mode: true to block it.`,
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.CLAWBACK_ADVISORY_RULE_ID,
+                checkLabel: `${assetCode} clawback advisory`,
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: `${assetCode} clawback advisory`,
@@ -62543,7 +62742,7 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 properties: {
                     trustbridgeVersion: version,
                     runTimestamp: new Date().toISOString(),
-                    reasonCode: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
+                    reasonCode: runReasonCode,
                     validationGate: {
                         ready: result.valid,
                         totalChecks: result.checks.length,
@@ -81779,6 +81978,42 @@ class StorageContextClient extends import_src.StorageClient {
 
 /***/ }),
 
+/***/ 83627:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var generatedModels_exports = {};
+__export(generatedModels_exports, {
+  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
+});
+module.exports = __toCommonJS(generatedModels_exports);
+var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
+  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
+  return KnownEncryptionAlgorithmType2;
+})(KnownEncryptionAlgorithmType || {});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=generatedModels.js.map
+
+
+/***/ }),
+
 /***/ 30247:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -92728,6 +92963,176 @@ const listType = {
 
 /***/ }),
 
+/***/ 56635:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var appendBlob_exports = {};
+module.exports = __toCommonJS(appendBlob_exports);
+//# sourceMappingURL=appendBlob.js.map
+
+
+/***/ }),
+
+/***/ 68355:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blob_exports = {};
+module.exports = __toCommonJS(blob_exports);
+//# sourceMappingURL=blob.js.map
+
+
+/***/ }),
+
+/***/ 17188:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blockBlob_exports = {};
+module.exports = __toCommonJS(blockBlob_exports);
+//# sourceMappingURL=blockBlob.js.map
+
+
+/***/ }),
+
+/***/ 15337:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var container_exports = {};
+module.exports = __toCommonJS(container_exports);
+//# sourceMappingURL=container.js.map
+
+
+/***/ }),
+
+/***/ 82354:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var operationsInterfaces_exports = {};
+module.exports = __toCommonJS(operationsInterfaces_exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 14400:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var pageBlob_exports = {};
+module.exports = __toCommonJS(pageBlob_exports);
+//# sourceMappingURL=pageBlob.js.map
+
+
+/***/ }),
+
+/***/ 26865:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var service_exports = {};
+module.exports = __toCommonJS(service_exports);
+//# sourceMappingURL=service.js.map
+
+
+/***/ }),
+
 /***/ 40535:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -96395,176 +96800,6 @@ const filterBlobsOperationSpec = {
 
 /***/ }),
 
-/***/ 56635:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var appendBlob_exports = {};
-module.exports = __toCommonJS(appendBlob_exports);
-//# sourceMappingURL=appendBlob.js.map
-
-
-/***/ }),
-
-/***/ 68355:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blob_exports = {};
-module.exports = __toCommonJS(blob_exports);
-//# sourceMappingURL=blob.js.map
-
-
-/***/ }),
-
-/***/ 17188:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blockBlob_exports = {};
-module.exports = __toCommonJS(blockBlob_exports);
-//# sourceMappingURL=blockBlob.js.map
-
-
-/***/ }),
-
-/***/ 15337:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var container_exports = {};
-module.exports = __toCommonJS(container_exports);
-//# sourceMappingURL=container.js.map
-
-
-/***/ }),
-
-/***/ 82354:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var operationsInterfaces_exports = {};
-module.exports = __toCommonJS(operationsInterfaces_exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=index.js.map
-
-
-/***/ }),
-
-/***/ 14400:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var pageBlob_exports = {};
-module.exports = __toCommonJS(pageBlob_exports);
-//# sourceMappingURL=pageBlob.js.map
-
-
-/***/ }),
-
-/***/ 26865:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var service_exports = {};
-module.exports = __toCommonJS(service_exports);
-//# sourceMappingURL=service.js.map
-
-
-/***/ }),
-
 /***/ 5313:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -96651,42 +96886,6 @@ class StorageClient extends coreHttpCompat.ExtendedServiceClient {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (0);
 //# sourceMappingURL=storageClient.js.map
-
-
-/***/ }),
-
-/***/ 83627:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var generatedModels_exports = {};
-__export(generatedModels_exports, {
-  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
-});
-module.exports = __toCommonJS(generatedModels_exports);
-var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
-  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
-  return KnownEncryptionAlgorithmType2;
-})(KnownEncryptionAlgorithmType || {});
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=generatedModels.js.map
 
 
 /***/ }),

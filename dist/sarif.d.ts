@@ -18,6 +18,13 @@
  * (`schemas/sarif-schema-2.1.0.json`, Issue #679) before it is written or
  * uploaded.
  *
+ * Every result carries a `partialFingerprints` entry keyed by
+ * `trustbridge/v1` — a stable hash of the result's identity inputs (Issue
+ * #893). It excludes message text and account data on purpose, so
+ * code-scanning history does not churn when wording or balances move; a
+ * `reason_code` change does move it. See {@link computeSarifFingerprint} and
+ * `docs/SCHEMA.md`.
+ *
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 import type { CheckResultItem, HomeDomainCheckMode, HomeDomainOutcome, ValidationResult } from './checks';
@@ -34,6 +41,8 @@ export interface SarifResult {
     level: SarifLevel;
     message: SarifMessage;
     locations?: SarifLocation[];
+    /** Stable identity for code scanning (Issue #893); see {@link SARIF_FINGERPRINT_KEY}. */
+    partialFingerprints?: Record<string, string>;
 }
 export interface SarifLocation {
     physicalLocation: {
@@ -42,6 +51,53 @@ export interface SarifLocation {
         };
     };
 }
+/**
+ * `partialFingerprints` key TrustBridge writes on every SARIF result.
+ *
+ * The `v1` suffix versions the fingerprint algorithm: bump it in the same
+ * release as any change to {@link SarifFingerprintInputs}, so GitHub code
+ * scanning treats the new values as a fresh result identity instead of
+ * matching them against values computed from the old inputs.
+ */
+export declare const SARIF_FINGERPRINT_KEY = "trustbridge/v1";
+/**
+ * Inputs that define the stable identity of one SARIF result (Issue #893).
+ *
+ * These are the *only* inputs. Anything that changes between runs without the
+ * finding itself changing is deliberately excluded — the result message text
+ * (which embeds addresses, balances and home-domain values), the Horizon URL,
+ * the run timestamp and the tool version. Feeding those in made code scanning
+ * open a new alert every time wording or account data moved, which is the
+ * history noise this contract removes.
+ *
+ * - `ruleId`     — stable TB### rule id, declared in {@link buildSarifRules}.
+ * - `checkLabel` — stable check label, also carried in `properties.checkLabel`.
+ * - `assetCode`  — configured asset code; part of what is being checked.
+ * - `reasonCode` — effective run reason code ({@link sarifRunReasonCode}).
+ */
+export interface SarifFingerprintInputs {
+    ruleId: string;
+    checkLabel: string;
+    assetCode: string;
+    reasonCode: string;
+}
+/**
+ * Compute the stable fingerprint for one SARIF result.
+ *
+ * Deterministic SHA-256 over {@link SarifFingerprintInputs} joined with NUL
+ * separators (so `a` + `bc` cannot collide with `ab` + `c`), truncated to 32
+ * hex characters. The same inputs always yield the same value on every runner,
+ * and a `reason_code` change yields a different one.
+ */
+export declare function computeSarifFingerprint(inputs: SarifFingerprintInputs): string;
+/**
+ * Normalise a run's reason code exactly the way `runs[0].properties.reasonCode`
+ * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
+ * `FAILED` for a failing one.
+ */
+export declare function sarifRunReasonCode(result: Pick<ValidationResult, 'reasonCode' | 'valid'>): string;
+/** Build the `partialFingerprints` property bag for one result. */
+export declare function sarifPartialFingerprints(inputs: SarifFingerprintInputs): Record<string, string>;
 export interface SarifRun {
     tool: {
         driver: {
@@ -211,7 +267,7 @@ export declare function unauthorizedTrustlineSarifSeverity(result: Pick<Validati
 export declare function checkToSarifResult(check: CheckResultItem, assetCode: string, horizonUrl: string, stellarAddress: string, severityOverride?: {
     level: SarifLevel;
     ruleId: string;
-}): Record<string, unknown>;
+}, reasonCode?: string): Record<string, unknown>;
 /**
  * Build a complete SARIF 2.1.0 output from a TrustBridge ValidationResult.
  * Returns a valid SARIF object ready for serialization to JSON and upload
@@ -221,6 +277,13 @@ export declare function checkToSarifResult(check: CheckResultItem, assetCode: st
  *  - TB007 (`warning`) when the milestone gate skipped validation.
  *  - TB008 (`warning`) when the trustline has clawback enabled but
  *    `clawback_strict_mode` did not block it (strict-mode blocks stay TB005).
+ *
+ * Every result also carries `partialFingerprints['trustbridge/v1']`, hash of
+ * the rule id, check label, asset code and the run's `reason_code`
+ * (Issue #893). Message text, the account address, balances, the Horizon URL
+ * and the run timestamp are excluded, so a purely cosmetic wording change
+ * keeps the same code-scanning alert while a `reason_code` change opens a new
+ * one.
  */
 export declare function buildSarifOutput(result: ValidationResult, assetCode: string, horizonUrl: string, stellarAddress: string, version?: string): Record<string, unknown>;
 /**
