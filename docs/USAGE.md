@@ -2088,8 +2088,17 @@ The SARIF file includes:
 - **Severity levels** — Passed checks appear as `note`, failed checks as `error`; the TB007 and TB008 advisories use `warning`
 - **Validation gate summary** — Total/passed/failed check counts and the `reason_code` in run properties
 - **Locations** — Links to the Horizon endpoint and checked account address
+- **Stable fingerprints** — Every result carries `partialFingerprints['trustbridge/v1']` so code-scanning alerts stay stable across cosmetic changes (see below)
 
 Rule ids are a stable contract for filtering TrustBridge alerts in code scanning views: new rules are only ever added, existing ids are never renumbered. Several failures can share a rule id (for example the primary and an `assets_json` trustline both under TB002); each result keeps its own message text and `properties.checkLabel`.
+
+### Fingerprint stability (Issue #893)
+
+GitHub code scanning matches a finding across runs by its SARIF `partialFingerprints`, so an unstable fingerprint opens a new alert every time wording or account data moves. TrustBridge hashes only the finding's identity — the rule id, the check label, the asset code and the effective `reason_code` — and excludes the message text, account address, balances, Horizon URL, run timestamp and tool version.
+
+- Editing a check's wording or changing an account balance keeps the same fingerprint (and the same code-scanning alert) while `reason_code` is unchanged.
+- Renaming or changing a `reason_code` moves the fingerprint, so code scanning opens a new result instead of silently re-labelling the old one.
+- The algorithm and inputs are documented in [`docs/SCHEMA.md`](SCHEMA.md#sarif-result-fingerprints-issue-893); the `trustbridge/v1` key is versioned and is bumped with any input change.
 
 ### Schema validation before upload (Issue #679)
 
@@ -3217,6 +3226,8 @@ if (!check.valid) return res.status(401).send(check.reason);
 | `result.xlm_balance` | string | Native XLM balance reported by Horizon (`"0"` when unfunded). |
 | `result.checks` | array | One entry per check: `{ "label": string, "passed": boolean }`. The `detail` field present in internal `ValidationResult` is intentionally excluded. Any Stellar address embedded in a `label` is redacted. |
 | `assets` | array (optional) | Per-asset trustline / clawback outcome — see [Per-asset `reason_code`](#per-asset-reason_code-issue-676). Omitted when per-asset evaluations are not supplied, so plain v1 payloads are unchanged. |
+| `truncated` | boolean (optional) | Present and `true` only when the body exceeded the hard size cap and trailing entries were dropped — see [Body size cap and truncation markers](#body-size-cap-and-truncation-markers-issue-894). Absent on an untruncated payload. |
+| `dropped_fields` | array of strings (optional) | Names of the payload fields whose trailing entries were dropped, in drop order: `["assets"]`, or `["assets", "result.checks"]`. Always present together with `truncated: true`. |
 
 #### Per-asset `reason_code` (Issue #676)
 
@@ -3248,6 +3259,33 @@ When the action is given per-asset evaluations (the primary `asset_code`/`asset_
 **Size:** the array is capped at 100 entries (`maxItems` in the schema). Longer `assets_json` lists are truncated in the payload.
 
 **Receivers that ignore `schema_version`** and parse strictly against an older copy of the schema will reject the new key. Refresh your copy of `schemas/webhook-payload.schema.json`, or ignore unknown keys.
+
+#### Body size cap and truncation markers (Issue #894)
+
+Oversized bodies are rejected by receivers and, from the sender's side, fail **silently** — a payout-readiness signal a Wave dashboard gates on is lost with no error. The action therefore enforces a hard cap of **900 000 UTF-8 bytes** (`WEBHOOK_MAX_BODY_BYTES` in `src/webhook.ts`) on every outbound body.
+
+When a payload would exceed the cap, it is truncated **deterministically** — earlier entries are always kept, later ones dropped, so two runs over the same input drop the same entries — and the loss is marked:
+
+| Marker | Value | Meaning |
+|--------|-------|---------|
+| `truncated` | `true` | Set only on a truncated body; absent otherwise. |
+| `dropped_fields` | `["assets"]` or `["assets", "result.checks"]` | Fields whose trailing entries were dropped, in drop order. |
+
+Truncation order:
+
+1. **`assets` first** — trailing `assets[]` entries are dropped (additive, receiver-ignorable), keeping every `result.checks[]` entry and the run-level `result.valid` signal intact.
+2. **`result.checks` only if needed** — every asset is dropped, then trailing `result.checks[]` entries. The boolean fields (`result.valid`, `result.account_funded`, `result.trustline_exists`) and `result.xlm_balance` always survive, so the payout gate stays authoritative.
+
+Sizing is multibyte-safe: bytes are counted with `Buffer.byteLength(…, 'utf8')`, not `String.length`, so a CJK label or emoji is capped by real byte size and whole entries are dropped — a character is never split.
+
+Delivery outcomes surface on the delivery result's `reason` field:
+
+| `reason` | `sent` | Meaning |
+|----------|--------|---------|
+| `WEBHOOK_PAYLOAD_TRUNCATED` | `true` | A truncated body was delivered; `truncated: true` and `dropped_fields` are set. |
+| `WEBHOOK_SIZE_LIMIT_EXCEEDED` | `false` | Even an empty `assets`/`result.checks` body exceeds the cap; nothing was sent (fail closed). The delivery log carries an actionable message. |
+
+Receivers MUST treat a `truncated: true` payload as a **partial** signal, not a malformed body: gate on the run-level `result` fields, and re-read the full run from the PR comment or the action outputs when the dropped `assets` / `result.checks` detail matters. An untruncated payload is byte-for-byte the frozen v1 shape — the marker keys are absent.
 
 #### Redaction policy (Issue #675)
 

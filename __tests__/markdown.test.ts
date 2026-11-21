@@ -623,6 +623,11 @@ describe('buildAssetChecklist (Issue #717)', () => {
       },
     ]);
 
+    expect(md).toMatchSnapshot();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildAssetTrustlineTable long-table truncation (Issue #860)
 // ---------------------------------------------------------------------------
 
