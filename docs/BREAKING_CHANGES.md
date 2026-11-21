@@ -382,3 +382,17 @@ To avoid breaking existing workflows that configured `comment_mode: dry-run` or 
 ---
 
 [← Back to README](../README.md)
+
+## Legacy alias warnings (Issue #862)
+
+Legacy aliases are accepted for one deprecation window but are no longer silent. When `skip_if_maintainer`, `ready_pass_label`, `ready_label_pass`, `ready_fail_label`, or `ready_label_fail` is explicitly set, the action emits one consolidated warning per run. Canonical names always win when both forms are supplied:
+
+- `skip_if_maintainer` → `skip_for_maintainers`
+- `ready_pass_label` / `ready_label_pass` → `pass_label`
+- `ready_fail_label` / `ready_label_fail` → `fail_label`
+
+No output, permission, pause/freeze, or dry-run semantics change. Consumers should migrate before the next major release.
+
+## Job Summary size policy (Issue #861)
+
+Job Summary markdown is limited to 1 MiB of UTF-8 data. TrustBridge keeps the compact overview ahead of the verbose JSON artifact, removes lower-priority detail first, and then applies a visible line-safe soft-fail truncation notice. This does not change the action conclusion or validation outputs.
