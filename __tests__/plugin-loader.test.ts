@@ -3,6 +3,47 @@ import * as os from 'os';
 import * as path from 'path';
 import { loadPlugin, loadPluginsFromAllowlist, PluginLoadError } from '../src/pluginLoader';
 
+// Helpers for symlink tests — skipped on platforms that cannot create symlinks
+// without elevated privileges (older Windows without Developer Mode).
+function trySymlink(target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Try to create a symlink or Windows junction to `target` at `linkPath`.
+ * Returns true on success, false when the OS refuses (e.g. Windows without
+ * Developer Mode or SeCreateSymbolicLinkPrivilege).
+ *
+ * Attempts, in order:
+ * 1. Plain symlink (works on Unix and Windows with Dev Mode)
+ * 2. 'file' symlink hint (Windows)
+ * 3. 'junction' (Windows directory junction — no privilege required for dirs)
+ */
+function trySymlinkOrJunction(target: string, linkPath: string, type?: 'file' | 'dir' | 'junction'): boolean {
+  const attempts: Array<fs.symlink.Type | undefined> = type
+    ? [type]
+    : [undefined, 'file', 'junction'];
+
+  for (const t of attempts) {
+    try {
+      if (t) {
+        fs.symlinkSync(target, linkPath, t);
+      } else {
+        fs.symlinkSync(target, linkPath);
+      }
+      return true;
+    } catch {
+      // try next
+    }
+  }
+  return false;
+}
+
 // Every test works in its own temp workspace, removed afterwards, so the suite
 // never touches the repository or depends on files outside the temp dir.
 // Fixtures are CommonJS so they load under Jest on every supported Node version.
@@ -156,6 +197,121 @@ describe('pluginLoader', () => {
         message:
           'Duplicate plugin id "consumer/kyc": plugins/b.cjs exports the same id as plugins/a.cjs. Plugin ids must be unique.',
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Symlink escape tests
+  // These tests verify that a symlink (or Windows junction) inside the
+  // workspace that points to a file outside the workspace root is rejected —
+  // not just the lexical path.
+  // ---------------------------------------------------------------------------
+  describe('symlink escape prevention', () => {
+    it('rejects a symlink that points outside the workspace root', async () => {
+      // Create a workspace and a separate "outside" directory with a real plugin.
+      const workspaceRoot = makeWorkspace();
+      const outsideDir = makeWorkspace();
+      const outsidePlugin = path.join(outsideDir, 'evil.cjs');
+      fs.writeFileSync(outsidePlugin, pluginSource('evil/escape'), 'utf8');
+
+      // Place a symlink inside the workspace that points to the outside file.
+      const pluginsDir = path.join(workspaceRoot, 'plugins');
+      fs.mkdirSync(pluginsDir, { recursive: true });
+      const symlinkPath = path.join(pluginsDir, 'evil.cjs');
+
+      const created = trySymlinkOrJunction(outsidePlugin, symlinkPath, 'file');
+      if (!created) {
+        // Skip gracefully on Windows without symlink privilege.
+        return;
+      }
+
+      await expect(loadPlugin(workspaceRoot, 'plugins/evil.cjs')).rejects.toMatchObject({
+        name: 'PluginLoadError',
+        reason: 'symlink_escape',
+        pluginPath: 'plugins/evil.cjs',
+      });
+    });
+
+    it('rejects a Windows junction directory that escapes workspace (directory symlink)', async () => {
+      // Create a workspace and a separate "outside" directory with a real plugin.
+      const workspaceRoot = makeWorkspace();
+      const outsideDir = makeWorkspace();
+      const outsidePlugin = path.join(outsideDir, 'secret.cjs');
+      fs.writeFileSync(outsidePlugin, pluginSource('evil/dir-escape'), 'utf8');
+
+      // Create plugins/ with a junctioned/symlinked subdirectory pointing outside.
+      const pluginsDir = path.join(workspaceRoot, 'plugins');
+      fs.mkdirSync(pluginsDir, { recursive: true });
+      const symlinkDir = path.join(pluginsDir, 'outside');
+
+      // 'junction' works without elevation on Windows for directories.
+      const created = trySymlinkOrJunction(outsideDir, symlinkDir, 'junction');
+      if (!created) {
+        return;
+      }
+
+      // The lexical path plugins/outside/secret.cjs is inside plugins/ — only
+      // realpath resolution reveals it escapes the workspace.
+      await expect(loadPlugin(workspaceRoot, 'plugins/outside/secret.cjs')).rejects.toMatchObject({
+        name: 'PluginLoadError',
+        reason: 'symlink_escape',
+        pluginPath: 'plugins/outside/secret.cjs',
+      });
+    });
+
+    it('accepts a plugin that is a symlink pointing to a file still inside the workspace', async () => {
+      const workspaceRoot = makeWorkspace();
+      const realPlugin = path.join(workspaceRoot, 'plugins', 'real.cjs');
+      fs.mkdirSync(path.dirname(realPlugin), { recursive: true });
+      fs.writeFileSync(realPlugin, pluginSource('consumer/symlinked'), 'utf8');
+
+      const symlinkPath = path.join(workspaceRoot, 'plugins', 'link.cjs');
+      const created = trySymlinkOrJunction(realPlugin, symlinkPath, 'file');
+      if (!created) {
+        return;
+      }
+
+      const plugin = await loadPlugin(workspaceRoot, 'plugins/link.cjs');
+      expect(plugin.id).toBe('consumer/symlinked');
+    });
+
+    it('allowlist loader skips junction-escape plugins with a warning and loads remaining plugins', async () => {
+      const workspaceRoot = makeWorkspace();
+      const outsideDir = makeWorkspace();
+      const outsidePlugin = path.join(outsideDir, 'evil.cjs');
+      fs.writeFileSync(outsidePlugin, pluginSource('evil/escape'), 'utf8');
+
+      const pluginsDir = path.join(workspaceRoot, 'plugins');
+      fs.mkdirSync(pluginsDir, { recursive: true });
+
+      // Try junction (dir) first; fall back to file symlink.
+      const symlinkDir = path.join(pluginsDir, 'outside');
+      const createdDir = trySymlinkOrJunction(outsideDir, symlinkDir, 'junction');
+      if (!createdDir) {
+        // Fall back: try creating a file symlink directly to the plugin.
+        const symlinkFile = path.join(pluginsDir, 'evil.cjs');
+        const createdFile = trySymlinkOrJunction(outsidePlugin, symlinkFile, 'file');
+        if (!createdFile) {
+          return; // cannot create any symlink — skip test
+        }
+        writePlugin(workspaceRoot, 'plugins/good.cjs', pluginSource('consumer/good'));
+        const loaded = await loadPluginsFromAllowlist({
+          workspaceRoot,
+          allowedPluginPaths: ['plugins/evil.cjs', 'plugins/good.cjs'],
+        });
+        expect(loaded.map((p) => p.id)).toEqual(['consumer/good']);
+        return;
+      }
+
+      // The good plugin should still load; the junction-escaped one is skipped.
+      writePlugin(workspaceRoot, 'plugins/good.cjs', pluginSource('consumer/good'));
+
+      const loaded = await loadPluginsFromAllowlist({
+        workspaceRoot,
+        allowedPluginPaths: ['plugins/outside/evil.cjs', 'plugins/good.cjs'],
+      });
+
+      expect(loaded.map((p) => p.id)).toEqual(['consumer/good']);
     });
   });
 });
