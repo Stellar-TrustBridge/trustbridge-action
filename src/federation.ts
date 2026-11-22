@@ -39,6 +39,24 @@ const FEDERATION_TIMEOUT_MS = 10_000;
  *
  * These are intentionally stable strings so callers and tests can assert on
  * them without depending on human-readable message wording.
+ *
+ * | Code | Meaning |
+ * |---|---|
+ * | `INVALID_ADDRESS` | Input is not a `user*domain` federation address. |
+ * | `INVALID_USERNAME` | Username part fails length or character validation. |
+ * | `INVALID_DOMAIN` | Domain part is blocked (private IP, loopback, metadata). |
+ * | `TOML_FETCH_FAILED` | Fetching `stellar.toml` failed for an unclassified reason. |
+ * | `TOML_NXDOMAIN` | `stellar.toml` host DNS lookup failed. |
+ * | `TOML_TRUNCATED` | `stellar.toml` response body exceeded the size limit. |
+ * | `TOML_TIMEOUT` | `stellar.toml` fetch timed out. |
+ * | `NO_FEDERATION_SERVER` | `stellar.toml` exists but has no `FEDERATION_SERVER`. |
+ * | `FEDERATION_FETCH_FAILED` | Federation server request failed for an unclassified reason. |
+ * | `FEDERATION_NXDOMAIN` | Federation server host DNS lookup failed. |
+ * | `FEDERATION_TRUNCATED` | Federation server response body exceeded the size limit. |
+ * | `FEDERATION_TIMEOUT` | Federation server request timed out. |
+ * | `INVALID_ACCOUNT_ID` | Federation response contained no valid Stellar G-address. |
+ * | `MEMO_REQUIRED` | Federation response includes `memo_type` but omits the `memo` value. |
+ * | `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized or the `memo` value is incompatible with the declared type (e.g. non-numeric `id`, non-hex `hash`). |
  */
 export type FederationErrorCode =
   | 'INVALID_ADDRESS'
@@ -53,18 +71,63 @@ export type FederationErrorCode =
   | 'FEDERATION_NXDOMAIN'
   | 'FEDERATION_TRUNCATED'
   | 'FEDERATION_TIMEOUT'
-  | 'INVALID_ACCOUNT_ID';
+  | 'INVALID_ACCOUNT_ID'
+  | 'MEMO_REQUIRED'
+  | 'MEMO_TYPE_MISMATCH';
+
+/**
+ * The three memo types defined by the Stellar protocol.
+ *
+ * - `text`  — a UTF-8 string up to 28 bytes.
+ * - `id`    — an unsigned 64-bit integer (sent as a decimal string by federation servers).
+ * - `hash`  — a 32-byte value encoded as a 64-character lowercase hex string.
+ *
+ * These values match the strings returned by SEP-0002 federation servers in
+ * the `memo_type` field of a federation response.
+ */
+export type MemoType = 'text' | 'id' | 'hash';
+
+/** Maximum length (bytes) of a `text` memo per the Stellar protocol. */
+export const MEMO_TEXT_MAX_BYTES = 28;
 
 /**
  * Result of a federation address resolution.
+ *
+ * When a federation response includes a `memo_type`, the receiving payment
+ * **must** attach the corresponding `memo` to the transaction or the funds
+ * will be unroutable. The `memoRequired` flag is `true` whenever `memoType`
+ * is set, so callers can gate on a single boolean instead of re-checking
+ * `memoType !== undefined`.
+ *
+ * Example — checking memo before building a payment:
+ * ```ts
+ * const resolution = await resolveFederationAddress('alice*example.com');
+ * if (resolution && resolution.memoRequired) {
+ *   // attach resolution.memo (of type resolution.memoType) to the transaction
+ * }
+ * ```
  */
 export interface FederationResolution {
   /** The resolved Stellar G-address. */
   gAddress: string;
-  /** Optional memo type (text, id, hash). */
-  memoType?: string;
-  /** Optional memo value. */
+  /**
+   * Memo type required by the destination account (`text`, `id`, or `hash`).
+   * Present when the federation server returned a `memo_type` field.
+   * Absent when no memo is required.
+   */
+  memoType?: MemoType;
+  /**
+   * Memo value to attach to the payment transaction.
+   * Always present when `memoType` is set.
+   * For `id` memos this is a decimal string representation of the numeric id.
+   * For `hash` memos this is a 64-character lowercase hex string.
+   */
   memo?: string;
+  /**
+   * `true` when the destination requires a memo (`memoType` is set).
+   * Payout tools should check this flag before building a payment transaction.
+   */
+  memoRequired: boolean;
 }
 
 /**
@@ -383,21 +446,44 @@ export async function resolveFederationAddress(
       return null;
     }
 
-    const memoType =
+    const rawMemoType =
       json && typeof json === 'object' && 'memo_type' in json
         ? (json as { memo_type?: unknown }).memo_type
         : undefined;
-    const memo =
+    const rawMemo =
       json && typeof json === 'object' && 'memo' in json
         ? (json as { memo?: unknown }).memo
         : undefined;
 
-    const resolution: FederationResolution = { gAddress: accountId };
-    if (typeof memoType === 'string') {
-      resolution.memoType = memoType;
+    // Validate memo fields when the server returned a memo_type. A memo_type
+    // without a compatible memo value is a non-conformant server response —
+    // attaching a malformed memo to a Stellar transaction silently breaks
+    // payment routing.
+    if (rawMemoType !== undefined && rawMemoType !== null) {
+      const memoValidation = validateMemo(rawMemoType, rawMemo);
+      if (!memoValidation.valid) {
+        logger.warn(
+          `Federation response for ${input} has invalid memo: ${memoValidation.reason}`,
+          {
+            component: 'federation',
+            domain,
+            code: memoValidation.code satisfies FederationErrorCode,
+          },
+        );
+        return null;
+      }
     }
-    if (typeof memo === 'string') {
-      resolution.memo = memo;
+
+    const resolution: FederationResolution = { gAddress: accountId, memoRequired: false };
+    if (
+      typeof rawMemoType === 'string' &&
+      (rawMemoType === 'text' || rawMemoType === 'id' || rawMemoType === 'hash')
+    ) {
+      resolution.memoType = rawMemoType as MemoType;
+      resolution.memoRequired = true;
+    }
+    if (typeof rawMemo === 'string' && rawMemo.trim() !== '') {
+      resolution.memo = rawMemo.trim();
     }
 
     logger.debug(`Resolved federation address ${input} in ${Date.now() - startTime}ms`, {
@@ -413,6 +499,111 @@ export async function resolveFederationAddress(
     });
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Memo validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates the `memo_type` and `memo` fields returned by a federation server.
+ *
+ * SEP-0002 defines three memo types:
+ * - `text`  — UTF-8 string, at most 28 bytes.
+ * - `id`    — unsigned 64-bit integer sent as a decimal string.
+ * - `hash`  — 32-byte value encoded as exactly 64 lowercase hex characters.
+ *
+ * Rules enforced here:
+ * 1. `memo_type` must be one of `text`, `id`, or `hash` (case-sensitive).
+ * 2. When `memo_type` is present, `memo` must also be present and non-empty
+ *    (a federation server that returns a type but no value is non-conformant;
+ *    attaching an empty memo to a transaction has no effect and breaks routing).
+ * 3. `id` memos must be a string of decimal digits only, representable as a
+ *    64-bit unsigned integer (0 – 18446744073709551615).
+ * 4. `hash` memos must be exactly 64 lowercase hex characters.
+ * 5. `text` memos must not exceed 28 bytes when encoded as UTF-8.
+ *
+ * Returns `{ valid: true, memoType, memo }` on success, or
+ * `{ valid: false, code, reason }` on failure.
+ */
+export function validateMemo(
+  memoType: unknown,
+  memo: unknown,
+): | { valid: true; memoType: MemoType; memo: string }
+  | { valid: false; code: 'MEMO_REQUIRED' | 'MEMO_TYPE_MISMATCH'; reason: string } {
+  // No memo at all — valid (memo is optional in federation responses).
+  if (memoType === undefined || memoType === null) {
+    // If memo is somehow present without a type, ignore it (non-standard server).
+    return { valid: true, memoType: undefined as unknown as MemoType, memo: undefined as unknown as string };
+  }
+
+  if (typeof memoType !== 'string' || (memoType !== 'text' && memoType !== 'id' && memoType !== 'hash')) {
+    return {
+      valid: false,
+      code: 'MEMO_TYPE_MISMATCH',
+      reason: `Unrecognized memo_type "${String(memoType)}": must be "text", "id", or "hash".`,
+    };
+  }
+
+  // memo_type is present — memo value is required.
+  if (memo === undefined || memo === null || (typeof memo === 'string' && memo.trim() === '')) {
+    return {
+      valid: false,
+      code: 'MEMO_REQUIRED',
+      reason: `Federation response includes memo_type "${memoType}" but omits the memo value. The destination account requires a memo; attach memo_type "${memoType}" to your payment transaction.`,
+    };
+  }
+
+  if (typeof memo !== 'string') {
+    return {
+      valid: false,
+      code: 'MEMO_TYPE_MISMATCH',
+      reason: `memo must be a string, got ${typeof memo}.`,
+    };
+  }
+
+  const memoStr = memo.trim();
+
+  if (memoType === 'id') {
+    // Must be a non-negative integer string in [0, 2^64 - 1].
+    if (!/^\d+$/.test(memoStr)) {
+      return {
+        valid: false,
+        code: 'MEMO_TYPE_MISMATCH',
+        reason: `memo_type is "id" but memo "${memoStr}" is not a decimal integer string.`,
+      };
+    }
+    if (BigInt(memoStr) > 18446744073709551615n) {
+      return {
+        valid: false,
+        code: 'MEMO_TYPE_MISMATCH',
+        reason: `memo_type is "id" but memo value ${memoStr} exceeds the maximum unsigned 64-bit integer (18446744073709551615).`,
+      };
+    }
+  }
+
+  if (memoType === 'hash') {
+    if (!/^[0-9a-f]{64}$/i.test(memoStr)) {
+      return {
+        valid: false,
+        code: 'MEMO_TYPE_MISMATCH',
+        reason: `memo_type is "hash" but memo "${memoStr}" is not a 64-character hex string.`,
+      };
+    }
+  }
+
+  if (memoType === 'text') {
+    const byteLength = Buffer.byteLength(memoStr, 'utf8');
+    if (byteLength > MEMO_TEXT_MAX_BYTES) {
+      return {
+        valid: false,
+        code: 'MEMO_TYPE_MISMATCH',
+        reason: `memo_type is "text" but memo is ${byteLength} bytes, exceeding the 28-byte UTF-8 limit.`,
+      };
+    }
+  }
+
+  return { valid: true, memoType, memo: memoStr };
 }
 
 /**

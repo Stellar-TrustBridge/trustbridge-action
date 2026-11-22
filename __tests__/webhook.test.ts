@@ -28,6 +28,8 @@ import {
   WEBHOOK_PREVIOUS_SIGNATURE_HEADER,
   WebhookConfig,
   WebhookPayload,
+  DEFAULT_OIDC_AUDIENCE,
+  OIDC_REQUIRED_PERMISSION,
 } from '../src/webhook';
 import { logger } from '../src/logger';
 
@@ -541,6 +543,121 @@ describe('OIDC fail-closed delivery (Issue #674)', () => {
     const message = describeOidcMintFailure('trustbridge-dashboard', new Error(`bad ${FAKE_JWT}`));
     expect(message).not.toContain(FAKE_JWT);
     expect(message).toContain('[REDACTED_JWT]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #673 — webhook_oidc_audience configuration and receiver-side
+// rejection coverage, kept separate from the Issue #674 mint-failure suite
+// above since these exercise a distinct failure/configuration surface:
+// the value passed to core.getIDToken(), and what happens when the
+// *receiver* (not the OIDC provider) rejects the token.
+// ---------------------------------------------------------------------------
+
+describe('OIDC audience configuration (Issue #673)', () => {
+  const FAKE_JWT = 'eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ0cnVzdGJyaWRnZSJ9.c2lnbmF0dXJlLXZhbHVl';
+  const OIDC_CONFIG: WebhookConfig = {
+    webhookUrl: 'https://dashboard.example.com/webhook',
+    timeoutMs: 1000,
+    authMode: 'oidc',
+  };
+
+  let origFetch: typeof fetch;
+  let fetchMock: jest.Mock;
+  let getIdTokenSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    origFetch = global.fetch;
+    fetchMock = jest.fn().mockResolvedValue({ status: 200 });
+    (global as any).fetch = fetchMock;
+    getIdTokenSpy = jest.spyOn(core, 'getIDToken').mockResolvedValue(FAKE_JWT);
+    jest.spyOn(core, 'setFailed').mockImplementation(() => {});
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.spyOn(core, 'info').mockImplementation(() => {});
+    jest.spyOn(core, 'debug').mockImplementation(() => {});
+    jest.spyOn(core, 'setSecret').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    (global as any).fetch = origFetch;
+    jest.restoreAllMocks();
+  });
+
+  it(`requests the ID token for the configured webhook_oidc_audience (requires "${OIDC_REQUIRED_PERMISSION}")`, async () => {
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      { ...OIDC_CONFIG, oidcAudience: 'my-custom-dashboard' },
+      'owner/repo',
+      1,
+    );
+
+    expect(getIdTokenSpy).toHaveBeenCalledWith('my-custom-dashboard');
+  });
+
+  it(`falls back to DEFAULT_OIDC_AUDIENCE ("${DEFAULT_OIDC_AUDIENCE}") when webhook_oidc_audience is unset (requires "${OIDC_REQUIRED_PERMISSION}")`, async () => {
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(getIdTokenSpy).toHaveBeenCalledWith(DEFAULT_OIDC_AUDIENCE);
+  });
+
+  it('treats an empty-string webhook_oidc_audience as unset: invalid configuration still falls back rather than requesting an empty aud claim', async () => {
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      { ...OIDC_CONFIG, oidcAudience: '' },
+      'owner/repo',
+      1,
+    );
+
+    expect(getIdTokenSpy).toHaveBeenCalledWith(DEFAULT_OIDC_AUDIENCE);
+    expect(getIdTokenSpy).not.toHaveBeenCalledWith('');
+  });
+
+  it(
+    'a receiver rejecting the bearer token for an audience mismatch (HTTP 401) is reported as delivered ' +
+      '(docs/USAGE.md troubleshooting: "Receiver returns 401/403 with an invalid aud claim") — distinct from an ' +
+      'OIDC-provider mint failure, which fails the step instead',
+    async () => {
+      fetchMock.mockResolvedValue({ status: 401 });
+      const infoSpy = core.info as jest.Mock;
+      const setFailedSpy = core.setFailed as jest.Mock;
+
+      await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+      // Minting succeeded, so the step does not fail — the 401 is a
+      // receiver-side policy decision (audience mismatch), not a TrustBridge
+      // misconfiguration the action can detect ahead of time.
+      expect(setFailedSpy).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const infoText = infoSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+      expect(infoText).toContain('HTTP 401');
+    },
+  );
+
+  it('a receiver rejecting the bearer token (HTTP 403) is likewise non-fatal and distinct from a mint failure', async () => {
+    fetchMock.mockResolvedValue({ status: 403 });
+    const setFailedSpy = core.setFailed as jest.Mock;
+
+    await sendWebhookNotification(passedResult, ADDRESS, OIDC_CONFIG, 'owner/repo', 1);
+
+    expect(setFailedSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it(`sends the Authorization: Bearer header unchanged for a GHES-style webhook host (requires "${OIDC_REQUIRED_PERMISSION}"; GHES OIDC issuers differ from github.com, but delivery itself is host-agnostic)`, async () => {
+    await sendWebhookNotification(
+      passedResult,
+      ADDRESS,
+      { ...OIDC_CONFIG, webhookUrl: 'https://dashboard.ghes.example.internal/webhook' },
+      'owner/repo',
+      1,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Authorization']).toBe(`Bearer ${FAKE_JWT}`);
+    expect(headers['X-TrustBridge-Signature']).toBeUndefined();
   });
 });
 

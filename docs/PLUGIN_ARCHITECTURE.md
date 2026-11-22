@@ -161,7 +161,39 @@ not abort the run and does not alter the results produced by other plugins.
 This fail-closed, per-plugin isolation is what allows unreliable third-party
 checks to be included without risking unrelated account validation.
 
-## Testing
+## Plugin loading and security
+
+Plugins are loaded by `src/pluginLoader.ts`. The loader enforces several
+security checks before a plugin file is imported:
+
+1. **Path must be relative** — absolute paths are rejected with reason
+   `path_traversal`.
+2. **Lexical path must stay inside the workspace root** — `../` segments that
+   escape the workspace root are rejected with reason `path_traversal`.
+3. **Realpath must stay inside the workspace root** — after confirming the file
+   exists, the loader calls `fs.realpathSync` to resolve any symlinks or
+   Windows junctions and checks that the resolved path is still under the
+   workspace root. A symlink (or junction) whose target lands outside the
+   workspace root is rejected with reason `symlink_escape`. This prevents
+   attackers from placing a symlink inside the workspace that points to an
+   untrusted file outside it. A symlink whose target is still inside the
+   workspace is accepted.
+4. **Path must resolve to a regular file** — directories and other special
+   files are rejected with reason `not_file`.
+5. **Module must export a valid `CheckPlugin` interface** — missing `id`,
+   `label`, or `run()` are rejected with reason `invalid_export`.
+
+### `PluginLoadError` reason codes
+
+| Reason | Meaning |
+|---|---|
+| `path_traversal` | Path is absolute or escapes the workspace root lexically |
+| `symlink_escape` | Realpath of the file or a directory component resolves outside the workspace root (symlink/junction escape) |
+| `not_found` | File does not exist at the resolved path |
+| `not_file` | Path resolves to a directory or non-regular file |
+| `load_failed` | Module threw an error during `import()` |
+| `invalid_export` | Module export does not match the `CheckPlugin` interface |
+| `duplicate_id` | Two allowlisted plugins export the same `id` |
 
 Unit tests under `__tests__/plugin.test.ts` cover the plugin runner's happy
 path, the timeout boundary (a slow plugin that returns late fails closed
@@ -170,3 +202,19 @@ with a stable error, including the per-plugin `timeoutMs` override — Issue
 abort or corrupt results for unrelated validation). When changing runner
 behavior, keep `src/pluginRunner.ts`, `src/plugin.ts`, and the tests
 consistent.
+
+The plugin loader tests under `__tests__/plugin-loader.test.ts` cover:
+
+- Happy path: a valid plugin loads and runs.
+- Path traversal via `../` segments.
+- Absolute path rejection.
+- Symlink escape: a symlink inside the workspace whose target is outside the
+  workspace is rejected with reason `symlink_escape`.
+- Windows junction escape: a directory junction inside the workspace that
+  points to an outside directory causes any file accessed through it to be
+  rejected with reason `symlink_escape`.
+- Safe intra-workspace symlinks: symlinks whose targets remain inside the
+  workspace are accepted.
+- Failure isolation: a bad plugin in the allowlist is skipped; remaining
+  plugins still load.
+- Duplicate id detection.

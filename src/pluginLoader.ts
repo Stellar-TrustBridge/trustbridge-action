@@ -68,6 +68,7 @@ export class PluginLoadError extends Error {
     public readonly pluginPath: string,
     public readonly reason:
       | 'path_traversal'
+      | 'symlink_escape'
       | 'not_found'
       | 'not_file'
       | 'invalid_export'
@@ -105,6 +106,49 @@ function validatePluginPath(
   // Ensure resolved path is still within workspace
   if (!normalized.startsWith(path.normalize(workspaceRoot))) {
     return { valid: false, reason: 'Plugin path escapes workspaceRoot' };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Resolve the realpath of a plugin file and ensure it still lives under
+ * `workspaceRoot`. This catches symlinks and junctions that lexically appear
+ * inside the workspace but whose targets resolve to a path outside it.
+ *
+ * Must be called *after* confirming the file exists (realpathSync requires
+ * the path to exist). Returns `{ valid: true }` or throws-safe
+ * `{ valid: false, reason: string }`.
+ */
+function validateRealpathInsideWorkspace(
+  workspaceRoot: string,
+  absolutePath: string,
+): { valid: true } | { valid: false; reason: string } {
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(absolutePath);
+  } catch {
+    // If realpathSync fails (e.g. broken symlink), treat as not_found — the
+    // caller already checked existsSync, so a failure here means the symlink
+    // is dangling.
+    return { valid: false, reason: 'Realpath resolution failed (possible dangling symlink)' };
+  }
+
+  const normalizedRoot = path.normalize(workspaceRoot);
+  const normalizedReal = path.normalize(realPath);
+
+  // The real path must be the workspace root itself or inside it. Use a
+  // separator-aware prefix check so a workspace at /tmp/abc does not
+  // accidentally match /tmp/abcdef.
+  const rootWithSep = normalizedRoot.endsWith(path.sep)
+    ? normalizedRoot
+    : normalizedRoot + path.sep;
+
+  if (normalizedReal !== normalizedRoot && !normalizedReal.startsWith(rootWithSep)) {
+    return {
+      valid: false,
+      reason: `Plugin real path ${realPath} escapes workspaceRoot via symlink or junction`,
+    };
   }
 
   return { valid: true };
@@ -150,7 +194,20 @@ export async function loadPlugin(
     );
   }
 
-  // Step 3: verify it's a regular file (not directory, symlink, socket, etc.)
+  // Step 3: resolve realpath and confirm it stays inside the workspace.
+  // This rejects symlinks and junctions whose targets land outside the
+  // workspace root — the lexical path check above is not sufficient because
+  // path.resolve does not follow symlinks.
+  const realpathValidation = validateRealpathInsideWorkspace(workspaceRoot, absolutePath);
+  if (!realpathValidation.valid) {
+    throw new PluginLoadError(
+      `Plugin path escapes workspaceRoot via symlink or junction: ${'reason' in realpathValidation ? realpathValidation.reason : 'unknown'}`,
+      pluginPath,
+      'symlink_escape',
+    );
+  }
+
+  // Step 4: verify it's a regular file (not directory, symlink, socket, etc.)
   const stats = fs.statSync(absolutePath);
   if (!stats.isFile()) {
     throw new PluginLoadError(
@@ -160,7 +217,7 @@ export async function loadPlugin(
     );
   }
 
-  // Step 4: dynamically load the module. CommonJS plugins load through a
+  // Step 5: dynamically load the module. CommonJS plugins load through a
   // plain absolute path (transpiled to require(), which resolves temp
   // workspace paths under both plain Node and Jest). file:// URLs do not
   // survive Jest's transpiled require, so they are only used for ESM (.mjs)
@@ -190,7 +247,7 @@ export async function loadPlugin(
     );
   }
 
-  // Step 5: extract and validate the plugin export
+  // Step 6: extract and validate the plugin export
   // Try: default export, then named 'plugin' export, then first exported object with `id` and `run`
   let plugin: unknown;
 

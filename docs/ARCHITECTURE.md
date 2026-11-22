@@ -17,7 +17,9 @@ When a match is found, the address is replaced with a masked placeholder (e.g. `
 
 ### Context key allowlist
 
-The logger accepts a structured context object. Only keys on an explicit allowlist (e.g. `operation`, `status`, `count`, `durationMs`) are serialized verbatim. Unknown keys are dropped rather than stringified, preventing accidental leakage of raw payload fields that may contain addresses.
+The logger accepts a structured context object (`LogContext`). By default, `redactContext` processes every key it is given: address-bearing keys are masked, known secret-shaped keys become `[REDACTED]`, and every other string is passed through the pattern-based redactor — no key is dropped, only values are made safe. This is deliberate so adding a new, ad-hoc context key at a call site never silently loses that field from the log.
+
+**Strict mode (Issue #858):** `redactContext(context, { strict: true })` additionally drops any key not in `LOG_CONTEXT_KEY_ALLOWLIST` (`operation`, `status`, `count`, `durationMs`, the keys `LogContext` itself declares, and every address-bearing key with a defined redaction policy) — an unreviewed field is absent from the log entirely rather than present in redacted form. `extraAllowedKeys` extends the allowlist for a specific call site. Strict mode is opt-in per call, not a global default, so existing call sites are unaffected until a caller deliberately adopts it for a context it has fully audited.
 
 ### Exceptions
 
@@ -174,6 +176,61 @@ rejected, and that unknown check kinds become `other`.
 | Latency histogram | Every fetch attempt (success, 404, exhausted-retries) records its wall-clock latency into `globalHorizonHistogram` (`HorizonLatencyHistogram` in `metrics.ts`), bucketed by `[50, 100, 250, 500, 1000, 2500, 5000, +Inf]` ms and labelled `primary` or `fallback`. The snapshot is included in the Job Summary JSON artifact under `horizonFetchLatencyHistogram`. No raw addresses or URLs are stored — only the endpoint kind tag and the numeric value. |
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
+
+---
+
+## Circuit breaker half-open probe budget (Issue #888)
+
+`CircuitBreaker` in `src/resilience.ts` enforces a configurable limit on
+the number of **concurrent** probe calls while the circuit is in the
+`half-open` state.
+
+### Why this matters
+
+Without a probe budget, every caller that checks `getState()` after the
+recovery timeout sees `half-open` and proceeds to call `execute()`. Under
+Wave batch peaks — where dozens of addresses are validated in parallel —
+all of them can stampede a Horizon endpoint that is only starting to
+recover, overwhelming it and triggering a fresh outage cycle.
+
+### How it works
+
+```
+CircuitBreakerOptions.halfOpenMaxProbes  (default: 1)
+```
+
+`execute()` tracks `halfOpenProbesInFlight`. When the count is already at
+`halfOpenMaxProbes`, any additional caller receives `CircuitOpenError`
+immediately — fast-fail, identical to fully-open behavior — and the
+rejection is counted in `halfOpenProbeBudgetExhaustedCount`.
+
+The in-flight counter is decremented in a `finally` block when each probe
+resolves (success) or rejects (failure). A probe failure also re-opens the
+circuit and resets the counter; a probe success that meets `successThreshold`
+closes the circuit and resets the counter. Both transitions also zero the
+exhaustion count so the next half-open period starts fresh.
+
+### Observability
+
+| Surface | What it shows |
+|---|---|
+| `getStats().halfOpenProbesInFlight` | Concurrently executing probes right now |
+| `getStats().halfOpenProbeBudgetExhaustedCount` | Calls fast-failed due to budget exhaustion since last half-open entry |
+| `getStats().halfOpenMaxProbes` | Configured budget |
+| `getOpenMetrics().halfOpenProbeStats` | All four values as a nested object for Job Summary export |
+| `onProbeBudgetExhausted(inFlight, maxProbes)` | Optional callback — default emits `core.warning` as a GitHub Check Run annotation |
+
+### Backward compatibility
+
+The default (`halfOpenMaxProbes: 1`) matches the previous undocumented
+behavior where only a single probe was practically in flight at a time
+(because the breaker was typically used with sequential callers). No
+existing test needed changes to accommodate the new field.
+
+Set `halfOpenMaxProbes: Infinity` to restore the pre-#888 behavior with
+no limit.
+
+Enforced by `__tests__/resilience.test.ts` — `CircuitBreaker — half-open probe budget (Issue #888)` suite (16 tests).
 
 ---
 
@@ -341,3 +398,11 @@ The test suite now includes three test files that benchmark parser resilience:
 ---
 
 [← Back to README](../README.md)
+
+## Wave runtime safeguards (#861–#864)
+
+The runtime keeps validation separate from mutation. `posting_mode: dry-run` runs the same check and output pipeline as enforce mode, while the entrypoint gates every GitHub mutation—comments, check runs, labels, assignee changes, and Projects v2 updates—behind `posting_mode: post`.
+
+Job Summary rendering is budget-aware. The compact overview is higher priority than the verbose metrics JSON artifact; the artifact is removed first, followed by safe line-boundary truncation with a visible marker if the compact report still exceeds the 1 MiB UTF-8 budget.
+
+Horizon retry scheduling accepts both Retry-After encodings, applies a bounded 10% jitter, and enforces both the per-sleep ceiling and cumulative wait budget. Retry-After waits are exported as privacy-safe numeric metrics without addresses, URLs, or response bodies.

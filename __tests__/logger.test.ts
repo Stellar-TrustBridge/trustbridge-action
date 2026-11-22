@@ -28,6 +28,8 @@ import {
   formatHorizonRetryMessage,
   horizonRetryLogLevel,
   redactHorizonBaseUrl,
+  LOG_CONTEXT_KEY_ALLOWLIST,
+  isAllowedLogContextKey,
 } from '../src/logger';
 
 jest.mock('@actions/core');
@@ -646,5 +648,180 @@ describe('structured Horizon retry events (Issue #697)', () => {
     expect(redactHorizonBaseUrl('https://user:pw@horizon.example.com/?token=abc#frag')).toBe(
       'https://horizon.example.com',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #858 — structured field allowlist and redaction regression suite
+// ---------------------------------------------------------------------------
+
+describe('LOG_CONTEXT_KEY_ALLOWLIST / isAllowedLogContextKey (Issue #858)', () => {
+  it('allows every key LogContext itself declares', () => {
+    for (const key of ['component', 'stellarAddress', 'horizonUrl', 'reason_code', 'check']) {
+      expect(isAllowedLogContextKey(key)).toBe(true);
+    }
+  });
+
+  it('allows the generic operational metadata keys documented in docs/ARCHITECTURE.md', () => {
+    for (const key of ['operation', 'status', 'count', 'durationMs']) {
+      expect(isAllowedLogContextKey(key)).toBe(true);
+    }
+  });
+
+  it('allows every address-bearing key with a defined redaction policy', () => {
+    for (const key of ['assetIssuer', 'accountId', 'contractAddress', 'issuerContractId']) {
+      expect(LOG_CONTEXT_KEY_ALLOWLIST.has(key)).toBe(true);
+    }
+  });
+
+  it('rejects an arbitrary, unreviewed key', () => {
+    expect(isAllowedLogContextKey('rawPayload')).toBe(false);
+    expect(isAllowedLogContextKey('someFutureField')).toBe(false);
+  });
+
+  it('accepts an unreviewed key only when explicitly passed as extraAllowedKeys', () => {
+    expect(isAllowedLogContextKey('pluginId', ['pluginId'])).toBe(true);
+    expect(isAllowedLogContextKey('pluginId')).toBe(false);
+  });
+});
+
+describe('redactContext strict mode (Issue #858)', () => {
+  it('non-strict (default) mode keeps every key, exactly as before this change', () => {
+    const result = redactContext({ component: 'checks', rawPayload: 'hello', count: 3 } as any);
+    expect(result).toEqual({ component: 'checks', rawPayload: 'hello', count: 3 });
+  });
+
+  it('strict mode drops a key not on the allowlist', () => {
+    const result = redactContext({ component: 'checks', rawPayload: 'hello' } as any, { strict: true });
+    expect(result).toEqual({ component: 'checks' });
+    expect('rawPayload' in result).toBe(false);
+  });
+
+  it('strict mode drops an unreviewed key even when its value contains an address (fail-closed, not just redacted)', () => {
+    const result = redactContext(
+      { component: 'checks', debugDump: VALID_G_ADDRESS } as any,
+      { strict: true },
+    );
+    expect(result).toEqual({ component: 'checks' });
+    expect(JSON.stringify(result)).not.toContain(VALID_G_ADDRESS);
+  });
+
+  it('strict mode still redacts (not just keeps) an allowed address-bearing key', () => {
+    const result = redactContext({ stellarAddress: VALID_G_ADDRESS } as any, { strict: true });
+    expect(result.stellarAddress).toBe(redactStellarAddress(VALID_G_ADDRESS));
+  });
+
+  it('strict mode honors extraAllowedKeys for a call-site-specific field', () => {
+    const result = redactContext({ component: 'plugin-loader', pluginId: 'my-plugin' } as any, {
+      strict: true,
+      extraAllowedKeys: ['pluginId'],
+    });
+    expect(result).toEqual({ component: 'plugin-loader', pluginId: 'my-plugin' });
+  });
+
+  it('strict mode with no context and no options drops nothing (empty in, empty out)', () => {
+    expect(redactContext({}, { strict: true })).toEqual({});
+  });
+});
+
+describe('redactValue nested objects and arrays regression suite (Issue #858)', () => {
+  it('redacts a secret nested three levels deep inside objects', () => {
+    const result = redactContext({
+      component: 'webhook',
+      payload: { outer: { inner: { token: 'super-secret-value' } } },
+    } as any);
+    expect(JSON.stringify(result)).not.toContain('super-secret-value');
+    expect((result as any).payload.outer.inner.token).toBe('[REDACTED]');
+  });
+
+  it('redacts an address nested inside an array of objects', () => {
+    const result = redactContext({
+      component: 'batch',
+      rows: [{ stellarAddress: VALID_G_ADDRESS }, { stellarAddress: VALID_C_ADDRESS }],
+    } as any);
+    const rows = (result as any).rows;
+    expect(rows[0].stellarAddress).toBe(redactStellarAddress(VALID_G_ADDRESS));
+    expect(rows[1].stellarAddress).toBe(redactStellarAddress(VALID_C_ADDRESS));
+    expect(JSON.stringify(result)).not.toContain(VALID_G_ADDRESS);
+    expect(JSON.stringify(result)).not.toContain(VALID_C_ADDRESS);
+  });
+
+  it('redacts an array of plain strings containing an embedded address', () => {
+    const result = redactContext({
+      component: 'batch',
+      lines: [`fetched ${VALID_G_ADDRESS} ok`, 'no address here'],
+    } as any);
+    const lines = (result as any).lines;
+    expect(lines[0]).not.toContain(VALID_G_ADDRESS);
+    expect(lines[1]).toBe('no address here');
+  });
+
+  it('redacts a token embedded inside an array nested inside an object', () => {
+    const result = redactContext({
+      component: 'webhook',
+      payload: { attempts: [{ authorization: 'Bearer abc.def.ghi' }] },
+    } as any);
+    const attempts = (result as any).payload.attempts;
+    expect(attempts[0].authorization).toBe('[REDACTED]');
+  });
+
+  it('handles an array of arrays (nested arrays, not just nested objects)', () => {
+    const result = redactContext({
+      component: 'batch',
+      matrix: [[VALID_G_ADDRESS, 'ok'], ['ok', VALID_C_ADDRESS]],
+    } as any);
+    const matrix = (result as any).matrix;
+    expect(matrix[0][0]).not.toContain(VALID_G_ADDRESS);
+    expect(matrix[1][1]).not.toContain(VALID_C_ADDRESS);
+  });
+
+  it('caps recursion at MAX_REDACT_DEPTH instead of stack-overflowing on a very deep object', () => {
+    let deep: any = { token: 'deepest-secret' };
+    for (let i = 0; i < 50; i++) {
+      deep = { nested: deep };
+    }
+    expect(() => redactContext({ component: 'x', deep } as any)).not.toThrow();
+    const serialized = JSON.stringify(redactContext({ component: 'x', deep } as any));
+    expect(serialized).not.toContain('deepest-secret');
+    expect(serialized).toContain('REDACTED_DEPTH_EXCEEDED');
+  });
+
+  it('does not crash or hang on a self-referential (circular) object', () => {
+    const circular: any = { component: 'x', token: 'secret-value' };
+    circular.self = circular;
+
+    let result: unknown;
+    expect(() => {
+      result = redactContext(circular);
+    }).not.toThrow();
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('secret-value');
+    expect(serialized).toContain('CIRCULAR');
+  });
+
+  it('does not crash on a circular reference nested inside an array', () => {
+    const node: any = { stellarAddress: VALID_G_ADDRESS };
+    const arr: any[] = [node];
+    node.siblings = arr; // array contains an object that references the array back
+
+    expect(() => redactContext({ component: 'x', list: arr } as any)).not.toThrow();
+  });
+
+  it('does not falsely flag the same object referenced twice (a DAG, not a cycle) as circular', () => {
+    const shared = { stellarAddress: VALID_G_ADDRESS };
+    const result = redactContext({ component: 'x', a: shared, b: shared } as any);
+    const a = (result as any).a;
+    const b = (result as any).b;
+    expect(a.stellarAddress).toBe(redactStellarAddress(VALID_G_ADDRESS));
+    expect(b.stellarAddress).toBe(redactStellarAddress(VALID_G_ADDRESS));
+    expect(JSON.stringify(result)).not.toContain('CIRCULAR');
+  });
+
+  it('strict mode + nested redaction compose: a dropped top-level key never reaches redactValue at all', () => {
+    const result = redactContext(
+      { component: 'x', rawDump: { token: 'secret', stellarAddress: VALID_G_ADDRESS } } as any,
+      { strict: true },
+    );
+    expect(result).toEqual({ component: 'x' });
   });
 });

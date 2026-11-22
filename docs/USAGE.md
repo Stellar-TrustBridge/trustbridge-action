@@ -832,6 +832,100 @@ These guarantees are verified by comprehensive test matrix in [`__tests__/fail_o
 
 ---
 
+## Federation address resolution and memo requirements (Issue #257 / #883)
+
+TrustBridge can resolve Stellar federation addresses (`user*domain.com`) to G-addresses via the SEP-0002 federation protocol. Enable it with:
+
+```yaml
+with:
+  stellar_address_input: alice*example.com
+  federation_resolution_enabled: true
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+When `federation_resolution_enabled` is `false` (the default), `stellar_address_input` must already be a plain G-address. No network request is made for federation.
+
+### When a memo is mandatory
+
+Federation servers may return a `memo_type` and `memo` alongside the resolved G-address. When present, the memo **must** be attached to every payment sent to that address. Without it, the funds cannot be credited to the correct sub-account and the payment is unroutable.
+
+TrustBridge surfaces this information in the `FederationResolution` object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `gAddress` | `string` | The resolved Stellar G-address. |
+| `memoType` | `"text" \| "id" \| "hash"` | Memo type required by the destination. Present only when a memo is required. |
+| `memo` | `string` | The memo value to attach. Present only when `memoType` is set. |
+| `memoRequired` | `boolean` | `true` when `memoType` is set; `false` when no memo is needed. |
+
+**Gate on `memoRequired` before building a payment:**
+
+```typescript
+const resolution = await resolveFederationAddress('alice*exchange.com');
+if (resolution && resolution.memoRequired) {
+  // Attach resolution.memoType and resolution.memo to the transaction
+  // before submitting. Without the memo, the exchange cannot credit the
+  // funds to Alice's account.
+}
+```
+
+### How missing or malformed memos are reported
+
+If the federation server returns `memo_type` without a `memo` value, or returns a `memo` that is incompatible with the declared `memo_type`, `resolveFederationAddress` returns `null` and logs a warning. The two error codes are:
+
+| Code | Trigger | Remediation |
+|---|---|---|
+| `MEMO_REQUIRED` | `memo_type` is present but `memo` is absent or empty. | The federation server is non-conformant. Contact the domain operator. Do not send funds until the server returns a valid memo pair. |
+| `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized (not `text`, `id`, or `hash`), or the `memo` value is incompatible with the type (e.g. a non-numeric `id`, a non-hex `hash`, or a `text` over 28 bytes). | The federation server is non-conformant. Contact the domain operator. |
+
+### Memo type rules (SEP-0002)
+
+| `memo_type` | Valid `memo` format | Stellar protocol limit |
+|---|---|---|
+| `text` | Any UTF-8 string | At most **28 bytes** (UTF-8 encoded) |
+| `id` | Decimal string of an unsigned integer | 0 – 18446744073709551615 (uint64) |
+| `hash` | Exactly **64 lowercase or uppercase hex characters** | Encodes a 32-byte value |
+
+### Edge cases
+
+- **No memo fields returned** — `memoRequired` is `false`; `memoType` and `memo` are `undefined`. No memo is needed.
+- **`memo_type` present, `memo` absent** — returns `null` with code `MEMO_REQUIRED`. Do not attempt to send funds.
+- **Unrecognized `memo_type`** — returns `null` with code `MEMO_TYPE_MISMATCH`.
+- **`memo` present without `memo_type`** — the `memo` field is ignored (non-standard server behaviour). The resolution succeeds with `memoRequired: false`.
+- **`text` memo over 28 bytes** — returns `null`. The Stellar protocol rejects transactions with text memos over 28 UTF-8 bytes; building one would fail at the network layer anyway.
+
+### Fixtures for testing
+
+The `__tests__/federation-memo-resolution.test.ts` test file contains ready-made JSON fixture shapes for all memo scenarios:
+
+```json
+// No memo (memoRequired: false)
+{ "account_id": "G..." }
+
+// text memo (memoRequired: true, memoType: "text")
+{ "account_id": "G...", "memo_type": "text", "memo": "invoice-99" }
+
+// id memo (memoRequired: true, memoType: "id")
+{ "account_id": "G...", "memo_type": "id", "memo": "12345" }
+
+// hash memo (memoRequired: true, memoType: "hash")
+{ "account_id": "G...", "memo_type": "hash", "memo": "<64 hex chars>" }
+
+// MEMO_REQUIRED: memo_type present, memo absent → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "text" }
+
+// MEMO_TYPE_MISMATCH: bad id format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "id", "memo": "not-a-number" }
+
+// MEMO_TYPE_MISMATCH: bad hash format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "hash", "memo": "tooshort" }
+
+// MEMO_TYPE_MISMATCH: unrecognized type → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "return", "memo": "some-value" }
+```
+
+---
+
 ## Debug mode and timeout
 
 ```yaml
@@ -1653,6 +1747,40 @@ steps:
 Usernames are matched **case-insensitively**. When the map is set, `stellar_address_input` is not required. Missing assignees fail with an actionable error; invalid G-addresses still go through the existing address validation before Horizon.
 
 > **Security:** Do **not** commit private or sensitive rosters to a public repository. Prefer GitHub Actions secrets / org variables, a private repo path, or a checkout of a restricted artifact. Public exposure of username↔wallet links can deanonymize contributors.
+
+### CSV roster import (Issue #798)
+
+`parseRosterCsv` (`src/roster.ts`) accepts a CSV of logins and/or Stellar addresses and returns a validated, de-duplicated roster plus a rejection summary — useful when a roster is maintained as a spreadsheet export rather than hand-written JSON, and you want bad rows caught *before* a batch validation run instead of surfacing as confusing per-row failures mid-run.
+
+Accepted shapes (a header row is optional and detected automatically by column name):
+
+```csv
+login,address
+alice,GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+bob,GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+```
+
+A single-column CSV of addresses only (no `login`) is also accepted — each row becomes an entry in the `addresses` array only (no `addressMap` key, since there is no login to key by).
+
+Validation rules:
+
+- **Invalid addresses are rejected**, not just flagged: a row whose address column fails StrKey validation (G-address checksum, or C-address structural validation — the same `isValidStellarAddress` check used everywhere else) is excluded from the usable roster and reported in `invalid`.
+- **Duplicate addresses are rejected**: the first row to claim an address wins; every later row with the same address (after trimming) is excluded and reported in `duplicates`, rather than being silently kept or silently dropped.
+- **One bad row never blocks the rest of the roster** — a typo on one line does not prevent validating everyone else; only a CSV with no data rows at all, or a header that does not name a recognised address column, throws.
+- The result's `summaryMarkdown` field renders rows-read / valid / duplicate / invalid counts plus up to 20 example rows per rejected category — post it as a job log line or PR/issue comment so a Wave operator sees exactly which rows need fixing before addresses are dropped into the normal `stellar_addresses` / `assignee_address_map` batch inputs.
+
+```ts
+import { parseRosterCsv } from './roster';
+
+const { addresses, addressMap, summaryMarkdown, summary } = parseRosterCsv(csvFileContents);
+if (summary.invalidCount > 0 || summary.duplicateCount > 0) {
+  core.warning(summaryMarkdown);
+}
+// addresses is ready for runBatchValidation(addresses, ...) / parseBatchAddresses-style consumers;
+// addressMap is ready for resolveAddressFromAssigneeMap / filterRosterAddressMap.
+```
+
+This is a library function for workflow authors who maintain a CSV roster upstream of TrustBridge (e.g. in a separate preparation step) — it is not wired to a dedicated `*_csv` action input, so pair it with `stellar_addresses` (for `addresses`) or `assignee_address_map` (for `addressMap`) in your own workflow step.
 
 ---
 
@@ -3122,6 +3250,38 @@ jobs:
 
 ---
 
+## Multi-repo allowlist matching for org-wide Wave runs (Issue #855)
+
+`matchesRepoAllowlist` (`src/projects.ts`) is a pure, dependency-free function a reusable workflow or wrapper script can call to decide whether a calling repository's `owner/repo` string (e.g. `${{ github.repository }}`) is in scope for org-wide Wave automation, before it validates anything. It is a library function — call it from your own `workflow_call` wrapper or a pre-step; it is not itself wired to an `action.yml` input.
+
+**Supported pattern forms** (one per allowlist entry):
+
+| Pattern | Matches |
+|---|---|
+| `"owner/repo"` | That exact repository only |
+| `"owner"` | Every repository under that org |
+| `"owner/*"` | Every repository under that org (equivalent to the bare `"owner"` form) |
+
+Matching is case-insensitive on both segments. Any other pattern shape — `"*"`, `"*/repo"`, `"owner/re*po"`, `"owner/**"`, a pattern with more than one `/`, etc. — is an **ambiguous glob** and is rejected outright: it is reported in the result's `rejectedPatterns` and can never match anything, so a malformed or overly broad pattern only ever narrows access, never accidentally widens it.
+
+**Fail-closed by default:** an empty allowlist (or an allowlist where every pattern was rejected as invalid) denies every repository. This is intentionally the opposite of `filterRosterAddressMap`'s "empty allowlist means allow all" — that function filters an already-trusted roster, while this one is the primary boundary deciding whether org-wide automation may touch a repository at all. An operator who wants "every repo in the org" must say so explicitly with `"owner"` or `"owner/*"`.
+
+**What it does not do:** this is a pure string match against `owner/repo`, not a GitHub API call. It cannot detect that a repository was renamed (an allowlist entry for the old name simply fails closed — there is no fuzzy or historical matching) or that a repository is archived (archival status is not encoded in `owner/repo`; check `github.context.payload.repository.archived` separately if you need to exclude archived repos).
+
+```ts
+import { matchesRepoAllowlist } from './projects';
+
+const result = matchesRepoAllowlist(process.env.GITHUB_REPOSITORY!, [
+  'Stellar-TrustBridge', // every repo in this org
+  'some-partner-org/specific-repo', // one specific repo in another org
+]);
+if (!result.allowed) {
+  core.setFailed(`Repository not in the Wave allowlist: ${result.reason}`);
+}
+```
+
+---
+
 ## Dashboard webhook receiver contract (Issue #326)
 
 TrustBridge POSTs a signed JSON notification to `webhook_url` after every validation run. This section is the **action-side contract freeze** — everything described here is guaranteed by the code in `src/webhook.ts` and is covered by the golden fixture at `__tests__/fixtures/webhook-payload.json`.
@@ -4086,6 +4246,23 @@ No live collector is required at any point.
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
 
+## Wave runtime safeguards (Issues #861–#864)
+
+### Job Summary budget
+
+GitHub Actions Job Summaries have a practical 1 MiB UTF-8 budget. TrustBridge renders the compact metrics overview first and treats the verbose JSON artifact as lower priority. If the complete report would exceed the budget, the JSON details block is omitted before the compact report is line-boundary truncated. The final summary includes a visible `summary-truncated` marker and points operators to workflow logs. This is a soft failure: validation results, action outputs, and the workflow conclusion are unchanged.
+
+### Legacy input aliases
+
+Legacy aliases such as `skip_if_maintainer`, `ready_pass_label`, `ready_label_pass`, `ready_fail_label`, and `ready_label_fail` remain accepted during the deprecation window. The canonical value wins when both forms are supplied. When an alias is explicitly configured, TrustBridge emits one consolidated deprecation warning per run; migrate to `skip_for_maintainers`, `pass_label`, and `fail_label`.
+
+### Dry-run side-effect boundary
+
+`posting_mode: dry-run` computes the same Horizon checks, summaries, outputs, and failure decision as enforce mode, but performs no GitHub mutations. It skips issue comments, check runs, wallet/ready labels, assignee removal, and Projects v2 status updates. Use it for rehearsal workflows and fork pull requests.
+
+### Horizon Retry-After behavior
+
+For HTTP 429, 502, 503, and 504 responses, TrustBridge parses `Retry-After` as either delta-seconds or an HTTP-date. The parsed wait is capped by `retry_max_delay_ms`, receives bounded 10% jitter to avoid synchronized retries, and remains subject to `retry_max_total_wait_ms`. The metrics artifact records `horizon_retry_after_wait` samples and aggregate `horizon_retry_after_waits` / `horizon_retry_after_wait_ms` counters. Malformed, negative, or non-finite headers fall back to jittered exponential backoff.
 ## Batch failure aggregation and fatal errors (#869)
 
 Batch mode always preserves per-address failures in `batch_summary_json`. Account-level failures such as an unfunded 404, trustline failure, or ordinary Horizon outage remain recoverable rows. Configuration/authentication failures (HTTP 400/401/403), cancellation, and exhausted request budgets are classified with `FATAL_*` reason codes or `RATE_BUDGET_EXHAUSTED` and set `fatal: true`; callers should fail the job rather than treating the batch as a green partial result. No raw response bodies or secrets are included.
