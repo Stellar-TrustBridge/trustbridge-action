@@ -25,6 +25,7 @@ import {
   escapeMarkdownInline,
   extractChecklistState,
   inlineCode,
+  markdownLinesOutsideCode,
   type AssetTrustlineRow,
 } from './markdown';
 import { buildTemplateContext, loadCommentTemplate } from './template';
@@ -1048,18 +1049,34 @@ export function resolveIssueOrPullRequestNumber(
 }
 
 /**
+ * Lines that identify a TrustBridge comment (Issue #900). Each must be a
+ * whole line on its own, exactly as TrustBridge writes it. See
+ * docs/COMMENT_GUIDE.md#marker-format-stability.
+ */
+export const TRUSTBRIDGE_IDENTITY_LINES: readonly string[] = Object.freeze([
+  STICKY_COMMENT_MARKER,
+  STICKY_COMMENT_MARKER_LEGACY,
+  TRUSTBRIDGE_FOOTER,
+]);
+
+/**
  * Returns true when a comment body matches any of the TrustBridge
  * identifiers: the current versioned sticky marker, the legacy marker
  * (pre-schema-version), or the TrustBridge footer. Matching on any of
  * these provides defense-in-depth across upgrades and accidental
  * marker drift.
+ *
+ * Issue #900: an identifier only counts when it is a whole line outside
+ * code blocks and blockquotes. A plain substring match let another bot's
+ * comment that quotes a TrustBridge marker, or embeds it in a longer HTML
+ * comment such as `<!-- other-bot: <!-- trustbridge-action:sticky-comment --> -->`,
+ * be picked as the sticky comment and overwritten. Other bots' own HTML
+ * comment markers never match.
  */
 export function isTrustBridgeComment(body: string | undefined | null): boolean {
   if (!body) return false;
-  return (
-    body.includes(STICKY_COMMENT_MARKER) ||
-    body.includes(STICKY_COMMENT_MARKER_LEGACY) ||
-    body.includes(TRUSTBRIDGE_FOOTER)
+  return markdownLinesOutsideCode(body).some((line) =>
+    TRUSTBRIDGE_IDENTITY_LINES.includes(line),
   );
 }
 

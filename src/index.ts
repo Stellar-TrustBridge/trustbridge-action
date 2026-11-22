@@ -44,8 +44,8 @@ import {
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
 } from './inputs';
-import { formatFailureSummary } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray } from './outputs';
+import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
@@ -371,6 +371,8 @@ export function evaluateMilestoneGate(
 export async function run(): Promise<void> {
   const jobController = new AbortController();
   emitDeprecatedInputWarnings();
+  // Issue #899: each run records exactly one job outcome.
+  globalMetrics.resetJobOutcome();
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
@@ -403,6 +405,10 @@ export async function run(): Promise<void> {
     core.setOutput('ready', 'false');
     core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
     core.setOutput('checks_json', '[]');
+
+    // Issue #899: a gate skip is its own outcome, never pass or fail.
+    globalMetrics.recordJobOutcome('skipped');
+    await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
 
     return;
   }
@@ -987,6 +993,16 @@ export async function run(): Promise<void> {
     }
   }
 
+  // Issue #897: older GHES runners lack GITHUB_OUTPUT / GITHUB_STEP_SUMMARY.
+  // Both degrade without failing the run; say so in the debug log so an
+  // operator can tell a GHES gap from a TrustBridge bug.
+  if (resolveOutputTransport() === 'workflow-command') {
+    core.debug('GITHUB_OUTPUT is not set; outputs use the legacy ::set-output command. See docs/GHES_COMPATIBILITY.md.');
+  }
+  if (!isJobSummaryAvailable()) {
+    core.debug('GITHUB_STEP_SUMMARY is not set; the TrustBridge Job Summary will be skipped. See docs/GHES_COMPATIBILITY.md.');
+  }
+
   const validatedAt = new Date().toISOString();
   setValidationOutputs(result, commentUrl, fullReportPath, {
     horizonUrl,
@@ -1177,6 +1193,10 @@ export async function run(): Promise<void> {
     }
   }
 
+  // Issue #899: job-level outcome plus per-check skipped counts, recorded
+  // before the Job Summary so they land in the metrics JSON artifact.
+  globalMetrics.recordJobOutcome(result.valid ? 'pass' : 'fail', listSkippedCheckKinds(result));
+
   await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
 
   if (result.valid) {
@@ -1222,6 +1242,9 @@ function writeSarifOutput(
 // Skip auto-run under Jest so performance / integration tests can import `run`.
 if (process.env.JEST_WORKER_ID === undefined) {
   run().catch((error) => {
+    // Issue #899: an aborted run counts as `fail` unless an outcome was
+    // already recorded (recordJobOutcome is first-wins).
+    globalMetrics.recordJobOutcome('fail');
     core.setFailed(getErrorMessage(error));
   });
 }

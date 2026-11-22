@@ -1,6 +1,7 @@
 import { ValidationResult } from './checks';
 import { privacyMaskAddress } from './delta';
 import { CircuitOpenMetrics } from './resilience';
+import { CHECK_KINDS, type CheckKind } from './metrics';
 
 export interface CheckSummary {
   total: number;
@@ -20,6 +21,50 @@ export function summarizeChecks(result: ValidationResult): CheckSummary {
     failed: failedLabels.length,
     failedLabels,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #899 — per-check skipped classification for job outcome metrics
+// ---------------------------------------------------------------------------
+
+// The bounded `CHECK_KINDS` label set lives in src/metrics.ts so the metrics
+// module stays free of a runtime dependency on checks/summary.
+export { CHECK_KINDS };
+export type { CheckKind };
+
+/**
+ * Detail prefixes the check builders in `src/checks.ts` use for a row that
+ * was not actually evaluated (missing prerequisite, Horizon unreachable,
+ * circuit open, rate budget exhausted).
+ */
+const SKIPPED_DETAIL_PATTERN = /^(Cannot verify|Check skipped)\b/;
+
+/** True when a check row was not evaluated and only reports why. */
+export function isCheckSkipped(check: { detail?: unknown }): boolean {
+  return typeof check.detail === 'string' && SKIPPED_DETAIL_PATTERN.test(check.detail.trim());
+}
+
+/** Map a check label to its bounded {@link CheckKind}. */
+export function classifyCheckKind(label: string): CheckKind {
+  const l = (typeof label === 'string' ? label : '').toLowerCase();
+  if (l.includes('horizon')) return 'horizon_available';
+  if (l.includes('account funded')) return 'account_funded';
+  if (l.includes('clawback')) return 'clawback';
+  if (l.includes('trustline limit')) return 'trustline_limit';
+  if (l.includes('trustline')) return 'trustline';
+  if (l.includes('xlm reserve') || l.includes('xlm balance')) return 'xlm_reserve';
+  if (l.includes('minimum balance')) return 'asset_balance';
+  if (l.includes('home domain')) return 'home_domain';
+  return 'other';
+}
+
+/**
+ * Kinds of every skipped check in `result`, in check order. A kind repeats
+ * when several rows of the same kind were skipped.
+ */
+export function listSkippedCheckKinds(result: Pick<ValidationResult, 'checks'>): CheckKind[] {
+  const checks = Array.isArray(result?.checks) ? result.checks : [];
+  return checks.filter((c) => isCheckSkipped(c)).map((c) => classifyCheckKind(c.label));
 }
 
 export function formatFailureSummary(result: ValidationResult): string {
@@ -391,6 +436,22 @@ export const JOB_SUMMARY_MAX_BYTES = 1024 * 1024;
 
 /** Stable marker appended to every truncated Job Summary. */
 export const JOB_SUMMARY_TRUNCATED_MARKER = '<!-- trustbridge-action:summary-truncated -->';
+
+/**
+ * True when the runner exposes a Job Summary file (`GITHUB_STEP_SUMMARY`).
+ *
+ * github.com runners always set it. GHES runners only set it on releases
+ * that support Job Summaries; elsewhere `core.summary.write()` throws and
+ * `writeJobSummary()` (src/metrics.ts) skips the summary without failing the
+ * run. The size limit, when supported, is the same
+ * {@link JOB_SUMMARY_MAX_BYTES} on both. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+export function isJobSummaryAvailable(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return Boolean(env && typeof env.GITHUB_STEP_SUMMARY === 'string' && env.GITHUB_STEP_SUMMARY !== '');
+}
 
 export interface JobSummaryGuardResult {
   markdown: string;

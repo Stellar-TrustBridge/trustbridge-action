@@ -327,6 +327,26 @@ The fields listed in `schemas/webhook-payload.schema.json` under `schema_version
 
 Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additionalProperties: false` validation on the receiver side against the v1 schema — use it only as a minimum-field check).
 
+### Webhook body size cap and truncation markers (Issue #894)
+
+`src/webhook.ts` now enforces a hard 900 000-byte cap on the serialized outbound
+body. Oversized payloads are truncated deterministically (trailing `assets[]`
+entries first, then trailing `result.checks[]` entries) and marked with two new
+**optional, additive** top-level fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `truncated` | boolean | Set to `true` only on a truncated body; absent otherwise. |
+| `dropped_fields` | array of strings | Fields whose trailing entries were dropped, in drop order: `["assets"]` or `["assets", "result.checks"]`. |
+
+This is a **non-breaking change**: `schema_version` stays `"1"`, no frozen field
+is renamed, removed, or retyped, and an under-cap payload is byte-for-byte
+identical to before (the marker keys are absent). Receivers tolerate the two
+unknown keys as with any additive field — see
+[`docs/USAGE.md`](USAGE.md#body-size-cap-and-truncation-markers-issue-894). Two
+delivery-result reason codes are added: `WEBHOOK_PAYLOAD_TRUNCATED` (a truncated
+body was delivered) and `WEBHOOK_SIZE_LIMIT_EXCEEDED` (nothing was sent).
+
 ### What requires a MAJOR version bump (v2+)
 
 | Change | Reason |
@@ -360,6 +380,7 @@ User-Agent: trustbridge-action/1
 - [ ] Is the change additive only? If yes — no schema version bump needed.
 - [ ] Does the change rename or remove a frozen field? If yes — this is a MAJOR bump.
 - [ ] Is a new optional field added? Update `schemas/webhook-payload.schema.json` (mark as not-required).
+- [ ] Does the change touch the size cap or truncation order? Keep `WEBHOOK_MAX_BODY_BYTES` / `WEBHOOK_TRUNCATABLE_FIELDS` and the `docs/USAGE.md` truncation section in sync, and cover the boundary + multibyte paths in `__tests__/webhook-size-cap.test.ts`.
 - [ ] Run `npm test -- --testPathPattern 'webhook'` — the contract tests must pass.
 - [ ] If introducing a new `schema_version`, add a new frozen-fields table above and update `buildWebhookPayload` to emit the new version for new consumers while keeping backward compatibility.
 
