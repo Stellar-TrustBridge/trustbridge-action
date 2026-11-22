@@ -204,6 +204,46 @@ export function formatConflictReportMarkdown(report: ConflictReport | null | und
  */
 export const MAX_OUTPUT_VALUE_BYTES = 900_000;
 
+/**
+ * GitHub's documented limit for one step output value: 1 MiB, the same on
+ * github.com and GHES. `MAX_OUTPUT_VALUE_BYTES` stays below it. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+export const GITHUB_OUTPUT_VALUE_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * GitHub's documented limits on workflow-command annotations
+ * (`core.warning` / `core.error` / `core.notice`). Annotations past these
+ * caps are dropped from the run UI but still printed to the log.
+ */
+export const WORKFLOW_ANNOTATION_LIMITS = Object.freeze({
+  errorsPerStep: 10,
+  warningsPerStep: 10,
+  perJob: 50,
+});
+
+/**
+ * How `core.setOutput()` delivers outputs on this runner.
+ *
+ * - `file-command`: the runner sets `GITHUB_OUTPUT` (current github.com
+ *   runners and up-to-date GHES runners).
+ * - `workflow-command`: `GITHUB_OUTPUT` is missing (older GHES runners), so
+ *   `@actions/core` falls back to the deprecated `::set-output` command.
+ *   Outputs still work, but the runner logs a deprecation warning, and
+ *   multi-line values are less reliable.
+ *
+ * Mirrors `@actions/core`, which only checks that the variable is non-empty.
+ */
+export type OutputTransport = 'file-command' | 'workflow-command';
+
+export function resolveOutputTransport(
+  env: Record<string, string | undefined> = process.env,
+): OutputTransport {
+  return env && typeof env.GITHUB_OUTPUT === 'string' && env.GITHUB_OUTPUT !== ''
+    ? 'file-command'
+    : 'workflow-command';
+}
+
 /** UTF-8 byte length of a string — never its UTF-16 `.length` (wrong for multibyte characters). */
 function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');

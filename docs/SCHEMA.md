@@ -183,6 +183,32 @@ The JSON catalog has a compile-time mirror at [`src/reasonCodes.ts`](../src/reas
   `docs/BREAKING_CHANGES.md`, and keep emitting the previous version for at
   least one deprecation window.
 
+### Webhook body size cap (Issue #894)
+
+Outbound webhook bodies are capped at **900 000 UTF-8 bytes**
+(`WEBHOOK_MAX_BODY_BYTES` in `src/webhook.ts`). Oversized payloads are
+truncated deterministically — trailing `assets[]` entries first, then trailing
+`result.checks[]` entries — and marked with `truncated: true` plus a
+`dropped_fields` list (`"assets"` and/or `"result.checks"`, in drop order).
+
+Both marker keys are **optional and additive** under `schema_version: "1"`; an
+untruncated payload omits them and stays byte-for-byte the frozen v1 shape.
+They are declared in `schemas/webhook-payload.schema.json` and mirrored by
+`WEBHOOK_PAYLOAD_OPTIONAL_FIELDS` / `WEBHOOK_TRUNCATABLE_FIELDS` in
+`src/webhook.ts`.
+
+Two stable reason codes are reported on the delivery result
+(`WebhookDeliveryResult.reason`):
+
+| Reason code | Delivery | Meaning |
+|-------------|----------|---------|
+| `WEBHOOK_PAYLOAD_TRUNCATED` | sent | A truncated body was delivered. |
+| `WEBHOOK_SIZE_LIMIT_EXCEEDED` | refused | The body cannot be reduced below the cap; nothing was sent (fail closed). |
+
+Because the marker keys are additive, no `schema_version` bump is required. See
+the receiver-facing reference in
+[`docs/USAGE.md`](USAGE.md#body-size-cap-and-truncation-markers-issue-894).
+
 ### Integrator guidance
 
 - Route on `X-TrustBridge-Schema-Version` (or `schema_version`) and reject or
@@ -196,3 +222,72 @@ The JSON catalog has a compile-time mirror at [`src/reasonCodes.ts`](../src/reas
 this table drifts from `WEBHOOK_SCHEMA_VERSION`, the webhook schema `enum`,
 or the reason-code catalog `version`, or when a reason code is missing
 `since`.
+
+---
+
+## SARIF result fingerprints (Issue #893)
+
+GitHub code scanning matches SARIF findings across runs by their
+`partialFingerprints`, not by rule id alone. An unstable fingerprint makes
+code scanning open a new alert every time wording or account data moves, which
+pollutes the code-scanning history Wave orgs use as a payout-readiness gate.
+Every result TrustBridge emits therefore carries one stable fingerprint key:
+
+| Property | Value |
+|----------|-------|
+| Fingerprint key | `trustbridge/v1` (exported as `SARIF_FINGERPRINT_KEY`) |
+| Algorithm | SHA-256 over the NUL-joined identity inputs, UTF-8, truncated to the first 32 hex characters |
+| Runtime source | [`src/sarif.ts`](../src/sarif.ts) — `computeSarifFingerprint` / `sarifPartialFingerprints` |
+
+The `v1` suffix versions the algorithm. Any change to the inputs below must be
+released with a new key (`trustbridge/v2`), so code scanning treats the new
+values as a fresh result identity rather than matching them against values
+computed from the old inputs.
+
+### Fingerprint inputs
+
+The fingerprint is a deterministic hash of exactly these `SarifFingerprintInputs`
+fields, in this order, joined by `\u0000` (so `a` + `bc` cannot collide with
+`ab` + `c`):
+
+| Input | Meaning |
+|-------|---------|
+| `ruleId` | Stable TB### rule id. See the SARIF rule reference in [`docs/USAGE.md`](USAGE.md#sarif-rule-reference). |
+| `checkLabel` | Stable check label, also carried in `result.properties.checkLabel`. |
+| `assetCode` | Configured asset code; part of what is being checked. |
+| `reasonCode` | Effective run reason code — the explicit `ValidationResult.reasonCode`, or `SUCCESS` / `FAILED` when none is set (`sarifRunReasonCode`). |
+
+Everything that changes between runs without the finding itself changing is
+**deliberately excluded**: the result message text (which embeds addresses,
+balances and home-domain values), the account address, the Horizon URL, the run
+timestamp and the tool version.
+
+### Stability and sensitivity contract
+
+- **Stable across message changes.** Editing a check's wording, an account
+  balance, the Horizon URL or the tool version leaves every fingerprint
+  unchanged as long as `reason_code` is unchanged.
+- **Moves on `reason_code` changes.** Renaming or changing a `reason_code`
+  changes every fingerprint that carries it, so code scanning opens a new
+  result instead of silently re-labelling the old one.
+- **Deterministic and idempotent.** The same inputs yield the same value on
+  every runner and across repeated builds of an identical result.
+- **Two results never collide.** Two findings under the same rule id (for
+  example TB002 for two different checks) stay distinct because `checkLabel`
+  and `assetCode` are part of the hash.
+
+### Enforcement
+
+`__tests__/sarif-fingerprint.test.ts` locks the documented algorithm with
+golden values in `__tests__/__golden__/sarif-fingerprints.json`: a change to
+the inputs, the separator, the hash or the truncation fails CI until the golden
+file and this section are updated together. The same suite asserts the
+stability and sensitivity contract above and that every emitted
+`partialFingerprints` bag stays SARIF 2.1.0 schema-valid
+(`schemas/sarif-schema-2.1.0.json`, Issue #679).
+
+Run it with:
+
+```
+npx jest __tests__/sarif-fingerprint.test.ts
+```

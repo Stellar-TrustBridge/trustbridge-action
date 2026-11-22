@@ -314,3 +314,41 @@ those targets). A read-only token may find a marker but cannot safely update
 it; the action keeps the existing comment and creates a new result when posting
 is otherwise enabled. `force_comment` bypasses snooze suppression only; it
 does not bypass marker, authorship, or GitHub permission checks.
+
+## Marker format stability
+
+Wave issues often carry comments from several bots, such as the Drips Wave
+application bot, coverage reporters and other automation. Many of them use
+hidden HTML comments as their own markers. TrustBridge decides that a comment
+is its own with `isTrustBridgeComment()` in `src/comment.ts`. The comment must
+contain one of these identity lines (`TRUSTBRIDGE_IDENTITY_LINES`):
+
+| Identity line | Status |
+|---|---|
+| `<!-- trustbridge-action:sticky-comment:schema-v<N> -->` (`<N>` = the current `COMMENT_SCHEMA_VERSION`) | Current. Written as the first line of every comment. |
+| `<!-- trustbridge-action:sticky-comment -->` | Legacy. Matched so comments from older releases can still be updated. Never written. |
+| `_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_` | Footer. Matched as a fallback if a marker was lost. |
+
+Matching rules (Issue #900):
+
+- The identity line must be a **whole line on its own**. Surrounding spaces and
+  `\r\n` line endings are allowed. A marker inside a sentence, inside inline
+  code, or nested in another bot's HTML comment (for example
+  `<!-- other-bot:quote <!-- trustbridge-action:sticky-comment --> -->`) does
+  not count.
+- Lines in fenced code blocks (```` ``` ```` or `~~~`), indented code blocks
+  and blockquotes (`>`) are ignored (`markdownLinesOutsideCode()` in
+  `src/markdown.ts`). A bot that quotes an earlier TrustBridge comment is not
+  taken for TrustBridge.
+- Only the exact strings above match. Similar prefixes such as
+  `<!-- trustbridge-action:sticky-comment-mirror -->`, and other schema
+  versions such as `schema-v999`, are not TrustBridge comments.
+- Other bots' markers (`<!-- wave:… -->`, `<!-- codecov-comment -->`, …) never
+  match, so TrustBridge never edits another bot's comment.
+
+The marker strings are a stable contract. Changing one breaks sticky updates
+for every existing comment, so a change needs a `COMMENT_SCHEMA_VERSION` bump
+and an entry in `docs/BREAKING_CHANGES.md`, and the old string must stay in
+`TRUSTBRIDGE_IDENTITY_LINES`. `__tests__/comment-marker-collision.test.ts`
+fixes the strings and runs sticky lookup (GraphQL and the REST fallback)
+against an issue shared with several foreign bots.

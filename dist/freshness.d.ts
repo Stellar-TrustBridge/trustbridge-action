@@ -60,6 +60,8 @@ export interface FreshnessOptions {
      * ledger close cycles at ~5–6 s each).
      */
     maxLagSeconds?: number;
+    /** Future ledger-close tolerance before the clock is considered unreliable. */
+    clockSkewToleranceSeconds?: number;
     /** Request timeout for the root endpoint call, in milliseconds. */
     timeoutMs?: number;
     /** Override fetch function (for testing). */

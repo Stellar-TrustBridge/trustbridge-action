@@ -84,6 +84,8 @@ Each `CheckResultItem` maps to one ✅/❌ line in the issue comment.
 | `mode` (home domain check) | `warn` \| `strict` \| `fail` | 3 |
 | `preset` / `network` (campaign preset) | Fixed preset ids / `pubnet` \| `testnet` | Small, closed set |
 | `endpointKind` (Horizon latency histogram) | `primary` \| `fallback` | 2 |
+| `outcome` (job outcome) | `pass` \| `fail` \| `skipped` | 3 |
+| `check` (skipped check) | `CHECK_KINDS` in `src/metrics.ts` | 9 |
 
 No other tag key may carry a Stellar address (`G`/`C`/`M`...) or a GitHub login/actor. `recordMetric()` rejects any call that sets the `contractAddress` tag directly — `MetricsCollector.recordContractMetric()` is the only path that may populate it, and it hashes the address with `hashAddressForMetrics()` (bounded 12-character output, sha256-derived, non-reversible) before the value ever reaches a `MetricPoint`.
 
@@ -91,6 +93,48 @@ No other tag key may carry a Stellar address (`G`/`C`/`M`...) or a GitHub login/
 
 `__tests__/metrics.test.ts` asserts `recordMetric()` throws on a raw `contractAddress` tag (valid or not), that `recordContractMetric()` never stores the raw address, and that neither `toJSON()` nor `buildJobSummary().jsonArtifact` ever contain a raw G-/C-address after a contract metric is recorded.
 
+
+### Job outcome counters
+
+`run()` in `src/index.ts` records exactly one job outcome per run through
+`MetricsCollector.recordJobOutcome()`. It is first-wins: a second call (for
+example from the top-level error handler after a verdict) is ignored, so the
+three outcome counters always sum to 1 per job.
+
+| Outcome | When |
+|---|---|
+| `pass` | Validation ran and every check passed (`ready = true`). |
+| `fail` | Validation ran and at least one check failed, or `run()` threw before a verdict. |
+| `skipped` | The milestone gate skipped validation (`reason_code = MILESTONE_GATE_SKIPPED`). |
+
+The same call counts skipped checks. A check row is skipped when it was not
+evaluated: its detail starts with `Cannot verify` or `Check skipped` (missing
+prerequisite, Horizon unreachable, circuit open, rate budget exhausted).
+`listSkippedCheckKinds()` in `src/summary.ts` maps each skipped row to a
+fixed check kind. Check labels can contain the operator's asset code, so they
+are never used as metric labels. The kinds are `horizon_available`,
+`account_funded`, `trustline`, `xlm_reserve`, `asset_balance`,
+`trustline_limit`, `clawback`, `home_domain` and `other`, where `other`
+catches any label that does not match.
+
+| Prometheus name | Type | Label | JSON artifact source |
+|---|---|---|---|
+| `trustbridge_job_outcome_total` | counter | `outcome` | `counters.job_outcome_<outcome>`, `metrics[name=job_outcome]` |
+| `trustbridge_check_skipped_total` | counter | `check` | `counters.check_skipped_<kind>`, `metrics[name=check_skipped]` |
+
+The names are exported as `JOB_OUTCOME_PROMETHEUS_METRICS`. Exporters that
+turn the JSON artifact into Prometheus series must use these names. The
+artifact also carries `jobOutcome: { outcome, skippedChecks }`, and the Job
+Summary table shows a `Job outcome` row. Example pass-rate query:
+
+```promql
+sum(rate(trustbridge_job_outcome_total{outcome="pass"}[1d]))
+  / sum(rate(trustbridge_job_outcome_total{outcome=~"pass|fail"}[1d]))
+```
+
+`__tests__/job-outcome-metrics.test.ts` checks that the outcomes are mutually
+exclusive, that repeated calls do not count twice, that an unknown outcome is
+rejected, and that unknown check kinds become `other`.
 ---
 
 ## Check rules
