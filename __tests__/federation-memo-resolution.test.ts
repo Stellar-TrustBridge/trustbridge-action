@@ -22,6 +22,9 @@
 // it loads.
 jest.mock('../src/ssrf', () => ({
   fetchSSRFSafe: jest.fn(),
+  // Issue #906 — federation resolves each host under its own DNS timeout
+  // before fetching; pin a public answer so these tests never touch real DNS.
+  defaultSSRFDnsLookup: jest.fn().mockResolvedValue(['93.184.216.34']),
 }));
 
 import { resolveFederationAddress, FederationResolution } from '../src/federation';
