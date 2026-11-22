@@ -43,6 +43,7 @@ import {
   parseNumberInput,
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
+  parseBatchMaxAddressesInput,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
@@ -517,6 +518,13 @@ export async function run(): Promise<void> {
     ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
     : undefined;
   const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+  const batchMaxAddresses = parseBatchMaxAddressesInput(core.getInput('batch_max_addresses'));
+  // Issue #911: parse and cap the batch list up front so an oversized matrix
+  // throws BatchAddressLimitError before *any* Horizon request (including the
+  // single-address checks below) is made.
+  const batchAddresses = stellarAddressesRaw.trim()
+    ? parseBatchAddresses(stellarAddressesRaw, { maxAddresses: batchMaxAddresses })
+    : [];
 
   // Check runs, labels, unassign, Projects v2 (Issues #228, #222, #200, #421).
   const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
@@ -839,8 +847,7 @@ export async function run(): Promise<void> {
   // summary comment. Batch outputs are published after the single-address
   // outputs below so they are never clobbered by the defaults.
   let batchSummary: BatchSummary | undefined;
-  if (stellarAddressesRaw.trim()) {
-    const batchAddresses = parseBatchAddresses(stellarAddressesRaw);
+  if (batchAddresses.length > 0) {
     core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
 
     const batchCheckConfig: CheckConfig = {
@@ -865,6 +872,7 @@ export async function run(): Promise<void> {
           retryBaseDelayMs,
           retryMaxDelayMs,
         },
+        maxAddresses: batchMaxAddresses,
       },
     );
 

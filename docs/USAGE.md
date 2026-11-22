@@ -4267,6 +4267,56 @@ For HTTP 429, 502, 503, and 504 responses, TrustBridge parses `Retry-After` as e
 
 Batch mode always preserves per-address failures in `batch_summary_json`. Account-level failures such as an unfunded 404, trustline failure, or ordinary Horizon outage remain recoverable rows. Configuration/authentication failures (HTTP 400/401/403), cancellation, and exhausted request budgets are classified with `FATAL_*` reason codes or `RATE_BUDGET_EXHAUSTED` and set `fatal: true`; callers should fail the job rather than treating the batch as a green partial result. No raw response bodies or secrets are included.
 
+## Batch address limit
+
+Batch mode (`stellar_addresses`) validates at most `batch_max_addresses`
+**unique** addresses per run (default `500`, maximum `2000`; duplicates are
+removed before counting). Issue #911.
+
+| Input | Default | Allowed values |
+| --- | --- | --- |
+| `batch_max_addresses` | `500` | Whole number from `1` to `2000` |
+
+When the list is longer than the limit, the run fails **before any Horizon
+request** (including the single-address checks), so an oversized matrix never
+spends rate budget or runner memory. The error carries the stable code
+`BATCH_ADDRESS_LIMIT_EXCEEDED` and says how to split the run:
+
+```text
+stellar_addresses contains 742 unique addresses, which exceeds the batch_max_addresses limit of 500 (BATCH_ADDRESS_LIMIT_EXCEEDED). No Horizon requests were made. Split the addresses across a job matrix with at most 500 addresses per leg (at least 2 legs), or raise batch_max_addresses (maximum 2000). See docs/USAGE.md#batch-address-limit.
+```
+
+A malformed value (`abc`, `1.5`, `0`, `2001`) fails with
+`batch_max_addresses must be a whole number between 1 and 2000. Received: "<value>"`.
+
+To split a large roster, pass one slice per matrix leg:
+
+```yaml
+strategy:
+  matrix:
+    slice: [0, 1]
+steps:
+  - id: slice
+    run: |
+      # 500 addresses per leg, taken from a newline-separated roster file
+      tail -n +$(( ${{ matrix.slice }} * 500 + 1 )) roster.txt | head -n 500 > slice.txt
+      {
+        echo 'addresses<<EOF'
+        cat slice.txt
+        echo 'EOF'
+      } >> "$GITHUB_OUTPUT"
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_addresses: ${{ steps.slice.outputs.addresses }}
+      batch_max_addresses: '500'
+```
+
+Library callers get the same guard from `parseBatchAddresses(raw, { maxAddresses })`
+and `runBatchValidation(addresses, config, horizonUrl, { maxAddresses })`, both
+of which throw `BatchAddressLimitError` (`reasonCode`, `count`, `limit`,
+`suggestedJobs`) from `src/batch.ts`. The error only reports counts; addresses
+are never included in the message.
+
 ## Negative Horizon account caching (#870)
 
 When `horizon_cache_ttl_ms` is enabled, not-found account responses use a separate 15-second negative-cache TTL (`negativeCacheTtlMs` for library callers). Negative entries contain only status and a safe message, never account payloads. Expiry is required so an account funded during a later run becomes visible; set the library option to `0` to disable negative caching.

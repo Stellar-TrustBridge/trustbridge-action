@@ -512,6 +512,11 @@
       "description": "Newline-separated or JSON array of Stellar addresses for batch validation.",
       "default": ""
     },
+    "batch_max_addresses": {
+      "type": "string",
+      "description": "Hard cap on unique addresses validated per run in batch mode (stellar_addresses). Whole number between 1 and 2000. A larger list fails with BATCH_ADDRESS_LIMIT_EXCEEDED before any Horizon request. Default 500. (Issue #911)",
+      "default": "500"
+    },
     "use_actions_cache_backend": {
       "type": "string",
       "description": "Enable GitHub Actions cache backend persistence (true/false) to share cached Horizon responses across matrix legs.",
