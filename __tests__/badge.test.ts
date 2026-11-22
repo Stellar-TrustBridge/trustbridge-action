@@ -12,6 +12,8 @@ import {
   generateBadgeUrl,
   generateBadgeMarkdown,
   generateBadgeSnippets,
+  generateBadgeETag,
+  DEFAULT_BADGE_CACHE_SECONDS,
   BadgeState,
 } from '../src/badge';
 import { ValidationResult } from '../src/checks';
@@ -303,5 +305,70 @@ describe('generateBadgeSnippets', () => {
     expect(snippets.url).not.toContain('G');
     expect(snippets.markdown).not.toContain('XLM');
     expect(snippets.url).not.toContain('XLM');
+  });
+
+  it('includes an etag alongside markdown and url', () => {
+    const snippets = generateBadgeSnippets(passResult);
+    expect(snippets).toHaveProperty('etag');
+    expect(snippets.etag).toBe(generateBadgeETag('pass'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cache-Control (cacheSeconds) and ETag — Issue #796
+// ---------------------------------------------------------------------------
+
+describe('badge cache-control (Issue #796)', () => {
+  it('generateBadgeUrl appends a cacheSeconds query param by default', () => {
+    const url = generateBadgeUrl('pass');
+    expect(url).toContain(`?cacheSeconds=${DEFAULT_BADGE_CACHE_SECONDS}`);
+  });
+
+  it('generateBadgeMarkdown embeds the same cacheSeconds default as the url', () => {
+    const markdown = generateBadgeMarkdown('pass');
+    expect(markdown).toContain(`?cacheSeconds=${DEFAULT_BADGE_CACHE_SECONDS}`);
+  });
+
+  it('honors an explicit cacheSeconds override', () => {
+    const url = generateBadgeUrl('pass', 'trustbridge', 30);
+    expect(url).toContain('?cacheSeconds=30');
+  });
+
+  it('truncates a fractional cacheSeconds to an integer', () => {
+    const url = generateBadgeUrl('pass', 'trustbridge', 30.9);
+    expect(url).toContain('?cacheSeconds=30');
+  });
+
+  it('omits the query param for a non-positive cacheSeconds (explicit opt-out)', () => {
+    const url = generateBadgeUrl('pass', 'trustbridge', 0);
+    expect(url).not.toContain('cacheSeconds');
+    expect(url).not.toContain('?');
+  });
+
+  it('omits the query param for a negative or non-finite cacheSeconds', () => {
+    expect(generateBadgeUrl('pass', 'trustbridge', -5)).not.toContain('cacheSeconds');
+    expect(generateBadgeUrl('pass', 'trustbridge', NaN)).not.toContain('cacheSeconds');
+  });
+});
+
+describe('generateBadgeETag (Issue #796)', () => {
+  it('is a weak ETag per RFC 7232', () => {
+    expect(generateBadgeETag('pass')).toMatch(/^W\/"[0-9a-f]+"$/);
+  });
+
+  it('is deterministic for the same state and label', () => {
+    expect(generateBadgeETag('pass', 'trustbridge')).toBe(generateBadgeETag('pass', 'trustbridge'));
+  });
+
+  it('changes when the state changes (recheck flips pass to fail)', () => {
+    expect(generateBadgeETag('pass')).not.toBe(generateBadgeETag('fail'));
+  });
+
+  it('changes when the label changes', () => {
+    expect(generateBadgeETag('pass', 'trustbridge')).not.toBe(generateBadgeETag('pass', 'other-label'));
+  });
+
+  it('does not change across repeated calls for an unchanged skipped state', () => {
+    expect(generateBadgeETag('skipped')).toBe(generateBadgeETag('skipped'));
   });
 });

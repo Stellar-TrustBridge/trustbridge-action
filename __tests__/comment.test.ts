@@ -973,6 +973,74 @@ describe('postIssueComment', () => {
     expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-99');
     expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // snoozeExpired wiring (Issue #799)
+  // -------------------------------------------------------------------------
+
+  it('happy path: reports snoozeExpired: true when a marker-based window just lapsed', async () => {
+    const octokit = makeOctokit();
+    const oldTimestamp = Date.now() - 40 * 60 * 1000; // 40 minutes ago
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${oldTimestamp} -->\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${oldTimestamp} -->\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({ data: [] });
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nstill failing`;
+    const posted = await upsertIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000, // 30-minute window, 40 minutes have elapsed
+    });
+
+    expect(posted?.snoozeExpired).toBe(true);
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
+  });
+
+  it('failure path: reports snoozeExpired: false while still inside the window', async () => {
+    const octokit = makeOctokit();
+    const recentTimestamp = Date.now() - 5 * 60 * 1000; // 5 minutes ago
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${recentTimestamp} -->\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${recentTimestamp} -->\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({ data: [] });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nstill failing`;
+    const posted = await upsertIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000, // 30-minute window, only 5 minutes have elapsed
+    });
+
+    // Still snoozed: no update call, and the returned state is not an expiry.
+    expect(posted?.snoozeExpired).toBe(false);
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('failure path: reports snoozeExpired: false for an ordinary first-failure post', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 101, html_url: 'https://github.com/o/r/issues/7#issuecomment-101' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'first failure body', {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(posted?.snoozeExpired).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1012,6 +1080,7 @@ describe('upsertIssueComment (Issue #696)', () => {
     expect(posted).toEqual({
       url: 'https://github.com/o/r/issues/7#issuecomment-1234',
       id: 1234,
+      snoozeExpired: false,
     });
   });
 

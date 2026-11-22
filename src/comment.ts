@@ -1383,6 +1383,14 @@ export interface PostedIssueComment {
   url: string | undefined;
   /** Numeric REST comment id. */
   id: number;
+  /**
+   * True when this post happened specifically because an active snooze
+   * window on this issue just lapsed (Issue #799) — see
+   * `evaluateCombinedSnoozeState`'s `snoozeExpired` flag in `src/snooze.ts`.
+   * `false`/omitted for every other reason a comment was posted (first
+   * failure, status flip, sticky disabled, snooze disabled, etc.).
+   */
+  snoozeExpired?: boolean;
 }
 
 /**
@@ -1499,6 +1507,10 @@ export async function upsertIssueComment(
     }
 
     // Check snooze state (Issue #155, Issue #227)
+    // Set when this run resumes posting specifically because an active
+    // snooze window lapsed (Issue #799), so the caller can tell that apart
+    // from every other reason a comment ends up being posted.
+    let snoozeExpired = false;
     if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
       const lastMarker = parseSnoozeMarker(existingCommentBody);
 
@@ -1512,6 +1524,7 @@ export async function upsertIssueComment(
         existingCommentReactions,
         snoozeWindowMs,
       );
+      snoozeExpired = snoozeState.snoozeExpired;
 
       if (snoozeState.isSnoozed) {
         core.info(
@@ -1520,6 +1533,7 @@ export async function upsertIssueComment(
         return {
           url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
           id: existingCommentId,
+          snoozeExpired: false,
         };
       }
     }
@@ -1533,7 +1547,7 @@ export async function upsertIssueComment(
           body,
         });
         core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-        return { url: response.data.html_url, id: response.data.id ?? existingCommentId };
+        return { url: response.data.html_url, id: response.data.id ?? existingCommentId, snoozeExpired };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         core.warning(
@@ -1574,7 +1588,7 @@ export async function upsertIssueComment(
       core.info(
         `Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`,
       );
-      return { url: response.data.html_url, id: response.data.id };
+      return { url: response.data.html_url, id: response.data.id, snoozeExpired };
     }
 
     const response = await octokit.rest.issues.createComment({
@@ -1585,7 +1599,7 @@ export async function upsertIssueComment(
     });
 
     core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-    const created = { url: response.data.html_url, id: response.data.id };
+    const created = { url: response.data.html_url, id: response.data.id, snoozeExpired };
     if (!sticky) return created;
     // Duplicate runs (e.g. two workflow_dispatch runs racing) can both miss
     // the sticky lookup and create a comment each. Converge on the oldest one.
@@ -1633,7 +1647,7 @@ export async function reconcileDuplicateStickyComment(
       comment_id: canonicalId,
       body,
     });
-    canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId };
+    canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId, snoozeExpired: created.snoozeExpired };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     core.warning(

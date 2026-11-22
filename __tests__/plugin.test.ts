@@ -310,6 +310,84 @@ describe('runPlugins error resilience', () => {
 });
 
 // ---------------------------------------------------------------------------
+// runPlugins — timeout boundary (Issue #797)
+// ---------------------------------------------------------------------------
+
+/** Busy-waits synchronously for at least `ms` before returning `result`. */
+function slowPlugin(id: string, ms: number, timeoutMs?: number): CheckPlugin {
+  return {
+    id,
+    label: 'Slow plugin',
+    timeoutMs,
+    run: () => {
+      const start = Date.now();
+      while (Date.now() - start < ms) {
+        /* busy-wait: plugins are synchronous, nothing to await */
+      }
+      return { passed: true, detail: 'Finished (too late).' };
+    },
+  };
+}
+
+describe('runPlugins timeout boundary', () => {
+  it('happy path: a plugin well within the budget passes through unaffected', () => {
+    const fastPlugin: CheckPlugin = {
+      id: 'test/fast',
+      label: 'Fast',
+      run: () => ({ passed: true, detail: 'Done quickly.' }),
+    };
+    const r = makeRegistry(fastPlugin);
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 50 });
+
+    expect(result.valid).toBe(true);
+    expect(result.checks[0]).toEqual({ passed: true, label: 'Fast', detail: 'Done quickly.' });
+  });
+
+  it('failure path: a plugin exceeding the runner-wide default timeout fails closed', () => {
+    const r = makeRegistry(slowPlugin('test/slow', 30));
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 5 });
+
+    expect(result.valid).toBe(false);
+    expect(result.checks[0].passed).toBe(false);
+    expect(result.checks[0].detail).toContain('test/slow');
+    expect(result.checks[0].detail).toContain('timed out after 5ms');
+  });
+
+  it('does not abort or affect other plugins when one times out', () => {
+    const okPlugin: CheckPlugin = {
+      id: 'test/ok',
+      label: 'OK',
+      run: () => ({ passed: true, detail: 'Fine.' }),
+    };
+    const r = makeRegistry(slowPlugin('test/slow', 30), okPlugin);
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 5 });
+
+    expect(result.checks).toHaveLength(2);
+    expect(result.checks[0].passed).toBe(false);
+    expect(result.checks[1]).toEqual({ passed: true, label: 'OK', detail: 'Fine.' });
+  });
+
+  it("a plugin's own timeoutMs overrides a longer runner-wide default (fails closed sooner)", () => {
+    // Runner default (50ms) would tolerate this plugin; its own 5ms budget does not.
+    const r = makeRegistry(slowPlugin('test/custom-timeout', 30, 5));
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 50 });
+
+    expect(result.checks[0].passed).toBe(false);
+    expect(result.checks[0].detail).toContain('test/custom-timeout');
+    expect(result.checks[0].detail).toContain('timed out after 5ms');
+  });
+
+  it("a plugin's own timeoutMs overrides a shorter runner-wide default (tolerates more time)", () => {
+    // Runner default (5ms) would fail this plugin; its own 200ms budget does not.
+    const r = makeRegistry(slowPlugin('test/custom-timeout', 30, 200));
+    const result = runPlugins(makeCtx(), r, { timeoutMs: 5 });
+
+    expect(result.checks[0].passed).toBe(true);
+    expect(result.checks[0].detail).toContain('Finished');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // runPlugins — well-known id suffix derivation
 // ---------------------------------------------------------------------------
 

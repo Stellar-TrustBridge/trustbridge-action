@@ -47,6 +47,13 @@ export interface ActionOutputExtras {
      * which publishes `comment_id` as an empty string.
      */
     commentId?: string;
+    /**
+     * #799 — True when the comment posted/updated this run happened
+     * specifically because an active snooze window just lapsed (see
+     * `PostedIssueComment.snoozeExpired` in `src/comment.ts`). Defaults to
+     * `false`, publishing `snooze_expired` as `"false"` when absent.
+     */
+    snoozeExpired?: boolean;
 }
 /**
  * A single source that provided a value for a given field.
@@ -159,6 +166,8 @@ export interface ActionOutputs {
     native_balance: string;
     badge_markdown: string;
     badge_url: string;
+    badge_etag: string;
+    snooze_expired: string;
     timings_json: string;
     timing_input_parse_ms: string;
     timing_horizon_fetch_ms: string;

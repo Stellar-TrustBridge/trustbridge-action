@@ -1879,6 +1879,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `comment_url`             | `string` (legacy)              | Created/updated issue comment URL.                                                                                                          |
 | `comment_id`              | `string`                       | Numeric REST id of the created/updated issue comment; `""` when no comment was posted (dry-run, off, no issue context).                     |
 | `full_report_path`        | `string` (legacy)              | Workspace path to full report when comment body exceeded size limits.                                                                       |
+| `snooze_expired`          | `boolean` (`"true"`/`"false"`) | `"true"` only for the run that resumes posting because an active snooze window just lapsed (Issue #799); see [COMMENT_GUIDE.md](COMMENT_GUIDE.md#snooze_expired-output-issue-799). |
 
 ### Failure Reason Code Catalog (`reason_code`)
 
@@ -3017,8 +3018,15 @@ TrustBridge now exposes `badge_markdown` and `badge_url` outputs containing pass
 
 - `badge_markdown`: Markdown-formatted badge link (e.g. `[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-ready-brightgreen)](...)`)
 - `badge_url`: Direct Shields.io badge URL for embedding in HTML or docs
+- `badge_etag`: Weak ETag (RFC 7232) derived from the current badge state/label (Issue #796)
 
 **Use case:** Display wallet readiness status in your project README without exposing account details.
+
+#### Cache freshness after a recheck (Issue #796)
+
+`badge_url` carries a `?cacheSeconds=60` query parameter (`DEFAULT_BADGE_CACHE_SECONDS` in `src/badge.ts`). Shields.io honors `cacheSeconds` as the `Cache-Control: max-age` it serves the badge image with, which is TrustBridge's only lever over the actual HTTP caching of a Shields.io-hosted image — this action does not serve the SVG itself. The shorter lifetime (vs. Shields.io's longer default) keeps a badge embedded in an issue comment or status board from showing a stale pass/fail state for long after a recheck changes it.
+
+If you mirror or proxy the badge image yourself (rather than hot-linking `badge_url`), use `badge_etag` as the `ETag` response header for that proxy: it changes only when the rendered badge would actually look different, so you can safely return `304 Not Modified` on a matching `If-None-Match` instead of re-fetching from Shields.io.
 
 ```yaml
 - uses: Stellar-TrustBridge/trustbridge-action@v1
@@ -3421,6 +3429,16 @@ When the action is given per-asset evaluations (the primary `asset_code`/`asset_
 **Size:** the array is capped at 100 entries (`maxItems` in the schema). Longer `assets_json` lists are truncated in the payload.
 
 **Receivers that ignore `schema_version`** and parse strictly against an older copy of the schema will reject the new key. Refresh your copy of `schemas/webhook-payload.schema.json`, or ignore unknown keys.
+
+#### Snooze expiry signal (Issue #799)
+
+`buildWebhookPayload`/`sendWebhookNotification` (`src/webhook.ts`) accept an optional `snoozeExpired` argument. When passed `true`, the payload carries an **optional, additive** `snooze_expired: true` field — omitted entirely otherwise, so every existing caller that never passes it keeps the byte-for-byte v1 shape. `schema_version` stays `"1"`.
+
+```json
+"snooze_expired": true
+```
+
+This lets a dashboard distinguish "comments resumed because an active snooze window just ended" from any other reason a `validation_complete` event fired, without diffing two polls of the issue comment itself. Pass `evaluateCombinedSnoozeState(...).snoozeExpired` (or `enforceSnoozeWindow(...).state.snoozeExpired` — see [`src/snooze.ts`](../src/snooze.ts)) as the argument, or read the action's own `snooze_expired` output (see [COMMENT_GUIDE.md — `snooze_expired` output](COMMENT_GUIDE.md#snooze_expired-output-issue-799)) if you build the webhook call yourself from the action's outputs rather than importing this library directly.
 
 #### Body size cap and truncation markers (Issue #894)
 

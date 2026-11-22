@@ -49177,7 +49177,7 @@ function getAssetClawbackStatus(balance) {
 /***/ }),
 
 /***/ 93120:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
@@ -49188,12 +49188,58 @@ function getAssetClawbackStatus(balance) {
  * in READMEs, maintainer dashboards, or other documentation. The badge
  * reflects pass/fail/pending states without exposing PII or sensitive data.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_BADGE_CACHE_SECONDS = void 0;
 exports.determineBadgeState = determineBadgeState;
 exports.getBadgeAltText = getBadgeAltText;
 exports.generateBadgeUrl = generateBadgeUrl;
 exports.generateBadgeMarkdown = generateBadgeMarkdown;
+exports.generateBadgeETag = generateBadgeETag;
 exports.generateBadgeSnippets = generateBadgeSnippets;
+const crypto = __importStar(__nccwpck_require__(76982));
+/**
+ * Default `cacheSeconds` applied to generated Shields.io badge URLs.
+ *
+ * Shields.io defaults to caching a badge response for 300s (and longer for
+ * some sources) unless the caller passes its own `cacheSeconds` query
+ * parameter. A readiness badge embedded in a GitHub issue comment or status
+ * board must reflect the *current* state shortly after a recheck, so
+ * TrustBridge requests a much shorter upstream cache lifetime by default.
+ */
+exports.DEFAULT_BADGE_CACHE_SECONDS = 60;
 /**
  * Determine the badge state from a ValidationResult.
  * - 'pass': All checks passed (valid === true)
@@ -49255,10 +49301,20 @@ function getBadgeAltText(state) {
  * The URL is parameterless and contains no sensitive information (no addresses,
  * balances, or asset details).
  */
-function generateBadgeUrl(state, label = 'trustbridge') {
+function generateBadgeUrl(state, label = 'trustbridge', cacheSeconds = exports.DEFAULT_BADGE_CACHE_SECONDS) {
     const color = getBadgeColor(state);
     const message = getBadgeLabel(state);
-    return `https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}`;
+    const base = `https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}`;
+    // `cacheSeconds` is a documented Shields.io query parameter that controls
+    // the `Cache-Control: max-age` the badge *response* is served with — this
+    // is the only lever TrustBridge has over the actual HTTP caching headers
+    // for an image hosted by Shields.io rather than served by this action.
+    // A non-positive value is treated as "use the Shields.io default" and is
+    // omitted so callers can opt out without producing an invalid query string.
+    if (!Number.isFinite(cacheSeconds) || cacheSeconds <= 0) {
+        return base;
+    }
+    return `${base}?cacheSeconds=${Math.floor(cacheSeconds)}`;
 }
 /**
  * Generate a Markdown-formatted badge snippet.
@@ -49268,10 +49324,31 @@ function generateBadgeUrl(state, label = 'trustbridge') {
  *
  * The Markdown includes a link to the TrustBridge repository for context.
  */
-function generateBadgeMarkdown(state, label = 'trustbridge') {
-    const url = generateBadgeUrl(state, label);
+function generateBadgeMarkdown(state, label = 'trustbridge', cacheSeconds = exports.DEFAULT_BADGE_CACHE_SECONDS) {
+    const url = generateBadgeUrl(state, label, cacheSeconds);
     const altText = getBadgeAltText(state);
     return `[![${altText}](${url})](https://github.com/Stellar-TrustBridge/trustbridge-action)`;
+}
+/**
+ * Generate a stable, content-addressed ETag for a badge's current state.
+ *
+ * This is **not** an HTTP response header this action can set itself — the
+ * badge image is served by Shields.io, not by TrustBridge. It is provided
+ * for a consumer (a status board, or a proxy that mirrors the badge image)
+ * that fronts its own cache for the badge and needs a cheap, deterministic
+ * way to detect "nothing changed since last fetch" without re-downloading
+ * the image: compare the previous ETag to the current one and skip the
+ * refetch/invalidation when they match.
+ *
+ * The value is a weak ETag (`W/"..."`, per RFC 7232 §2.3) derived only from
+ * the rendered badge state and label — the same two inputs that determine
+ * the badge's visual content — so it is stable across reruns that produce
+ * the same badge and changes whenever the badge would actually look
+ * different (e.g. a recheck that flips `fail` to `pass`).
+ */
+function generateBadgeETag(state, label = 'trustbridge') {
+    const hash = crypto.createHash('sha1').update(`${label}:${state}`).digest('hex').slice(0, 16);
+    return `W/"${hash}"`;
 }
 /**
  * Generate both Markdown and URL badge snippets from a ValidationResult.
@@ -49289,6 +49366,7 @@ function generateBadgeSnippets(result, label = 'trustbridge') {
     return {
         markdown: generateBadgeMarkdown(state, label),
         url: generateBadgeUrl(state, label),
+        etag: generateBadgeETag(state, label),
     };
 }
 
@@ -53035,17 +53113,23 @@ async function upsertIssueComment(token, body, options = {}) {
             }
         }
         // Check snooze state (Issue #155, Issue #227)
+        // Set when this run resumes posting specifically because an active
+        // snooze window lapsed (Issue #799), so the caller can tell that apart
+        // from every other reason a comment ends up being posted.
+        let snoozeExpired = false;
         if (existingCommentId && snoozeWindowMs > 0 && !forceComment) {
             const lastMarker = (0, snooze_1.parseSnoozeMarker)(existingCommentBody);
             // Determine if current check is passing by looking at body content
             // The snooze marker we just added to body indicates 'pass' or 'fail'
             const currentPassed = body.includes('<!-- trustbridge-action:snooze:status=pass');
             const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
+            snoozeExpired = snoozeState.snoozeExpired;
             if (snoozeState.isSnoozed) {
                 core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
                 return {
                     url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
                     id: existingCommentId,
+                    snoozeExpired: false,
                 };
             }
         }
@@ -53058,7 +53142,7 @@ async function upsertIssueComment(token, body, options = {}) {
                     body,
                 });
                 core.info(`Updated existing TrustBridge comment on issue #${issueNumber}.`);
-                return { url: response.data.html_url, id: response.data.id ?? existingCommentId };
+                return { url: response.data.html_url, id: response.data.id ?? existingCommentId, snoozeExpired };
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -53088,7 +53172,7 @@ async function upsertIssueComment(token, body, options = {}) {
                 body: replyBody,
             });
             core.info(`Posted TrustBridge reply comment on issue #${issueNumber}${parentCommentId ? ` (reply to #${parentCommentId})` : ''}.`);
-            return { url: response.data.html_url, id: response.data.id };
+            return { url: response.data.html_url, id: response.data.id, snoozeExpired };
         }
         const response = await octokit.rest.issues.createComment({
             owner,
@@ -53097,7 +53181,7 @@ async function upsertIssueComment(token, body, options = {}) {
             body,
         });
         core.info(`Posted TrustBridge comment on issue #${issueNumber}.`);
-        const created = { url: response.data.html_url, id: response.data.id };
+        const created = { url: response.data.html_url, id: response.data.id, snoozeExpired };
         if (!sticky)
             return created;
         // Duplicate runs (e.g. two workflow_dispatch runs racing) can both miss
@@ -53139,7 +53223,7 @@ async function reconcileDuplicateStickyComment(octokit, owner, repo, issueNumber
             comment_id: canonicalId,
             body,
         });
-        canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId };
+        canonical = { url: updated.data.html_url, id: updated.data.id ?? canonicalId, snoozeExpired: created.snoozeExpired };
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -57455,12 +57539,19 @@ async function run() {
     // context, or a failed post all leave it (and comment_url) empty.
     let commentUrl;
     let commentId;
+    // Issue #799: surfaced only when `upsertIssueComment` actually enforces a
+    // snooze window for this call (the batch path above already passes
+    // `snoozeWindowMs`; wiring it into this single-address call as well is a
+    // separate, larger behavioral change outside this issue's scope, since
+    // `snooze_window_minutes` defaults to 30 and currently has no effect here).
+    let snoozeExpired = false;
     if (postingMode === 'post') {
         try {
             const posted = await (0, comment_1.upsertIssueComment)(githubToken, commentBody, { sticky: stickyComment });
             if (posted) {
                 commentUrl = posted.url;
                 commentId = posted.id !== undefined ? String(posted.id) : undefined;
+                snoozeExpired = posted.snoozeExpired ?? false;
                 logger_1.logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
             }
         }
@@ -57526,6 +57617,7 @@ async function run() {
         timings: metrics_1.globalMetrics.getTimingBreakdown(),
         checkRunId,
         checkRunConclusion,
+        snoozeExpired,
     });
     // Batch outputs last so the single-address defaults above never clobber
     // the real batch summary (Issue #537).
@@ -60549,7 +60641,7 @@ function truncateJsonArray(items, toJson, maxBytes = exports.MAX_OUTPUT_VALUE_BY
 function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const timings = extras.timings ?? {};
     const validatedAt = extras.validatedAt ?? new Date().toISOString();
-    const { markdown: badgeMarkdown, url: badgeUrl } = (0, badge_1.generateBadgeSnippets)(result);
+    const { markdown: badgeMarkdown, url: badgeUrl, etag: badgeEtag } = (0, badge_1.generateBadgeSnippets)(result);
     const mismatch = result.networkPassphraseMismatch;
     // Matrix-friendly outputs (Issue #3)
     const assigneeResultsJson = extras.assigneeLogin && extras.stellarAddress
@@ -60605,6 +60697,8 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         native_balance: result.xlmBalance,
         badge_markdown: badgeMarkdown,
         badge_url: badgeUrl,
+        badge_etag: badgeEtag,
+        snooze_expired: String(extras.snoozeExpired ?? false),
         timings_json: JSON.stringify({
             input_parse_ms: timings.input_parse_ms ?? 0,
             horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
@@ -63392,38 +63486,47 @@ function formatSnoozeMarker(status, timestamp = Date.now()) {
  */
 function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
     const now = Date.now();
-    // If current check passes, always post (unsnooze).
+    // If current check passes, always post (unsnooze) — not an expiry, the
+    // check itself changed outcome.
     if (currentPassed) {
         return {
             isSnoozed: false,
+            snoozeExpired: false,
             lastStatus: lastMarker?.status,
             lastTimestamp: lastMarker?.timestamp,
         };
     }
     // Current check failed.
-    // If no prior marker, this is the first failure — post it.
+    // If no prior marker, this is the first failure — post it. Not an
+    // expiry: there was never an active snooze window to expire.
     if (!lastMarker) {
         return {
             isSnoozed: false,
+            snoozeExpired: false,
             lastStatus: undefined,
             lastTimestamp: undefined,
         };
     }
     // Current failed, prior status known.
     const elapsedMs = now - lastMarker.timestamp;
-    // Status changed from pass to fail — post it.
+    // Status changed from pass to fail — post it. Not an expiry: this is a
+    // fresh failure, not a resumed one.
     if (lastMarker.status === 'pass') {
         return {
             isSnoozed: false,
+            snoozeExpired: false,
             lastStatus: lastMarker.status,
             lastTimestamp: lastMarker.timestamp,
             elapsedMs,
         };
     }
-    // Status remains failed.
+    // Status remains failed. `withinWindow === false` is the expiry case:
+    // the prior run was (or would have been) snoozed and the window has now
+    // lapsed, so this run resumes normal posting.
     const withinWindow = elapsedMs < snoozeWindowMs;
     return {
         isSnoozed: withinWindow,
+        snoozeExpired: !withinWindow,
         lastStatus: lastMarker.status,
         lastTimestamp: lastMarker.timestamp,
         elapsedMs,
@@ -63457,7 +63560,7 @@ function isSnoozeReaction(content) {
  */
 function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = Date.now()) {
     if (currentPassed || !reactions || reactions.length === 0) {
-        return { isSnoozed: false };
+        return { isSnoozed: false, snoozeExpired: false };
     }
     // Filter out bot reactions and non-snooze emojis
     const eligibleReactions = reactions.filter((r) => {
@@ -63466,7 +63569,7 @@ function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = 
         return !isBot && isSnoozeReaction(r.content);
     });
     if (eligibleReactions.length === 0) {
-        return { isSnoozed: false };
+        return { isSnoozed: false, snoozeExpired: false };
     }
     // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
     const timestamps = eligibleReactions
@@ -63481,6 +63584,9 @@ function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = 
     const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
     return {
         isSnoozed: withinWindow,
+        // A reaction-based snooze that has lapsed (the reaction is older than
+        // the window) is an expiry in the same sense as the marker-based path.
+        snoozeExpired: !withinWindow,
         lastTimestamp: latestTimestamp,
         elapsedMs,
     };
@@ -63494,7 +63600,7 @@ function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = 
  */
 function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, now = Date.now()) {
     if (currentPassed) {
-        return { isSnoozed: false };
+        return { isSnoozed: false, snoozeExpired: false };
     }
     const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
     const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
@@ -63504,8 +63610,11 @@ function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snooz
     if (markerState.isSnoozed) {
         return markerState;
     }
+    // Neither mechanism is currently snoozing. It's an expiry if either one
+    // specifically just lapsed (rather than never having been active).
     return {
         isSnoozed: false,
+        snoozeExpired: reactionState.snoozeExpired || markerState.snoozeExpired,
         lastStatus: markerState.lastStatus,
         lastTimestamp: reactionState.lastTimestamp ?? markerState.lastTimestamp,
         elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,

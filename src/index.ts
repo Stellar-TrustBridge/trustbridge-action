@@ -933,12 +933,19 @@ export async function run(): Promise<void> {
   // context, or a failed post all leave it (and comment_url) empty.
   let commentUrl: string | undefined;
   let commentId: string | undefined;
+  // Issue #799: surfaced only when `upsertIssueComment` actually enforces a
+  // snooze window for this call (the batch path above already passes
+  // `snoozeWindowMs`; wiring it into this single-address call as well is a
+  // separate, larger behavioral change outside this issue's scope, since
+  // `snooze_window_minutes` defaults to 30 and currently has no effect here).
+  let snoozeExpired = false;
   if (postingMode === 'post') {
     try {
       const posted = await upsertIssueComment(githubToken, commentBody, { sticky: stickyComment });
       if (posted) {
         commentUrl = posted.url;
         commentId = posted.id !== undefined ? String(posted.id) : undefined;
+        snoozeExpired = posted.snoozeExpired ?? false;
         logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
       }
     } catch (commentError) {
@@ -1016,6 +1023,7 @@ export async function run(): Promise<void> {
     timings: globalMetrics.getTimingBreakdown(),
     checkRunId,
     checkRunConclusion,
+    snoozeExpired,
   });
 
   // Batch outputs last so the single-address defaults above never clobber

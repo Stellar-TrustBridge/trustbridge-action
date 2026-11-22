@@ -19,6 +19,7 @@ import * as os from 'os';
 import {
   parseSimpleYaml,
   readTrustbridgeConfig,
+  readTrustbridgeConfigs,
   mergeConsumerConfig,
 } from '../src/configReader';
 import {
@@ -503,5 +504,149 @@ describe('mergeConsumerConfig', () => {
     const original = { ...baseInputs };
     mergeConsumerConfig(baseInputs, consumerConfig, new Set());
     expect(baseInputs.horizonUrl).toBe(original.horizonUrl);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readTrustbridgeConfigs — org vs. repo precedence (Issue #850)
+// ---------------------------------------------------------------------------
+
+/** Writes a workspace with optional org (.github/trustbridge.yml) and repo config files. */
+function writeWorkspace(orgYaml?: string, repoYaml?: string, repoFilename = '.trustbridge.yml'): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-workspace-'));
+  if (orgYaml !== undefined) {
+    const githubDir = path.join(dir, '.github');
+    fs.mkdirSync(githubDir, { recursive: true });
+    fs.writeFileSync(path.join(githubDir, 'trustbridge.yml'), orgYaml, 'utf8');
+  }
+  if (repoYaml !== undefined) {
+    fs.writeFileSync(path.join(dir, repoFilename), repoYaml, 'utf8');
+  }
+  return dir;
+}
+
+describe('readTrustbridgeConfigs — org/repo layering', () => {
+  it('happy path: repo-only config is used when no org config exists', () => {
+    const dir = writeWorkspace(undefined, 'asset_code: EURC');
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.config?.asset_code).toBe('EURC');
+    expect(result.found).toBe(true);
+  });
+
+  it('happy path: org-only config is used when no repo config exists', () => {
+    const dir = writeWorkspace('asset_code: EURC', undefined);
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.config?.asset_code).toBe('EURC');
+    expect(result.found).toBe(true);
+  });
+
+  it('repo config overrides org config for the same key (repo wins)', () => {
+    const dir = writeWorkspace('asset_code: USDC\nmin_xlm_reserve: "1.5"', 'asset_code: EURC');
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    // Overridden by repo
+    expect(result.config?.asset_code).toBe('EURC');
+    // Falls through from org since repo does not declare it
+    expect(result.config?.min_xlm_reserve).toBe('1.5');
+  });
+
+  it('merges distinct keys declared only at one level', () => {
+    const dir = writeWorkspace('asset_issuer: ' + VALID_G_ISSUER, 'asset_code: EURC');
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.config?.asset_issuer).toBe(VALID_G_ISSUER);
+    expect(result.config?.asset_code).toBe('EURC');
+  });
+
+  it('failure path: an invalid org config fails the merge even when repo config is valid', () => {
+    const dir = writeWorkspace('horizon_url: http://127.0.0.1:8080', 'asset_code: EURC');
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors.some((e) => /blocked/i.test(e))).toBe(true);
+  });
+
+  it('failure path: an invalid repo config fails the merge even when org config is valid', () => {
+    const dir = writeWorkspace('asset_code: USDC', 'asset_code: USDC; rm -rf');
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors.some((e) => /injection/i.test(e))).toBe(true);
+  });
+
+  it('neither file present: valid and not found, config is null', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-workspace-'));
+    const result = readTrustbridgeConfigs(undefined, dir);
+
+    expect(result.validation.valid).toBe(true);
+    expect(result.found).toBe(false);
+    expect(result.config).toBeNull();
+  });
+
+  it('honors an explicit repoConfigPath for the repo layer, independent of the org layer', () => {
+    const dir = writeWorkspace('asset_code: USDC', 'asset_code: EURC', 'custom.yml');
+    const result = readTrustbridgeConfigs('custom.yml', dir);
+
+    expect(result.config?.asset_code).toBe('EURC');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Type-conflict handling — same key, wrong YAML type (Issue #850)
+// ---------------------------------------------------------------------------
+
+describe('readTrustbridgeConfig — type conflicts fail closed with a stable error', () => {
+  it('rejects a numeric min_xlm_reserve with a clear, stable error instead of coercing it', () => {
+    // parseSimpleYaml parses an unquoted numeric-looking value as a JS
+    // number, but min_xlm_reserve is typed as a string field.
+    // validateTrustbridgeConfig type-checks every raw field *before*
+    // readTrustbridgeConfig ever extracts it, so a type conflict fails the
+    // whole config (closed) with a stable message rather than silently
+    // dropping the field or coercing it to a string.
+    const { filePath, dir } = writeTempFileInDir('min_xlm_reserve: 2.5');
+    const result = readTrustbridgeConfig(path.basename(filePath), dir);
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors).toContain('min_xlm_reserve must be a string');
+    expect(result.config).toBeNull();
+  });
+
+  it('accepts the same value when explicitly quoted as a string', () => {
+    const { filePath, dir } = writeTempFileInDir('min_xlm_reserve: "2.5"');
+    const result = readTrustbridgeConfig(path.basename(filePath), dir);
+
+    expect(result.validation.valid).toBe(true);
+    expect(result.config?.min_xlm_reserve).toBe('2.5');
+  });
+
+  it('rejects a numeric asset_code with a clear, stable error instead of coercing it', () => {
+    const { filePath, dir } = writeTempFileInDir('asset_code: 123');
+    const result = readTrustbridgeConfig(path.basename(filePath), dir);
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors).toContain('asset_code must be a string');
+    expect(result.config).toBeNull();
+  });
+
+  it('rejects a quoted string "false" for the boolean fail_on_missing field', () => {
+    // fail_on_missing is typed as boolean; a quoted "false" parses as a
+    // string via parseSimpleYaml, which fails validation rather than being
+    // coerced to the boolean false.
+    const { filePath, dir } = writeTempFileInDir('fail_on_missing: "false"');
+    const result = readTrustbridgeConfig(path.basename(filePath), dir);
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors).toContain('fail_on_missing must be a boolean (true or false)');
+    expect(result.config).toBeNull();
+  });
+
+  it('accepts an unquoted false for the boolean fail_on_missing field', () => {
+    const { filePath, dir } = writeTempFileInDir('fail_on_missing: false');
+    const result = readTrustbridgeConfig(path.basename(filePath), dir);
+
+    expect(result.validation.valid).toBe(true);
+    expect(result.config?.fail_on_missing).toBe(false);
   });
 });

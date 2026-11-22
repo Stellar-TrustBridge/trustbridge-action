@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { ValidationResult } from '../src/checks';
 import { toActionOutputs, setValidationOutputs, writeValidationJson } from '../src/outputs';
+import { generateBadgeETag } from '../src/badge';
 
 jest.mock('@actions/core');
 
@@ -756,6 +757,21 @@ describe('setValidationOutputs (Issue #535)', () => {
     expect(written.get('check_run_conclusion')).toBe('');
   });
 
+  // Issue #799 — snooze_expired output
+  it('happy path: publishes snooze_expired: "true" when extras.snoozeExpired is true', () => {
+    setValidationOutputs(result, undefined, undefined, { snoozeExpired: true });
+
+    const written = outputsByName();
+    expect(written.get('snooze_expired')).toBe('true');
+  });
+
+  it('failure path: defaults snooze_expired to "false" when extras.snoozeExpired is absent', () => {
+    setValidationOutputs(result);
+
+    const written = outputsByName();
+    expect(written.get('snooze_expired')).toBe('false');
+  });
+
   // Issue #696 — comment_id is published next to comment_url so downstream
   // steps can chain issues.updateComment without parsing the URL.
   it('publishes comment_id alongside comment_url when a comment was posted', () => {
@@ -883,8 +899,9 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       ]),
       asset_balance: '25.0000000',
       native_balance: '5.0000000',
-      badge_markdown: '[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)',
-      badge_url: 'https://img.shields.io/badge/trustbridge-Ready-brightgreen',
+      badge_markdown: '[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-Ready-brightgreen?cacheSeconds=60)](https://github.com/Stellar-TrustBridge/trustbridge-action)',
+      badge_url: 'https://img.shields.io/badge/trustbridge-Ready-brightgreen?cacheSeconds=60',
+      badge_etag: generateBadgeETag('pass'),
       timings_json: JSON.stringify({
         input_parse_ms: 10,
         horizon_fetch_ms: 100,
@@ -916,6 +933,7 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       batch_summary_json: '',
       batch_passed_count: '',
       batch_failed_count: '',
+      snooze_expired: 'false',
       outputs_truncated: 'false',
     });
   });

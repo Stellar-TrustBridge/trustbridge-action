@@ -225,6 +225,31 @@ describe('buildWebhookPayload', () => {
     expect(() => new Date(payload.timestamp)).not.toThrow();
     expect(new Date(payload.timestamp).toISOString()).toBe(payload.timestamp);
   });
+
+  // -------------------------------------------------------------------------
+  // snooze_expired — Issue #799
+  // -------------------------------------------------------------------------
+
+  it('happy path: omits snooze_expired when not passed at all', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1);
+    expect(payload).not.toHaveProperty('snooze_expired');
+  });
+
+  it('happy path: omits snooze_expired when explicitly passed false', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, undefined, false);
+    expect(payload).not.toHaveProperty('snooze_expired');
+  });
+
+  it('failure path: sets snooze_expired: true only when explicitly passed true', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, undefined, true);
+    expect(payload.snooze_expired).toBe(true);
+  });
+
+  it('is independent of the assets parameter', () => {
+    const payload = buildWebhookPayload(passedResult, ADDRESS, 'owner/repo', 1, [], true);
+    expect(payload.snooze_expired).toBe(true);
+    expect(payload).not.toHaveProperty('assets');
+  });
 });
 
 // ---------------------------------------------------------------------------

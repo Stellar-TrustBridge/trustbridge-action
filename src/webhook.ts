@@ -220,6 +220,18 @@ export interface WebhookPayload {
   /** Per-asset trustline / clawback reason codes (Issue #676). Omitted when not supplied. */
   assets?: WebhookAssetEntry[];
   /**
+   * True when this `validation_complete` event is the first one after an
+   * active snooze window lapsed (Issue #799) — see
+   * `evaluateCombinedSnoozeState`'s `snoozeExpired` flag in `src/snooze.ts`.
+   * Lets a dashboard distinguish "comments resumed because the snooze
+   * window ended" from any other reason this webhook fired, without
+   * polling the issue comment to diff snooze state itself. Omitted
+   * (rather than `false`) when not applicable, matching the `assets`
+   * convention — this keeps the payload byte-for-byte the v1 shape for
+   * every caller that never passes a snooze state.
+   */
+  snooze_expired?: true;
+  /**
    * Structured truncation marker (Issue #894). Present and `true` only when the
    * body exceeded {@link WEBHOOK_MAX_BODY_BYTES} and entries were dropped to fit
    * the cap. Absent on an untruncated v1 payload.
@@ -384,6 +396,11 @@ export const WEBHOOK_SCHEMA_VERSION = '1' as const;
  * @param assets  Optional per-asset evaluations (Issue #676). When omitted or
  *                empty the `assets` key is left out and the payload is
  *                byte-for-byte the frozen v1 shape.
+ * @param snoozeExpired  Optional (Issue #799): pass `evaluateCombinedSnoozeState(...).snoozeExpired`
+ *                (or `enforceSnoozeWindow(...).state.snoozeExpired`) when the
+ *                caller has that context. Only ever adds `snooze_expired: true`
+ *                to the payload — a falsy value omits the key entirely, so
+ *                existing callers that never pass it are unaffected.
  */
 export function buildWebhookPayload(
   result: ValidationResult,
@@ -391,6 +408,7 @@ export function buildWebhookPayload(
   repository: string,
   issueNumber: number | null,
   assets?: AssetReasonEvaluation[],
+  snoozeExpired?: boolean,
 ): WebhookPayload {
   const payload: WebhookPayload = {
     schema_version: '1',
@@ -417,6 +435,10 @@ export function buildWebhookPayload(
       clawback_enabled: a.clawbackEnabled,
       reason_code: a.reasonCode,
     }));
+  }
+
+  if (snoozeExpired) {
+    payload.snooze_expired = true;
   }
 
   return payload;
@@ -602,8 +624,8 @@ export const WEBHOOK_RESULT_REQUIRED_FIELDS = [
   'checks',
 ] as const;
 export const WEBHOOK_CHECK_REQUIRED_FIELDS = ['label', 'passed'] as const;
-/** Optional additive top-level fields (Issue #676, Issue #894). */
-export const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS = ['assets', 'truncated', 'dropped_fields'] as const;
+/** Optional additive top-level fields (Issues #676, #799, #894). */
+export const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS = ['assets', 'snooze_expired', 'truncated', 'dropped_fields'] as const;
 export const WEBHOOK_ASSET_REQUIRED_FIELDS = [
   'asset_code',
   'asset_issuer',
@@ -667,6 +689,9 @@ export function validateWebhookPayload(payload: unknown): string[] {
     errors.push('stellar_address: must be a redacted address (first-4...last-4)');
   }
   if ('assets' in payload) validateAssetEntries(payload.assets, errors);
+  if ('snooze_expired' in payload && payload.snooze_expired !== true) {
+    errors.push('snooze_expired: must be true when present');
+  }
   if ('truncated' in payload && typeof payload.truncated !== 'boolean') {
     errors.push('truncated: must be a boolean');
   }
@@ -887,6 +912,7 @@ export function describeOidcMintFailure(audience: string, error: unknown): strin
  * @param repository    `owner/repo` string from the GitHub context.
  * @param issueNumber   Current issue number, or `null` when not in an issue context.
  * @param assets        Optional per-asset evaluations for the `assets` section (Issue #676).
+ * @param snoozeExpired Optional (Issue #799): forwarded verbatim to {@link buildWebhookPayload}.
  */
 export async function sendWebhookNotification(
   result: ValidationResult,
@@ -895,6 +921,7 @@ export async function sendWebhookNotification(
   repository: string,
   issueNumber: number | null,
   assets?: AssetReasonEvaluation[],
+  snoozeExpired?: boolean,
 ): Promise<void> {
   // No URL → never mint an OIDC token or build a payload.
   if (!config.webhookUrl) return;
@@ -922,7 +949,7 @@ export async function sendWebhookNotification(
       }
     }
 
-    const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber, assets);
+    const payload = buildWebhookPayload(result, stellarAddress, repository, issueNumber, assets, snoozeExpired);
     // Debug-only payload dump; the logger redacts any G/C-address it contains.
     logger.debug(`Webhook payload: ${JSON.stringify(payload)}`, { component: 'webhook' });
     const delivery = await deliverWebhook(payload, effectiveConfig);

@@ -62,7 +62,7 @@ When `comment_mode: 'reply'` is configured, TrustBridge:
 
 ### `comment_id` output (Issue #696)
 
-Every successful post publishes the numeric REST comment id as the `comment_id` action output, next to `comment_url`. `upsertIssueComment` in `src/comment.ts` returns `{ url, id }` from the response of whichever call actually wrote the body, and `setValidationOutputs` publishes it.
+Every successful post publishes the numeric REST comment id as the `comment_id` action output, next to `comment_url`. `upsertIssueComment` in `src/comment.ts` returns `{ url, id, snoozeExpired }` from the response of whichever call actually wrote the body, and `setValidationOutputs` publishes `comment_id`/`comment_url` from it (see [`snooze_expired` output](#snooze_expired-output-issue-799) below for `snoozeExpired`).
 
 How `posting_mode` and `comment_mode` decide between update and create:
 
@@ -85,6 +85,14 @@ Notes:
 - `comment_id` is not part of the dashboard webhook payload, so `privacy_mode` has nothing extra to redact.
 
 See [USAGE.md — `comment_id`](USAGE.md#comment_id--chaining-a-follow-up-edit-issue-696) for a workflow that edits the comment in a later step.
+
+### `snooze_expired` output (Issue #799)
+
+A dashboard that wants to know when a Wave issue "comes back" after a snooze window ends, without polling the comment to diff snooze state itself, can read the `snooze_expired` action output (`"true"` / `"false"`) published by every run — or, if it builds the webhook payload itself via `buildWebhookPayload`/`sendWebhookNotification` (`src/webhook.ts`), pass the same value through as their optional `snoozeExpired` argument to get an additive `snooze_expired: true` field on the `validation_complete` payload it already receives.
+
+The flag is `"true"` only for the specific run that resumes posting *because* a prior snooze window lapsed — not for an ordinary first failure, a pass→fail or fail→pass status change, or any run with snoozing disabled (`snooze_window_minutes: 0` or the batch `snoozeWindowMs` option left unset). See `evaluateCombinedSnoozeState`'s `snoozeExpired` field in `src/snooze.ts` for the exact decision table, and `__tests__/snooze.test.ts` / `__tests__/comment.test.ts` for the regression coverage (marker-based and reaction-based expiry, plus every non-expiry case).
+
+**Known gap:** the single-address comment path in `src/index.ts` does not currently pass `snoozeWindowMs` to `upsertIssueComment`, so `snooze_expired` is always `"false"` there today even though `snooze_window_minutes` defaults to `30`. The batch validation path already wires it through. Fixing the single-address gap is a separate, larger behavioral change (it would newly start suppressing repeated-failure comments by default) and is tracked outside this issue rather than bundled into it.
 
 ---
 ## FAQ deep links

@@ -60,6 +60,13 @@ export interface ActionOutputExtras {
    * which publishes `comment_id` as an empty string.
    */
   commentId?: string;
+  /**
+   * #799 — True when the comment posted/updated this run happened
+   * specifically because an active snooze window just lapsed (see
+   * `PostedIssueComment.snoozeExpired` in `src/comment.ts`). Defaults to
+   * `false`, publishing `snooze_expired` as `"false"` when absent.
+   */
+  snoozeExpired?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +347,9 @@ export interface ActionOutputs {
   // Badge outputs for README/dashboard embeds
   badge_markdown: string;
   badge_url: string;
+  badge_etag: string;
+  // Snooze expiry (Issue #799)
+  snooze_expired: string;
   // Timing breakdown outputs
   timings_json: string;
   timing_input_parse_ms: string;
@@ -410,7 +420,7 @@ export function toActionOutputs(
 ): ActionOutputs {
   const timings = extras.timings ?? {};
   const validatedAt = extras.validatedAt ?? new Date().toISOString();
-  const { markdown: badgeMarkdown, url: badgeUrl } = generateBadgeSnippets(result);
+  const { markdown: badgeMarkdown, url: badgeUrl, etag: badgeEtag } = generateBadgeSnippets(result);
   
   const mismatch = result.networkPassphraseMismatch;
   
@@ -480,6 +490,8 @@ export function toActionOutputs(
     native_balance: result.xlmBalance,
     badge_markdown: badgeMarkdown,
     badge_url: badgeUrl,
+    badge_etag: badgeEtag,
+    snooze_expired: String(extras.snoozeExpired ?? false),
     timings_json: JSON.stringify({
       input_parse_ms: timings.input_parse_ms ?? 0,
       horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
