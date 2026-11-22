@@ -9,7 +9,7 @@ import {
   isTrustlineAuthorized,
   parseHorizonBalance,
 } from "./horizon";
-import { getAssetClawbackStatus, classifyAssetIssuer, isSorobanContractIssuer, type AssetIssuerKind } from "./assets";
+import { getAssetClawbackStatus, classifyAssetIssuer, isSorobanContractIssuer, resolveIssuerAuthFlagVerdict, type AssetIssuerKind } from "./assets";
 import { escapeMarkdownInline, inlineCode } from "./markdown";
 import {
   buildChangeTrustLink,
@@ -951,14 +951,27 @@ export function runAccountChecks(
   // issuer's immutable/revocable flags: those flags describe future state,
   // while this policy evaluates the account's present authorization state.
   const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
-  const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
 
   // Detect issuer flags for enhanced messaging (Issue #248)
   const issuerAuthRevocable = account.flags?.auth_revocable ?? false;
 
   const clawbackStrictMode = config.clawbackStrictMode ?? false;
-  const clawbackBlocks =
-    trustlineExistsRaw && clawbackEnabled && clawbackStrictMode;
+
+  // Issue #898: the authorization/clawback precedence lives in one decision
+  // table (`ISSUER_AUTH_FLAG_DECISION_TABLE` in src/assets.ts) so per-asset
+  // webhook codes, docs and this check cannot drift apart.
+  const authFlagVerdict = resolveIssuerAuthFlagVerdict({
+    trustlineExists: trustlineExistsRaw,
+    trustlineAuthorized,
+    clawbackEnabled,
+    authRequired: account.flags?.auth_required,
+    authRevocable: account.flags?.auth_revocable,
+    authImmutable: account.flags?.auth_immutable,
+    unauthorizedTrustlinePolicy: unauthorizedPolicy,
+    clawbackStrictMode,
+  });
+  const authorizationBlocks = authFlagVerdict.authorizationBlocks;
+  const clawbackBlocks = authFlagVerdict.clawbackBlocks;
 
   const trustlineExists = trustlineExistsRaw && !authorizationBlocks;
 
