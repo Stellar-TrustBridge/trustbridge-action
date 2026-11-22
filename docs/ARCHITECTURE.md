@@ -177,6 +177,61 @@ Errors are classified as **retryable** vs **terminal** to avoid masking real pro
 
 ---
 
+## Circuit breaker half-open probe budget (Issue #888)
+
+`CircuitBreaker` in `src/resilience.ts` enforces a configurable limit on
+the number of **concurrent** probe calls while the circuit is in the
+`half-open` state.
+
+### Why this matters
+
+Without a probe budget, every caller that checks `getState()` after the
+recovery timeout sees `half-open` and proceeds to call `execute()`. Under
+Wave batch peaks — where dozens of addresses are validated in parallel —
+all of them can stampede a Horizon endpoint that is only starting to
+recover, overwhelming it and triggering a fresh outage cycle.
+
+### How it works
+
+```
+CircuitBreakerOptions.halfOpenMaxProbes  (default: 1)
+```
+
+`execute()` tracks `halfOpenProbesInFlight`. When the count is already at
+`halfOpenMaxProbes`, any additional caller receives `CircuitOpenError`
+immediately — fast-fail, identical to fully-open behavior — and the
+rejection is counted in `halfOpenProbeBudgetExhaustedCount`.
+
+The in-flight counter is decremented in a `finally` block when each probe
+resolves (success) or rejects (failure). A probe failure also re-opens the
+circuit and resets the counter; a probe success that meets `successThreshold`
+closes the circuit and resets the counter. Both transitions also zero the
+exhaustion count so the next half-open period starts fresh.
+
+### Observability
+
+| Surface | What it shows |
+|---|---|
+| `getStats().halfOpenProbesInFlight` | Concurrently executing probes right now |
+| `getStats().halfOpenProbeBudgetExhaustedCount` | Calls fast-failed due to budget exhaustion since last half-open entry |
+| `getStats().halfOpenMaxProbes` | Configured budget |
+| `getOpenMetrics().halfOpenProbeStats` | All four values as a nested object for Job Summary export |
+| `onProbeBudgetExhausted(inFlight, maxProbes)` | Optional callback — default emits `core.warning` as a GitHub Check Run annotation |
+
+### Backward compatibility
+
+The default (`halfOpenMaxProbes: 1`) matches the previous undocumented
+behavior where only a single probe was practically in flight at a time
+(because the breaker was typically used with sequential callers). No
+existing test needed changes to accommodate the new field.
+
+Set `halfOpenMaxProbes: Infinity` to restore the pre-#888 behavior with
+no limit.
+
+Enforced by `__tests__/resilience.test.ts` — `CircuitBreaker — half-open probe budget (Issue #888)` suite (16 tests).
+
+---
+
 ## Batch concurrency cap (Issue #852)
 
 `runBatchValidation` (`src/batch.ts`) is the only place the Action fans

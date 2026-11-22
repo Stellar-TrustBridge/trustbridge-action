@@ -1,0 +1,20 @@
+# Conflict fixture: a catch-all rule followed by a more-specific rule that
+# assigns different owners, leaving a deliberate coverage gap for generated
+# files (no-owner pattern via a rule with no owners is not supported by GitHub
+# CODEOWNERS — an empty-owner line is simply skipped by the parser).
+#
+# Pattern precedence (GitHub semantics): LAST matching rule wins.
+#
+# For `src/generated/schema.ts`:
+#   1. `**/*.ts`      matches → owners: @typescript-guild     (overridden)
+#   2. `src/generated/**` matches → owners: @tooling-team     ← WINS
+#
+# For `src/codeowners.ts`:
+#   1. `**/*.ts`      matches → owners: @typescript-guild     ← WINS
+#   (rule 2 does not match)
+#
+# For `scripts/build.sh`:
+#   No rule matches → uncovered
+
+**/*.ts           @typescript-guild
+src/generated/**  @tooling-team

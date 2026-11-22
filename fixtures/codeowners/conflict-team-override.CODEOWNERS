@@ -1,0 +1,17 @@
+# Conflict fixture: team-level rule overridden by a later individual rule.
+#
+# Pattern precedence (GitHub semantics): LAST matching rule wins.
+#
+# For `docs/api/reference.md`:
+#   1. `docs/**`      matches → owners: @docs-team            (overridden)
+#   2. `docs/api/**`  matches → owners: @alice @bob           ← WINS
+#
+# For `docs/USAGE.md`:
+#   1. `docs/**`      matches → owners: @docs-team            ← WINS
+#   (rule 2 does not match)
+#
+# For `src/index.ts`:
+#   No rule matches → uncovered (no owners)
+
+docs/**           @docs-team
+docs/api/**       @alice @bob
