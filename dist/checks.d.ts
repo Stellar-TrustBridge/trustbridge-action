@@ -2,6 +2,7 @@ import { HorizonAccount } from "./horizon";
 import { type AssetIssuerKind } from "./assets";
 import { StellarNetwork } from './links';
 import { UnauthorizedTrustlinePolicy } from './inputs';
+import { type ReasonCode } from './reasonCodes';
 /** Stellar public network base reserve per ledger entry (XLM). */
 export declare const STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
@@ -193,8 +194,8 @@ export interface ValidationResult {
     trustlineLimit?: string;
     checks: CheckResultItem[];
     remediation?: string;
-    /** Machine-readable failure reason for gating / metrics. */
-    reasonCode?: string;
+    /** Machine-readable failure reason for gating / metrics. Frozen catalog: src/reasonCodes.ts. */
+    reasonCode?: ReasonCode;
     /**
      * Issuer flavour of the configured asset (Issue #730). `soroban-contract`
      * means `asset_issuer` is a Stellar Asset Contract id (C-address), so the

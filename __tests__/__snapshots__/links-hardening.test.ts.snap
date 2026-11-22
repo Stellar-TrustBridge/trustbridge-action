@@ -1,0 +1,7 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`buildFaqLink baseUrl override hardening (Issue #853) matches the golden snapshot for the default (no override) case 1`] = `"https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low"`;
+
+exports[`buildSep0007TxLink callback hardening (Issue #853) matches the golden snapshot when the callback is malicious and must be dropped 1`] = `"web+stellar:tx?xdr=AAAAAQ&network_passphrase=Public+Global+Stellar+Network+%3B+September+2015"`;
+
+exports[`buildSep0007TxLink callback hardening (Issue #853) matches the golden snapshot with a legitimate callback and msg 1`] = `"web+stellar:tx?xdr=AAAAAQ&network_passphrase=Test+SDF+Network+%3B+September+2015&msg=Add+USDC+trustline&callback=https%3A%2F%2Fwallet.example.com%2Fsign-callback"`;

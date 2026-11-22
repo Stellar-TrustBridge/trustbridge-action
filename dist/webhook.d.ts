@@ -18,6 +18,11 @@
  *   and never propagate to the comment-posting or validation-result paths.
  * - A configurable timeout (`webhook_timeout_ms`, default 5 000 ms) prevents
  *   a slow receiver from stalling the action.
+ * - The serialized body is capped at `WEBHOOK_MAX_BODY_BYTES` (Issue #894).
+ *   Oversized payloads are truncated deterministically (trailing `assets[]`
+ *   entries, then trailing `result.checks[]` entries) and marked with
+ *   `truncated: true` plus a `dropped_fields` list, so the receiver never
+ *   silently loses the payout signal to a rejected body.
  *
  * ## Payload schema
  * ```json
@@ -166,11 +171,28 @@ export interface WebhookPayload {
      * every caller that never passes a snooze state.
      */
     snooze_expired?: true;
+    /**
+     * Structured truncation marker (Issue #894). Present and `true` only when the
+     * body exceeded {@link WEBHOOK_MAX_BODY_BYTES} and entries were dropped to fit
+     * the cap. Absent on an untruncated v1 payload.
+     */
+    truncated?: boolean;
+    /**
+     * Names of the payload fields whose trailing entries were dropped, in drop
+     * order (Issue #894). Always present together with `truncated: true`.
+     */
+    dropped_fields?: string[];
 }
 export interface WebhookDeliveryResult {
     sent: boolean;
     statusCode?: number;
     error?: string;
+    /**
+     * Stable reason code for size-cap outcomes (Issue #894):
+     * `WEBHOOK_PAYLOAD_TRUNCATED` when a truncated body was delivered, or
+     * `WEBHOOK_SIZE_LIMIT_EXCEEDED` when delivery was refused.
+     */
+    reason?: string;
 }
 /**
  * Compute the HMAC-SHA256 signature for a raw payload body.
@@ -252,12 +274,71 @@ export declare const WEBHOOK_SCHEMA_VERSION: "1";
  *                existing callers that never pass it are unaffected.
  */
 export declare function buildWebhookPayload(result: ValidationResult, stellarAddress: string, repository: string, issueNumber: number | null, assets?: AssetReasonEvaluation[], snoozeExpired?: boolean): WebhookPayload;
+/**
+ * Hard upper bound on the serialized outbound webhook body, in UTF-8 bytes.
+ *
+ * Receivers reject oversized bodies and, from the sender's point of view, fail
+ * **silently** — so a payout-readiness signal a Wave dashboard gates on is lost
+ * with no error. Truncating deterministically keeps every delivery parseable
+ * and marks the loss explicitly instead.
+ *
+ * Sized like `MAX_OUTPUT_VALUE_BYTES` in `src/outputs.ts`: below a 1 MiB
+ * ingress limit, leaving headroom for HTTP headers and receiver envelopes.
+ */
+export declare const WEBHOOK_MAX_BODY_BYTES = 900000;
+/**
+ * Payload fields whose trailing entries are dropped to fit
+ * {@link WEBHOOK_MAX_BODY_BYTES}, in drop order (Issue #894).
+ *
+ * `assets` (optional, additive) is trimmed first so the core `result` signal
+ * survives as long as possible; `result.checks` is trimmed only when dropping
+ * every asset is still not enough. Trimming is prefix-preserving and
+ * deterministic: earlier entries are always kept and later ones dropped, so two
+ * runs over the same input drop the same entries.
+ */
+export declare const WEBHOOK_TRUNCATABLE_FIELDS: readonly ["assets", "result.checks"];
+/** Reason code: a truncated body was delivered (Issue #894). */
+export declare const WEBHOOK_PAYLOAD_TRUNCATED: "WEBHOOK_PAYLOAD_TRUNCATED";
+/** Reason code: the body could not be reduced below the cap and was not sent (Issue #894). */
+export declare const WEBHOOK_SIZE_LIMIT_EXCEEDED: "WEBHOOK_SIZE_LIMIT_EXCEEDED";
+/** All webhook size-cap reason codes (Issue #894). */
+export declare const WEBHOOK_SIZE_REASON_CODES: readonly ["WEBHOOK_PAYLOAD_TRUNCATED", "WEBHOOK_SIZE_LIMIT_EXCEEDED"];
+export type WebhookSizeReasonCode = (typeof WEBHOOK_SIZE_REASON_CODES)[number];
+export interface WebhookSizeGuardResult {
+    /** The payload to send. Equal to the input when nothing was dropped. */
+    payload: WebhookPayload;
+    /** `false` when even an empty `assets`/`result.checks` body exceeds the cap — do not send. */
+    fits: boolean;
+    /** `true` when entries were dropped to fit the cap. */
+    truncated: boolean;
+    /** Fields whose trailing entries were dropped, in drop order. */
+    droppedFields: string[];
+    /** UTF-8 byte length of the original serialized payload. */
+    originalBytes: number;
+    /** UTF-8 byte length of the serialized payload that will be sent. */
+    finalBytes: number;
+}
+/**
+ * Enforce {@link WEBHOOK_MAX_BODY_BYTES} on a payload before it is serialized
+ * and sent (Issue #894).
+ *
+ * Deterministic: for a given payload the same entries are kept on every runner.
+ * Multibyte-safe: sizing uses the same UTF-8 byte accounting as
+ * `truncateJsonArray` in `src/outputs.ts`, and whole entries are dropped (never
+ * raw bytes), so a CJK label or emoji is never split mid-character.
+ *
+ * When the payload already fits, it is returned unchanged — the frozen v1 shape
+ * is byte-for-byte identical and no `truncated` marker is added.
+ *
+ * @param maxBytes Byte budget; defaults to {@link WEBHOOK_MAX_BODY_BYTES}.
+ */
+export declare function enforceWebhookPayloadSize(payload: WebhookPayload, maxBytes?: number): WebhookSizeGuardResult;
 /** Mirrors `schemas/webhook-payload.schema.json`; kept in sync by webhook-contract tests. */
 export declare const WEBHOOK_PAYLOAD_REQUIRED_FIELDS: readonly ["schema_version", "event", "timestamp", "repository", "issue_number", "stellar_address", "result"];
 export declare const WEBHOOK_RESULT_REQUIRED_FIELDS: readonly ["valid", "account_funded", "trustline_exists", "xlm_balance", "checks"];
 export declare const WEBHOOK_CHECK_REQUIRED_FIELDS: readonly ["label", "passed"];
-/** Optional additive top-level fields (Issue #676, Issue #799). */
-export declare const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS: readonly ["assets", "snooze_expired"];
+/** Optional additive top-level fields (Issues #676, #799, #894). */
+export declare const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS: readonly ["assets", "snooze_expired", "truncated", "dropped_fields"];
 export declare const WEBHOOK_ASSET_REQUIRED_FIELDS: readonly ["asset_code", "asset_issuer", "primary", "trustline_exists", "clawback_enabled", "reason_code"];
 export declare const WEBHOOK_ASSET_REASON_CODES: readonly ["SUCCESS", "TRUSTLINE_MISSING", "CLAWBACK_BLOCKED"];
 export declare const WEBHOOK_REPOSITORY_PATTERN = "^[^/]+/[^/]+$";

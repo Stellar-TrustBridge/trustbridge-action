@@ -199,3 +199,7 @@ The full copy-paste workflow lives at [`docs/examples/cron-revalidation.yml`](ex
 | Comments not updated | `sticky_comment: false` in target workflow | Set `sticky_comment: true` in the per-issue revalidation workflow |
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+## Clock-skew tolerance (#871)
+
+Freshness checks tolerate a ledger close timestamp up to 30 seconds in the future, which covers normal runner/NTP skew. A future timestamp beyond that tolerance is reported as `status: unknown` and remains fail-open; it is never treated as proof that Horizon is fresh. Library callers can override this with `clockSkewToleranceSeconds`. Keep runner clocks synchronized and investigate repeated `freshness_clock_skew_unknown` metrics.

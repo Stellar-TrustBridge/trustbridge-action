@@ -313,6 +313,8 @@ export interface FetchAccountOptions {
   fallbackUrls?: string[];
   useCache?: boolean;
   cacheTtlMs?: number;
+  /** Short TTL for Horizon 404/not-found markers; zero disables negative caching. */
+  negativeCacheTtlMs?: number;
   cache?: SimpleCache;
   fetchFn?: FetchLike;
   /**
@@ -362,6 +364,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
+export const DEFAULT_NEGATIVE_CACHE_TTL_MS = 15_000;
 export const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
 export const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120_000;
 
@@ -989,6 +992,7 @@ export async function fetchAccount(
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  const negativeCacheTtlMs = options.negativeCacheTtlMs ?? DEFAULT_NEGATIVE_CACHE_TTL_MS;
   const retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
   const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
   const cache = options.cache ?? defaultCache;
@@ -1035,6 +1039,11 @@ export async function fetchAccount(
       cacheEntryCountBefore: cacheStatsBefore.entries.length,
     }));
 
+    const negative = negativeCacheTtlMs > 0 ? cache.getNegative(cacheKey) : null;
+    if (negative) {
+      recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+      throw new HorizonError(negative.message, 404, false);
+    }
     const cached = cache.get<HorizonAccount>(cacheKey);
     if (cached) {
       logger.debug('Horizon cache hit', safeHorizonContext({
@@ -1112,6 +1121,9 @@ export async function fetchAccount(
     if (error instanceof HorizonError) {
       primaryError = error;
       if (error.statusCode === 404) {
+        if (cachingEnabled && negativeCacheTtlMs > 0) {
+          cache.setNegative(cacheKey, error.message, negativeCacheTtlMs);
+        }
         throw error;
       }
     } else {

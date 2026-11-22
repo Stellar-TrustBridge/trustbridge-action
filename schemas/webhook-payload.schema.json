@@ -147,6 +147,18 @@
       "type": "boolean",
       "enum": [true],
       "description": "Optional, additive (Issue #799). Present and true only when this validation_complete event is the first one after an active snooze window lapsed. Omitted (never false) for every other event. Receivers on schema_version '1' that ignore unknown fields are unaffected."
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Optional, additive (Issue #894). Present and true only when the outbound body exceeded the action's hard size cap (WEBHOOK_MAX_BODY_BYTES, 900000 UTF-8 bytes) and trailing entries were dropped to fit it. Absent on an untruncated v1 payload. Receivers should treat a truncated payload as a partial signal and re-read the full run via the comment/outputs, not as a malformed body."
+    },
+    "dropped_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["assets", "result.checks"]
+      },
+      "description": "Optional, additive (Issue #894). Names of the payload fields whose trailing entries were dropped, in drop order, so receivers know what a truncated payload is missing. Always present together with truncated: true. 'assets' is trimmed first; 'result.checks' is trimmed only when dropping every asset is still not enough."
     }
   },
   "examples": [

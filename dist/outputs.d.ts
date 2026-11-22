@@ -106,6 +106,44 @@ export declare function buildConflictReport(fieldSources: Record<string, Conflic
  * unconditionally append the result.
  */
 export declare function formatConflictReportMarkdown(report: ConflictReport | null | undefined): string;
+/**
+ * Budget for a single JSON output value, in UTF-8 bytes. Set below GitHub
+ * Actions' documented 1MB per-output limit to leave headroom for the output
+ * name, the `GITHUB_OUTPUT` file's own delimiter syntax, and any other
+ * output written in the same step.
+ */
+export declare const MAX_OUTPUT_VALUE_BYTES = 900000;
+/** Result of truncating an array-shaped JSON output to fit a byte budget. */
+export interface TruncatedJsonResult {
+    /** The (possibly truncated) JSON string, always within `maxBytes`. */
+    json: string;
+    /** True when one or more entries were dropped to fit the budget. */
+    truncated: boolean;
+    /** Number of entries included in `json`. */
+    includedCount: number;
+    /** Number of entries in the original input. */
+    totalCount: number;
+}
+/**
+ * Serialize `items` to JSON via `toJson`, truncating deterministically from
+ * the end until the result fits within `maxBytes`.
+ *
+ * Deterministic and order-preserving: for a given `items` array, the
+ * included prefix is always the same — earlier entries are kept, later ones
+ * are dropped — so two runs over the same (even differently-ordered-by-
+ * network-timing) input never disagree about which entries survive, as
+ * long as the caller passes `items` in a stable order.
+ *
+ * Correct on multibyte input: size is measured with `Buffer.byteLength`
+ * (UTF-8 bytes), not `String.length` (UTF-16 code units), so an array of
+ * entries containing emoji, CJK text, or other multibyte characters is
+ * capped by actual output size, not character count.
+ *
+ * @param items    Entries to serialize, in the order they should be kept.
+ * @param toJson   Serializes a prefix of `items` (e.g. `(xs) => JSON.stringify(xs)`).
+ * @param maxBytes Byte budget; defaults to {@link MAX_OUTPUT_VALUE_BYTES}.
+ */
+export declare function truncateJsonArray<T>(items: readonly T[], toJson: (subset: T[]) => string, maxBytes?: number): TruncatedJsonResult;
 export interface ActionOutputs {
     trustline_exists: string;
     xlm_balance: string;
@@ -179,6 +217,15 @@ export interface ActionOutputs {
     batch_summary_json: string;
     batch_passed_count: string;
     batch_failed_count: string;
+    /**
+     * Issue #854 — `"true"` when any JSON/array output this run produced
+     * (currently `assets_trustline_status`; batch mode also sets this via
+     * `batch_summary_json`'s own truncation in `src/index.ts`) was truncated
+     * to stay within `MAX_OUTPUT_VALUE_BYTES`. `"false"` otherwise. Always
+     * set — never empty — so a consumer can gate on it unconditionally:
+     * `if: steps.trustbridge.outputs.outputs_truncated == 'true'`.
+     */
+    outputs_truncated: string;
 }
 export declare function toActionOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): ActionOutputs;
 export declare function setValidationOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): void;
@@ -229,15 +276,23 @@ export type MatrixReadyMap = Record<string, boolean>;
  * @param results Array of validation results with assignee metadata
  * @returns JSON string maps for assignee_results_json and matrix_ready_map
  */
+/** Return shape of {@link buildMatrixOutputs}, including the Issue #854 truncation report. */
+export interface MatrixOutputsResult {
+    assigneeResultsJson: string;
+    matrixReadyMap: string;
+    /** True when one or more assignees were dropped to stay within {@link MAX_OUTPUT_VALUE_BYTES}. */
+    truncated: boolean;
+    /** Number of assignees included in the (possibly truncated) outputs. */
+    includedCount: number;
+    /** Number of assignees in the input, before any truncation. */
+    totalCount: number;
+}
 export declare function buildMatrixOutputs(results: Array<{
     assigneeLogin: string;
     stellarAddress: string;
     validationResult: ValidationResult;
     validatedAt?: string;
-}>): {
-    assigneeResultsJson: string;
-    matrixReadyMap: string;
-};
+}>): MatrixOutputsResult;
 /**
  * Sanitize a GitHub username for use as a matrix dimension or output key.
  * Replaces characters that could cause issues in GitHub Actions expressions

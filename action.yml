@@ -968,6 +968,15 @@ outputs:
     description: >-
       Human-readable count of additional assets with trustlines, formatted as
       "N of M additional trustlines present".
+  outputs_truncated:
+    description: >-
+      "true" when a JSON/array output this run produced (assets_trustline_status
+      in single-address mode, or batch_summary_json's failures array in batch
+      mode) was truncated to stay under GitHub Actions' per-output size limit;
+      "false" otherwise. Always set. Gate with
+      `if: steps.trustbridge.outputs.outputs_truncated == 'true'` before trusting
+      a JSON output's array length as the full result set — see
+      docs/USAGE.md#output-size-limits.
 
   # ── Batch mode outputs (stellar_addresses / assignee_address_map) ───────
   #

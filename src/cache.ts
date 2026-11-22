@@ -37,6 +37,12 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
+export interface NegativeCacheEntry {
+  statusCode: 404;
+  message: string;
+  cachedAt: number;
+}
+
 export interface CacheBackendOptions {
   /**
    * Enable GitHub Actions cache backend persistence (true) or in-memory only (false).
@@ -244,6 +250,7 @@ export class GitHubActionsCacheBackend implements PersistentCacheBackend {
 
 export class SimpleCache {
   private store = new Map<string, CacheEntry<unknown>>();
+  private negativeStore = new Map<string, CacheEntry<NegativeCacheEntry>>();
   private backend?: PersistentCacheBackend;
   private useBackend: boolean = false;
 
@@ -353,6 +360,31 @@ export class SimpleCache {
     return null;
   }
 
+
+  /** Return a short-lived account-not-found marker, never a positive payload. */
+  getNegative(key: string): NegativeCacheEntry | null {
+    const entry = this.negativeStore.get(key);
+    if (!entry) return null;
+    if (Date.now() >= entry.expiresAt) {
+      this.negativeStore.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  /** Store only a redacted 404 marker; no address or response body is persisted. */
+  setNegative(key: string, message: string, ttlMs: number): void {
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
+    this.negativeStore.set(key, {
+      data: { statusCode: 404, message, cachedAt: Date.now() },
+      expiresAt: Date.now() + ttlMs,
+    });
+  }
+
+  deleteNegative(key: string): boolean {
+    return this.negativeStore.delete(key);
+  }
+
   /**
    * Store a value in the cache with an expiration time.
    *
@@ -420,6 +452,7 @@ export class SimpleCache {
    */
   async clear(): Promise<void> {
     this.store.clear();
+    this.negativeStore.clear();
     if (this.backend?.dispose) {
       await this.backend.dispose();
     }

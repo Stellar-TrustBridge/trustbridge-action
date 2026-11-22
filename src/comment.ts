@@ -25,6 +25,7 @@ import {
   escapeMarkdownInline,
   extractChecklistState,
   inlineCode,
+  markdownLinesOutsideCode,
   type AssetTrustlineRow,
 } from './markdown';
 import { buildTemplateContext, loadCommentTemplate } from './template';
@@ -1048,18 +1049,34 @@ export function resolveIssueOrPullRequestNumber(
 }
 
 /**
+ * Lines that identify a TrustBridge comment (Issue #900). Each must be a
+ * whole line on its own, exactly as TrustBridge writes it. See
+ * docs/COMMENT_GUIDE.md#marker-format-stability.
+ */
+export const TRUSTBRIDGE_IDENTITY_LINES: readonly string[] = Object.freeze([
+  STICKY_COMMENT_MARKER,
+  STICKY_COMMENT_MARKER_LEGACY,
+  TRUSTBRIDGE_FOOTER,
+]);
+
+/**
  * Returns true when a comment body matches any of the TrustBridge
  * identifiers: the current versioned sticky marker, the legacy marker
  * (pre-schema-version), or the TrustBridge footer. Matching on any of
  * these provides defense-in-depth across upgrades and accidental
  * marker drift.
+ *
+ * Issue #900: an identifier only counts when it is a whole line outside
+ * code blocks and blockquotes. A plain substring match let another bot's
+ * comment that quotes a TrustBridge marker, or embeds it in a longer HTML
+ * comment such as `<!-- other-bot: <!-- trustbridge-action:sticky-comment --> -->`,
+ * be picked as the sticky comment and overwritten. Other bots' own HTML
+ * comment markers never match.
  */
 export function isTrustBridgeComment(body: string | undefined | null): boolean {
   if (!body) return false;
-  return (
-    body.includes(STICKY_COMMENT_MARKER) ||
-    body.includes(STICKY_COMMENT_MARKER_LEGACY) ||
-    body.includes(TRUSTBRIDGE_FOOTER)
+  return markdownLinesOutsideCode(body).some((line) =>
+    TRUSTBRIDGE_IDENTITY_LINES.includes(line),
   );
 }
 
@@ -1111,6 +1128,8 @@ interface IssueCommentGraphqlNode {
   id: string;
   databaseId?: number;
   body: string;
+  author?: { login?: string | null; __typename?: string } | null;
+  viewerCanUpdate?: boolean;
 }
 
 interface IssueCommentsGraphqlPage {
@@ -1133,7 +1152,10 @@ interface IssueCommentsGraphqlPage {
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
- * for upsert.
+ * for upsert. When GitHub supplies author/updateability metadata, a matching
+ * marker is selected only when the authenticated viewer may update it and it
+ * is not visibly owned by a human user. Older responses without those fields
+ * retain the marker-only compatibility behavior.
  */
 export async function findStickyComment(
   octokit: Octokit,
@@ -1156,6 +1178,8 @@ export async function findStickyComment(
                   id
                   databaseId
                   body
+                  author { login __typename }
+                  viewerCanUpdate
                 }
                 pageInfo {
                   hasNextPage
@@ -1189,7 +1213,14 @@ export async function findStickyComment(
         graphqlHandled = true;
 
         for (const comment of comments.nodes) {
-          if (isTrustBridgeComment(comment.body)) {
+          const author = comment.author;
+          const authoredByHuman = author?.__typename === 'User' &&
+            Boolean(author.login && !/\[bot\]$/i.test(author.login));
+          if (
+            isTrustBridgeComment(comment.body) &&
+            comment.viewerCanUpdate !== false &&
+            !authoredByHuman
+          ) {
             // databaseId is the numeric REST issue comment id
             lastMatchId = comment.databaseId;
           }
@@ -1226,9 +1257,12 @@ export async function findStickyComment(
       issue_number: issueNumber,
       per_page: 100,
     });
-    const matches = comments.filter((comment) =>
-      isTrustBridgeComment(comment.body),
-    );
+    const matches = comments.filter((comment) => {
+      const author = (comment as { user?: { login?: string; type?: string } }).user;
+      const authoredByHuman = author?.type === 'User' &&
+        Boolean(author.login && !/\[bot\]$/i.test(author.login));
+      return isTrustBridgeComment(comment.body) && !authoredByHuman;
+    });
     return matches.length > 0 ? matches[matches.length - 1]!.id : undefined;
   }
 

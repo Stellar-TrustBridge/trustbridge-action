@@ -400,3 +400,154 @@ export function getAssetClawbackStatus(
 ): AssetClawbackStatus {
   return { clawbackEnabled: balance?.is_clawback_enabled === true };
 }
+
+// ---------------------------------------------------------------------------
+// Issue #898 — issuer authorization flag precedence decision table.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reason codes the authorization/clawback layer can produce. Every value is
+ * part of the public catalog in `schemas/reason-codes.json`.
+ */
+export type IssuerAuthFlagReasonCode =
+  | 'SUCCESS'
+  | 'TRUSTLINE_MISSING'
+  | 'TRUSTLINE_UNAUTHORIZED'
+  | 'CLAWBACK_BLOCKED';
+
+/**
+ * Non-blocking signals surfaced alongside the verdict. They never change the
+ * reason code on their own; they explain why the comment carries a warning.
+ */
+export type IssuerAuthFlagNote =
+  | 'unauthorized_warn'
+  | 'clawback_warn'
+  | 'auth_required'
+  | 'auth_revocable'
+  | 'auth_immutable';
+
+/** Policy for `unauthorized_trustline_policy` (mirrors `src/inputs.ts`). */
+export type IssuerAuthUnauthorizedPolicy = 'fail' | 'warn' | 'ignore';
+
+/** Flag state observed for one asset on one account. */
+export interface IssuerAuthFlagState {
+  /** A matching trustline is present in the account's `balances`. */
+  trustlineExists: boolean;
+  /**
+   * Horizon `is_authorized`. `undefined` (older Horizon, or no trustline)
+   * is treated as authorized, matching `isTrustlineAuthorized`.
+   */
+  trustlineAuthorized?: boolean;
+  /** Trustline-level `is_clawback_enabled`. */
+  clawbackEnabled?: boolean;
+  /** Issuer `auth_required` flag (informational). */
+  authRequired?: boolean;
+  /** Issuer `auth_revocable` flag (informational). */
+  authRevocable?: boolean;
+  /** Issuer `auth_immutable` flag (informational). */
+  authImmutable?: boolean;
+  /** `unauthorized_trustline_policy` input. Default: `warn`. */
+  unauthorizedTrustlinePolicy?: IssuerAuthUnauthorizedPolicy;
+  /** `clawback_strict_mode` input. Default: `false`. */
+  clawbackStrictMode?: boolean;
+}
+
+/** Result of applying the decision table to an {@link IssuerAuthFlagState}. */
+export interface IssuerAuthFlagVerdict {
+  reasonCode: IssuerAuthFlagReasonCode;
+  /** `unauthorized_trustline_policy: fail` blocked an unauthorized trustline. */
+  authorizationBlocks: boolean;
+  /** `clawback_strict_mode: true` blocked a clawback-enabled trustline. */
+  clawbackBlocks: boolean;
+  /** Informational notes, in stable order. */
+  notes: IssuerAuthFlagNote[];
+}
+
+/**
+ * Ordered precedence of the blocking rules. The first rule that matches
+ * decides the reason code; later rules are not consulted.
+ *
+ * 1. `TRUSTLINE_MISSING` — no trustline, so no trustline flag can apply.
+ * 2. `TRUSTLINE_UNAUTHORIZED` — `is_authorized: false` under policy `fail`.
+ *    The actionable fix is issuer approval (SetTrustLineFlags), so it
+ *    outranks clawback even when both flags are set.
+ * 3. `CLAWBACK_BLOCKED` — `is_clawback_enabled: true` under strict mode.
+ * 4. `SUCCESS`.
+ *
+ * `auth_required`, `auth_revocable` and `auth_immutable` are issuer
+ * capabilities. They never change the reason code; only the trustline's
+ * present `is_authorized` / `is_clawback_enabled` state does.
+ */
+export const ISSUER_AUTH_FLAG_PRECEDENCE: readonly IssuerAuthFlagReasonCode[] = Object.freeze([
+  'TRUSTLINE_MISSING',
+  'TRUSTLINE_UNAUTHORIZED',
+  'CLAWBACK_BLOCKED',
+  'SUCCESS',
+]);
+
+/**
+ * Apply the issuer authorization flag decision table.
+ *
+ * Inputs are compared with `=== true` / `=== false`, so a malformed or
+ * missing Horizon field falls back to the permissive default (authorized,
+ * clawback disabled, flag unset) instead of throwing. An unknown policy
+ * string is treated as the default `warn`.
+ */
+export function resolveIssuerAuthFlagVerdict(state: IssuerAuthFlagState): IssuerAuthFlagVerdict {
+  const trustlineExists = state.trustlineExists === true;
+  const unauthorized = trustlineExists && state.trustlineAuthorized === false;
+  const clawbackEnabled = trustlineExists && state.clawbackEnabled === true;
+  const policy: IssuerAuthUnauthorizedPolicy =
+    state.unauthorizedTrustlinePolicy === 'fail' || state.unauthorizedTrustlinePolicy === 'ignore'
+      ? state.unauthorizedTrustlinePolicy
+      : 'warn';
+  const strict = state.clawbackStrictMode === true;
+
+  const authorizationBlocks = unauthorized && policy === 'fail';
+  const clawbackBlocks = clawbackEnabled && strict;
+
+  const notes: IssuerAuthFlagNote[] = [];
+  if (unauthorized && policy === 'warn') notes.push('unauthorized_warn');
+  if (clawbackEnabled && !strict) notes.push('clawback_warn');
+  if (state.authRequired === true) notes.push('auth_required');
+  if (state.authRevocable === true) notes.push('auth_revocable');
+  if (state.authImmutable === true) notes.push('auth_immutable');
+
+  let reasonCode: IssuerAuthFlagReasonCode;
+  if (!trustlineExists) reasonCode = 'TRUSTLINE_MISSING';
+  else if (authorizationBlocks) reasonCode = 'TRUSTLINE_UNAUTHORIZED';
+  else if (clawbackBlocks) reasonCode = 'CLAWBACK_BLOCKED';
+  else reasonCode = 'SUCCESS';
+
+  return { reasonCode, authorizationBlocks, clawbackBlocks, notes };
+}
+
+/** One row of the published decision table (see `docs/USAGE.md`). */
+export interface IssuerAuthFlagDecisionRow {
+  id: string;
+  state: IssuerAuthFlagState;
+  reasonCode: IssuerAuthFlagReasonCode;
+}
+
+/**
+ * The published decision table. `docs/USAGE.md` renders the same rows and
+ * `__tests__/issuer-auth-flag-precedence.test.ts` asserts that each row
+ * matches {@link resolveIssuerAuthFlagVerdict} and the full `runAccountChecks`
+ * pipeline.
+ */
+export const ISSUER_AUTH_FLAG_DECISION_TABLE: readonly IssuerAuthFlagDecisionRow[] = Object.freeze([
+  { id: 'no-trustline', state: { trustlineExists: false, authRequired: true, authRevocable: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: true }, reasonCode: 'TRUSTLINE_MISSING' },
+  { id: 'authorized-plain', state: { trustlineExists: true, trustlineAuthorized: true }, reasonCode: 'SUCCESS' },
+  { id: 'authorized-all-issuer-flags', state: { trustlineExists: true, trustlineAuthorized: true, authRequired: true, authRevocable: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'SUCCESS' },
+  { id: 'unauthorized-warn', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'warn' }, reasonCode: 'SUCCESS' },
+  { id: 'unauthorized-ignore', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'ignore' }, reasonCode: 'SUCCESS' },
+  { id: 'unauthorized-fail', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+  { id: 'unauthorized-fail-revocable', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, authRevocable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+  { id: 'unauthorized-fail-immutable', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+  { id: 'clawback-warn', state: { trustlineExists: true, trustlineAuthorized: true, clawbackEnabled: true, authRevocable: true, clawbackStrictMode: false }, reasonCode: 'SUCCESS' },
+  { id: 'clawback-strict', state: { trustlineExists: true, trustlineAuthorized: true, clawbackEnabled: true, authRevocable: true, clawbackStrictMode: true }, reasonCode: 'CLAWBACK_BLOCKED' },
+  { id: 'unauthorized-fail-clawback-strict', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: true }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+  { id: 'unauthorized-warn-clawback-strict', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, unauthorizedTrustlinePolicy: 'warn', clawbackStrictMode: true }, reasonCode: 'CLAWBACK_BLOCKED' },
+  { id: 'unauthorized-fail-clawback-warn', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: false }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+  { id: 'legacy-horizon-no-flags', state: { trustlineExists: true }, reasonCode: 'SUCCESS' },
+] as IssuerAuthFlagDecisionRow[]);

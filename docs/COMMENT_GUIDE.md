@@ -138,7 +138,9 @@ On a blocked run the first bullet becomes `Blocked by: <failed check labels>` an
 
 The fallback is the same contract the `reason_code` action output uses, so the comment and the output never disagree. `Reason code` is rendered inside a code span, so snake_case values stay literal and copy-pasteable; only backticks are neutralized.
 
-All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`.
+Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code.
+
+All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`. An unrecognized `locale` input (unsupported code, stray whitespace, wrong case, etc.) falls back to the complete English pack rather than throwing or rendering a partial comment — see `getStrings()` in [`src/i18n.ts`](../src/i18n.ts) and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
 
 ---
 
@@ -264,6 +266,13 @@ Rendering rules:
 - Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
 - Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
 - A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+- **Long tables are truncated** (Issue #860): only the first `MAX_ASSET_TABLE_ROWS` (50) rows render. The Trustline status column stays intact for every visible row — truncation only hides rows, never columns. A plain sentence *after* the table (not an extra table row — GitHub Markdown tables have no colspan) summarizes what was cut, e.g.:
+
+  ```markdown
+  _…and **187** more assets not shown (showing 50 of 237). See the `assets_trustline_status` / `trustlines_summary` action outputs for the full list._
+  ```
+
+  Because the summary is ordinary paragraph text after the table rather than a malformed row, it reads correctly for screen readers and does not depend on sighted users noticing a visual cutoff. Use the `assets_trustline_status` / `trustlines_summary` action outputs for the complete, untruncated per-asset list.
 
 Implementation: `buildAssetTrustlineTable` in `src/markdown.ts`, wired into `formatCommentBody` via the `CommentConfig.assets` field (`src/comment.ts`), populated from the `assets_json` multi-asset check in `src/index.ts`.
 
@@ -294,3 +303,60 @@ This never fails the step:
 | Duplicate cannot be deleted (missing `issues: write`) | Original is updated; warning names the missing permission |
 
 `comment_mode: new` and `comment_mode: reply` are unchanged — they intentionally post a new comment on every run.
+
+## Sticky comment selection policy (Issues #867 and #790)
+
+The default `comment_mode: sticky` edits a comment in place only when the
+comment is identified by a TrustBridge marker (current schema marker, legacy
+marker, or TrustBridge footer) and GitHub says the authenticated token may
+update it. When GitHub returns author metadata, a marked comment authored by a
+human is not selected. A missing marker is never inferred from similar prose,
+and a lookup, permission, or update failure has stable behavior: warn and post
+a new comment rather than editing an unrelated comment. `comment_mode: new`
+always creates a new top-level comment; `comment_mode: reply` always creates a
+new chronological reply/reference.
+
+Maintainers should grant the token the permission needed to update issue/PR
+comments (`issues: write`, plus the appropriate PR/discussion permission for
+those targets). A read-only token may find a marker but cannot safely update
+it; the action keeps the existing comment and creates a new result when posting
+is otherwise enabled. `force_comment` bypasses snooze suppression only; it
+does not bypass marker, authorship, or GitHub permission checks.
+
+## Marker format stability
+
+Wave issues often carry comments from several bots, such as the Drips Wave
+application bot, coverage reporters and other automation. Many of them use
+hidden HTML comments as their own markers. TrustBridge decides that a comment
+is its own with `isTrustBridgeComment()` in `src/comment.ts`. The comment must
+contain one of these identity lines (`TRUSTBRIDGE_IDENTITY_LINES`):
+
+| Identity line | Status |
+|---|---|
+| `<!-- trustbridge-action:sticky-comment:schema-v<N> -->` (`<N>` = the current `COMMENT_SCHEMA_VERSION`) | Current. Written as the first line of every comment. |
+| `<!-- trustbridge-action:sticky-comment -->` | Legacy. Matched so comments from older releases can still be updated. Never written. |
+| `_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_` | Footer. Matched as a fallback if a marker was lost. |
+
+Matching rules (Issue #900):
+
+- The identity line must be a **whole line on its own**. Surrounding spaces and
+  `\r\n` line endings are allowed. A marker inside a sentence, inside inline
+  code, or nested in another bot's HTML comment (for example
+  `<!-- other-bot:quote <!-- trustbridge-action:sticky-comment --> -->`) does
+  not count.
+- Lines in fenced code blocks (```` ``` ```` or `~~~`), indented code blocks
+  and blockquotes (`>`) are ignored (`markdownLinesOutsideCode()` in
+  `src/markdown.ts`). A bot that quotes an earlier TrustBridge comment is not
+  taken for TrustBridge.
+- Only the exact strings above match. Similar prefixes such as
+  `<!-- trustbridge-action:sticky-comment-mirror -->`, and other schema
+  versions such as `schema-v999`, are not TrustBridge comments.
+- Other bots' markers (`<!-- wave:… -->`, `<!-- codecov-comment -->`, …) never
+  match, so TrustBridge never edits another bot's comment.
+
+The marker strings are a stable contract. Changing one breaks sticky updates
+for every existing comment, so a change needs a `COMMENT_SCHEMA_VERSION` bump
+and an entry in `docs/BREAKING_CHANGES.md`, and the old string must stay in
+`TRUSTBRIDGE_IDENTITY_LINES`. `__tests__/comment-marker-collision.test.ts`
+fixes the strings and runs sticky lookup (GraphQL and the REST fallback)
+against an issue shared with several foreign bots.

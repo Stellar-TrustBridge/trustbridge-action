@@ -10,6 +10,7 @@
  */
 
 import * as core from '@actions/core';
+import * as crypto from 'crypto';
 import { validateContractAddress } from './validation';
 
 export interface MetricPoint {
@@ -27,6 +28,29 @@ export interface MetricPoint {
  * makes it into the JSON metrics artifact (see toJSON()).
  */
 export const CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+
+/**
+ * Length, in hex characters, of a hashed address label (see `hashAddressForMetrics`).
+ * Fixed and short so the resulting tag value cannot be reversed to the
+ * original address and does not itself blow up series cardinality.
+ */
+const ADDRESS_HASH_LABEL_LENGTH = 12;
+
+/**
+ * Derive a bounded, non-reversible metric label for a Stellar address
+ * (`G...`/`C...`/`M...`).
+ *
+ * Tagging a metric with a raw address turns every distinct account into its
+ * own Prometheus series (unbounded cardinality) and leaks the address itself
+ * into any scraper or JSON artifact that reads the metric — see
+ * docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy. Hashing
+ * collapses the tag to a fixed-width token that is still useful for
+ * correlating repeated runs against the *same* address without exposing or
+ * bounding on the raw value.
+ */
+export function hashAddressForMetrics(address: string): string {
+  return crypto.createHash('sha256').update(address).digest('hex').slice(0, ADDRESS_HASH_LABEL_LENGTH);
+}
 
 // ---------------------------------------------------------------------------
 // OctokitOperationResult  (Wave #37)
@@ -262,25 +286,94 @@ export interface TimingBreakdown {
   total_ms: number;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #899 — job-level outcome counters
+// ---------------------------------------------------------------------------
+
+/**
+ * Overall outcome of one Action job. Exactly one is recorded per job:
+ *   - `pass`    — validation ran and every check passed (`ready = true`)
+ *   - `fail`    — validation ran and at least one check failed, or the run
+ *                 aborted with an error before a verdict
+ *   - `skipped` — validation was intentionally not run (milestone gate)
+ */
+export const JOB_OUTCOMES = ['pass', 'fail', 'skipped'] as const;
+export type JobOutcome = (typeof JOB_OUTCOMES)[number];
+
+/**
+ * Bounded set of check kinds used as the `check` label on
+ * `check_skipped`. Check labels embed the operator-supplied asset code, so
+ * they are never used as labels directly; anything unrecognised is `other`.
+ */
+export const CHECK_KINDS = [
+  'horizon_available',
+  'account_funded',
+  'trustline',
+  'xlm_reserve',
+  'asset_balance',
+  'trustline_limit',
+  'clawback',
+  'home_domain',
+  'other',
+] as const;
+export type CheckKind = (typeof CHECK_KINDS)[number];
+
+/** In-process counter name for a job outcome, e.g. `job_outcome_pass`. */
+export function jobOutcomeCounterName(outcome: JobOutcome): string {
+  return `job_outcome_${outcome}`;
+}
+
+/** In-process counter name for a skipped check kind, e.g. `check_skipped_trustline`. */
+export function checkSkippedCounterName(kind: CheckKind): string {
+  return `check_skipped_${kind}`;
+}
+
+/**
+ * Prometheus names for the job outcome metrics, as documented in
+ * docs/ARCHITECTURE.md#job-outcome-counters. Exporters that turn the JSON
+ * artifact into Prometheus series must use exactly these names and labels.
+ */
+export const JOB_OUTCOME_PROMETHEUS_METRICS = Object.freeze({
+  /** Counter, label `outcome` ∈ JOB_OUTCOMES. Sums to 1 per job. */
+  jobOutcome: 'trustbridge_job_outcome_total',
+  /** Counter, label `check` ∈ CHECK_KINDS. */
+  checkSkipped: 'trustbridge_check_skipped_total',
+});
+
+/** Result of `MetricsCollector.recordJobOutcome()`. */
+export interface JobOutcomeRecord {
+  outcome: JobOutcome;
+  /** Skipped-check counts keyed by kind; kinds with zero skips are omitted. */
+  skippedChecks: Partial<Record<CheckKind, number>>;
+}
+
+function isJobOutcome(value: unknown): value is JobOutcome {
+  return typeof value === 'string' && (JOB_OUTCOMES as readonly string[]).includes(value);
+}
+
+function toCheckKind(value: unknown): CheckKind {
+  return typeof value === 'string' && (CHECK_KINDS as readonly string[]).includes(value)
+    ? (value as CheckKind)
+    : 'other';
+}
+
 export class MetricsCollector {
   private metrics: MetricPoint[] = [];
   private counters: Map<string, number> = new Map();
   private timers: Map<string, number> = new Map();
+  private jobOutcome: JobOutcomeRecord | undefined;
 
   /**
-   * Record a numeric metric. If a `contractAddress` tag is present, it is
-   * validated against the Soroban C-address policy first; an invalid
-   * address throws rather than being silently recorded.
+   * Record a numeric metric. A `contractAddress` tag is rejected outright:
+   * callers must go through `recordContractMetric()`, which validates the
+   * address and replaces it with a bounded hash before it ever reaches a
+   * tag value (see docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy).
    */
   recordMetric(name: string, value: number, unit: string = '', tags?: Record<string, string>): void {
-    const contractAddress = tags?.[CONTRACT_ADDRESS_TAG_KEY];
-    if (contractAddress !== undefined) {
-      const result = validateContractAddress(contractAddress);
-      if (!result.valid) {
-        throw new Error(
-          `Invalid ${CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`,
-        );
-      }
+    if (tags && CONTRACT_ADDRESS_TAG_KEY in tags) {
+      throw new Error(
+        `recordMetric() tag "${CONTRACT_ADDRESS_TAG_KEY}" on metric "${name}" must be set via recordContractMetric(), never with a raw address.`,
+      );
     }
 
     this.metrics.push({
@@ -293,8 +386,11 @@ export class MetricsCollector {
   }
 
   /**
-   * Convenience wrapper for recording a metric tagged with a Soroban
-   * contract address, enforcing the C-address policy up front.
+   * Convenience wrapper for recording a metric correlated with a Soroban
+   * contract address. The address is validated against the C-address policy
+   * (an invalid address throws, same as before), but only its bounded hash
+   * — never the raw address — is stored as the `contractAddress` tag, so the
+   * metric cannot become an unbounded, PII-carrying label series.
    */
   recordContractMetric(
     name: string,
@@ -303,9 +399,22 @@ export class MetricsCollector {
     unit: string = '',
     extraTags?: Record<string, string>,
   ): void {
-    this.recordMetric(name, value, unit, {
-      ...extraTags,
-      [CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+    const result = validateContractAddress(contractAddress);
+    if (!result.valid) {
+      throw new Error(
+        `Invalid ${CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`,
+      );
+    }
+
+    this.metrics.push({
+      name,
+      value,
+      unit,
+      timestamp: Date.now(),
+      tags: {
+        ...extraTags,
+        [CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(contractAddress),
+      },
     });
   }
 
@@ -407,6 +516,60 @@ export class MetricsCollector {
     this.metrics = [];
     this.counters.clear();
     this.timers.clear();
+    this.jobOutcome = undefined;
+  }
+
+  /**
+   * Record the job-level outcome (Issue #899).
+   *
+   * Outcomes are mutually exclusive: the first call wins and later calls are
+   * ignored (returning the already-recorded outcome), so an error handler
+   * that runs after a verdict cannot double-count a job as both `pass` and
+   * `fail`. `skippedCheckKinds` is only counted on the winning call.
+   *
+   * @throws When `outcome` is not one of {@link JOB_OUTCOMES}.
+   */
+  recordJobOutcome(
+    outcome: JobOutcome,
+    skippedCheckKinds: readonly CheckKind[] = [],
+  ): JobOutcomeRecord {
+    if (!isJobOutcome(outcome)) {
+      throw new Error(
+        `recordJobOutcome(): outcome must be one of ${JOB_OUTCOMES.join(', ')}. Received: ${JSON.stringify(outcome)}`,
+      );
+    }
+    if (this.jobOutcome) return this.jobOutcome;
+
+    const skippedChecks: Partial<Record<CheckKind, number>> = {};
+    for (const raw of Array.isArray(skippedCheckKinds) ? skippedCheckKinds : []) {
+      const kind = toCheckKind(raw);
+      skippedChecks[kind] = (skippedChecks[kind] ?? 0) + 1;
+    }
+
+    this.incrementCounter(jobOutcomeCounterName(outcome));
+    this.recordMetric('job_outcome', 1, 'count', { outcome });
+    for (const kind of CHECK_KINDS) {
+      const count = skippedChecks[kind];
+      if (!count) continue;
+      this.incrementCounter(checkSkippedCounterName(kind), count);
+      this.recordMetric('check_skipped', count, 'count', { check: kind });
+    }
+
+    this.jobOutcome = { outcome, skippedChecks };
+    return this.jobOutcome;
+  }
+
+  /**
+   * Forget the recorded job outcome so a new job can record one. Called at
+   * the start of `run()`; counters already incremented are kept.
+   */
+  resetJobOutcome(): void {
+    this.jobOutcome = undefined;
+  }
+
+  /** The recorded job outcome, or `undefined` before `recordJobOutcome()`. */
+  getJobOutcome(): JobOutcomeRecord | undefined {
+    return this.jobOutcome;
   }
 
   /**
@@ -479,6 +642,10 @@ export class MetricsCollector {
       })),
     };
 
+    if (this.jobOutcome) {
+      safeArtifact.jobOutcome = this.jobOutcome;
+    }
+
     // Include the Horizon fetch latency histogram when provided.
     const histogramSnapshot = horizonHistogram?.toSnapshot();
     if (histogramSnapshot) {
@@ -492,6 +659,7 @@ export class MetricsCollector {
       totalErrors: this.counters.get('errors') ?? 0,
       jsonArtifact: JSON.stringify(safeArtifact, null, 2),
       horizonFetchLatencyHistogram: histogramSnapshot,
+      jobOutcome: this.jobOutcome?.outcome,
     };
   }
 }
@@ -520,6 +688,11 @@ export interface JobSummaryReport {
    * passed to `buildJobSummary()`; `undefined` otherwise.
    */
   horizonFetchLatencyHistogram?: HorizonLatencyHistogramSnapshot;
+  /**
+   * Job-level outcome recorded via `recordJobOutcome()` (Issue #899);
+   * `undefined` when none was recorded yet.
+   */
+  jobOutcome?: JobOutcome;
 }
 
 /**
@@ -551,6 +724,7 @@ export async function writeJobSummary(
         { data: 'Metric', header: true },
         { data: 'Value', header: true },
       ],
+      ...(report.jobOutcome ? [['Job outcome', report.jobOutcome]] : []),
       ['Total runs', String(report.totalRuns)],
       ['Total errors', String(report.totalErrors)],
       ['Avg latency', report.latencyMs !== null ? `${report.latencyMs.toFixed(1)} ms` : '_none recorded_'],

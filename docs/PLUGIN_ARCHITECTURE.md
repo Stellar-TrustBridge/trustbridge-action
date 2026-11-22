@@ -57,6 +57,40 @@ reserved for built-in checks.
 Table above is machine-checked by `__tests__/plugin.test.ts`: export names
 must resolve to the same plugin objects as `corePlugins`, in order.
 
+### Why registration order matters
+
+`runPlugins()` (`src/pluginRunner.ts`) does not reorder anything: it runs
+every plugin from `registry.list()` and writes one `CheckResultItem` per
+plugin into `ValidationResult.checks[]`, **in registration order**. Nothing
+downstream re-sorts that array:
+
+- `formatCommentBody` (`src/comment.ts`) renders one comment line per entry
+  of `checks[]`, top to bottom, in that order.
+- the SARIF exporter (`src/sarif.ts`, `result.checks.map(...)`) emits one
+  SARIF `result` per entry, in that order.
+
+So the order `corePlugins` is declared in is the order assignees read check
+rows in a Wave comment and the order a SARIF consumer sees results — even
+though every plugin's pass/fail outcome is computed completely
+independently of the others (there is no actual early-exit short-circuit in
+`runPlugins`; each plugin always runs). A reorder of `corePlugins` changes
+no outcome, but it reshuffles every downstream row and SARIF result, which
+Wave CI diffing and assignee tooling can mistake for a real regression. That
+is the "short-circuiting" risk this section and its tests guard against: not
+that a later check stops running, but that *where a check's row lands*
+silently depends on array order that is easy to disturb with an innocuous
+edit (e.g. inserting a new plugin in the middle of the array instead of at
+the end).
+
+**Enforcement:** `__tests__/core-plugins-freeze.test.ts` locks `corePlugins`
+against the table above, and `__tests__/core-plugins-golden-order.test.ts`
+locks it a second time against the standalone golden fixture
+`__tests__/__golden__/core-plugin-order.json`. Either test fails if a core
+plugin is added, removed, renamed, or reordered without updating both the
+table and the golden file in the same change — so a reorder is always an
+explicit, reviewed decision instead of an accidental side effect of an
+unrelated edit.
+
 ## Timeout behavior
 
 Plugins are synchronous by contract (`CheckPlugin.run` returns, it does not

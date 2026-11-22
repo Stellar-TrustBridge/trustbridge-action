@@ -18,6 +18,11 @@
  *   and never propagate to the comment-posting or validation-result paths.
  * - A configurable timeout (`webhook_timeout_ms`, default 5 000 ms) prevents
  *   a slow receiver from stalling the action.
+ * - The serialized body is capped at `WEBHOOK_MAX_BODY_BYTES` (Issue #894).
+ *   Oversized payloads are truncated deterministically (trailing `assets[]`
+ *   entries, then trailing `result.checks[]` entries) and marked with
+ *   `truncated: true` plus a `dropped_fields` list, so the receiver never
+ *   silently loses the payout signal to a rejected body.
  *
  * ## Payload schema
  * ```json
@@ -61,6 +66,7 @@ import { logger, redactStellarAddress, redactHorizonUrl, redactString } from './
 import type { ValidationResult } from './checks';
 import type { AssetReasonCode, AssetReasonEvaluation } from './assets';
 import { traceWebhookDeliver } from './tracing';
+import { truncateJsonArray } from './outputs';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -225,12 +231,29 @@ export interface WebhookPayload {
    * every caller that never passes a snooze state.
    */
   snooze_expired?: true;
+  /**
+   * Structured truncation marker (Issue #894). Present and `true` only when the
+   * body exceeded {@link WEBHOOK_MAX_BODY_BYTES} and entries were dropped to fit
+   * the cap. Absent on an untruncated v1 payload.
+   */
+  truncated?: boolean;
+  /**
+   * Names of the payload fields whose trailing entries were dropped, in drop
+   * order (Issue #894). Always present together with `truncated: true`.
+   */
+  dropped_fields?: string[];
 }
 
 export interface WebhookDeliveryResult {
   sent: boolean;
   statusCode?: number;
   error?: string;
+  /**
+   * Stable reason code for size-cap outcomes (Issue #894):
+   * `WEBHOOK_PAYLOAD_TRUNCATED` when a truncated body was delivered, or
+   * `WEBHOOK_SIZE_LIMIT_EXCEEDED` when delivery was refused.
+   */
+  reason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +445,164 @@ export function buildWebhookPayload(
 }
 
 // ---------------------------------------------------------------------------
+// Outbound body size cap (Issue #894)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard upper bound on the serialized outbound webhook body, in UTF-8 bytes.
+ *
+ * Receivers reject oversized bodies and, from the sender's point of view, fail
+ * **silently** — so a payout-readiness signal a Wave dashboard gates on is lost
+ * with no error. Truncating deterministically keeps every delivery parseable
+ * and marks the loss explicitly instead.
+ *
+ * Sized like `MAX_OUTPUT_VALUE_BYTES` in `src/outputs.ts`: below a 1 MiB
+ * ingress limit, leaving headroom for HTTP headers and receiver envelopes.
+ */
+export const WEBHOOK_MAX_BODY_BYTES = 900_000;
+
+/**
+ * Payload fields whose trailing entries are dropped to fit
+ * {@link WEBHOOK_MAX_BODY_BYTES}, in drop order (Issue #894).
+ *
+ * `assets` (optional, additive) is trimmed first so the core `result` signal
+ * survives as long as possible; `result.checks` is trimmed only when dropping
+ * every asset is still not enough. Trimming is prefix-preserving and
+ * deterministic: earlier entries are always kept and later ones dropped, so two
+ * runs over the same input drop the same entries.
+ */
+export const WEBHOOK_TRUNCATABLE_FIELDS = ['assets', 'result.checks'] as const;
+
+/** Reason code: a truncated body was delivered (Issue #894). */
+export const WEBHOOK_PAYLOAD_TRUNCATED = 'WEBHOOK_PAYLOAD_TRUNCATED' as const;
+/** Reason code: the body could not be reduced below the cap and was not sent (Issue #894). */
+export const WEBHOOK_SIZE_LIMIT_EXCEEDED = 'WEBHOOK_SIZE_LIMIT_EXCEEDED' as const;
+/** All webhook size-cap reason codes (Issue #894). */
+export const WEBHOOK_SIZE_REASON_CODES = [
+  WEBHOOK_PAYLOAD_TRUNCATED,
+  WEBHOOK_SIZE_LIMIT_EXCEEDED,
+] as const;
+export type WebhookSizeReasonCode = (typeof WEBHOOK_SIZE_REASON_CODES)[number];
+
+export interface WebhookSizeGuardResult {
+  /** The payload to send. Equal to the input when nothing was dropped. */
+  payload: WebhookPayload;
+  /** `false` when even an empty `assets`/`result.checks` body exceeds the cap — do not send. */
+  fits: boolean;
+  /** `true` when entries were dropped to fit the cap. */
+  truncated: boolean;
+  /** Fields whose trailing entries were dropped, in drop order. */
+  droppedFields: string[];
+  /** UTF-8 byte length of the original serialized payload. */
+  originalBytes: number;
+  /** UTF-8 byte length of the serialized payload that will be sent. */
+  finalBytes: number;
+}
+
+/** UTF-8 byte length — `Buffer.byteLength`, never `.length` (wrong for multibyte text). */
+function webhookByteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+/**
+ * Enforce {@link WEBHOOK_MAX_BODY_BYTES} on a payload before it is serialized
+ * and sent (Issue #894).
+ *
+ * Deterministic: for a given payload the same entries are kept on every runner.
+ * Multibyte-safe: sizing uses the same UTF-8 byte accounting as
+ * `truncateJsonArray` in `src/outputs.ts`, and whole entries are dropped (never
+ * raw bytes), so a CJK label or emoji is never split mid-character.
+ *
+ * When the payload already fits, it is returned unchanged — the frozen v1 shape
+ * is byte-for-byte identical and no `truncated` marker is added.
+ *
+ * @param maxBytes Byte budget; defaults to {@link WEBHOOK_MAX_BODY_BYTES}.
+ */
+export function enforceWebhookPayloadSize(
+  payload: WebhookPayload,
+  maxBytes: number = WEBHOOK_MAX_BODY_BYTES,
+): WebhookSizeGuardResult {
+  const serialize = (value: WebhookPayload): string => JSON.stringify(value);
+  const originalBytes = webhookByteLength(serialize(payload));
+  if (originalBytes <= maxBytes) {
+    return {
+      payload,
+      fits: true,
+      truncated: false,
+      droppedFields: [],
+      originalBytes,
+      finalBytes: originalBytes,
+    };
+  }
+
+  const assets = payload.assets ?? [];
+  const checks = payload.result.checks;
+
+  // Candidates always carry the marker fields, so the marker's own bytes are
+  // included in every size measurement.
+  const build = (
+    assetSubset: WebhookAssetEntry[],
+    checkSubset: Array<{ label: string; passed: boolean }>,
+    dropped: string[],
+  ): WebhookPayload => {
+    const out: WebhookPayload = {
+      ...payload,
+      result: { ...payload.result, checks: checkSubset },
+      truncated: true,
+      dropped_fields: dropped,
+    };
+    if (assetSubset.length > 0) out.assets = assetSubset;
+    else delete out.assets;
+    return out;
+  };
+
+  const fitted = (candidate: WebhookPayload, dropped: string[]): WebhookSizeGuardResult => ({
+    payload: candidate,
+    fits: true,
+    truncated: true,
+    droppedFields: dropped,
+    originalBytes,
+    finalBytes: webhookByteLength(serialize(candidate)),
+  });
+
+  // Stage 1 — drop trailing `assets[]` entries (optional, additive), keep every check.
+  if (assets.length > 0) {
+    const stage1 = truncateJsonArray(
+      assets,
+      (subset) => serialize(build(subset, checks, ['assets'])),
+      maxBytes,
+    );
+    if (webhookByteLength(stage1.json) <= maxBytes) {
+      return fitted(build(assets.slice(0, stage1.includedCount), checks, ['assets']), ['assets']);
+    }
+  }
+
+  // Stage 2 — drop every asset and as many trailing `result.checks[]` entries as needed.
+  // Reaching here means keeping all checks (even with zero assets) already
+  // overflowed, so any fitting candidate has at least one check dropped.
+  const baseDropped = assets.length > 0 ? ['assets'] : [];
+  const dropped = [...baseDropped, 'result.checks'];
+  const stage2 = truncateJsonArray(
+    checks,
+    (subset) => serialize(build([], subset, dropped)),
+    maxBytes,
+  );
+  if (webhookByteLength(stage2.json) <= maxBytes) {
+    return fitted(build([], checks.slice(0, stage2.includedCount), dropped), dropped);
+  }
+
+  // Irreducible: even an empty `assets`/`result.checks` body exceeds the cap.
+  return {
+    payload,
+    fits: false,
+    truncated: true,
+    droppedFields: dropped,
+    originalBytes,
+    finalBytes: webhookByteLength(serialize(build([], [], dropped))),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Schema validation (Issue #471)
 // ---------------------------------------------------------------------------
 
@@ -443,8 +624,8 @@ export const WEBHOOK_RESULT_REQUIRED_FIELDS = [
   'checks',
 ] as const;
 export const WEBHOOK_CHECK_REQUIRED_FIELDS = ['label', 'passed'] as const;
-/** Optional additive top-level fields (Issue #676, Issue #799). */
-export const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS = ['assets', 'snooze_expired'] as const;
+/** Optional additive top-level fields (Issues #676, #799, #894). */
+export const WEBHOOK_PAYLOAD_OPTIONAL_FIELDS = ['assets', 'snooze_expired', 'truncated', 'dropped_fields'] as const;
 export const WEBHOOK_ASSET_REQUIRED_FIELDS = [
   'asset_code',
   'asset_issuer',
@@ -511,6 +692,10 @@ export function validateWebhookPayload(payload: unknown): string[] {
   if ('snooze_expired' in payload && payload.snooze_expired !== true) {
     errors.push('snooze_expired: must be true when present');
   }
+  if ('truncated' in payload && typeof payload.truncated !== 'boolean') {
+    errors.push('truncated: must be a boolean');
+  }
+  if ('dropped_fields' in payload) validateDroppedFields(payload.dropped_fields, errors);
 
   const result = payload.result;
   if (!isPlainObject(result)) {
@@ -542,6 +727,23 @@ export function validateWebhookPayload(payload: unknown): string[] {
   }
 
   return errors;
+}
+
+/**
+ * Validate the `dropped_fields` marker (Issue #894). Every entry must name a
+ * known truncatable field so receivers can switch on a stable, closed set.
+ */
+function validateDroppedFields(dropped: unknown, errors: string[]): void {
+  if (!Array.isArray(dropped) || dropped.some((field) => typeof field !== 'string')) {
+    errors.push('dropped_fields: must be an array of strings');
+    return;
+  }
+  const known = WEBHOOK_TRUNCATABLE_FIELDS as readonly string[];
+  dropped.forEach((field, i) => {
+    if (!known.includes(field as string)) {
+      errors.push(`dropped_fields[${i}]: must be one of ${known.join(', ')}`);
+    }
+  });
 }
 
 function validateAssetEntries(assets: unknown, errors: string[]): void {
@@ -615,9 +817,21 @@ export async function deliverWebhook(
     };
   }
 
+  // Hard body-size cap (Issue #894): truncate deterministically before
+  // serialising so an oversized body is never sent and silently dropped.
+  const guard = enforceWebhookPayloadSize(payload);
+  if (!guard.fits) {
+    return {
+      sent: false,
+      reason: WEBHOOK_SIZE_LIMIT_EXCEEDED,
+      error: `payload exceeds the ${WEBHOOK_MAX_BODY_BYTES}-byte webhook body cap (${guard.originalBytes} bytes) and cannot be reduced below it without dropping required fields; refusing to send (${WEBHOOK_SIZE_LIMIT_EXCEEDED})`,
+    };
+  }
+  const outgoing = guard.payload;
+
   let body: string;
   try {
-    body = JSON.stringify(payload);
+    body = JSON.stringify(outgoing);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { sent: false, error: `payload serialisation failed: ${msg}` };
@@ -628,7 +842,7 @@ export async function deliverWebhook(
     'User-Agent': 'trustbridge-action/1',
     // Schema version header allows receivers to route/validate without parsing the body first.
     // Updated whenever schema_version in the payload changes (Issue #296).
-    'X-TrustBridge-Schema-Version': payload.schema_version,
+    'X-TrustBridge-Schema-Version': outgoing.schema_version,
   };
 
   if (config.oidcToken) {
@@ -654,7 +868,9 @@ export async function deliverWebhook(
       signal: controller.signal as AbortSignal,
     });
 
-    return { sent: true, statusCode: response.status };
+    return guard.truncated
+      ? { sent: true, statusCode: response.status, reason: WEBHOOK_PAYLOAD_TRUNCATED }
+      : { sent: true, statusCode: response.status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { sent: false, error: msg };
@@ -739,8 +955,9 @@ export async function sendWebhookNotification(
     const delivery = await deliverWebhook(payload, effectiveConfig);
 
     if (delivery.sent) {
+      const truncated = delivery.reason === WEBHOOK_PAYLOAD_TRUNCATED;
       core.info(
-        `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}.`,
+        `[TrustBridge] Webhook delivered to ${safeUrl} (${config.authMode === 'oidc' ? 'OIDC' : 'HMAC'}) — HTTP ${delivery.statusCode ?? 'unknown'}${truncated ? ` (${WEBHOOK_PAYLOAD_TRUNCATED}: body trimmed to the ${WEBHOOK_MAX_BODY_BYTES}-byte cap)` : ''}.`,
       );
     } else {
       core.warning(

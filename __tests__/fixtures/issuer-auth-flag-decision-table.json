@@ -1,0 +1,155 @@
+{
+  "$comment": "Issue #898: issuer authorization flag precedence decision table. Must match ISSUER_AUTH_FLAG_DECISION_TABLE in src/assets.ts and the table in docs/USAGE.md.",
+  "rows": [
+    {
+      "id": "no-trustline",
+      "state": {
+        "trustlineExists": false,
+        "authRequired": true,
+        "authRevocable": true,
+        "authImmutable": true,
+        "unauthorizedTrustlinePolicy": "fail",
+        "clawbackStrictMode": true
+      },
+      "reasonCode": "TRUSTLINE_MISSING"
+    },
+    {
+      "id": "authorized-plain",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": true
+      },
+      "reasonCode": "SUCCESS"
+    },
+    {
+      "id": "authorized-all-issuer-flags",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": true,
+        "authRequired": true,
+        "authRevocable": true,
+        "authImmutable": true,
+        "unauthorizedTrustlinePolicy": "fail"
+      },
+      "reasonCode": "SUCCESS"
+    },
+    {
+      "id": "unauthorized-warn",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "authRequired": true,
+        "unauthorizedTrustlinePolicy": "warn"
+      },
+      "reasonCode": "SUCCESS"
+    },
+    {
+      "id": "unauthorized-ignore",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "authRequired": true,
+        "unauthorizedTrustlinePolicy": "ignore"
+      },
+      "reasonCode": "SUCCESS"
+    },
+    {
+      "id": "unauthorized-fail",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "authRequired": true,
+        "unauthorizedTrustlinePolicy": "fail"
+      },
+      "reasonCode": "TRUSTLINE_UNAUTHORIZED"
+    },
+    {
+      "id": "unauthorized-fail-revocable",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "authRequired": true,
+        "authRevocable": true,
+        "unauthorizedTrustlinePolicy": "fail"
+      },
+      "reasonCode": "TRUSTLINE_UNAUTHORIZED"
+    },
+    {
+      "id": "unauthorized-fail-immutable",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "authRequired": true,
+        "authImmutable": true,
+        "unauthorizedTrustlinePolicy": "fail"
+      },
+      "reasonCode": "TRUSTLINE_UNAUTHORIZED"
+    },
+    {
+      "id": "clawback-warn",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": true,
+        "clawbackEnabled": true,
+        "authRevocable": true,
+        "clawbackStrictMode": false
+      },
+      "reasonCode": "SUCCESS"
+    },
+    {
+      "id": "clawback-strict",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": true,
+        "clawbackEnabled": true,
+        "authRevocable": true,
+        "clawbackStrictMode": true
+      },
+      "reasonCode": "CLAWBACK_BLOCKED"
+    },
+    {
+      "id": "unauthorized-fail-clawback-strict",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "clawbackEnabled": true,
+        "authRequired": true,
+        "authImmutable": true,
+        "unauthorizedTrustlinePolicy": "fail",
+        "clawbackStrictMode": true
+      },
+      "reasonCode": "TRUSTLINE_UNAUTHORIZED"
+    },
+    {
+      "id": "unauthorized-warn-clawback-strict",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "clawbackEnabled": true,
+        "authRequired": true,
+        "unauthorizedTrustlinePolicy": "warn",
+        "clawbackStrictMode": true
+      },
+      "reasonCode": "CLAWBACK_BLOCKED"
+    },
+    {
+      "id": "unauthorized-fail-clawback-warn",
+      "state": {
+        "trustlineExists": true,
+        "trustlineAuthorized": false,
+        "clawbackEnabled": true,
+        "authRequired": true,
+        "unauthorizedTrustlinePolicy": "fail",
+        "clawbackStrictMode": false
+      },
+      "reasonCode": "TRUSTLINE_UNAUTHORIZED"
+    },
+    {
+      "id": "legacy-horizon-no-flags",
+      "state": {
+        "trustlineExists": true
+      },
+      "reasonCode": "SUCCESS"
+    }
+  ]
+}

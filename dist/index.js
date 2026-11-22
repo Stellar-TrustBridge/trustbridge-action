@@ -49386,7 +49386,7 @@ function generateBadgeSnippets(result, label = 'trustbridge') {
  * on Horizon predictable and avoids triggering rate limits.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.BATCH_REASON_CODES = exports.CLAWBACK_STRICT_REASON_CODE = void 0;
+exports.MAX_BATCH_CONCURRENCY = exports.MIN_BATCH_CONCURRENCY = exports.BATCH_REASON_CODES = exports.CLAWBACK_STRICT_REASON_CODE = void 0;
 exports.parseBatchAddresses = parseBatchAddresses;
 exports.runBatchValidation = runBatchValidation;
 exports.buildBatchSummary = buildBatchSummary;
@@ -49421,11 +49421,227 @@ exports.BATCH_REASON_CODES = {
     horizonError: 'HORIZON_ERROR',
     invalidAddress: 'INVALID_ADDRESS',
     rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
+    fatalAuth: 'FATAL_AUTH',
+    fatalConfig: 'FATAL_CONFIG',
+    fatalCancellation: 'FATAL_CANCELLED',
     clawbackStrict: exports.CLAWBACK_STRICT_REASON_CODE,
+    /**
+     * Row never dispatched to Horizon because `options.signal` was aborted
+     * before this address's turn came up in the concurrency-limited queue
+     * (Issue #852). Distinct from `RATE_BUDGET_EXHAUSTED`: no budget was
+     * spent, the run was cancelled by the caller.
+     */
+    cancelled: 'CANCELLED',
 };
+/** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
+exports.MIN_BATCH_CONCURRENCY = 1;
+/** Upper bound for {@link BatchRunOptions.maxConcurrency}. */
+exports.MAX_BATCH_CONCURRENCY = 20;
+function clampConcurrency(value) {
+    if (value === undefined || !Number.isFinite(value))
+        return exports.MIN_BATCH_CONCURRENCY;
+    return Math.min(exports.MAX_BATCH_CONCURRENCY, Math.max(exports.MIN_BATCH_CONCURRENCY, Math.floor(value)));
+}
 const DEFAULT_REQUEST_DELAY_MS = 200;
 async function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+/** Synthetic row for an address never dispatched because `signal` fired first (Issue #852). */
+function cancelledBatchRow(address) {
+    return {
+        address,
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: 'unknown',
+        xlmReserveMet: false,
+        failureReason: 'Batch run cancelled before checking this address',
+        reasonCode: exports.BATCH_REASON_CODES.cancelled,
+        clawbackStrictFailure: false,
+        clawbackStrictAssets: [],
+    };
+}
+/**
+ * Validate exactly one address against Horizon and classify the outcome.
+ *
+ * Extracted from `runBatchValidation` (Issue #852) so both the default
+ * single-worker dispatch and the bounded-concurrency dispatch share the
+ * exact same per-address logic and metrics instead of duplicating it.
+ */
+async function validateOneAddress(address, config, horizonUrl, fetchOptions, extraAssets, issuerAccount) {
+    if (!(0, checks_1.isValidStellarAddress)(address)) {
+        metrics_1.globalMetrics.incrementCounter('batch_address_invalid');
+        // Issue #777: every row counts toward exactly one of passed/failed so
+        // `batch_address_passed + batch_address_failed === batch_size`.
+        metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+        return {
+            budgetExhausted: false,
+            result: {
+                address,
+                valid: false,
+                accountFunded: false,
+                trustlineExists: false,
+                xlmBalance: '0',
+                xlmReserveMet: false,
+                failureReason: `Invalid Stellar address format: "${address}"`,
+                reasonCode: exports.BATCH_REASON_CODES.invalidAddress,
+                clawbackStrictFailure: false,
+                clawbackStrictAssets: [],
+            },
+        };
+    }
+    try {
+        // Stop early when the shared rate budget is already spent: marking the
+        // row exhausted without attempting a fetch that must fail closed.
+        const tracker = fetchOptions?.rateBudgetTracker;
+        if (tracker && !tracker.hasRemainingBudget()) {
+            throw new resilience_1.RateBudgetExhaustedError('Rate budget exhausted before checking this address');
+        }
+        const account = await (0, horizon_1.fetchAccount)(horizonUrl, address, fetchOptions);
+        const result = await (0, checks_1.runAccountChecks)(account, config, issuerAccount);
+        const homeDomainStrictFailure = result.reasonCode === 'HOME_DOMAIN_MISMATCH' || result.reasonCode === 'HOME_DOMAIN_MISSING';
+        // Issue #725: a clawback-strict failure is a per-asset outcome, so the
+        // row fails whenever *any* evaluated asset trips `clawback_strict_mode` —
+        // including additional `assets_json` entries that the single-asset
+        // `ValidationResult` does not cover.
+        const clawbackStrictAssets = collectClawbackStrictAssets(account, config, extraAssets);
+        const clawbackStrictFailure = clawbackStrictAssets.length > 0;
+        const valid = result.valid && !clawbackStrictFailure;
+        let failureReason = null;
+        if (!valid) {
+            const reasons = [];
+            if (!result.trustlineExists)
+                reasons.push('trustline missing');
+            if (!result.xlmReserveMet)
+                reasons.push('XLM reserve insufficient');
+            if (clawbackStrictFailure) {
+                reasons.push(`clawback strict mode: ${clawbackStrictAssets.map((a) => a.assetCode).join(', ')}`);
+            }
+            if (homeDomainStrictFailure) {
+                reasons.push(`home domain ${result.homeDomainCheck?.outcome ?? 'missing'}`);
+            }
+            failureReason = reasons.join('; ') || 'unknown';
+        }
+        if (valid) {
+            metrics_1.globalMetrics.incrementCounter('batch_address_passed');
+        }
+        else {
+            metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+            if (!result.trustlineExists)
+                metrics_1.globalMetrics.incrementCounter('batch_fail_trustline_missing');
+            if (!result.xlmReserveMet)
+                metrics_1.globalMetrics.incrementCounter('batch_fail_reserve_insufficient');
+            if (clawbackStrictFailure) {
+                metrics_1.globalMetrics.incrementCounter('batch_fail_clawback_strict');
+                metrics_1.globalMetrics.recordMetric('batch_clawback_strict_assets', clawbackStrictAssets.length, 'count');
+            }
+        }
+        return {
+            budgetExhausted: false,
+            result: {
+                address,
+                valid,
+                accountFunded: result.accountFunded,
+                trustlineExists: result.trustlineExists,
+                xlmBalance: result.xlmBalance,
+                xlmReserveMet: result.xlmReserveMet,
+                failureReason,
+                reasonCode: deriveBatchReasonCode(valid, {
+                    clawbackStrictFailure,
+                    trustlineExists: result.trustlineExists,
+                    xlmReserveMet: result.xlmReserveMet,
+                    homeDomainReasonCode: homeDomainStrictFailure ? result.reasonCode : undefined,
+                }),
+                clawbackStrictFailure,
+                clawbackStrictAssets,
+                ...(result.homeDomainCheck ? { homeDomainOutcome: result.homeDomainCheck.outcome } : {}),
+            },
+        };
+    }
+    catch (error) {
+        let failureReason;
+        let isFunded = false;
+        const isBudgetExhausted = error instanceof resilience_1.RateBudgetExhaustedError;
+        const statusCode = error instanceof horizon_1.HorizonError ? error.statusCode : 0;
+        const isCancelled = error instanceof Error &&
+            (error.name === 'AbortError' || /cancel|abort/i.test(error.message));
+        const isFatalAuth = error instanceof horizon_1.HorizonError && (statusCode === 401 || statusCode === 403);
+        const isFatalConfig = error instanceof horizon_1.HorizonError &&
+            statusCode >= 400 &&
+            statusCode < 500 &&
+            statusCode !== 404 &&
+            !isFatalAuth;
+        if (isBudgetExhausted) {
+            failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
+            metrics_1.globalMetrics.incrementCounter('rate_budget_exhausted');
+            metrics_1.globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+        }
+        else if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
+            failureReason = 'account not funded';
+            metrics_1.globalMetrics.incrementCounter('batch_fail_account_not_funded');
+        }
+        else if (isCancelled) {
+            failureReason = `Batch cancelled: ${error instanceof Error ? error.message : 'cancelled'}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_cancelled');
+        }
+        else if (isFatalAuth) {
+            failureReason = `Fatal Horizon authentication/permission error (${statusCode}): ${error.message}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_auth');
+        }
+        else if (isFatalConfig) {
+            failureReason = `Fatal Horizon configuration error (${statusCode}): ${error.message}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_fatal_config');
+        }
+        else if (error instanceof horizon_1.HorizonError) {
+            failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
+            isFunded = false;
+        }
+        else {
+            const msg = error instanceof Error ? error.message : 'unknown error';
+            failureReason = `error: ${msg}`;
+            metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
+        }
+        metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+        let syntheticResult;
+        if (isBudgetExhausted) {
+            syntheticResult = (0, checks_1.rateBudgetExhaustedResult)(error instanceof Error ? error.message : 'unknown error', config);
+        }
+        else if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
+            syntheticResult = (0, checks_1.unfundedAccountResult)(address, config);
+        }
+        else {
+            syntheticResult = (0, checks_1.horizonFailureResult)(error instanceof Error ? error.message : 'unknown error', config);
+        }
+        return {
+            budgetExhausted: isBudgetExhausted,
+            result: {
+                address,
+                valid: false,
+                accountFunded: isFunded || syntheticResult.accountFunded,
+                trustlineExists: false,
+                xlmBalance: syntheticResult.xlmBalance,
+                xlmReserveMet: false,
+                failureReason,
+                reasonCode: isBudgetExhausted
+                    ? exports.BATCH_REASON_CODES.rateBudgetExhausted
+                    : isCancelled
+                        ? exports.BATCH_REASON_CODES.fatalCancellation
+                        : isFatalAuth
+                            ? exports.BATCH_REASON_CODES.fatalAuth
+                            : isFatalConfig
+                                ? exports.BATCH_REASON_CODES.fatalConfig
+                                : deriveBatchReasonCode(false, {
+                                    clawbackStrictFailure: false,
+                                    invalidAddress: false,
+                                    accountNotFunded: error instanceof horizon_1.HorizonError && error.statusCode === 404,
+                                    horizonError: true,
+                                }),
+                clawbackStrictFailure: false,
+                clawbackStrictAssets: [],
+            },
+        };
+    }
 }
 /**
  * Parse the `stellar_addresses` input into a deduplicated list of addresses.
@@ -49557,11 +49773,36 @@ function collectClawbackStrictAssets(account, config, extraAssets) {
 }
 async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
     const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
-    const fetchOptions = options.fetchOptions ?? {};
     const extraAssets = options.extraAssets ?? [];
+    const maxConcurrency = clampConcurrency(options.maxConcurrency);
+    const signal = options.signal;
+    // Issue #852: threading the batch-level signal into fetchOptions aborts
+    // in-flight Horizon requests too (fetchAccount already honors `signal`),
+    // unless the caller already wired its own signal through fetchOptions.
+    const fetchOptions = {
+        ...(options.fetchOptions ?? {}),
+        signal: options.fetchOptions?.signal ?? signal,
+    };
     metrics_1.globalMetrics.incrementCounter('batch_run_start');
     metrics_1.globalMetrics.recordMetric('batch_size', addresses.length, 'count');
-    const results = [];
+    metrics_1.globalMetrics.recordMetric('batch_max_concurrency', maxConcurrency, 'count');
+    const results = new Array(addresses.length).fill(undefined);
+    if (signal?.aborted || addresses.length === 0) {
+        // Nothing dispatched: either there is no work, or the caller cancelled
+        // before this run ever touched Horizon. Every row is CANCELLED, not a
+        // silent empty result, so callers can tell "cancelled" from "no input".
+        if (signal?.aborted) {
+            for (let i = 0; i < addresses.length; i++) {
+                results[i] = cancelledBatchRow(addresses[i]);
+                metrics_1.globalMetrics.incrementCounter('batch_address_cancelled');
+                metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+            }
+        }
+        metrics_1.globalMetrics.recordMetric('batch_passed', 0, 'count');
+        metrics_1.globalMetrics.recordMetric('batch_failed', results.filter(Boolean).length, 'count');
+        metrics_1.globalMetrics.incrementCounter('batch_run_complete');
+        return results;
+    }
     // Issue #708: every row shares the same configured issuer, so fetch it once
     // and evaluate the home domain against it for each address.
     const issuerAccount = !config.homeDomainCheckEnabled
@@ -49569,179 +49810,83 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
         : options.issuerAccount !== undefined
             ? options.issuerAccount
             : await (0, horizon_1.fetchHomeDomainIssuerAccount)(horizonUrl, config.assetIssuer, fetchOptions);
-    for (let i = 0; i < addresses.length; i++) {
-        const address = addresses[i];
-        // Delay between requests (skip before first)
-        if (i > 0 && requestDelayMs > 0) {
-            await sleep(requestDelayMs);
-        }
-        // Validate address format before hitting Horizon
-        if (!(0, checks_1.isValidStellarAddress)(address)) {
-            results.push({
-                address,
-                valid: false,
-                accountFunded: false,
-                trustlineExists: false,
-                xlmBalance: '0',
-                xlmReserveMet: false,
-                failureReason: `Invalid Stellar address format: "${address}"`,
-                reasonCode: exports.BATCH_REASON_CODES.invalidAddress,
-                clawbackStrictFailure: false,
-                clawbackStrictAssets: [],
-            });
-            metrics_1.globalMetrics.incrementCounter('batch_address_invalid');
-            // Issue #777: every row counts toward exactly one of passed/failed so
-            // `batch_address_passed + batch_address_failed === batch_size`.
-            metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-            continue;
-        }
-        try {
-            // Stop early when the shared rate budget is already spent: marking the
-            // row exhausted without attempting a fetch that must fail closed.
-            const tracker = fetchOptions?.rateBudgetTracker;
-            if (tracker && !tracker.hasRemainingBudget()) {
-                throw new resilience_1.RateBudgetExhaustedError('Rate budget exhausted before checking this address');
+    // Issue #852: a bounded pool of `workerCount` workers pulls addresses off
+    // a shared cursor (`nextIndex`) in input order. `workerCount` is exactly
+    // `maxConcurrency` (clamped to the number of addresses), so the default
+    // `maxConcurrency: 1` runs a single worker that processes every address
+    // strictly in order — byte-for-byte the original sequential behavior.
+    // Each worker still waits `requestDelayMs` before its own 2nd+ request, so
+    // raising `maxConcurrency` bounds *parallel* Horizon pressure without
+    // defeating per-worker pacing.
+    const workerCount = Math.min(maxConcurrency, addresses.length);
+    let nextIndex = 0;
+    let stopDispatch = false;
+    async function worker() {
+        let dispatchedBefore = false;
+        while (true) {
+            if (stopDispatch || signal?.aborted) {
+                stopDispatch = true;
+                return;
             }
-            const account = await (0, horizon_1.fetchAccount)(horizonUrl, address, fetchOptions);
-            const result = await (0, checks_1.runAccountChecks)(account, config, issuerAccount);
-            const homeDomainStrictFailure = result.reasonCode === 'HOME_DOMAIN_MISMATCH' || result.reasonCode === 'HOME_DOMAIN_MISSING';
-            // Issue #725: a clawback-strict failure is a per-asset outcome, so the
-            // row fails whenever *any* evaluated asset trips `clawback_strict_mode` —
-            // including additional `assets_json` entries that the single-asset
-            // `ValidationResult` does not cover.
-            const clawbackStrictAssets = collectClawbackStrictAssets(account, config, extraAssets);
-            const clawbackStrictFailure = clawbackStrictAssets.length > 0;
-            const valid = result.valid && !clawbackStrictFailure;
-            let failureReason = null;
-            if (!valid) {
-                const reasons = [];
-                if (!result.trustlineExists)
-                    reasons.push('trustline missing');
-                if (!result.xlmReserveMet)
-                    reasons.push('XLM reserve insufficient');
-                if (clawbackStrictFailure) {
-                    reasons.push(`clawback strict mode: ${clawbackStrictAssets.map((a) => a.assetCode).join(', ')}`);
-                }
-                if (homeDomainStrictFailure) {
-                    reasons.push(`home domain ${result.homeDomainCheck?.outcome ?? 'missing'}`);
-                }
-                failureReason = reasons.join('; ') || 'unknown';
+            const i = nextIndex;
+            if (i >= addresses.length)
+                return;
+            nextIndex = i + 1;
+            // Issue #852: every address beyond the first wave had to wait for a
+            // worker slot to free up — that wait is exactly what "the queue is
+            // saturated" means here. Deterministic: exactly
+            // `max(0, addresses.length - workerCount)` increments per run.
+            if (i >= workerCount) {
+                metrics_1.globalMetrics.incrementCounter('batch_queue_saturated');
             }
-            results.push({
-                address,
-                valid,
-                accountFunded: result.accountFunded,
-                trustlineExists: result.trustlineExists,
-                xlmBalance: result.xlmBalance,
-                xlmReserveMet: result.xlmReserveMet,
-                failureReason,
-                reasonCode: deriveBatchReasonCode(valid, {
-                    clawbackStrictFailure,
-                    trustlineExists: result.trustlineExists,
-                    xlmReserveMet: result.xlmReserveMet,
-                    homeDomainReasonCode: homeDomainStrictFailure ? result.reasonCode : undefined,
-                }),
-                clawbackStrictFailure,
-                clawbackStrictAssets,
-                ...(result.homeDomainCheck ? { homeDomainOutcome: result.homeDomainCheck.outcome } : {}),
-            });
-            if (valid) {
-                metrics_1.globalMetrics.incrementCounter('batch_address_passed');
+            if (dispatchedBefore && requestDelayMs > 0) {
+                await sleep(requestDelayMs);
             }
-            else {
-                metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-                if (!result.trustlineExists)
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_trustline_missing');
-                if (!result.xlmReserveMet)
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_reserve_insufficient');
-                if (clawbackStrictFailure) {
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_clawback_strict');
-                    metrics_1.globalMetrics.recordMetric('batch_clawback_strict_assets', clawbackStrictAssets.length, 'count');
-                }
-            }
-        }
-        catch (error) {
-            let failureReason;
-            let isFunded = false;
-            const isBudgetExhausted = error instanceof resilience_1.RateBudgetExhaustedError;
-            if (isBudgetExhausted) {
-                failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
-                metrics_1.globalMetrics.incrementCounter('rate_budget_exhausted');
-                metrics_1.globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
-            }
-            else if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-                failureReason = 'account not funded';
-                metrics_1.globalMetrics.incrementCounter('batch_fail_account_not_funded');
-            }
-            else if (error instanceof horizon_1.HorizonError) {
-                failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
-                metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
-                isFunded = false;
-            }
-            else {
-                const msg = error instanceof Error ? error.message : 'unknown error';
-                failureReason = `error: ${msg}`;
-                metrics_1.globalMetrics.incrementCounter('batch_fail_horizon_error');
-            }
-            metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-            let syntheticResult;
-            if (isBudgetExhausted) {
-                syntheticResult = (0, checks_1.rateBudgetExhaustedResult)(error instanceof Error ? error.message : 'unknown error', config);
-            }
-            else if (error instanceof horizon_1.HorizonError && error.statusCode === 404) {
-                syntheticResult = (0, checks_1.unfundedAccountResult)(address, config);
-            }
-            else {
-                syntheticResult = (0, checks_1.horizonFailureResult)(error instanceof Error ? error.message : 'unknown error', config);
-            }
-            results.push({
-                address,
-                valid: false,
-                accountFunded: isFunded || syntheticResult.accountFunded,
-                trustlineExists: false,
-                xlmBalance: syntheticResult.xlmBalance,
-                xlmReserveMet: false,
-                failureReason,
-                reasonCode: isBudgetExhausted
-                    ? exports.BATCH_REASON_CODES.rateBudgetExhausted
-                    : deriveBatchReasonCode(false, {
-                        clawbackStrictFailure: false,
-                        invalidAddress: false,
-                        accountNotFunded: error instanceof horizon_1.HorizonError && error.statusCode === 404,
-                        horizonError: true,
-                    }),
-                clawbackStrictFailure: false,
-                clawbackStrictAssets: [],
-            });
-            // Stop batch early if rate budget exhausted
-            if (isBudgetExhausted) {
-                // Mark remaining addresses as budget exhausted
-                for (let j = i + 1; j < addresses.length; j++) {
-                    const remainingAddress = addresses[j];
-                    const exhaustedResult = (0, checks_1.rateBudgetExhaustedResult)('Rate budget exhausted before checking this address', config);
-                    results.push({
-                        address: remainingAddress,
-                        valid: false,
-                        accountFunded: false,
-                        trustlineExists: false,
-                        xlmBalance: exhaustedResult.xlmBalance,
-                        xlmReserveMet: false,
-                        failureReason: 'Rate budget exhausted before checking this address',
-                        reasonCode: exports.BATCH_REASON_CODES.rateBudgetExhausted,
-                        clawbackStrictFailure: false,
-                        clawbackStrictAssets: [],
-                    });
-                    metrics_1.globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
-                    metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-                }
-                break;
+            dispatchedBefore = true;
+            const outcome = await validateOneAddress(addresses[i], config, horizonUrl, fetchOptions, extraAssets, issuerAccount);
+            results[i] = outcome.result;
+            if (outcome.budgetExhausted || signal?.aborted) {
+                stopDispatch = true;
+                return;
             }
         }
     }
-    metrics_1.globalMetrics.recordMetric('batch_passed', results.filter((r) => r.valid).length, 'count');
-    metrics_1.globalMetrics.recordMetric('batch_failed', results.filter((r) => !r.valid).length, 'count');
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    // Any address left `undefined` was never dispatched — either the rate
+    // budget was exhausted by another worker, or `signal` fired mid-run.
+    // Fill every such row (preserving input order) so the function always
+    // resolves with exactly `addresses.length` rows and nothing is orphaned.
+    for (let i = 0; i < addresses.length; i++) {
+        if (results[i] !== undefined)
+            continue;
+        if (signal?.aborted) {
+            results[i] = cancelledBatchRow(addresses[i]);
+            metrics_1.globalMetrics.incrementCounter('batch_address_cancelled');
+            metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+        }
+        else {
+            const exhaustedResult = (0, checks_1.rateBudgetExhaustedResult)('Rate budget exhausted before checking this address', config);
+            results[i] = {
+                address: addresses[i],
+                valid: false,
+                accountFunded: false,
+                trustlineExists: false,
+                xlmBalance: exhaustedResult.xlmBalance,
+                xlmReserveMet: false,
+                failureReason: 'Rate budget exhausted before checking this address',
+                reasonCode: exports.BATCH_REASON_CODES.rateBudgetExhausted,
+                clawbackStrictFailure: false,
+                clawbackStrictAssets: [],
+            };
+            metrics_1.globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+            metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+        }
+    }
+    const finalResults = results;
+    metrics_1.globalMetrics.recordMetric('batch_passed', finalResults.filter((r) => r.valid).length, 'count');
+    metrics_1.globalMetrics.recordMetric('batch_failed', finalResults.filter((r) => !r.valid).length, 'count');
     metrics_1.globalMetrics.incrementCounter('batch_run_complete');
-    return results;
+    return finalResults;
 }
 /**
  * Compute aggregate summary metrics from batch results.
@@ -49755,6 +49900,7 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
 function buildBatchSummary(results, options = {}) {
     const passed = results.filter((r) => r.valid).length;
     const failed = results.length - passed;
+    const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code) => Boolean(code && (code.startsWith('FATAL_') || code === exports.BATCH_REASON_CODES.rateBudgetExhausted)))));
     const failures = results
         .filter((r) => !r.valid)
         .map((r) => ({
@@ -49802,6 +49948,8 @@ function buildBatchSummary(results, options = {}) {
         failureTaxonomy: taxonomy,
         clawbackStrictFailures: taxonomy.clawbackStrict,
         clawbackStrictMode: options.clawbackStrictMode ?? results.some((r) => r.clawbackStrictFailure === true),
+        fatal: fatalReasonCodes.length > 0,
+        fatalReasonCodes,
     };
 }
 /**
@@ -50084,6 +50232,7 @@ exports.GitHubActionsCacheBackend = GitHubActionsCacheBackend;
 class SimpleCache {
     constructor(options = {}) {
         this.store = new Map();
+        this.negativeStore = new Map();
         this.useBackend = false;
         // Warn when an unsupported named backend is requested so operators learn
         // immediately instead of silently getting in-memory-only behaviour.
@@ -50185,6 +50334,29 @@ class SimpleCache {
         }
         return null;
     }
+    /** Return a short-lived account-not-found marker, never a positive payload. */
+    getNegative(key) {
+        const entry = this.negativeStore.get(key);
+        if (!entry)
+            return null;
+        if (Date.now() >= entry.expiresAt) {
+            this.negativeStore.delete(key);
+            return null;
+        }
+        return entry.data;
+    }
+    /** Store only a redacted 404 marker; no address or response body is persisted. */
+    setNegative(key, message, ttlMs) {
+        if (!Number.isFinite(ttlMs) || ttlMs <= 0)
+            return;
+        this.negativeStore.set(key, {
+            data: { statusCode: 404, message, cachedAt: Date.now() },
+            expiresAt: Date.now() + ttlMs,
+        });
+    }
+    deleteNegative(key) {
+        return this.negativeStore.delete(key);
+    }
     /**
      * Store a value in the cache with an expiration time.
      *
@@ -50250,6 +50422,7 @@ class SimpleCache {
      */
     async clear() {
         this.store.clear();
+        this.negativeStore.clear();
         if (this.backend?.dispose) {
             await this.backend.dispose();
         }
@@ -51079,6 +51252,10 @@ issuerAccount) {
     const assetIssuerKind = (0, assets_1.classifyAssetIssuer)(config.assetIssuer);
     const sacIssuer = (0, assets_1.isSorobanContractIssuer)(config.assetIssuer);
     const unauthorizedPolicy = config.unauthorizedTrustlinePolicy ?? "warn";
+    // Horizon only reports `is_authorized: false` for a trustline that is
+    // currently unauthorized. Keep this independent from clawback and from the
+    // issuer's immutable/revocable flags: those flags describe future state,
+    // while this policy evaluates the account's present authorization state.
     const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
     const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
     // Detect issuer flags for enhanced messaging (Issue #248)
@@ -51295,6 +51472,9 @@ issuerAccount) {
                 // missing trustline — the trustline exists on-chain. Reporting
                 // TRUSTLINE_MISSING here sent triage to the wrong remediation step
                 // ("add a trustline") when the real fix is an issuer SetTrustLineFlags.
+                // Combined auth_required/auth_immutable/clawback states still use
+                // authorization precedence: the actionable fix is issuer approval,
+                // not adding a second trustline or changing clawback policy.
                 if (authorizationBlocks)
                     return "TRUSTLINE_UNAUTHORIZED";
                 // Issue #730: a Soroban SAC issuer never appears in a Horizon account's
@@ -52667,7 +52847,10 @@ exports.MAX_STICKY_COMMENT_SEARCH_PAGES = 10;
  *
  * Matches on the current versioned marker, the legacy marker, and the
  * action footer so comments posted by older releases are still eligible
- * for upsert.
+ * for upsert. When GitHub supplies author/updateability metadata, a matching
+ * marker is selected only when the authenticated viewer may update it and it
+ * is not visibly owned by a human user. Older responses without those fields
+ * retain the marker-only compatibility behavior.
  */
 async function findStickyComment(octokit, owner, repo, issueNumber, options = {}) {
     const maxPages = options.maxPages ?? exports.MAX_STICKY_COMMENT_SEARCH_PAGES;
@@ -52683,6 +52866,8 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
                   id
                   databaseId
                   body
+                  author { login __typename }
+                  viewerCanUpdate
                 }
                 pageInfo {
                   hasNextPage
@@ -52711,7 +52896,12 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
                 }
                 graphqlHandled = true;
                 for (const comment of comments.nodes) {
-                    if (isTrustBridgeComment(comment.body)) {
+                    const author = comment.author;
+                    const authoredByHuman = author?.__typename === 'User' &&
+                        Boolean(author.login && !/\[bot\]$/i.test(author.login));
+                    if (isTrustBridgeComment(comment.body) &&
+                        comment.viewerCanUpdate !== false &&
+                        !authoredByHuman) {
                         // databaseId is the numeric REST issue comment id
                         lastMatchId = comment.databaseId;
                     }
@@ -52742,7 +52932,12 @@ async function findStickyComment(octokit, owner, repo, issueNumber, options = {}
             issue_number: issueNumber,
             per_page: 100,
         });
-        const matches = comments.filter((comment) => isTrustBridgeComment(comment.body));
+        const matches = comments.filter((comment) => {
+            const author = comment.user;
+            const authoredByHuman = author?.type === 'User' &&
+                Boolean(author.login && !/\[bot\]$/i.test(author.login));
+            return isTrustBridgeComment(comment.body) && !authoredByHuman;
+        });
         return matches.length > 0 ? matches[matches.length - 1].id : undefined;
     }
     return undefined;
@@ -54470,7 +54665,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
 exports.isCircuitOpenError = isCircuitOpenError;
 exports.checkCertificatePin = checkCertificatePin;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
@@ -54684,6 +54879,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
 const DEFAULT_CACHE_TTL_MS = 60000;
+exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 exports.DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
 function normalizeHorizonUrl(baseUrl) {
@@ -55190,6 +55386,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const negativeCacheTtlMs = options.negativeCacheTtlMs ?? exports.DEFAULT_NEGATIVE_CACHE_TTL_MS;
     const retryMaxDelayMs = options.retryMaxDelayMs ?? exports.DEFAULT_RETRY_MAX_DELAY_MS;
     const retryMaxTotalWaitMs = options.retryMaxTotalWaitMs ?? exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS;
     const cache = options.cache ?? cache_1.defaultCache;
@@ -55230,6 +55427,11 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
             cacheSizeBefore: cacheStatsBefore.size,
             cacheEntryCountBefore: cacheStatsBefore.entries.length,
         }));
+        const negative = negativeCacheTtlMs > 0 ? cache.getNegative(cacheKey) : null;
+        if (negative) {
+            recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+            throw new HorizonError(negative.message, 404, false);
+        }
         const cached = cache.get(cacheKey);
         if (cached) {
             logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
@@ -55290,6 +55492,9 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
         if (error instanceof HorizonError) {
             primaryError = error;
             if (error.statusCode === 404) {
+                if (cachingEnabled && negativeCacheTtlMs > 0) {
+                    cache.setNegative(cacheKey, error.message, negativeCacheTtlMs);
+                }
                 throw error;
             }
         }
@@ -57284,6 +57489,10 @@ async function run() {
             clawbackStrictMode: checkConfig.clawbackStrictMode,
         });
         batchSummary = batchSummaryLocal;
+        if (batchSummaryLocal.fatal) {
+            const reasons = (batchSummaryLocal.fatalReasonCodes ?? []).join(', ');
+            core.setFailed(`Batch validation encountered fatal errors (${reasons}). Per-address results remain available in batch_summary_json.`);
+        }
         const batchMarkdown = (0, batch_1.formatBatchSummaryMarkdown)(batchSummaryLocal, normalizedAsset.assetCode);
         if (postingMode === 'post') {
             try {
@@ -57413,9 +57622,20 @@ async function run() {
     // Batch outputs last so the single-address defaults above never clobber
     // the real batch summary (Issue #537).
     if (batchSummary) {
-        core.setOutput('batch_summary_json', JSON.stringify(batchSummary));
+        // Issue #854: a Wave payout-week batch of hundreds of addresses can
+        // produce a `failures` array large enough to exceed GitHub's per-output
+        // size limit. Truncate deterministically (keep the earliest failures,
+        // drop the rest) rather than let the runner silently truncate or reject
+        // the output — a matrix workflow parsing an incomplete failures list
+        // would otherwise make the wrong branch decision.
+        const { json: batchSummaryJson, truncated: batchOutputsTruncated } = (0, outputs_1.truncateJsonArray)(batchSummary.failures, (failuresSubset) => JSON.stringify({ ...batchSummary, failures: failuresSubset }));
+        core.setOutput('batch_summary_json', batchSummaryJson);
         core.setOutput('batch_passed_count', String(batchSummary.passed));
         core.setOutput('batch_failed_count', String(batchSummary.failed));
+        // Authoritative for batch mode — overwrites setValidationOutputs's
+        // single-address-derived value above, same precedence as the other
+        // batch outputs.
+        core.setOutput('outputs_truncated', String(batchOutputsTruncated));
     }
     // ---------------------------------------------------------------------------
     // Wallet labels (Issue #200)
@@ -57973,6 +58193,7 @@ function resolveReadyLabelInputs(options) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.KNOWN_HORIZON_NETWORKS = exports.STELLAR_NETWORK_PRESETS = exports.FAQ_ANCHORS = exports.DEFAULT_FAQ_BASE_URL = void 0;
 exports.getFaqAnchorForCheck = getFaqAnchorForCheck;
+exports.isSafeExternalLink = isSafeExternalLink;
 exports.buildFaqLink = buildFaqLink;
 exports.buildFaqLinkForCheck = buildFaqLinkForCheck;
 exports.inferStellarNetwork = inferStellarNetwork;
@@ -58072,28 +58293,96 @@ function getFaqAnchorForCheck(checkLabel) {
     }
     return undefined;
 }
+// ---------------------------------------------------------------------------
+// Link safety (Issue #853) — shared guard for every URL this module renders
+// as a clickable Markdown link.
+// ---------------------------------------------------------------------------
+/**
+ * Hosts rejected for any externally-rendered link regardless of scheme:
+ * private/loopback/link-local address ranges and cloud metadata endpoints.
+ * Mirrors the SSRF blocklist already enforced for live Horizon requests —
+ * a link a human clicks should not be able to target internal
+ * infrastructure any more than a request this Action makes itself.
+ */
+const BLOCKED_LINK_HOSTS = [
+    /^127\./,
+    /^10\./,
+    /^192\.168\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^169\.254\./,
+    /^0\.0\.0\.0$/,
+    /^localhost$/i,
+    /^\[?::1\]?$/,
+];
+const BLOCKED_LINK_EXACT_HOSTS = new Set(['metadata.google.internal']);
+/**
+ * Validate that `url` is safe to render as a clickable link in a GitHub
+ * comment (Issue #853): deep links into Horizon explorers, docs mirrors,
+ * dashboards, and wallet callbacks all funnel through this check before
+ * being embedded in Markdown.
+ *
+ * Rejects:
+ * - anything that does not parse as an absolute URL
+ * - any scheme other than `https:` — `javascript:`, `data:`, `vbscript:`,
+ *   plain `http:`, and bare/relative strings are all rejected outright, so
+ *   a crafted value can never execute script or escape to a local file
+ * - embedded credentials (`https://user:pass@host/...`)
+ * - private, loopback, link-local, or cloud-metadata hosts (open-redirect-
+ *   to-internal-service guard, same list as the Horizon SSRF policy)
+ *
+ * This check only validates the URL as a whole; it does not percent-encode
+ * anything. Callers that interpolate dynamic path or query segments must
+ * still build them with `URLSearchParams` (as every builder in this file
+ * does), because an unescaped `)` in a raw string would terminate a
+ * Markdown `[text](url)` link early and let the rest of the string inject
+ * arbitrary Markdown.
+ */
+function isSafeExternalLink(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        return false;
+    }
+    if (parsed.protocol !== 'https:')
+        return false;
+    if (parsed.username || parsed.password)
+        return false;
+    const host = parsed.hostname.toLowerCase();
+    if (BLOCKED_LINK_EXACT_HOSTS.has(host))
+        return false;
+    for (const pattern of BLOCKED_LINK_HOSTS) {
+        if (pattern.test(host))
+            return false;
+    }
+    // Issue #853: every caller in this codebase embeds the URL this check
+    // approves directly as raw `[text](url)` Markdown (buildFaqLink, the
+    // SEP-0010 dashboard proof link, buildAssetChecklist's `deepLink`). An
+    // unescaped `)` ends that link early and lets the remainder of the
+    // string inject arbitrary Markdown; raw whitespace, backticks, angle
+    // brackets, and quotes are rejected too since a well-formed URL never
+    // needs them unencoded — a legitimate URL that needs one of these
+    // characters should percent-encode it (`)` -> `%29`, etc).
+    if (/[()\s`<>"']/.test(url))
+        return false;
+    return true;
+}
 /**
  * Build a full FAQ deep link URL for a given anchor.
  *
  * @param anchor   A value from `FAQ_ANCHORS`.
  * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
- *                 mirror). When the value is not a valid HTTPS URL, the
- *                 default base URL is used silently so comment posting is
- *                 never blocked by an invalid override.
+ *                 mirror). When the value fails {@link isSafeExternalLink}
+ *                 (wrong scheme, credentials, private/metadata host, or
+ *                 simply not a valid URL), the default base URL is used
+ *                 silently so comment posting is never blocked by an
+ *                 invalid or malicious override.
  */
 function buildFaqLink(anchor, baseUrl) {
     let base = exports.DEFAULT_FAQ_BASE_URL;
-    if (baseUrl) {
-        try {
-            const parsed = new URL(baseUrl);
-            if (parsed.protocol === 'https:') {
-                base = baseUrl.replace(/\/$/, '');
-            }
-            // Non-HTTPS or unparseable → fall through to default
-        }
-        catch {
-            // Invalid URL → fall through to default
-        }
+    if (baseUrl && isSafeExternalLink(baseUrl)) {
+        base = baseUrl.replace(/\/$/, '');
     }
     return `${base}#${anchor}`;
 }
@@ -58220,7 +58509,12 @@ function buildSep0007TxLink(options) {
     if (options.msg) {
         params.set('msg', options.msg);
     }
-    if (options.callback) {
+    // Issue #853: `callback` is where a compatible wallet POSTs the signed
+    // XDR. An unvalidated value here is a direct exfiltration vector for a
+    // signed transaction, so a callback that fails isSafeExternalLink (wrong
+    // scheme, credentials, or a private/metadata host) is dropped rather than
+    // included — same silent fail-closed-by-omission pattern as buildFaqLink.
+    if (options.callback && isSafeExternalLink(options.callback)) {
         params.set('callback', options.callback);
     }
     if (options.originDomain) {
@@ -58302,29 +58596,14 @@ function buildSep0007PayLink(options) {
  * host — never a plausible-looking but unrecognized one.
  */
 function isValidDashboardUrl(url) {
+    if (!isSafeExternalLink(url))
+        return false;
     try {
         const parsed = new URL(url);
-        if (parsed.protocol !== 'https:')
-            return false;
-        if (parsed.username || parsed.password)
-            return false;
-        // Block private/loopback/metadata hosts (same list as Horizon SSRF)
-        const blocked = [
-            /^127\./,
-            /^10\./,
-            /^192\.168\./,
-            /^172\.(1[6-9]|2\d|3[01])\./,
-            /^169\.254\./,
-            /^localhost$/i,
-        ];
-        const host = parsed.hostname;
-        for (const pat of blocked) {
-            if (pat.test(host))
-                return false;
-        }
-        if (host === 'metadata.google.internal')
-            return false;
-        if (host.toLowerCase() === 'dashboard.stellar.org')
+        // `dashboard.stellar.org` is not a recognized Stellar dashboard
+        // endpoint — see the docstring above for why it is explicitly rejected
+        // rather than just "not allowlisted".
+        if (parsed.hostname.toLowerCase() === 'dashboard.stellar.org')
             return false;
         return true;
     }
@@ -59116,7 +59395,7 @@ function emitInputsLogRecord(inputs) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = void 0;
+exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = exports.MAX_ASSET_TABLE_ROWS = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
 exports.buildAssetTrustlineTable = buildAssetTrustlineTable;
@@ -59153,11 +59432,19 @@ function inlineCode(value) {
  * @param options.heading Section heading (defaults to "Asset trustlines").
  * @returns Markdown section (heading + table), or `''` when `rows` is empty.
  */
+/**
+ * Default cap on rows rendered by {@link buildAssetTrustlineTable} before it
+ * truncates with a summary line (Issue #860). Matches the long-standing
+ * `DIGEST_MAX_LISTED_ISSUES` cap in `src/summary.ts` so every multi-row
+ * section in a TrustBridge comment truncates at the same threshold.
+ */
+exports.MAX_ASSET_TABLE_ROWS = 50;
 function buildAssetTrustlineTable(rows, options = {}) {
     if (!Array.isArray(rows) || rows.length === 0) {
         return '';
     }
     const heading = options.heading ?? 'Asset trustlines';
+    const maxRows = options.maxRows ?? exports.MAX_ASSET_TABLE_ROWS;
     const shortenIssuer = (issuer) => {
         if (issuer.length <= 12)
             return issuer;
@@ -59176,11 +59463,26 @@ function buildAssetTrustlineTable(rows, options = {}) {
         '| Asset | Trustline | Balance | Issuer |',
         '| --- | --- | --- | --- |',
     ];
-    for (const row of rows) {
+    // Issue #860: a table with hundreds of assets_json entries can exceed
+    // GitHub's comment size limit and bury the rows an assignee actually
+    // needs to act on. Render only the first `maxRows` — the Trustline
+    // (status) column stays intact for every visible row — and summarize the
+    // rest in a plain sentence *after* the table (not an extra table row,
+    // which would either break the column count or need a colspan GitHub
+    // Markdown does not support). A trailing paragraph reads correctly for
+    // screen readers and keeps the table itself well-formed.
+    const visibleRows = maxRows > 0 ? rows.slice(0, maxRows) : rows;
+    const hiddenCount = rows.length - visibleRows.length;
+    for (const row of visibleRows) {
         const asset = escapeMarkdownInline(row.assetCode);
         const status = row.trustlineExists ? '✅ exists' : '❌ missing';
         const issuer = inlineCode(shortenIssuer(row.assetIssuer));
         lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
+    }
+    if (hiddenCount > 0) {
+        lines.push('', `_…and **${hiddenCount}** more asset${hiddenCount === 1 ? '' : 's'} not shown ` +
+            `(showing ${visibleRows.length} of ${rows.length}). See the ` +
+            '`assets_trustline_status` / `trustlines_summary` action outputs for the full list._');
     }
     return lines.join('\n');
 }
@@ -59239,7 +59541,14 @@ function buildAssetChecklist(rows, options = {}) {
         if (hints.length > 0) {
             line += ` (${hints.map((hint) => escapeMarkdownInline(hint)).join(', ')})`;
         }
-        if (!passed && row.deepLink) {
+        // Issue #853: `deepLink` is caller-supplied (e.g. derived from
+        // `assets_json`). Rendered unvalidated, it would be both an open-
+        // redirect/phishing vector and a Markdown-injection vector — an
+        // unescaped `)` in the URL ends the `[text](url)` link early and lets
+        // the rest of the string inject arbitrary Markdown into the comment.
+        // A link that fails the shared safety check is omitted entirely rather
+        // than rendered broken or malicious.
+        if (!passed && row.deepLink && (0, links_1.isSafeExternalLink)(row.deepLink)) {
             line += ` — [remediation](${row.deepLink})`;
         }
         lines.push(line);
@@ -59516,10 +59825,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.globalOctokitMetrics = exports.globalHorizonHistogram = exports.globalMetrics = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.hashAddressForMetrics = hashAddressForMetrics;
 exports.classifyOctokitStatus = classifyOctokitStatus;
 exports.writeJobSummary = writeJobSummary;
 exports.normalizeMetricHost = normalizeMetricHost;
 const core = __importStar(__nccwpck_require__(37484));
+const crypto = __importStar(__nccwpck_require__(76982));
 const validation_1 = __nccwpck_require__(24344);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
@@ -59528,6 +59839,27 @@ const validation_1 = __nccwpck_require__(24344);
  * makes it into the JSON metrics artifact (see toJSON()).
  */
 exports.CONTRACT_ADDRESS_TAG_KEY = 'contractAddress';
+/**
+ * Length, in hex characters, of a hashed address label (see `hashAddressForMetrics`).
+ * Fixed and short so the resulting tag value cannot be reversed to the
+ * original address and does not itself blow up series cardinality.
+ */
+const ADDRESS_HASH_LABEL_LENGTH = 12;
+/**
+ * Derive a bounded, non-reversible metric label for a Stellar address
+ * (`G...`/`C...`/`M...`).
+ *
+ * Tagging a metric with a raw address turns every distinct account into its
+ * own Prometheus series (unbounded cardinality) and leaks the address itself
+ * into any scraper or JSON artifact that reads the metric — see
+ * docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy. Hashing
+ * collapses the tag to a fixed-width token that is still useful for
+ * correlating repeated runs against the *same* address without exposing or
+ * bounding on the raw value.
+ */
+function hashAddressForMetrics(address) {
+    return crypto.createHash('sha256').update(address).digest('hex').slice(0, ADDRESS_HASH_LABEL_LENGTH);
+}
 /**
  * Classify an HTTP status code into an `OctokitOutcome`.
  */
@@ -59688,17 +60020,14 @@ class MetricsCollector {
         this.timers = new Map();
     }
     /**
-     * Record a numeric metric. If a `contractAddress` tag is present, it is
-     * validated against the Soroban C-address policy first; an invalid
-     * address throws rather than being silently recorded.
+     * Record a numeric metric. A `contractAddress` tag is rejected outright:
+     * callers must go through `recordContractMetric()`, which validates the
+     * address and replaces it with a bounded hash before it ever reaches a
+     * tag value (see docs/ARCHITECTURE.md#metrics-label-cardinality-and-pii-policy).
      */
     recordMetric(name, value, unit = '', tags) {
-        const contractAddress = tags?.[exports.CONTRACT_ADDRESS_TAG_KEY];
-        if (contractAddress !== undefined) {
-            const result = (0, validation_1.validateContractAddress)(contractAddress);
-            if (!result.valid) {
-                throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
-            }
+        if (tags && exports.CONTRACT_ADDRESS_TAG_KEY in tags) {
+            throw new Error(`recordMetric() tag "${exports.CONTRACT_ADDRESS_TAG_KEY}" on metric "${name}" must be set via recordContractMetric(), never with a raw address.`);
         }
         this.metrics.push({
             name,
@@ -59709,13 +60038,26 @@ class MetricsCollector {
         });
     }
     /**
-     * Convenience wrapper for recording a metric tagged with a Soroban
-     * contract address, enforcing the C-address policy up front.
+     * Convenience wrapper for recording a metric correlated with a Soroban
+     * contract address. The address is validated against the C-address policy
+     * (an invalid address throws, same as before), but only its bounded hash
+     * — never the raw address — is stored as the `contractAddress` tag, so the
+     * metric cannot become an unbounded, PII-carrying label series.
      */
     recordContractMetric(name, value, contractAddress, unit = '', extraTags) {
-        this.recordMetric(name, value, unit, {
-            ...extraTags,
-            [exports.CONTRACT_ADDRESS_TAG_KEY]: contractAddress,
+        const result = (0, validation_1.validateContractAddress)(contractAddress);
+        if (!result.valid) {
+            throw new Error(`Invalid ${exports.CONTRACT_ADDRESS_TAG_KEY} tag on metric "${name}": ${result.errors.join('; ')}`);
+        }
+        this.metrics.push({
+            name,
+            value,
+            unit,
+            timestamp: Date.now(),
+            tags: {
+                ...extraTags,
+                [exports.CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(contractAddress),
+            },
         });
     }
     /**
@@ -60082,8 +60424,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_OUTPUT_VALUE_BYTES = void 0;
 exports.buildConflictReport = buildConflictReport;
 exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
+exports.truncateJsonArray = truncateJsonArray;
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
 exports.writeValidationJson = writeValidationJson;
@@ -60165,6 +60509,76 @@ function formatConflictReportMarkdown(report) {
     lines.push('');
     return lines.join('\n');
 }
+// ---------------------------------------------------------------------------
+// Output size cap (Issue #854)
+//
+// GitHub Actions enforces a per-output size limit (documented here, and in
+// docs/USAGE.md#output-size-limits, as 1MB). A JSON array/map output built
+// from an unbounded source — assets_json entries, batch addresses, matrix
+// assignees — can exceed that limit on a large Wave run. GitHub's own
+// behavior when that happens is not a clean, catchable error the workflow
+// can branch on, so TrustBridge truncates deterministically *before*
+// `core.setOutput` is ever called and reports the fact via `outputs_truncated`,
+// rather than letting a Wave matrix workflow silently see an incomplete (or
+// entirely missing) payout list and make the wrong branch decision.
+// ---------------------------------------------------------------------------
+/**
+ * Budget for a single JSON output value, in UTF-8 bytes. Set below GitHub
+ * Actions' documented 1MB per-output limit to leave headroom for the output
+ * name, the `GITHUB_OUTPUT` file's own delimiter syntax, and any other
+ * output written in the same step.
+ */
+exports.MAX_OUTPUT_VALUE_BYTES = 900000;
+/** UTF-8 byte length of a string — never its UTF-16 `.length` (wrong for multibyte characters). */
+function byteLength(value) {
+    return Buffer.byteLength(value, 'utf8');
+}
+/**
+ * Serialize `items` to JSON via `toJson`, truncating deterministically from
+ * the end until the result fits within `maxBytes`.
+ *
+ * Deterministic and order-preserving: for a given `items` array, the
+ * included prefix is always the same — earlier entries are kept, later ones
+ * are dropped — so two runs over the same (even differently-ordered-by-
+ * network-timing) input never disagree about which entries survive, as
+ * long as the caller passes `items` in a stable order.
+ *
+ * Correct on multibyte input: size is measured with `Buffer.byteLength`
+ * (UTF-8 bytes), not `String.length` (UTF-16 code units), so an array of
+ * entries containing emoji, CJK text, or other multibyte characters is
+ * capped by actual output size, not character count.
+ *
+ * @param items    Entries to serialize, in the order they should be kept.
+ * @param toJson   Serializes a prefix of `items` (e.g. `(xs) => JSON.stringify(xs)`).
+ * @param maxBytes Byte budget; defaults to {@link MAX_OUTPUT_VALUE_BYTES}.
+ */
+function truncateJsonArray(items, toJson, maxBytes = exports.MAX_OUTPUT_VALUE_BYTES) {
+    const full = toJson([...items]);
+    if (byteLength(full) <= maxBytes || items.length === 0) {
+        return { json: full, truncated: false, includedCount: items.length, totalCount: items.length };
+    }
+    // Binary search for the largest prefix whose serialization fits. Correct
+    // even when entries vary wildly in size (e.g. one giant failure reason
+    // string among many short ones) because it re-serializes the real
+    // candidate prefix on every probe instead of assuming uniform entry size.
+    let lo = 0;
+    let hi = items.length - 1;
+    let best = 0;
+    let bestJson = toJson([]);
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candidate = toJson(items.slice(0, mid + 1));
+        if (byteLength(candidate) <= maxBytes) {
+            best = mid + 1;
+            bestJson = candidate;
+            lo = mid + 1;
+        }
+        else {
+            hi = mid - 1;
+        }
+    }
+    return { json: bestJson, truncated: true, includedCount: best, totalCount: items.length };
+}
 function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     const timings = extras.timings ?? {};
     const validatedAt = extras.validatedAt ?? new Date().toISOString();
@@ -60196,6 +60610,11 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         balance: status.balance,
     }));
     const presentTrustlines = assetsTrustlineStatus.filter((status) => status.trustline_exists).length;
+    // Issue #854: a run with hundreds of assets_json entries could otherwise
+    // produce an assets_trustline_status output over GitHub's per-output size
+    // limit. trustlines_summary still reports the true, untruncated totals —
+    // only the JSON array itself is capped.
+    const assetsTrustlineStatusTruncation = truncateJsonArray(assetsTrustlineStatus, (subset) => JSON.stringify(subset));
     return {
         trustline_exists: String(result.trustlineExists),
         xlm_balance: result.xlmBalance,
@@ -60252,13 +60671,18 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         friendbot_called: String(Boolean(extras.friendbotCalled)),
         friendbot_success: String(Boolean(extras.friendbotSuccess)),
         friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
-        assets_trustline_status: JSON.stringify(assetsTrustlineStatus),
+        assets_trustline_status: assetsTrustlineStatusTruncation.json,
         trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
         // Batch-mode outputs. Empty in single-address mode; index.ts overwrites
         // these on the batch path before returning. (Issue #670)
         batch_summary_json: '',
         batch_passed_count: '',
         batch_failed_count: '',
+        // Issue #854 — index.ts's batch path overwrites this with its own
+        // truncation result (batch_summary_json can be far larger than
+        // assets_trustline_status); single-address mode reports whether
+        // assets_trustline_status itself was truncated.
+        outputs_truncated: String(assetsTrustlineStatusTruncation.truncated),
     };
 }
 function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
@@ -60293,31 +60717,9 @@ function writeValidationJson(options) {
     fs.writeFileSync(absolutePath, JSON.stringify(payload, null, 2), 'utf8');
     return payload;
 }
-/**
- * Build matrix-friendly JSON outputs from multiple validation results.
- * This enables GitHub matrix workflows to access per-assignee results via
- * `fromJSON(steps.trustbridge.outputs.matrix_ready_map)`.
- *
- * Example usage in a matrix workflow:
- * ```yaml
- * strategy:
- *   matrix:
- *     assignee: [alice, bob, charlie]
- * steps:
- *   - id: check
- *     run: |
- *       READY=$(echo '${{ steps.trustbridge.outputs.matrix_ready_map }}' | jq -r '.["${{ matrix.assignee }}"]')
- *       echo "ready=$READY" >> $GITHUB_OUTPUT
- * ```
- *
- * @param results Array of validation results with assignee metadata
- * @returns JSON string maps for assignee_results_json and matrix_ready_map
- */
-function buildMatrixOutputs(results) {
+function buildAssigneeResultsMap(subset) {
     const assigneeResults = {};
-    const readyMap = {};
-    for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of results) {
-        const validated = validatedAt ?? new Date().toISOString();
+    for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of subset) {
         assigneeResults[assigneeLogin] = {
             ready: validationResult.valid,
             stellar_address: stellarAddress,
@@ -60325,13 +60727,31 @@ function buildMatrixOutputs(results) {
             account_funded: validationResult.accountFunded,
             trustline_exists: validationResult.trustlineExists,
             reason_code: validationResult.reasonCode ?? (validationResult.valid ? 'SUCCESS' : 'FAILED'),
-            validated_at: validated,
+            validated_at: validatedAt ?? new Date().toISOString(),
         };
+    }
+    return assigneeResults;
+}
+function buildMatrixOutputs(results) {
+    // Issue #854: a matrix job validating hundreds of assignees can otherwise
+    // produce an assignee_results_json output over GitHub's per-output size
+    // limit, silently truncated (or rejected outright) by the runner itself —
+    // exactly the "incomplete payout list, wrong branch decision" failure
+    // mode this guards against. assigneeResultsJson is the larger of the two
+    // payloads, so the included-assignee count is bounded against *its*
+    // budget, then matrixReadyMap is built from that exact same subset so the
+    // two maps never disagree about which assignees are present.
+    const { json: assigneeResultsJson, truncated, includedCount, totalCount } = truncateJsonArray(results, (subset) => JSON.stringify(buildAssigneeResultsMap(subset)));
+    const readyMap = {};
+    for (const { assigneeLogin, validationResult } of results.slice(0, includedCount)) {
         readyMap[assigneeLogin] = validationResult.valid;
     }
     return {
-        assigneeResultsJson: JSON.stringify(assigneeResults),
+        assigneeResultsJson,
         matrixReadyMap: JSON.stringify(readyMap),
+        truncated,
+        includedCount,
+        totalCount,
     };
 }
 /**
@@ -61689,6 +62109,13 @@ exports.HttpMockMatrix = HttpMockMatrix;
  * (`schemas/sarif-schema-2.1.0.json`, Issue #679) before it is written or
  * uploaded.
  *
+ * Every result carries a `partialFingerprints` entry keyed by
+ * `trustbridge/v1` — a stable hash of the result's identity inputs (Issue
+ * #893). It excludes message text and account data on purpose, so
+ * code-scanning history does not churn when wording or balances move; a
+ * `reason_code` change does move it. See {@link computeSarifFingerprint} and
+ * `docs/SCHEMA.md`.
+ *
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
@@ -61725,7 +62152,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.SARIF_FINGERPRINT_KEY = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.computeSarifFingerprint = computeSarifFingerprint;
+exports.sarifRunReasonCode = sarifRunReasonCode;
+exports.sarifPartialFingerprints = sarifPartialFingerprints;
 exports.buildSarifDocument = buildSarifDocument;
 exports.sarifOutcomeFromResult = sarifOutcomeFromResult;
 exports.serialiseSarif = serialiseSarif;
@@ -61741,6 +62171,7 @@ exports.serializeSarif = serializeSarif;
 exports.getSarifSchemaErrors = getSarifSchemaErrors;
 exports.validateSarifSchema = validateSarifSchema;
 exports.writeSarifFile = writeSarifFile;
+const crypto = __importStar(__nccwpck_require__(76982));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const sarifSchema_1 = __nccwpck_require__(20634);
@@ -61748,6 +62179,42 @@ exports.SARIF_SCHEMA = 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/m
 exports.SARIF_VERSION = '2.1.0';
 exports.TOOL_NAME = 'trustbridge-action';
 exports.TOOL_VERSION = '1.0.0';
+// ---------------------------------------------------------------------------
+// Stable result fingerprints (Issue #893)
+// ---------------------------------------------------------------------------
+/**
+ * `partialFingerprints` key TrustBridge writes on every SARIF result.
+ *
+ * The `v1` suffix versions the fingerprint algorithm: bump it in the same
+ * release as any change to {@link SarifFingerprintInputs}, so GitHub code
+ * scanning treats the new values as a fresh result identity instead of
+ * matching them against values computed from the old inputs.
+ */
+exports.SARIF_FINGERPRINT_KEY = 'trustbridge/v1';
+/**
+ * Compute the stable fingerprint for one SARIF result.
+ *
+ * Deterministic SHA-256 over {@link SarifFingerprintInputs} joined with NUL
+ * separators (so `a` + `bc` cannot collide with `ab` + `c`), truncated to 32
+ * hex characters. The same inputs always yield the same value on every runner,
+ * and a `reason_code` change yields a different one.
+ */
+function computeSarifFingerprint(inputs) {
+    const canonical = [inputs.ruleId, inputs.checkLabel, inputs.assetCode, inputs.reasonCode].join('\u0000');
+    return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 32);
+}
+/**
+ * Normalise a run's reason code exactly the way `runs[0].properties.reasonCode`
+ * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
+ * `FAILED` for a failing one.
+ */
+function sarifRunReasonCode(result) {
+    return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+}
+/** Build the `partialFingerprints` property bag for one result. */
+function sarifPartialFingerprints(inputs) {
+    return { [exports.SARIF_FINGERPRINT_KEY]: computeSarifFingerprint(inputs) };
+}
 /** Stable SARIF rule id for the SEP-0001 home domain check (Issue #708). */
 exports.HOME_DOMAIN_RULE_ID = 'TB004';
 exports.HOME_DOMAIN_HELP_URI = 'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/SEP0001_HOME_DOMAIN.md';
@@ -61788,9 +62255,12 @@ function buildSarifDocument(outcome) {
             helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/lumens',
         },
     ];
+    // `label` is the rule's stable `name`; this document carries no per-check
+    // labels, so it is the identity input for the fingerprint (Issue #893).
     const checks = [
         {
             ruleId: 'TB001',
+            label: 'AccountFunded',
             passed: outcome.accountFunded,
             message: outcome.accountFunded
                 ? `Account ${outcome.stellarAddress} is funded and active.`
@@ -61798,6 +62268,7 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB002',
+            label: 'TrustlineExists',
             passed: outcome.trustlineExists,
             message: outcome.trustlineExists
                 ? `Trustline for ${outcome.assetCode} is present.`
@@ -61805,20 +62276,27 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB003',
+            label: 'XlmReserveMet',
             passed: outcome.xlmReserveMet,
             message: outcome.xlmReserveMet
                 ? 'XLM balance meets the minimum reserve requirement.'
                 : 'XLM balance is below the minimum reserve requirement.',
         },
     ];
-    const results = checks.map(({ ruleId, passed, message }) => ({
+    const results = checks.map(({ ruleId, label, passed, message }) => ({
         ruleId,
         level: passed ? 'none' : 'error',
         message: { text: message },
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: label,
+            assetCode: outcome.assetCode,
+            reasonCode: passed ? 'SUCCESS' : 'FAILED',
+        }),
     }));
     if (outcome.homeDomain && outcome.homeDomain.outcome !== 'skipped') {
         rules.push(buildHomeDomainRule());
-        results.push(buildHomeDomainResult(outcome.homeDomain));
+        results.push(buildHomeDomainResult(outcome.homeDomain, outcome.assetCode));
     }
     return {
         $schema: exports.SARIF_SCHEMA,
@@ -61858,19 +62336,37 @@ function buildHomeDomainRule() {
         },
     };
 }
-function buildHomeDomainResult(homeDomain) {
+/**
+ * Map a home domain outcome to the reason code used for its fingerprint. These
+ * are the `reason_code` values the full validation path records for the same
+ * outcome, so a code rename moves this fingerprint too (Issue #893).
+ */
+const HOME_DOMAIN_OUTCOME_REASON_CODE = {
+    valid: 'SUCCESS',
+    mismatch: 'HOME_DOMAIN_MISMATCH',
+    missing: 'HOME_DOMAIN_MISSING',
+    skipped: 'SUCCESS',
+};
+function buildHomeDomainResult(homeDomain, assetCode) {
+    const partialFingerprints = sarifPartialFingerprints({
+        ruleId: exports.HOME_DOMAIN_RULE_ID,
+        checkLabel: 'HomeDomainAligned',
+        assetCode,
+        reasonCode: HOME_DOMAIN_OUTCOME_REASON_CODE[homeDomain.outcome],
+    });
     if (homeDomain.outcome === 'valid') {
         return {
             ruleId: exports.HOME_DOMAIN_RULE_ID,
             level: 'none',
             message: { text: `Issuer home_domain is ${homeDomain.actualHomeDomain ?? 'set'}.` },
+            partialFingerprints,
         };
     }
     const level = homeDomain.mode === 'strict' ? 'error' : 'warning';
     const text = homeDomain.outcome === 'mismatch'
         ? `Issuer home_domain is ${homeDomain.actualHomeDomain ?? ''} but ${homeDomain.expectedHomeDomain ?? ''} was expected.`
         : 'Issuer account has no home_domain set on-chain (or the issuer account was unavailable).';
-    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text } };
+    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text }, partialFingerprints };
 }
 /**
  * Build a SARIF outcome from a `ValidationResult` (Issue #708), so callers
@@ -62180,7 +62676,7 @@ function unauthorizedTrustlineSarifSeverity(result) {
 /**
  * Build a single SARIF result from a TrustBridge check.
  */
-function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride) {
+function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride, reasonCode = '') {
     const ruleId = severityOverride?.ruleId ?? checkLabelToRuleId(check.label);
     const level = severityOverride?.level ?? checkToSarifLevel(check);
     return {
@@ -62201,6 +62697,12 @@ function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severi
                 },
             },
         ],
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: check.label,
+            assetCode,
+            reasonCode,
+        }),
         properties: {
             assetCode,
             checkLabel: check.label,
@@ -62241,6 +62743,13 @@ function severityOverrideFor(check, result, unauthorizedSeverity) {
  *  - TB007 (`warning`) when the milestone gate skipped validation.
  *  - TB008 (`warning`) when the trustline has clawback enabled but
  *    `clawback_strict_mode` did not block it (strict-mode blocks stay TB005).
+ *
+ * Every result also carries `partialFingerprints['trustbridge/v1']`, hash of
+ * the rule id, check label, asset code and the run's `reason_code`
+ * (Issue #893). Message text, the account address, balances, the Horizon URL
+ * and the run timestamp are excluded, so a purely cosmetic wording change
+ * keeps the same code-scanning alert while a `reason_code` change opens a new
+ * one.
  */
 function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version = '1.0.0') {
     const rules = buildSarifRules();
@@ -62248,7 +62757,11 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
     // for it: `fail` promotes the trustline result to an `error` under TB006,
     // `warn` keeps it at `note` severity, `ignore` omits it entirely.
     const unauthorizedSeverity = unauthorizedTrustlineSarifSeverity(result);
-    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity)));
+    // Issue #893 — every result carries the run's reason code in its stable
+    // fingerprint, so a reason_code change (including a rename) moves the
+    // finding identity while message wording does not.
+    const runReasonCode = sarifRunReasonCode(result);
+    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity), runReasonCode));
     const location = [
         {
             physicalLocation: {
@@ -62269,6 +62782,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: 'Validation was skipped by the milestone gate — the issue milestone is not in milestone_allowlist.',
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.MILESTONE_GATE_RULE_ID,
+                checkLabel: 'Milestone gate',
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: 'Milestone gate',
@@ -62286,6 +62805,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: `Trustline for ${assetCode} has clawback enabled — the issuer can reclaim the asset at any time. Set clawback_strict_mode: true to block it.`,
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.CLAWBACK_ADVISORY_RULE_ID,
+                checkLabel: `${assetCode} clawback advisory`,
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: `${assetCode} clawback advisory`,
@@ -62311,7 +62836,7 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 properties: {
                     trustbridgeVersion: version,
                     runTimestamp: new Date().toISOString(),
-                    reasonCode: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
+                    reasonCode: runReasonCode,
                     validationGate: {
                         ready: result.valid,
                         totalChecks: result.checks.length,
@@ -81562,6 +82087,42 @@ class StorageContextClient extends import_src.StorageClient {
 
 /***/ }),
 
+/***/ 83627:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var generatedModels_exports = {};
+__export(generatedModels_exports, {
+  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
+});
+module.exports = __toCommonJS(generatedModels_exports);
+var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
+  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
+  return KnownEncryptionAlgorithmType2;
+})(KnownEncryptionAlgorithmType || {});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=generatedModels.js.map
+
+
+/***/ }),
+
 /***/ 30247:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -92511,6 +93072,176 @@ const listType = {
 
 /***/ }),
 
+/***/ 56635:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var appendBlob_exports = {};
+module.exports = __toCommonJS(appendBlob_exports);
+//# sourceMappingURL=appendBlob.js.map
+
+
+/***/ }),
+
+/***/ 68355:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blob_exports = {};
+module.exports = __toCommonJS(blob_exports);
+//# sourceMappingURL=blob.js.map
+
+
+/***/ }),
+
+/***/ 17188:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blockBlob_exports = {};
+module.exports = __toCommonJS(blockBlob_exports);
+//# sourceMappingURL=blockBlob.js.map
+
+
+/***/ }),
+
+/***/ 15337:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var container_exports = {};
+module.exports = __toCommonJS(container_exports);
+//# sourceMappingURL=container.js.map
+
+
+/***/ }),
+
+/***/ 82354:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var operationsInterfaces_exports = {};
+module.exports = __toCommonJS(operationsInterfaces_exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 14400:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var pageBlob_exports = {};
+module.exports = __toCommonJS(pageBlob_exports);
+//# sourceMappingURL=pageBlob.js.map
+
+
+/***/ }),
+
+/***/ 26865:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var service_exports = {};
+module.exports = __toCommonJS(service_exports);
+//# sourceMappingURL=service.js.map
+
+
+/***/ }),
+
 /***/ 40535:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -96178,176 +96909,6 @@ const filterBlobsOperationSpec = {
 
 /***/ }),
 
-/***/ 56635:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var appendBlob_exports = {};
-module.exports = __toCommonJS(appendBlob_exports);
-//# sourceMappingURL=appendBlob.js.map
-
-
-/***/ }),
-
-/***/ 68355:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blob_exports = {};
-module.exports = __toCommonJS(blob_exports);
-//# sourceMappingURL=blob.js.map
-
-
-/***/ }),
-
-/***/ 17188:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blockBlob_exports = {};
-module.exports = __toCommonJS(blockBlob_exports);
-//# sourceMappingURL=blockBlob.js.map
-
-
-/***/ }),
-
-/***/ 15337:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var container_exports = {};
-module.exports = __toCommonJS(container_exports);
-//# sourceMappingURL=container.js.map
-
-
-/***/ }),
-
-/***/ 82354:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var operationsInterfaces_exports = {};
-module.exports = __toCommonJS(operationsInterfaces_exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=index.js.map
-
-
-/***/ }),
-
-/***/ 14400:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var pageBlob_exports = {};
-module.exports = __toCommonJS(pageBlob_exports);
-//# sourceMappingURL=pageBlob.js.map
-
-
-/***/ }),
-
-/***/ 26865:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var service_exports = {};
-module.exports = __toCommonJS(service_exports);
-//# sourceMappingURL=service.js.map
-
-
-/***/ }),
-
 /***/ 5313:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -96434,42 +96995,6 @@ class StorageClient extends coreHttpCompat.ExtendedServiceClient {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (0);
 //# sourceMappingURL=storageClient.js.map
-
-
-/***/ }),
-
-/***/ 83627:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var generatedModels_exports = {};
-__export(generatedModels_exports, {
-  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
-});
-module.exports = __toCommonJS(generatedModels_exports);
-var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
-  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
-  return KnownEncryptionAlgorithmType2;
-})(KnownEncryptionAlgorithmType || {});
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=generatedModels.js.map
 
 
 /***/ }),

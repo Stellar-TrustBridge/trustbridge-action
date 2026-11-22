@@ -20,6 +20,11 @@
  * to GitHub Actions cache backend on save operations, allowing data to be
  * reused across matrix legs and subsequent workflow runs (subject to TTL).
  */
+export interface NegativeCacheEntry {
+    statusCode: 404;
+    message: string;
+    cachedAt: number;
+}
 export interface CacheBackendOptions {
     /**
      * Enable GitHub Actions cache backend persistence (true) or in-memory only (false).
@@ -94,6 +99,7 @@ export declare class GitHubActionsCacheBackend implements PersistentCacheBackend
 }
 export declare class SimpleCache {
     private store;
+    private negativeStore;
     private backend?;
     private useBackend;
     constructor(options?: CacheBackendOptions);
@@ -129,6 +135,11 @@ export declare class SimpleCache {
      * @returns    The restored value, or `null` if not found, expired, or on error.
      */
     restoreAsync<T>(key: string): Promise<T | null>;
+    /** Return a short-lived account-not-found marker, never a positive payload. */
+    getNegative(key: string): NegativeCacheEntry | null;
+    /** Store only a redacted 404 marker; no address or response body is persisted. */
+    setNegative(key: string, message: string, ttlMs: number): void;
+    deleteNegative(key: string): boolean;
     /**
      * Store a value in the cache with an expiration time.
      *

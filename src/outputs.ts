@@ -189,6 +189,137 @@ export function formatConflictReportMarkdown(report: ConflictReport | null | und
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Output size cap (Issue #854)
+//
+// GitHub Actions enforces a per-output size limit (documented here, and in
+// docs/USAGE.md#output-size-limits, as 1MB). A JSON array/map output built
+// from an unbounded source — assets_json entries, batch addresses, matrix
+// assignees — can exceed that limit on a large Wave run. GitHub's own
+// behavior when that happens is not a clean, catchable error the workflow
+// can branch on, so TrustBridge truncates deterministically *before*
+// `core.setOutput` is ever called and reports the fact via `outputs_truncated`,
+// rather than letting a Wave matrix workflow silently see an incomplete (or
+// entirely missing) payout list and make the wrong branch decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Budget for a single JSON output value, in UTF-8 bytes. Set below GitHub
+ * Actions' documented 1MB per-output limit to leave headroom for the output
+ * name, the `GITHUB_OUTPUT` file's own delimiter syntax, and any other
+ * output written in the same step.
+ */
+export const MAX_OUTPUT_VALUE_BYTES = 900_000;
+
+/**
+ * GitHub's documented limit for one step output value: 1 MiB, the same on
+ * github.com and GHES. `MAX_OUTPUT_VALUE_BYTES` stays below it. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+export const GITHUB_OUTPUT_VALUE_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * GitHub's documented limits on workflow-command annotations
+ * (`core.warning` / `core.error` / `core.notice`). Annotations past these
+ * caps are dropped from the run UI but still printed to the log.
+ */
+export const WORKFLOW_ANNOTATION_LIMITS = Object.freeze({
+  errorsPerStep: 10,
+  warningsPerStep: 10,
+  perJob: 50,
+});
+
+/**
+ * How `core.setOutput()` delivers outputs on this runner.
+ *
+ * - `file-command`: the runner sets `GITHUB_OUTPUT` (current github.com
+ *   runners and up-to-date GHES runners).
+ * - `workflow-command`: `GITHUB_OUTPUT` is missing (older GHES runners), so
+ *   `@actions/core` falls back to the deprecated `::set-output` command.
+ *   Outputs still work, but the runner logs a deprecation warning, and
+ *   multi-line values are less reliable.
+ *
+ * Mirrors `@actions/core`, which only checks that the variable is non-empty.
+ */
+export type OutputTransport = 'file-command' | 'workflow-command';
+
+export function resolveOutputTransport(
+  env: Record<string, string | undefined> = process.env,
+): OutputTransport {
+  return env && typeof env.GITHUB_OUTPUT === 'string' && env.GITHUB_OUTPUT !== ''
+    ? 'file-command'
+    : 'workflow-command';
+}
+
+/** UTF-8 byte length of a string — never its UTF-16 `.length` (wrong for multibyte characters). */
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+/** Result of truncating an array-shaped JSON output to fit a byte budget. */
+export interface TruncatedJsonResult {
+  /** The (possibly truncated) JSON string, always within `maxBytes`. */
+  json: string;
+  /** True when one or more entries were dropped to fit the budget. */
+  truncated: boolean;
+  /** Number of entries included in `json`. */
+  includedCount: number;
+  /** Number of entries in the original input. */
+  totalCount: number;
+}
+
+/**
+ * Serialize `items` to JSON via `toJson`, truncating deterministically from
+ * the end until the result fits within `maxBytes`.
+ *
+ * Deterministic and order-preserving: for a given `items` array, the
+ * included prefix is always the same — earlier entries are kept, later ones
+ * are dropped — so two runs over the same (even differently-ordered-by-
+ * network-timing) input never disagree about which entries survive, as
+ * long as the caller passes `items` in a stable order.
+ *
+ * Correct on multibyte input: size is measured with `Buffer.byteLength`
+ * (UTF-8 bytes), not `String.length` (UTF-16 code units), so an array of
+ * entries containing emoji, CJK text, or other multibyte characters is
+ * capped by actual output size, not character count.
+ *
+ * @param items    Entries to serialize, in the order they should be kept.
+ * @param toJson   Serializes a prefix of `items` (e.g. `(xs) => JSON.stringify(xs)`).
+ * @param maxBytes Byte budget; defaults to {@link MAX_OUTPUT_VALUE_BYTES}.
+ */
+export function truncateJsonArray<T>(
+  items: readonly T[],
+  toJson: (subset: T[]) => string,
+  maxBytes: number = MAX_OUTPUT_VALUE_BYTES,
+): TruncatedJsonResult {
+  const full = toJson([...items]);
+  if (byteLength(full) <= maxBytes || items.length === 0) {
+    return { json: full, truncated: false, includedCount: items.length, totalCount: items.length };
+  }
+
+  // Binary search for the largest prefix whose serialization fits. Correct
+  // even when entries vary wildly in size (e.g. one giant failure reason
+  // string among many short ones) because it re-serializes the real
+  // candidate prefix on every probe instead of assuming uniform entry size.
+  let lo = 0;
+  let hi = items.length - 1;
+  let best = 0;
+  let bestJson = toJson([]);
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = toJson(items.slice(0, mid + 1) as T[]);
+    if (byteLength(candidate) <= maxBytes) {
+      best = mid + 1;
+      bestJson = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return { json: bestJson, truncated: true, includedCount: best, totalCount: items.length };
+}
+
 export interface ActionOutputs {
   // Legacy outputs — kept for backward compatibility
   trustline_exists: string;
@@ -270,6 +401,15 @@ export interface ActionOutputs {
   batch_summary_json: string;
   batch_passed_count: string;
   batch_failed_count: string;
+  /**
+   * Issue #854 — `"true"` when any JSON/array output this run produced
+   * (currently `assets_trustline_status`; batch mode also sets this via
+   * `batch_summary_json`'s own truncation in `src/index.ts`) was truncated
+   * to stay within `MAX_OUTPUT_VALUE_BYTES`. `"false"` otherwise. Always
+   * set — never empty — so a consumer can gate on it unconditionally:
+   * `if: steps.trustbridge.outputs.outputs_truncated == 'true'`.
+   */
+  outputs_truncated: string;
 }
 
 export function toActionOutputs(
@@ -316,6 +456,14 @@ export function toActionOutputs(
   const presentTrustlines = assetsTrustlineStatus.filter(
     (status) => status.trustline_exists,
   ).length;
+  // Issue #854: a run with hundreds of assets_json entries could otherwise
+  // produce an assets_trustline_status output over GitHub's per-output size
+  // limit. trustlines_summary still reports the true, untruncated totals —
+  // only the JSON array itself is capped.
+  const assetsTrustlineStatusTruncation = truncateJsonArray(
+    assetsTrustlineStatus,
+    (subset) => JSON.stringify(subset),
+  );
   
   return {
     trustline_exists: String(result.trustlineExists),
@@ -375,13 +523,18 @@ export function toActionOutputs(
     friendbot_called: String(Boolean(extras.friendbotCalled)),
     friendbot_success: String(Boolean(extras.friendbotSuccess)),
     friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
-    assets_trustline_status: JSON.stringify(assetsTrustlineStatus),
+    assets_trustline_status: assetsTrustlineStatusTruncation.json,
     trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
     // Batch-mode outputs. Empty in single-address mode; index.ts overwrites
     // these on the batch path before returning. (Issue #670)
     batch_summary_json: '',
     batch_passed_count: '',
     batch_failed_count: '',
+    // Issue #854 — index.ts's batch path overwrites this with its own
+    // truncation result (batch_summary_json can be far larger than
+    // assets_trustline_status); single-address mode reports whether
+    // assets_trustline_status itself was truncated.
+    outputs_truncated: String(assetsTrustlineStatusTruncation.truncated),
   };
 }
 
@@ -476,20 +629,28 @@ export type MatrixReadyMap = Record<string, boolean>;
  * @param results Array of validation results with assignee metadata
  * @returns JSON string maps for assignee_results_json and matrix_ready_map
  */
-export function buildMatrixOutputs(
-  results: Array<{
+/** Return shape of {@link buildMatrixOutputs}, including the Issue #854 truncation report. */
+export interface MatrixOutputsResult {
+  assigneeResultsJson: string;
+  matrixReadyMap: string;
+  /** True when one or more assignees were dropped to stay within {@link MAX_OUTPUT_VALUE_BYTES}. */
+  truncated: boolean;
+  /** Number of assignees included in the (possibly truncated) outputs. */
+  includedCount: number;
+  /** Number of assignees in the input, before any truncation. */
+  totalCount: number;
+}
+
+function buildAssigneeResultsMap(
+  subset: Array<{
     assigneeLogin: string;
     stellarAddress: string;
     validationResult: ValidationResult;
     validatedAt?: string;
   }>,
-): { assigneeResultsJson: string; matrixReadyMap: string } {
+): AssigneeResultsMap {
   const assigneeResults: AssigneeResultsMap = {};
-  const readyMap: MatrixReadyMap = {};
-
-  for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of results) {
-    const validated = validatedAt ?? new Date().toISOString();
-    
+  for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of subset) {
     assigneeResults[assigneeLogin] = {
       ready: validationResult.valid,
       stellar_address: stellarAddress,
@@ -497,15 +658,44 @@ export function buildMatrixOutputs(
       account_funded: validationResult.accountFunded,
       trustline_exists: validationResult.trustlineExists,
       reason_code: validationResult.reasonCode ?? (validationResult.valid ? 'SUCCESS' : 'FAILED'),
-      validated_at: validated,
+      validated_at: validatedAt ?? new Date().toISOString(),
     };
+  }
+  return assigneeResults;
+}
 
+export function buildMatrixOutputs(
+  results: Array<{
+    assigneeLogin: string;
+    stellarAddress: string;
+    validationResult: ValidationResult;
+    validatedAt?: string;
+  }>,
+): MatrixOutputsResult {
+  // Issue #854: a matrix job validating hundreds of assignees can otherwise
+  // produce an assignee_results_json output over GitHub's per-output size
+  // limit, silently truncated (or rejected outright) by the runner itself —
+  // exactly the "incomplete payout list, wrong branch decision" failure
+  // mode this guards against. assigneeResultsJson is the larger of the two
+  // payloads, so the included-assignee count is bounded against *its*
+  // budget, then matrixReadyMap is built from that exact same subset so the
+  // two maps never disagree about which assignees are present.
+  const { json: assigneeResultsJson, truncated, includedCount, totalCount } = truncateJsonArray(
+    results,
+    (subset) => JSON.stringify(buildAssigneeResultsMap(subset)),
+  );
+
+  const readyMap: MatrixReadyMap = {};
+  for (const { assigneeLogin, validationResult } of results.slice(0, includedCount)) {
     readyMap[assigneeLogin] = validationResult.valid;
   }
 
   return {
-    assigneeResultsJson: JSON.stringify(assigneeResults),
+    assigneeResultsJson,
     matrixReadyMap: JSON.stringify(readyMap),
+    truncated,
+    includedCount,
+    totalCount,
   };
 }
 
