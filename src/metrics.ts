@@ -286,10 +286,82 @@ export interface TimingBreakdown {
   total_ms: number;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #899 — job-level outcome counters
+// ---------------------------------------------------------------------------
+
+/**
+ * Overall outcome of one Action job. Exactly one is recorded per job:
+ *   - `pass`    — validation ran and every check passed (`ready = true`)
+ *   - `fail`    — validation ran and at least one check failed, or the run
+ *                 aborted with an error before a verdict
+ *   - `skipped` — validation was intentionally not run (milestone gate)
+ */
+export const JOB_OUTCOMES = ['pass', 'fail', 'skipped'] as const;
+export type JobOutcome = (typeof JOB_OUTCOMES)[number];
+
+/**
+ * Bounded set of check kinds used as the `check` label on
+ * `check_skipped`. Check labels embed the operator-supplied asset code, so
+ * they are never used as labels directly; anything unrecognised is `other`.
+ */
+export const CHECK_KINDS = [
+  'horizon_available',
+  'account_funded',
+  'trustline',
+  'xlm_reserve',
+  'asset_balance',
+  'trustline_limit',
+  'clawback',
+  'home_domain',
+  'other',
+] as const;
+export type CheckKind = (typeof CHECK_KINDS)[number];
+
+/** In-process counter name for a job outcome, e.g. `job_outcome_pass`. */
+export function jobOutcomeCounterName(outcome: JobOutcome): string {
+  return `job_outcome_${outcome}`;
+}
+
+/** In-process counter name for a skipped check kind, e.g. `check_skipped_trustline`. */
+export function checkSkippedCounterName(kind: CheckKind): string {
+  return `check_skipped_${kind}`;
+}
+
+/**
+ * Prometheus names for the job outcome metrics, as documented in
+ * docs/ARCHITECTURE.md#job-outcome-counters. Exporters that turn the JSON
+ * artifact into Prometheus series must use exactly these names and labels.
+ */
+export const JOB_OUTCOME_PROMETHEUS_METRICS = Object.freeze({
+  /** Counter, label `outcome` ∈ JOB_OUTCOMES. Sums to 1 per job. */
+  jobOutcome: 'trustbridge_job_outcome_total',
+  /** Counter, label `check` ∈ CHECK_KINDS. */
+  checkSkipped: 'trustbridge_check_skipped_total',
+});
+
+/** Result of `MetricsCollector.recordJobOutcome()`. */
+export interface JobOutcomeRecord {
+  outcome: JobOutcome;
+  /** Skipped-check counts keyed by kind; kinds with zero skips are omitted. */
+  skippedChecks: Partial<Record<CheckKind, number>>;
+}
+
+function isJobOutcome(value: unknown): value is JobOutcome {
+  return typeof value === 'string' && (JOB_OUTCOMES as readonly string[]).includes(value);
+}
+
+function toCheckKind(value: unknown): CheckKind {
+  return typeof value === 'string' && (CHECK_KINDS as readonly string[]).includes(value)
+    ? (value as CheckKind)
+    : 'other';
+}
+
 export class MetricsCollector {
   private metrics: MetricPoint[] = [];
   private counters: Map<string, number> = new Map();
   private timers: Map<string, number> = new Map();
+  private jobOutcome: JobOutcomeRecord | undefined;
 
   /**
    * Record a numeric metric. A `contractAddress` tag is rejected outright:
@@ -444,6 +516,60 @@ export class MetricsCollector {
     this.metrics = [];
     this.counters.clear();
     this.timers.clear();
+    this.jobOutcome = undefined;
+  }
+
+  /**
+   * Record the job-level outcome (Issue #899).
+   *
+   * Outcomes are mutually exclusive: the first call wins and later calls are
+   * ignored (returning the already-recorded outcome), so an error handler
+   * that runs after a verdict cannot double-count a job as both `pass` and
+   * `fail`. `skippedCheckKinds` is only counted on the winning call.
+   *
+   * @throws When `outcome` is not one of {@link JOB_OUTCOMES}.
+   */
+  recordJobOutcome(
+    outcome: JobOutcome,
+    skippedCheckKinds: readonly CheckKind[] = [],
+  ): JobOutcomeRecord {
+    if (!isJobOutcome(outcome)) {
+      throw new Error(
+        `recordJobOutcome(): outcome must be one of ${JOB_OUTCOMES.join(', ')}. Received: ${JSON.stringify(outcome)}`,
+      );
+    }
+    if (this.jobOutcome) return this.jobOutcome;
+
+    const skippedChecks: Partial<Record<CheckKind, number>> = {};
+    for (const raw of Array.isArray(skippedCheckKinds) ? skippedCheckKinds : []) {
+      const kind = toCheckKind(raw);
+      skippedChecks[kind] = (skippedChecks[kind] ?? 0) + 1;
+    }
+
+    this.incrementCounter(jobOutcomeCounterName(outcome));
+    this.recordMetric('job_outcome', 1, 'count', { outcome });
+    for (const kind of CHECK_KINDS) {
+      const count = skippedChecks[kind];
+      if (!count) continue;
+      this.incrementCounter(checkSkippedCounterName(kind), count);
+      this.recordMetric('check_skipped', count, 'count', { check: kind });
+    }
+
+    this.jobOutcome = { outcome, skippedChecks };
+    return this.jobOutcome;
+  }
+
+  /**
+   * Forget the recorded job outcome so a new job can record one. Called at
+   * the start of `run()`; counters already incremented are kept.
+   */
+  resetJobOutcome(): void {
+    this.jobOutcome = undefined;
+  }
+
+  /** The recorded job outcome, or `undefined` before `recordJobOutcome()`. */
+  getJobOutcome(): JobOutcomeRecord | undefined {
+    return this.jobOutcome;
   }
 
   /**
@@ -516,6 +642,10 @@ export class MetricsCollector {
       })),
     };
 
+    if (this.jobOutcome) {
+      safeArtifact.jobOutcome = this.jobOutcome;
+    }
+
     // Include the Horizon fetch latency histogram when provided.
     const histogramSnapshot = horizonHistogram?.toSnapshot();
     if (histogramSnapshot) {
@@ -529,6 +659,7 @@ export class MetricsCollector {
       totalErrors: this.counters.get('errors') ?? 0,
       jsonArtifact: JSON.stringify(safeArtifact, null, 2),
       horizonFetchLatencyHistogram: histogramSnapshot,
+      jobOutcome: this.jobOutcome?.outcome,
     };
   }
 }
@@ -557,6 +688,11 @@ export interface JobSummaryReport {
    * passed to `buildJobSummary()`; `undefined` otherwise.
    */
   horizonFetchLatencyHistogram?: HorizonLatencyHistogramSnapshot;
+  /**
+   * Job-level outcome recorded via `recordJobOutcome()` (Issue #899);
+   * `undefined` when none was recorded yet.
+   */
+  jobOutcome?: JobOutcome;
 }
 
 /**
@@ -588,6 +724,7 @@ export async function writeJobSummary(
         { data: 'Metric', header: true },
         { data: 'Value', header: true },
       ],
+      ...(report.jobOutcome ? [['Job outcome', report.jobOutcome]] : []),
       ['Total runs', String(report.totalRuns)],
       ['Total errors', String(report.totalErrors)],
       ['Avg latency', report.latencyMs !== null ? `${report.latencyMs.toFixed(1)} ms` : '_none recorded_'],

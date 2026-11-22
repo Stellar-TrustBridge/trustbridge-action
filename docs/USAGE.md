@@ -2408,6 +2408,8 @@ See `mock/horizon/README.md` for details on the test setup.
 
 > **Full compatibility matrix:** See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) for a detailed matrix covering Comments, Checks API, Artifacts, OIDC, permission requirements, and known GHES-specific limitations.
 
+> **Outputs, Job Summary and annotations on GHES:** output and annotation limits match github.com. Older GHES runners may not set `GITHUB_OUTPUT` (outputs fall back to `::set-output`) or `GITHUB_STEP_SUMMARY` (the TrustBridge Job Summary is skipped). Neither changes `ready` or `reason_code`. See [GHES_COMPATIBILITY.md — Actions outputs, summaries and annotations](GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897).
+
 ### What changes on GHES
 
 On a GHES runner, the Actions runner sets `GITHUB_API_URL` (and `GITHUB_SERVER_URL`, `GITHUB_GRAPHQL_URL`) to your enterprise instance's endpoints instead of the public GitHub ones, e.g.:
@@ -4058,6 +4060,51 @@ turn an authorized trustline into an unauthorized one. In `warn` mode an
 unauthorized trustline remains ready but is called out in the comment. In
 `ignore` mode that authorization signal is omitted. See the combined offline
 fixture at [`fixtures/account-auth-required-immutable-clawback.json`](../fixtures/account-auth-required-immutable-clawback.json).
+
+### Issuer authorization flag decision table (Issue #898)
+
+`resolveIssuerAuthFlagVerdict` in `src/assets.ts` is the single source of
+truth for how `auth_required`, `auth_revocable`, `auth_immutable`, trustline
+`is_authorized`, trustline `is_clawback_enabled`,
+`unauthorized_trustline_policy` and `clawback_strict_mode` combine into a
+`reason_code`. `runAccountChecks` in `src/checks.ts` calls it, so the
+top-level `reason_code` output follows the same rules.
+
+Precedence (first match wins):
+
+1. `TRUSTLINE_MISSING` — no matching trustline. No trustline flag can apply.
+2. `TRUSTLINE_UNAUTHORIZED` — `is_authorized: false` and `unauthorized_trustline_policy: fail`.
+3. `CLAWBACK_BLOCKED` — `is_clawback_enabled: true` and `clawback_strict_mode: true`.
+4. `SUCCESS`.
+
+The issuer flags `auth_required`, `auth_revocable` and `auth_immutable` never
+change the code on their own. Only the trustline's current `is_authorized` and
+`is_clawback_enabled` values do. A missing or malformed Horizon field (older
+Horizon, or a non-boolean value) is read as the permissive default:
+authorized, clawback disabled, flag unset. An unknown policy string is read as
+`warn`.
+
+| Row id | Trustline | `is_authorized` | `is_clawback_enabled` | Issuer flags | Policy / strict mode | `reason_code` |
+|---|---|---|---|---|---|---|
+| `no-trustline` | absent | — | — | required, revocable, immutable | `fail` / `true` | `TRUSTLINE_MISSING` |
+| `authorized-plain` | present | `true` | — | none | defaults | `SUCCESS` |
+| `authorized-all-issuer-flags` | present | `true` | — | required, revocable, immutable | `fail` / default | `SUCCESS` |
+| `unauthorized-warn` | present | `false` | — | required | `warn` / default | `SUCCESS` (warning in comment) |
+| `unauthorized-ignore` | present | `false` | — | required | `ignore` / default | `SUCCESS` |
+| `unauthorized-fail` | present | `false` | — | required | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-fail-revocable` | present | `false` | — | required, revocable | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-fail-immutable` | present | `false` | — | required, immutable | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `clawback-warn` | present | `true` | `true` | revocable | default / `false` | `SUCCESS` (warning in comment) |
+| `clawback-strict` | present | `true` | `true` | revocable | default / `true` | `CLAWBACK_BLOCKED` |
+| `unauthorized-fail-clawback-strict` | present | `false` | `true` | required, immutable | `fail` / `true` | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-warn-clawback-strict` | present | `false` | `true` | required | `warn` / `true` | `CLAWBACK_BLOCKED` |
+| `unauthorized-fail-clawback-warn` | present | `false` | `true` | required | `fail` / `false` | `TRUSTLINE_UNAUTHORIZED` |
+| `legacy-horizon-no-flags` | present | absent | absent | absent | defaults | `SUCCESS` |
+
+The same rows are exported as `ISSUER_AUTH_FLAG_DECISION_TABLE` and stored in
+[`__tests__/fixtures/issuer-auth-flag-decision-table.json`](../__tests__/fixtures/issuer-auth-flag-decision-table.json).
+`__tests__/issuer-auth-flag-precedence.test.ts` fails if the code, the fixture,
+this table or `runAccountChecks` disagree.
 
 ## Label gate force path (Issue #868)
 

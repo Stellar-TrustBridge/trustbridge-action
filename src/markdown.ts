@@ -526,3 +526,46 @@ export function buildOnboardingChecklist(
 
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Issue #900 — marker-safe line scanning
+// ---------------------------------------------------------------------------
+
+/**
+ * Lines of `body` that GitHub renders as normal Markdown, trimmed: lines in
+ * fenced code blocks (```` ``` ```` / `~~~`), indented code blocks (4 spaces
+ * or a tab) and blockquotes (`>`) are dropped.
+ *
+ * TrustBridge uses this to find its hidden HTML markers. Another bot that
+ * quotes or code-formats a TrustBridge marker (for example in a "previous
+ * comment" excerpt) shows it as text, so that comment must not be taken as
+ * TrustBridge's own. A non-string `body` returns an empty array.
+ */
+export function markdownLinesOutsideCode(body: unknown): string[] {
+  if (typeof body !== 'string' || body.length === 0) return [];
+  const out: string[] = [];
+  let fence: { char: string; length: number } | null = null;
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (
+        fenceMatch &&
+        fenceMatch[1][0] === fence.char &&
+        fenceMatch[1].length >= fence.length &&
+        line.slice(fenceMatch[1].length).trim() === ''
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (fenceMatch && raw.search(/\S/) < 4) {
+      fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+      continue;
+    }
+    if (/^( {4}|\t)/.test(raw)) continue;
+    if (line.startsWith('>')) continue;
+    out.push(line);
+  }
+  return out;
+}
