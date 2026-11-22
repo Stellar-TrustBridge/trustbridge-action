@@ -336,6 +336,55 @@ export function validateUrl(
 }
 
 /**
+ * Longest raw value echoed back in an enum validation error. Longer values
+ * are truncated so an oversized (or pasted-secret) input never floods the
+ * log line. See docs/INPUT_VALIDATION.md#enum-inputs-network-and-enforcement-modes.
+ */
+export const ENUM_INPUT_MAX_ECHO_LENGTH = 32;
+
+/**
+ * Validates a string enum input (Issue #901).
+ *
+ * Case policy: the value is trimmed and lowercased before matching, so
+ * `Testnet` and ` STRICT ` are accepted. An empty value is valid — callers
+ * apply the documented default. Anything else is rejected with a stable,
+ * actionable message that lists every allowed value:
+ *
+ *   `<field> must be one of "a", "b". Received: "<value>"`
+ *
+ * The span records only the field name, the input length and the result —
+ * never the raw value.
+ */
+export function validateEnumInput(
+  value: string | undefined,
+  fieldName: string,
+  allowed: readonly string[],
+): ValidationResult {
+  const raw = value ?? '';
+  return withSpan(
+    'validateEnumInput',
+    { fieldName, inputLength: raw.length, allowedCount: allowed.length },
+    () => {
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      const normalized = raw.trim().toLowerCase();
+
+      if (normalized && !allowed.includes(normalized)) {
+        const echoed =
+          raw.length > ENUM_INPUT_MAX_ECHO_LENGTH
+            ? `${raw.slice(0, ENUM_INPUT_MAX_ECHO_LENGTH)}…`
+            : raw;
+        errors.push(
+          `${fieldName} must be one of ${allowed.map((v) => `"${v}"`).join(', ')}. Received: "${echoed}"`,
+        );
+      }
+
+      return { valid: errors.length === 0, errors, warnings };
+    },
+  );
+}
+
+/**
  * Combines multiple validation results into a single summary.
  */
 export function combineResults(...results: ValidationResult[]): ValidationResult {

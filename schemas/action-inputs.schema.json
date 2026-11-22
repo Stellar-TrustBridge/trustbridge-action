@@ -494,8 +494,13 @@
     },
     "home_domain_check_mode": {
       "type": "string",
-      "description": "Home domain check mode: warn or strict.",
-      "default": "warn"
+      "description": "Home domain check mode: warn or strict. Case-insensitive; unknown values fail before any Horizon call. (Issue #901)",
+      "default": "warn",
+      "enum": [
+        "",
+        "warn",
+        "strict"
+      ]
     },
     "locale": {
       "type": "string",

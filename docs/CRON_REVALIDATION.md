@@ -89,6 +89,82 @@ A cron job failing because one contributor's wallet drifted would break your CI 
 
 ---
 
+## Backoff when Horizon is degraded
+
+A nightly sweep that keeps firing at full rate while Horizon is returning `429` / `5xx` / timeouts makes the incident worse for every Wave org sharing that Horizon. TrustBridge already backs off **inside** a run; the cron workflow should back off **between** runs and between dispatches.
+
+### 1. In-run resilience settings (per TrustBridge step)
+
+These are enforced by `src/horizon.ts` / `src/resilience.ts`. During an incident, prefer *fewer, bounded* retries over more of them.
+
+| Input | Default | Recommended during a Horizon incident | Effect |
+| --- | --- | --- | --- |
+| `max_retries` | `3` (0–10) | `1`–`2` | Attempts per endpoint on `429` / `502` / `503` / `504` / timeout |
+| `retry_base_delay_ms` | `1000` | `2000` | Exponential backoff base (`base * 2^attempt`, ± 10 % jitter) |
+| `retry_max_delay_ms` | `30000` | keep | Cap on any single wait, including `Retry-After` |
+| `retry_max_total_wait_ms` | `120000` | `60000` | Cumulative wait budget per endpoint; exhaustion yields `HORIZON_WAIT_BUDGET_EXHAUSTED` |
+| `horizon_timeout_ms` | `15000` | keep | Per-request timeout (`HORIZON_TIMEOUT`) |
+| `horizon_max_requests` | `0` (unlimited) | e.g. `50` | Hard request budget per run (`RATE_BUDGET_EXHAUSTED`) |
+| `use_cache` + `horizon_cache_ttl_ms` | off / `60000` | on / `60000` | Reuses results when an address appears on several issues |
+| `horizon_url_fallback` / `rpc_fallback_url` | empty | a same-network mirror | Failover after retry exhaustion |
+
+The circuit breaker (5 consecutive failures → open for 30 s, one half-open probe at a time) fast-fails with `CIRCUIT_OPEN` instead of sending more requests. See [Error handling → Retry-After cap inputs](ERROR_HANDLING.md#retry-after-cap-inputs-issue-705) and [Error handling → 503 / 502 / 504](ERROR_HANDLING.md#503--502--504--service-degradation) for full semantics.
+
+### 2. Which signals mean "Horizon is degraded"
+
+Drive pauses from the step's `reason_code` output, never from wallet failures. These codes are exported as `HORIZON_DEGRADED_REASON_CODES` in `src/resilience.ts`:
+
+| `reason_code` | Meaning |
+| --- | --- |
+| `HORIZON_TIMEOUT` | Requests timed out after retries |
+| `HORIZON_ERROR` | Non-retryable or exhausted Horizon HTTP / transport error |
+| `CIRCUIT_OPEN` | Circuit breaker short-circuited the request |
+| `RATE_BUDGET_EXHAUSTED` | `horizon_max_requests` budget used up |
+| `HORIZON_WAIT_BUDGET_EXHAUSTED` | `Retry-After` / backoff waits exceeded `retry_max_total_wait_ms` |
+
+Wallet outcomes (`TRUSTLINE_MISSING`, `RESERVE_TOO_LOW`, `ACCOUNT_NOT_FUNDED`, …) mean Horizon answered correctly and must **not** trigger a pause.
+
+Supporting Action metrics in the Job Summary JSON artifact: the `horizon_retry_after_waits` / `horizon_retry_after_wait_ms` counters (Horizon asked us to slow down), the `horizonFetchLatencyHistogram` (latency shifting into the `2500` / `5000` / `+Inf` buckets), circuit-breaker state-change annotations, and — when tracing is enabled — `horizon.http_error` spans (see [ARCHITECTURE.md → Horizon error spans](ARCHITECTURE.md#horizon-error-spans)).
+
+### 3. Pause and back off between sweeps
+
+Recommended policy (`DEFAULT_CRON_BACKOFF_POLICY` in `src/resilience.ts`):
+
+- **Pause the sweep** (stop dispatching further issues) once at least **5** results are in and **≥ 20 %** of them carry a degraded `reason_code` (`shouldPauseCronSweep`).
+- **Back off the next sweep** after *n* consecutive degraded sweeps by `min(15 min × 2^(n-1), 6 h)` with **± 20 % jitter** (`computeCronBackoffDelayMs`): 15 min → 30 min → 1 h → 2 h → 4 h → 6 h. A clean sweep resets *n* to 0.
+- **Jitter the schedule itself.** Avoid `0 * * * *` / `0 3 * * *`; pick an off-minute (`17 3 * * *`) and add a random `sleep` of up to a few minutes before the first Horizon call so Wave orgs do not hit Horizon in lockstep.
+- **Never overlap runs.** Add a `concurrency` group so a slow, backing-off sweep is not joined by the next scheduled one.
+- **Space dispatches.** Keep `REVALIDATION_BATCH_SIZE` small and sleep between `workflow_dispatch` calls during an incident.
+
+```yaml
+concurrency:
+  group: trustbridge-cron
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    steps:
+      - name: Jitter start
+        run: sleep $(( RANDOM % 180 ))
+
+      # … per-address TrustBridge step with id: tb …
+
+      - name: Pause sweep if Horizon is degraded
+        if: always()
+        run: |
+          case "${{ steps.tb.outputs.reason_code }}" in
+            HORIZON_TIMEOUT|HORIZON_ERROR|CIRCUIT_OPEN|RATE_BUDGET_EXHAUSTED|HORIZON_WAIT_BUDGET_EXHAUSTED)
+              echo "::warning::Horizon degraded (${{ steps.tb.outputs.reason_code }}); pausing sweep."
+              echo "HORIZON_DEGRADED=true" >> "$GITHUB_ENV" ;;
+          esac
+```
+
+Persist the consecutive-degraded counter wherever your sweep already keeps state (a repository variable, a cache entry, or a tracking issue label) and skip the run early while `now < last_run + computeCronBackoffDelayMs(n)`.
+
+Pausing never changes readiness semantics: a skipped or paused sweep posts no comments and leaves the previous sticky comment untouched, so no partial state is written. Use `posting_mode: dry-run` to rehearse the policy without touching issues.
+
+---
+
 ## Inline variant (no secondary workflow file)
 
 If you cannot or do not want to dispatch a second workflow, you can call `trustbridge-action` directly inside the cron job. When running in a cron job without issue context, set `posting_mode: dry-run` so checks run cleanly and outputs are populated for downstream maintainer alerts:
@@ -197,6 +273,7 @@ The full copy-paste workflow lives at [`docs/examples/cron-revalidation.yml`](ex
 | Dispatch failures with 422 | `workflow_dispatch` not enabled on target workflow | Add `workflow_dispatch:` trigger to the target workflow |
 | `::warning:: rate limit` on `gh issue list` | Too many issues or too-frequent schedule | Reduce `REVALIDATION_BATCH_SIZE` or switch to a PAT / GitHub App token |
 | Comments not updated | `sticky_comment: false` in target workflow | Set `sticky_comment: true` in the per-issue revalidation workflow |
+| Many issues report `HORIZON_TIMEOUT` / `CIRCUIT_OPEN` / `HORIZON_WAIT_BUDGET_EXHAUSTED` at once | Horizon is degraded, not the wallets | Pause and back off — see [§ Backoff when Horizon is degraded](#backoff-when-horizon-is-degraded) |
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
