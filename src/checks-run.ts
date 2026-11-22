@@ -22,6 +22,12 @@ import { getOctokitProxyOptions } from './proxy';
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
 export const HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
 
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+export const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 
 /**
@@ -169,9 +175,9 @@ export async function createCheckRun(
     const conclusion = determineCheckConclusion(result);
     const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
 
-    // Octokit Checks API supports up to 50 annotations per request.
-    // For simplicity, we truncate to the first 50 checks.
-    const annotationsSlice = annotations.slice(0, 50);
+    // Octokit Checks API supports up to 50 annotations per request on
+    // github.com and GHES. For simplicity, we truncate to the first 50 checks.
+    const annotationsSlice = annotations.slice(0, CHECK_RUN_ANNOTATIONS_PER_REQUEST);
 
     // Annotations are built synchronously, but re-check so a cancel that
     // landed while preparing never reaches the API.

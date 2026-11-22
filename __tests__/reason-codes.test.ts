@@ -176,6 +176,11 @@ const KNOWN_REASON_CODES = [
   'RATE_BUDGET_EXHAUSTED',
   'MILESTONE_GATE_SKIPPED',
   'MAINTAINER_SKIPPED',
+  // Issue #856: codes that were emitted at runtime (src/checks.ts,
+  // src/index.ts) and covered by their own tests, but missing from the
+  // catalog — exactly the drift the exhaustiveness work is meant to catch.
+  'HORIZON_WAIT_BUDGET_EXHAUSTED',
+  'EXTRA_TRUSTLINE_MISSING',
 ] as const;
 
 describe('CI lock: all known reason_codes are in the catalog', () => {

@@ -150,3 +150,23 @@ For backwards compatibility, if `posting_mode` is omitted, the action falls back
 - **`use_actions_cache_backend`**: Opts into the persistent GitHub Actions Cache Service backend (`@actions/cache`) to reuse check results across matrix legs and workflow runs. Falls back gracefully to runner memory cache if cache operations encounter service issues.
 - **`horizon_cache_ttl_ms`**: Time-to-live for cached account data in milliseconds (default: `60000`).
 
+
+## Unauthorized trustline decision table (Issue #866)
+
+`unauthorized_trustline_policy` evaluates the present trustline state. It does
+not infer authorization from `auth_immutable`, `auth_revocable`, or clawback
+flags; those issuer flags explain what may happen next, while
+`is_authorized: false` is the actionable account state.
+
+| Account/trustline state | `fail` | `warn` | `ignore` |
+|---|---|---|---|
+| No trustline | `TRUSTLINE_MISSING` | `TRUSTLINE_MISSING` | `TRUSTLINE_MISSING` |
+| Trustline, authorized or authorization field absent | pass | pass | pass |
+| Trustline, `is_authorized: false` | fail, `TRUSTLINE_UNAUTHORIZED` | pass with warning, `SUCCESS` | pass silently, `SUCCESS` |
+| Unauthorized + `auth_immutable: true` | still `TRUSTLINE_UNAUTHORIZED`; issuer approval is the remediation | warning remains actionable | ignored by policy |
+| Unauthorized + clawback enabled + strict clawback | authorization wins: `TRUSTLINE_UNAUTHORIZED` | warning mode remains non-blocking; strict clawback may add its own check | authorization is ignored; strict clawback may still block |
+
+The precedence is deliberate: a trustline that exists but is unauthorized must
+never be reported as missing. Stable remediation is to ask the issuer to
+submit `SetTrustLineFlags` (or legacy `AllowTrust`); adding another Change
+Trust operation is not the fix.

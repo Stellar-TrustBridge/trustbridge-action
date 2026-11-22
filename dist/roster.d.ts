@@ -1,8 +1,12 @@
 import { AssigneeAddressMap } from './inputs';
 export interface RosterFilterOptions {
+    /** Exact addresses or bounded globs using `*` and `?`. */
     allowlist?: string[];
+    /** Exact addresses or bounded globs using `*` and `?`; deny wins. */
     denylist?: string[];
 }
+/** Linear-time glob matcher. It does not compile user input into a RegExp. */
+export declare function matchesRosterPattern(value: string, pattern: string): boolean;
 /**
  * Filter a batch assignee address map against roster allowlist/denylist entries.
  *

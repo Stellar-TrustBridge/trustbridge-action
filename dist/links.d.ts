@@ -60,13 +60,38 @@ export type FaqAnchor = (typeof FAQ_ANCHORS)[keyof typeof FAQ_ANCHORS];
  */
 export declare function getFaqAnchorForCheck(checkLabel: string): FaqAnchor | undefined;
 /**
+ * Validate that `url` is safe to render as a clickable link in a GitHub
+ * comment (Issue #853): deep links into Horizon explorers, docs mirrors,
+ * dashboards, and wallet callbacks all funnel through this check before
+ * being embedded in Markdown.
+ *
+ * Rejects:
+ * - anything that does not parse as an absolute URL
+ * - any scheme other than `https:` — `javascript:`, `data:`, `vbscript:`,
+ *   plain `http:`, and bare/relative strings are all rejected outright, so
+ *   a crafted value can never execute script or escape to a local file
+ * - embedded credentials (`https://user:pass@host/...`)
+ * - private, loopback, link-local, or cloud-metadata hosts (open-redirect-
+ *   to-internal-service guard, same list as the Horizon SSRF policy)
+ *
+ * This check only validates the URL as a whole; it does not percent-encode
+ * anything. Callers that interpolate dynamic path or query segments must
+ * still build them with `URLSearchParams` (as every builder in this file
+ * does), because an unescaped `)` in a raw string would terminate a
+ * Markdown `[text](url)` link early and let the rest of the string inject
+ * arbitrary Markdown.
+ */
+export declare function isSafeExternalLink(url: string): boolean;
+/**
  * Build a full FAQ deep link URL for a given anchor.
  *
  * @param anchor   A value from `FAQ_ANCHORS`.
  * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
- *                 mirror). When the value is not a valid HTTPS URL, the
- *                 default base URL is used silently so comment posting is
- *                 never blocked by an invalid override.
+ *                 mirror). When the value fails {@link isSafeExternalLink}
+ *                 (wrong scheme, credentials, private/metadata host, or
+ *                 simply not a valid URL), the default base URL is used
+ *                 silently so comment posting is never blocked by an
+ *                 invalid or malicious override.
  */
 export declare function buildFaqLink(anchor: FaqAnchor, baseUrl?: string): string;
 /**

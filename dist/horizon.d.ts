@@ -137,6 +137,8 @@ export interface FetchAccountOptions {
     fallbackUrls?: string[];
     useCache?: boolean;
     cacheTtlMs?: number;
+    /** Short TTL for Horizon 404/not-found markers; zero disables negative caching. */
+    negativeCacheTtlMs?: number;
     cache?: SimpleCache;
     fetchFn?: FetchLike;
     /**
@@ -181,6 +183,7 @@ export interface FetchAccountOptions {
     /** Optional SHA-256 TLS certificate fingerprint pin (Issue #303). */
     pinFingerprint?: string;
 }
+export declare const DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 export declare const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 export declare const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
 export declare function normalizeHorizonUrl(baseUrl: string): string;
