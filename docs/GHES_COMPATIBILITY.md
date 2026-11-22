@@ -44,6 +44,38 @@
 | GHES 3.x | 50 | Same as github.com |
 | GHES 4.x | 50 | Same as github.com |
 
+## Actions Outputs, Summaries and Annotations (Issue #897)
+
+This matrix covers the Actions runtime surfaces that TrustBridge writes to:
+step outputs, the Job Summary, and annotations. The first column holds stable
+row keys. `__tests__/ghes-actions-surfaces.test.ts` checks the numbers against
+the constants in `src/outputs.ts`, `src/summary.ts`, `src/checks-run.ts` and
+`src/comment.ts`, so update the code, this table and the test together.
+
+<!-- GHES_ACTIONS_SURFACES_BEGIN -->
+| Key | Surface | github.com | GHES | TrustBridge behaviour | Constant |
+|-----|---------|------------|------|-----------------------|----------|
+| `step-output-value` | One step output value | ✅ 1,048,576 bytes (1 MiB) | ✅ 1,048,576 bytes (1 MiB) | Array-shaped JSON outputs (`batch_summary_json` failures, `assets_trustline_status`, matrix assignee results) drop their last entries until they fit 900,000 bytes. `outputs_truncated` is then `"true"`. | `GITHUB_OUTPUT_VALUE_LIMIT_BYTES`, `MAX_OUTPUT_VALUE_BYTES` |
+| `output-transport` | `GITHUB_OUTPUT` file command | ✅ Always set | ⚠️ Missing on older runner versions | Without `GITHUB_OUTPUT`, `@actions/core` falls back to the deprecated `::set-output` command. Outputs still work. TrustBridge logs a debug line. | `resolveOutputTransport()` |
+| `job-summary-availability` | `GITHUB_STEP_SUMMARY` file | ✅ Always set | ⚠️ Only on GHES releases with Job Summaries | Without it, `writeJobSummary()` skips the summary and the run continues. TrustBridge logs a debug line. Outputs and the issue comment are unaffected. | `isJobSummaryAvailable()` |
+| `job-summary-size` | Job Summary size per step | ✅ 1,048,576 bytes (1 MiB) | ✅ 1,048,576 bytes (1 MiB) when supported | `guardJobSummaryMarkdown()` cuts at a line boundary and adds the `trustbridge-action:summary-truncated` marker. | `JOB_SUMMARY_MAX_BYTES` |
+| `check-run-annotations` | Annotations per Checks API request | ✅ 50 | ✅ 50 | Only the first 50 checks become annotations. | `CHECK_RUN_ANNOTATIONS_PER_REQUEST` |
+| `workflow-annotations` | `core.warning` / `core.error` annotations | ✅ 10 errors and 10 warnings per step, 50 per job | ✅ 10 errors and 10 warnings per step, 50 per job | Annotations past the cap are dropped from the run page but stay in the log. Gate on the `ready` / `reason_code` outputs, never on annotation counts. | `WORKFLOW_ANNOTATION_LIMITS` |
+| `comment-body` | Issue / PR comment body | ✅ 65,536 | ✅ 65,536 by default; admins can lower it | Bodies over the limit are truncated, and the full report goes to `report_output_path`. | `COMMENT_SIZE_LIMIT_BYTES` |
+<!-- GHES_ACTIONS_SURFACES_END -->
+
+### Failure modes on GHES
+
+| Symptom | Cause | Stable behaviour |
+|---------|-------|------------------|
+| `Warning: The set-output command is deprecated` in the log | Runner does not set `GITHUB_OUTPUT` | Outputs are still set. Upgrade the self-hosted runner to remove the warning. |
+| No "TrustBridge Metrics" section on the run summary page | Runner does not set `GITHUB_STEP_SUMMARY` | The summary is skipped. `ready`, `reason_code` and the comment are unchanged. |
+| `outputs_truncated: "true"` | A JSON output was larger than 900,000 bytes | The earliest entries are kept. Read the scalar count outputs (`batch_failed_count`, …) for totals. |
+| Fewer annotations than failing checks | Per-request or per-step annotation cap | Failing checks are always listed in `checks_json` and the comment. |
+
+No row in this matrix changes `ready` or `reason_code`. A missing surface
+degrades to "not shown" and never to a silent pass.
+
 ## Permissions Matrix
 
 | Feature | Required Permissions | Notes |
@@ -143,7 +175,7 @@ If `HTTPS_PROXY` / `HTTP_PROXY` contains a malformed URL, TrustBridge logs a war
 4. **Network egress:** GHES runners are often on restricted networks. Ensure access to:
    - `horizon.stellar.org` (or your configured `horizon_url`) — may require proxy configuration (see above).
    - Your GHES instance's API and GraphQL endpoints — typically bypassed via `NO_PROXY`.
-5. **Custom API limits:** GHES admins can configure custom rate limits, comment size limits, and annotation caps that differ from github.com defaults.
+5. **Custom API limits:** GHES admins can configure custom rate limits, comment size limits, and annotation caps that differ from github.com defaults. Runtime surfaces (`GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY`) may also be missing on older runners. See [Actions outputs, summaries and annotations](#actions-outputs-summaries-and-annotations-issue-897).
 
 ## Verification Without a Live GHES Instance
 

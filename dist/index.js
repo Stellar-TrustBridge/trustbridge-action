@@ -62015,6 +62015,13 @@ exports.HttpMockMatrix = HttpMockMatrix;
  * (`schemas/sarif-schema-2.1.0.json`, Issue #679) before it is written or
  * uploaded.
  *
+ * Every result carries a `partialFingerprints` entry keyed by
+ * `trustbridge/v1` — a stable hash of the result's identity inputs (Issue
+ * #893). It excludes message text and account data on purpose, so
+ * code-scanning history does not churn when wording or balances move; a
+ * `reason_code` change does move it. See {@link computeSarifFingerprint} and
+ * `docs/SCHEMA.md`.
+ *
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
@@ -62051,7 +62058,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.SarifValidationError = exports.GENERIC_RULE_ID = exports.CIRCUIT_OPEN_RULE_ID = exports.RATE_BUDGET_RULE_ID = exports.CLAWBACK_ADVISORY_RULE_ID = exports.MILESTONE_GATE_RULE_ID = exports.UNAUTHORIZED_TRUSTLINE_RULE_ID = exports.TRUSTLINE_RULE_ID = exports.HOME_DOMAIN_HELP_URI = exports.HOME_DOMAIN_RULE_ID = exports.SARIF_FINGERPRINT_KEY = exports.TOOL_VERSION = exports.TOOL_NAME = exports.SARIF_VERSION = exports.SARIF_SCHEMA = void 0;
+exports.computeSarifFingerprint = computeSarifFingerprint;
+exports.sarifRunReasonCode = sarifRunReasonCode;
+exports.sarifPartialFingerprints = sarifPartialFingerprints;
 exports.buildSarifDocument = buildSarifDocument;
 exports.sarifOutcomeFromResult = sarifOutcomeFromResult;
 exports.serialiseSarif = serialiseSarif;
@@ -62067,6 +62077,7 @@ exports.serializeSarif = serializeSarif;
 exports.getSarifSchemaErrors = getSarifSchemaErrors;
 exports.validateSarifSchema = validateSarifSchema;
 exports.writeSarifFile = writeSarifFile;
+const crypto = __importStar(__nccwpck_require__(76982));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const sarifSchema_1 = __nccwpck_require__(20634);
@@ -62074,6 +62085,42 @@ exports.SARIF_SCHEMA = 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/m
 exports.SARIF_VERSION = '2.1.0';
 exports.TOOL_NAME = 'trustbridge-action';
 exports.TOOL_VERSION = '1.0.0';
+// ---------------------------------------------------------------------------
+// Stable result fingerprints (Issue #893)
+// ---------------------------------------------------------------------------
+/**
+ * `partialFingerprints` key TrustBridge writes on every SARIF result.
+ *
+ * The `v1` suffix versions the fingerprint algorithm: bump it in the same
+ * release as any change to {@link SarifFingerprintInputs}, so GitHub code
+ * scanning treats the new values as a fresh result identity instead of
+ * matching them against values computed from the old inputs.
+ */
+exports.SARIF_FINGERPRINT_KEY = 'trustbridge/v1';
+/**
+ * Compute the stable fingerprint for one SARIF result.
+ *
+ * Deterministic SHA-256 over {@link SarifFingerprintInputs} joined with NUL
+ * separators (so `a` + `bc` cannot collide with `ab` + `c`), truncated to 32
+ * hex characters. The same inputs always yield the same value on every runner,
+ * and a `reason_code` change yields a different one.
+ */
+function computeSarifFingerprint(inputs) {
+    const canonical = [inputs.ruleId, inputs.checkLabel, inputs.assetCode, inputs.reasonCode].join('\u0000');
+    return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 32);
+}
+/**
+ * Normalise a run's reason code exactly the way `runs[0].properties.reasonCode`
+ * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
+ * `FAILED` for a failing one.
+ */
+function sarifRunReasonCode(result) {
+    return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+}
+/** Build the `partialFingerprints` property bag for one result. */
+function sarifPartialFingerprints(inputs) {
+    return { [exports.SARIF_FINGERPRINT_KEY]: computeSarifFingerprint(inputs) };
+}
 /** Stable SARIF rule id for the SEP-0001 home domain check (Issue #708). */
 exports.HOME_DOMAIN_RULE_ID = 'TB004';
 exports.HOME_DOMAIN_HELP_URI = 'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/SEP0001_HOME_DOMAIN.md';
@@ -62114,9 +62161,12 @@ function buildSarifDocument(outcome) {
             helpUri: 'https://developers.stellar.org/docs/learn/fundamentals/lumens',
         },
     ];
+    // `label` is the rule's stable `name`; this document carries no per-check
+    // labels, so it is the identity input for the fingerprint (Issue #893).
     const checks = [
         {
             ruleId: 'TB001',
+            label: 'AccountFunded',
             passed: outcome.accountFunded,
             message: outcome.accountFunded
                 ? `Account ${outcome.stellarAddress} is funded and active.`
@@ -62124,6 +62174,7 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB002',
+            label: 'TrustlineExists',
             passed: outcome.trustlineExists,
             message: outcome.trustlineExists
                 ? `Trustline for ${outcome.assetCode} is present.`
@@ -62131,20 +62182,27 @@ function buildSarifDocument(outcome) {
         },
         {
             ruleId: 'TB003',
+            label: 'XlmReserveMet',
             passed: outcome.xlmReserveMet,
             message: outcome.xlmReserveMet
                 ? 'XLM balance meets the minimum reserve requirement.'
                 : 'XLM balance is below the minimum reserve requirement.',
         },
     ];
-    const results = checks.map(({ ruleId, passed, message }) => ({
+    const results = checks.map(({ ruleId, label, passed, message }) => ({
         ruleId,
         level: passed ? 'none' : 'error',
         message: { text: message },
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: label,
+            assetCode: outcome.assetCode,
+            reasonCode: passed ? 'SUCCESS' : 'FAILED',
+        }),
     }));
     if (outcome.homeDomain && outcome.homeDomain.outcome !== 'skipped') {
         rules.push(buildHomeDomainRule());
-        results.push(buildHomeDomainResult(outcome.homeDomain));
+        results.push(buildHomeDomainResult(outcome.homeDomain, outcome.assetCode));
     }
     return {
         $schema: exports.SARIF_SCHEMA,
@@ -62184,19 +62242,37 @@ function buildHomeDomainRule() {
         },
     };
 }
-function buildHomeDomainResult(homeDomain) {
+/**
+ * Map a home domain outcome to the reason code used for its fingerprint. These
+ * are the `reason_code` values the full validation path records for the same
+ * outcome, so a code rename moves this fingerprint too (Issue #893).
+ */
+const HOME_DOMAIN_OUTCOME_REASON_CODE = {
+    valid: 'SUCCESS',
+    mismatch: 'HOME_DOMAIN_MISMATCH',
+    missing: 'HOME_DOMAIN_MISSING',
+    skipped: 'SUCCESS',
+};
+function buildHomeDomainResult(homeDomain, assetCode) {
+    const partialFingerprints = sarifPartialFingerprints({
+        ruleId: exports.HOME_DOMAIN_RULE_ID,
+        checkLabel: 'HomeDomainAligned',
+        assetCode,
+        reasonCode: HOME_DOMAIN_OUTCOME_REASON_CODE[homeDomain.outcome],
+    });
     if (homeDomain.outcome === 'valid') {
         return {
             ruleId: exports.HOME_DOMAIN_RULE_ID,
             level: 'none',
             message: { text: `Issuer home_domain is ${homeDomain.actualHomeDomain ?? 'set'}.` },
+            partialFingerprints,
         };
     }
     const level = homeDomain.mode === 'strict' ? 'error' : 'warning';
     const text = homeDomain.outcome === 'mismatch'
         ? `Issuer home_domain is ${homeDomain.actualHomeDomain ?? ''} but ${homeDomain.expectedHomeDomain ?? ''} was expected.`
         : 'Issuer account has no home_domain set on-chain (or the issuer account was unavailable).';
-    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text } };
+    return { ruleId: exports.HOME_DOMAIN_RULE_ID, level, message: { text }, partialFingerprints };
 }
 /**
  * Build a SARIF outcome from a `ValidationResult` (Issue #708), so callers
@@ -62506,7 +62582,7 @@ function unauthorizedTrustlineSarifSeverity(result) {
 /**
  * Build a single SARIF result from a TrustBridge check.
  */
-function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride) {
+function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverride, reasonCode = '') {
     const ruleId = severityOverride?.ruleId ?? checkLabelToRuleId(check.label);
     const level = severityOverride?.level ?? checkToSarifLevel(check);
     return {
@@ -62527,6 +62603,12 @@ function checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severi
                 },
             },
         ],
+        partialFingerprints: sarifPartialFingerprints({
+            ruleId,
+            checkLabel: check.label,
+            assetCode,
+            reasonCode,
+        }),
         properties: {
             assetCode,
             checkLabel: check.label,
@@ -62567,6 +62649,13 @@ function severityOverrideFor(check, result, unauthorizedSeverity) {
  *  - TB007 (`warning`) when the milestone gate skipped validation.
  *  - TB008 (`warning`) when the trustline has clawback enabled but
  *    `clawback_strict_mode` did not block it (strict-mode blocks stay TB005).
+ *
+ * Every result also carries `partialFingerprints['trustbridge/v1']`, hash of
+ * the rule id, check label, asset code and the run's `reason_code`
+ * (Issue #893). Message text, the account address, balances, the Horizon URL
+ * and the run timestamp are excluded, so a purely cosmetic wording change
+ * keeps the same code-scanning alert while a `reason_code` change opens a new
+ * one.
  */
 function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version = '1.0.0') {
     const rules = buildSarifRules();
@@ -62574,7 +62663,11 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
     // for it: `fail` promotes the trustline result to an `error` under TB006,
     // `warn` keeps it at `note` severity, `ignore` omits it entirely.
     const unauthorizedSeverity = unauthorizedTrustlineSarifSeverity(result);
-    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity)));
+    // Issue #893 — every result carries the run's reason code in its stable
+    // fingerprint, so a reason_code change (including a rename) moves the
+    // finding identity while message wording does not.
+    const runReasonCode = sarifRunReasonCode(result);
+    const results = result.checks.map((check) => checkToSarifResult(check, assetCode, horizonUrl, stellarAddress, severityOverrideFor(check, result, unauthorizedSeverity), runReasonCode));
     const location = [
         {
             physicalLocation: {
@@ -62595,6 +62688,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: 'Validation was skipped by the milestone gate — the issue milestone is not in milestone_allowlist.',
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.MILESTONE_GATE_RULE_ID,
+                checkLabel: 'Milestone gate',
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: 'Milestone gate',
@@ -62612,6 +62711,12 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 text: `Trustline for ${assetCode} has clawback enabled — the issuer can reclaim the asset at any time. Set clawback_strict_mode: true to block it.`,
             },
             locations: location,
+            partialFingerprints: sarifPartialFingerprints({
+                ruleId: exports.CLAWBACK_ADVISORY_RULE_ID,
+                checkLabel: `${assetCode} clawback advisory`,
+                assetCode,
+                reasonCode: runReasonCode,
+            }),
             properties: {
                 assetCode,
                 checkLabel: `${assetCode} clawback advisory`,
@@ -62637,7 +62742,7 @@ function buildSarifOutput(result, assetCode, horizonUrl, stellarAddress, version
                 properties: {
                     trustbridgeVersion: version,
                     runTimestamp: new Date().toISOString(),
-                    reasonCode: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
+                    reasonCode: runReasonCode,
                     validationGate: {
                         ready: result.valid,
                         totalChecks: result.checks.length,
