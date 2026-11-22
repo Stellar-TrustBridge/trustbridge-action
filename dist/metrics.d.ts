@@ -143,10 +143,48 @@ export interface TimingBreakdown {
     comment_post_ms: number;
     total_ms: number;
 }
+/**
+ * Overall outcome of one Action job. Exactly one is recorded per job:
+ *   - `pass`    — validation ran and every check passed (`ready = true`)
+ *   - `fail`    — validation ran and at least one check failed, or the run
+ *                 aborted with an error before a verdict
+ *   - `skipped` — validation was intentionally not run (milestone gate)
+ */
+export declare const JOB_OUTCOMES: readonly ["pass", "fail", "skipped"];
+export type JobOutcome = (typeof JOB_OUTCOMES)[number];
+/**
+ * Bounded set of check kinds used as the `check` label on
+ * `check_skipped`. Check labels embed the operator-supplied asset code, so
+ * they are never used as labels directly; anything unrecognised is `other`.
+ */
+export declare const CHECK_KINDS: readonly ["horizon_available", "account_funded", "trustline", "xlm_reserve", "asset_balance", "trustline_limit", "clawback", "home_domain", "other"];
+export type CheckKind = (typeof CHECK_KINDS)[number];
+/** In-process counter name for a job outcome, e.g. `job_outcome_pass`. */
+export declare function jobOutcomeCounterName(outcome: JobOutcome): string;
+/** In-process counter name for a skipped check kind, e.g. `check_skipped_trustline`. */
+export declare function checkSkippedCounterName(kind: CheckKind): string;
+/**
+ * Prometheus names for the job outcome metrics, as documented in
+ * docs/ARCHITECTURE.md#job-outcome-counters. Exporters that turn the JSON
+ * artifact into Prometheus series must use exactly these names and labels.
+ */
+export declare const JOB_OUTCOME_PROMETHEUS_METRICS: Readonly<{
+    /** Counter, label `outcome` ∈ JOB_OUTCOMES. Sums to 1 per job. */
+    jobOutcome: "trustbridge_job_outcome_total";
+    /** Counter, label `check` ∈ CHECK_KINDS. */
+    checkSkipped: "trustbridge_check_skipped_total";
+}>;
+/** Result of `MetricsCollector.recordJobOutcome()`. */
+export interface JobOutcomeRecord {
+    outcome: JobOutcome;
+    /** Skipped-check counts keyed by kind; kinds with zero skips are omitted. */
+    skippedChecks: Partial<Record<CheckKind, number>>;
+}
 export declare class MetricsCollector {
     private metrics;
     private counters;
     private timers;
+    private jobOutcome;
     /**
      * Record a numeric metric. A `contractAddress` tag is rejected outright:
      * callers must go through `recordContractMetric()`, which validates the
@@ -204,6 +242,24 @@ export declare class MetricsCollector {
      */
     reset(): void;
     /**
+     * Record the job-level outcome (Issue #899).
+     *
+     * Outcomes are mutually exclusive: the first call wins and later calls are
+     * ignored (returning the already-recorded outcome), so an error handler
+     * that runs after a verdict cannot double-count a job as both `pass` and
+     * `fail`. `skippedCheckKinds` is only counted on the winning call.
+     *
+     * @throws When `outcome` is not one of {@link JOB_OUTCOMES}.
+     */
+    recordJobOutcome(outcome: JobOutcome, skippedCheckKinds?: readonly CheckKind[]): JobOutcomeRecord;
+    /**
+     * Forget the recorded job outcome so a new job can record one. Called at
+     * the start of `run()`; counters already incremented are kept.
+     */
+    resetJobOutcome(): void;
+    /** The recorded job outcome, or `undefined` before `recordJobOutcome()`. */
+    getJobOutcome(): JobOutcomeRecord | undefined;
+    /**
      * Record campaign preset metric.
      */
     recordPresetMetric(presetId: string, network: string): void;
@@ -247,6 +303,11 @@ export interface JobSummaryReport {
      * passed to `buildJobSummary()`; `undefined` otherwise.
      */
     horizonFetchLatencyHistogram?: HorizonLatencyHistogramSnapshot;
+    /**
+     * Job-level outcome recorded via `recordJobOutcome()` (Issue #899);
+     * `undefined` when none was recorded yet.
+     */
+    jobOutcome?: JobOutcome;
 }
 /**
  * Write a `JobSummaryReport` to the GitHub Actions Job Summary markdown

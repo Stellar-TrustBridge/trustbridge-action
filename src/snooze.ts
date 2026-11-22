@@ -30,14 +30,22 @@
 
 /**
  * Hidden marker format in comment body:
- * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
+ * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms|iso-utc}(?:,timezone={tz})? -->
  */
 export const SNOOZE_MARKER_PATTERN =
-  /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=(\d+) -->/;
+  /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=([^\s,>]+)(?:,timezone=([^\s>]+))? -->/;
 
 export interface SnoozeMarker {
   status: 'pass' | 'fail';
   timestamp: number;
+  timezone?: string;
+}
+
+export interface SnoozeTimestampValidation {
+  valid: boolean;
+  timestamp?: number;
+  utcIso?: string;
+  error?: string;
 }
 
 export interface SnoozeState {
@@ -70,24 +78,222 @@ export interface SnoozeState {
 export const SNOOZE_REASON_CODE = 'snoozed' as const;
 
 /**
+ * Normalizes any timestamp representation (unix-ms number, Date instance,
+ * ISO 8601 UTC string with Z, ISO 8601 with explicit timezone offset, or
+ * date/time string stored without timezone context) to UTC epoch milliseconds.
+ *
+ * ### Timezone & DST Boundary Enforcement (Issue #873)
+ *
+ * Snooze windows that cross DST boundaries or are stored without timezone context
+ * can reopen early or late when parsed by naive local-time parsers (such as `new Date(str)`).
+ * This function normalizes all inputs to UTC epoch milliseconds:
+ * - If an ISO string lacks timezone context (e.g. "2026-11-01T01:30:00"), it is treated
+ *   strictly as UTC rather than runner-local time.
+ * - If an explicit timezone name or offset is provided, it is resolved to the exact UTC epoch instant.
+ * - Negative, non-finite, oversized, or malformed inputs return undefined (fail closed).
+ */
+export function normalizeToUtc(
+  raw: number | string | Date | undefined | null,
+  timezone?: string,
+): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw < 0 || raw > 8.64e15) return undefined;
+    return Math.floor(raw);
+  }
+
+  if (raw instanceof Date) {
+    const time = raw.getTime();
+    if (isNaN(time) || time < 0 || time > 8.64e15) return undefined;
+    return time;
+  }
+
+  if (typeof raw !== 'string') return undefined;
+
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+
+  // Pure digits: unix timestamp in ms
+  if (/^\d+$/.test(trimmed)) {
+    const num = Number(trimmed);
+    if (!Number.isFinite(num) || num < 0 || num > 8.64e15) return undefined;
+    return Math.floor(num);
+  }
+
+  // Explicit negative number: invalid
+  if (/^-\d+$/.test(trimmed)) return undefined;
+
+  // Explicit UTC indicator (Z or z)
+  if (/[Zz]$/.test(trimmed)) {
+    const parsed = Date.parse(trimmed);
+    if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15) return parsed;
+    return undefined;
+  }
+
+  // Explicit timezone offset (+HH:MM, -HH:MM, +HHMM, -HHMM, +HH, -HH)
+  if (/[+-]\d{2}(?::?\d{2})?$/.test(trimmed)) {
+    const parsed = Date.parse(trimmed);
+    if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15) return parsed;
+    return undefined;
+  }
+
+  // Naive date or date-time string without timezone context (e.g. "2026-11-01", "2026-11-01T01:30:00", "2026-11-01 01:30:00")
+  if (/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)?$/.test(trimmed)) {
+    const normalizedIso = trimmed.replace(' ', 'T');
+    const withTime = normalizedIso.includes('T') ? normalizedIso : `${normalizedIso}T00:00:00.000`;
+
+    // If an explicit timezone is given and it's not UTC/Z/GMT, resolve through IANA timezone
+    if (timezone && !['UTC', 'ETC/UTC', 'Z', 'GMT'].includes(timezone.toUpperCase())) {
+      try {
+        const utcMs = Date.parse(`${withTime}Z`);
+        if (isNaN(utcMs)) return undefined;
+        const offsetMs = getTimezoneOffsetMs(utcMs, timezone);
+        const resolved = utcMs - offsetMs;
+        if (Number.isFinite(resolved) && resolved >= 0 && resolved <= 8.64e15) {
+          return resolved;
+        }
+      } catch {
+        // Fall back to UTC if timezone lookup fails
+      }
+    }
+
+    // Default: Normalize to UTC by appending 'Z'
+    const parsed = Date.parse(`${withTime}Z`);
+    if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15) return parsed;
+    return undefined;
+  }
+
+  // Generic ISO parse attempt
+  const fallback = Date.parse(trimmed);
+  if (!isNaN(fallback) && fallback >= 0 && fallback <= 8.64e15) {
+    return fallback;
+  }
+
+  return undefined;
+}
+
+/**
+ * Calculates the UTC offset in milliseconds for a given UTC timestamp and IANA timeZone.
+ */
+export function getTimezoneOffsetMs(utcTimestamp: number, timeZone: string): number {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = formatter.formatToParts(new Date(utcTimestamp));
+    const getPart = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+    const asUtc = Date.UTC(
+      getPart('year'),
+      getPart('month') - 1,
+      getPart('day'),
+      getPart('hour'),
+      getPart('minute'),
+      getPart('second'),
+    );
+    return asUtc - utcTimestamp;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Alias for {@link normalizeToUtc} specific to snooze timestamps.
+ */
+export const normalizeSnoozeTimestamp = normalizeToUtc;
+
+/**
+ * Validates a snooze timestamp and returns structured validation status.
+ * Fails closed on empty, oversized, negative, or malformed inputs.
+ */
+export function validateSnoozeTimestamp(raw: unknown): SnoozeTimestampValidation {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: false, error: 'Snooze timestamp cannot be empty' };
+  }
+  if (typeof raw !== 'string' && typeof raw !== 'number' && !(raw instanceof Date)) {
+    return { valid: false, error: 'Snooze timestamp must be a number, string, or Date' };
+  }
+  const ms = normalizeToUtc(raw as number | string | Date);
+  if (ms === undefined) {
+    return {
+      valid: false,
+      error: `Malformed snooze timestamp: "${String(raw)}" is not a valid unix ms or ISO 8601 UTC date`,
+    };
+  }
+  return {
+    valid: true,
+    timestamp: ms,
+    utcIso: new Date(ms).toISOString(),
+  };
+}
+
+/**
+ * Formats a timestamp into canonical operator ISO 8601 UTC format (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ */
+export function formatSnoozeTimestampUtc(timestamp: number | string | Date): string {
+  const ms = normalizeToUtc(timestamp);
+  if (ms === undefined) {
+    throw new Error(`Cannot format invalid snooze timestamp: "${String(timestamp)}"`);
+  }
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Evaluates whether a physical duration has elapsed between startTimestamp and now,
+ * evaluated strictly in UTC milliseconds to ensure invariance across DST boundaries.
+ */
+export function isWithinSnoozeWindow(
+  startTimestamp: number | string | Date,
+  snoozeWindowMs: number,
+  now: number | string | Date = Date.now(),
+): boolean {
+  const startMs = normalizeToUtc(startTimestamp);
+  const nowMs = normalizeToUtc(now) ?? Date.now();
+  if (startMs === undefined || snoozeWindowMs <= 0) return false;
+  const elapsed = nowMs - startMs;
+  return elapsed >= 0 && elapsed < snoozeWindowMs;
+}
+
+/**
  * Extract snooze marker from a comment body. Returns undefined if marker
- * not found (backward compatible with older comments).
+ * not found or if the timestamp is malformed/invalid (backward compatible with older comments).
  */
 export function parseSnoozeMarker(commentBody: string | undefined): SnoozeMarker | undefined {
   if (!commentBody) return undefined;
   const match = commentBody.match(SNOOZE_MARKER_PATTERN);
   if (!match) return undefined;
-  return {
+  const rawTimestamp = match[2];
+  const timezone = match[3];
+  const timestamp = normalizeToUtc(rawTimestamp, timezone);
+  if (timestamp === undefined) return undefined;
+  const marker: SnoozeMarker = {
     status: match[1] as 'pass' | 'fail',
-    timestamp: Number(match[2]),
+    timestamp,
   };
+  if (timezone) {
+    marker.timezone = timezone;
+  }
+  return marker;
 }
 
 /**
  * Generate a snooze marker string to embed in comment body.
  */
-export function formatSnoozeMarker(status: 'pass' | 'fail', timestamp: number = Date.now()): string {
-  return `<!-- trustbridge-action:snooze:status=${status},timestamp=${timestamp} -->`;
+export function formatSnoozeMarker(
+  status: 'pass' | 'fail',
+  timestamp: number | string | Date = Date.now(),
+): string {
+  const normalized = typeof timestamp === 'number'
+    ? timestamp
+    : (normalizeToUtc(timestamp) ?? Date.now());
+  return `<!-- trustbridge-action:snooze:status=${status},timestamp=${normalized} -->`;
 }
 
 /**
@@ -102,13 +308,17 @@ export function formatSnoozeMarker(status: 'pass' | 'fail', timestamp: number = 
  *   - **Snoozed** (suppress comment, but still update outputs).
  * - If current result **fails** AND prior status **failed** AND elapsed >= snoozeMs:
  *   - **Post** (reminder after timeout; reset timer).
+ *
+ * Both `now` and `lastMarker.timestamp` are evaluated in normalized UTC epoch milliseconds,
+ * guaranteeing physical duration invariance across DST boundaries.
  */
 export function evaluateSnoozeState(
   currentPassed: boolean,
   lastMarker: SnoozeMarker | undefined,
   snoozeWindowMs: number,
+  now: number | string | Date = Date.now(),
 ): SnoozeState {
-  const now = Date.now();
+  const nowMs = normalizeToUtc(now) ?? Date.now();
 
   // If current check passes, always post (unsnooze) — not an expiry, the
   // check itself changed outcome.
@@ -134,7 +344,10 @@ export function evaluateSnoozeState(
   }
 
   // Current failed, prior status known.
-  const elapsedMs = now - lastMarker.timestamp;
+  // Both nowMs and lastMarker.timestamp are normalized to UTC epoch milliseconds,
+  // ensuring physical elapsed time is invariant across daylight saving time (DST)
+  // boundaries and host timezones.
+  const elapsedMs = nowMs - lastMarker.timestamp;
 
   // Status changed from pass to fail — post it. Not an expiry: this is a
   // fresh failure, not a resumed one.
@@ -200,13 +413,16 @@ export function isSnoozeReaction(content: string | undefined | null): boolean {
 
 /**
  * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ * Reaction timestamps are normalized to UTC to prevent DST early/late reopen.
  */
 export function evaluateReactionSnooze(
   currentPassed: boolean,
   reactions: CommentReaction[] | undefined | null,
   snoozeWindowMs: number,
-  now: number = Date.now(),
+  now: number | string | Date = Date.now(),
 ): SnoozeState {
+  const nowMs = normalizeToUtc(now) ?? Date.now();
+
   if (currentPassed || !reactions || reactions.length === 0) {
     return { isSnoozed: false, snoozeExpired: false };
   }
@@ -224,16 +440,17 @@ export function evaluateReactionSnooze(
   }
 
   // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
+  // Normalized to UTC to ensure invariance across DST boundaries.
   const timestamps = eligibleReactions
     .map((r) => {
       const raw = r.created_at || r.createdAt;
-      const parsed = raw ? new Date(raw).getTime() : now;
-      return isNaN(parsed) ? now : parsed;
+      const parsed = raw ? normalizeToUtc(raw) : nowMs;
+      return parsed !== undefined ? parsed : nowMs;
     })
     .sort((a, b) => b - a);
 
   const latestTimestamp = timestamps[0];
-  const elapsedMs = now - latestTimestamp;
+  const elapsedMs = nowMs - latestTimestamp;
   const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
 
   return {
@@ -252,20 +469,24 @@ export function evaluateReactionSnooze(
  * An issue comment is snoozed if:
  * 1. Current check fails (not passed), AND
  * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ *
+ * Evaluated in UTC physical milliseconds to prevent DST transition discrepancies.
  */
 export function evaluateCombinedSnoozeState(
   currentPassed: boolean,
   lastMarker: SnoozeMarker | undefined,
   reactions: CommentReaction[] | undefined | null,
   snoozeWindowMs: number,
-  now: number = Date.now(),
+  now: number | string | Date = Date.now(),
 ): SnoozeState {
+  const nowMs = normalizeToUtc(now) ?? Date.now();
+
   if (currentPassed) {
     return { isSnoozed: false, snoozeExpired: false };
   }
 
-  const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
-  const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
+  const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs, nowMs);
+  const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, nowMs);
 
   if (reactionState.isSnoozed) {
     return reactionState;
@@ -316,12 +537,15 @@ export function formatSnoozeDuration(ms: number | undefined): string {
 }
 
 /**
- * Enforce a snooze window at the validation call site (Issue #754).
+ * Enforce a snooze window at the validation call site (Issue #754, Issue #873).
  *
  * Wraps {@link evaluateCombinedSnoozeState} and, when the issue is within an
  * active snooze window, returns a stable `reason_code` (`snoozed`) plus a
  * user-visible comment notice. Callers should skip validation and post the
  * notice instead of failing the assignee.
+ *
+ * Normalizes all timestamps and `options.now` to UTC physical milliseconds,
+ * guaranteeing snooze duration integrity across DST boundaries.
  *
  * `forceComment` bypasses enforcement so maintainers can force a run.
  */
@@ -330,14 +554,15 @@ export function enforceSnoozeWindow(
   lastMarker: SnoozeMarker | undefined,
   reactions: CommentReaction[] | undefined | null,
   snoozeWindowMs: number,
-  options: { forceComment?: boolean; now?: number } = {},
+  options: { forceComment?: boolean; now?: number | string | Date } = {},
 ): SnoozeEnforcement {
+  const nowMs = options.now !== undefined ? normalizeToUtc(options.now) : Date.now();
   const state = evaluateCombinedSnoozeState(
     currentPassed,
     lastMarker,
     reactions,
     snoozeWindowMs,
-    options.now,
+    nowMs ?? Date.now(),
   );
 
   if (options.forceComment || !state.isSnoozed) {

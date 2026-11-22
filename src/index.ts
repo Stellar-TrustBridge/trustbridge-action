@@ -511,6 +511,7 @@ export async function run(): Promise<void> {
     min: 0,
     max: 60 * 24 * 30,
   });
+  // Snooze window duration in milliseconds (Issue #873: UTC physical duration invariant across DST boundaries).
   const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
   const issueNumberInputRaw = core.getInput('issue_number') || '';
   const issueNumberInput = issueNumberInputRaw.trim()
