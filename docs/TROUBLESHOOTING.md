@@ -182,3 +182,15 @@ permissions:
   id-token: write
   issues: write
 ```
+
+## Job Summary was truncated
+
+GitHub Job Summaries have a 1 MiB UTF-8 budget. TrustBridge treats the verbose metrics JSON as lower priority and removes it before truncating the compact overview. A visible `trustbridge-action:summary-truncated` marker identifies this soft-fail path; inspect the workflow logs or uploaded artifacts for the complete detail. The validation result and action outputs are not changed.
+
+## Dry-run unexpectedly changed GitHub state
+
+`posting_mode: dry-run` is side-effect free for TrustBridge-owned GitHub mutations. Confirm the workflow is not invoking a separate step or action that edits comments, labels, assignees, projects, or check runs. TrustBridge still performs Horizon reads and computes the same result as `post` mode.
+
+## Retry-After wait metrics
+
+A `horizon_retry_after_wait` metric records each actual jittered wait in milliseconds. The `horizon_retry_after_waits` and `horizon_retry_after_wait_ms` counters show how often and how long the action waited on server guidance. The wait is always bounded by `retry_max_delay_ms` and the cumulative `retry_max_total_wait_ms` budget.
