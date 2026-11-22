@@ -58599,13 +58599,14 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
+exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.LOG_CONTEXT_KEY_ALLOWLIST = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
 exports.withStructuredFields = withStructuredFields;
 exports.isSensitiveSecretKey = isSensitiveSecretKey;
 exports.redactStellarAddress = redactStellarAddress;
 exports.redactContractAddress = redactContractAddress;
 exports.redactString = redactString;
 exports.redactHorizonUrl = redactHorizonUrl;
+exports.isAllowedLogContextKey = isAllowedLogContextKey;
 exports.redactContext = redactContext;
 exports.formatStructuredLog = formatStructuredLog;
 exports.logInfo = logInfo;
@@ -58883,14 +58884,50 @@ function redactHorizonUrl(url) {
     return masked;
 }
 /**
+ * Base allowlist of structured log context keys (Issue #858).
+ *
+ * Includes every key `LogContext` itself declares, every key in
+ * {@link ADDRESS_CONTEXT_KEYS} (already individually redacted, so safe to
+ * admit), and the generic operational metadata keys documented in
+ * docs/ARCHITECTURE.md's "Context key allowlist" section (`operation`,
+ * `status`, `count`, `durationMs`).
+ *
+ * This is the allowlist {@link redactContext}'s `strict` option enforces.
+ * It is intentionally **not** applied by default — see that option's
+ * docstring for why — so adding a key here only ever affects callers that
+ * explicitly opt into strict mode.
+ */
+exports.LOG_CONTEXT_KEY_ALLOWLIST = new Set([
+    'component',
+    'stellarAddress',
+    'horizonUrl',
+    'reason_code',
+    'check',
+    'operation',
+    'status',
+    'count',
+    'durationMs',
+    ...ADDRESS_CONTEXT_KEYS,
+]);
+/** True when `key` is in {@link LOG_CONTEXT_KEY_ALLOWLIST} or `extraAllowedKeys`. */
+function isAllowedLogContextKey(key, extraAllowedKeys = []) {
+    return exports.LOG_CONTEXT_KEY_ALLOWLIST.has(key) || extraAllowedKeys.includes(key);
+}
+/**
  * Redacts a log context object. Address-bearing keys are masked with
  * {@link redactStellarAddress}; sensitive secret keys are replaced with
  * `[REDACTED]`; all other string values are passed through
  * {@link redactString} so embedded addresses never leak.
+ *
+ * In `strict` mode (Issue #858), a key not on {@link LOG_CONTEXT_KEY_ALLOWLIST}
+ * is dropped instead of redacted-and-kept — see {@link RedactContextOptions}.
  */
-function redactContext(context = {}) {
+function redactContext(context = {}, options = {}) {
     const redacted = {};
     for (const [key, value] of Object.entries(context)) {
+        if (options.strict && !isAllowedLogContextKey(key, options.extraAllowedKeys)) {
+            continue;
+        }
         if (value === undefined || value === null) {
             redacted[key] = value;
             continue;
@@ -58952,14 +58989,34 @@ function logError(message, context = {}) {
 // Restored after the #771 rewrite dropped them while src/horizon.ts,
 // src/webhook.ts and ~10 other modules still import `logger`.
 // ---------------------------------------------------------------------------
-function redactValue(raw) {
+/**
+ * Maximum nesting depth {@link redactValue} will recurse into. A context
+ * value this deep is already not useful log output; capping it turns a
+ * pathological or accidentally-huge payload into a stable placeholder
+ * instead of a very large log line or a stack overflow (Issue #858).
+ */
+const MAX_REDACT_DEPTH = 10;
+function redactValue(raw, depth = 0, ancestors = new Set()) {
     if (typeof raw === 'string')
         return redactString(raw);
     if (raw === null || raw === undefined)
         return raw;
-    if (Array.isArray(raw))
-        return raw.map((item) => redactValue(item));
-    if (typeof raw === 'object') {
+    if (typeof raw !== 'object')
+        return raw;
+    if (depth >= MAX_REDACT_DEPTH)
+        return '[REDACTED_DEPTH_EXCEEDED]';
+    // Cycle guard (Issue #858): a context value with a circular reference
+    // (e.g. accidentally logging a live object graph) must never hang or
+    // crash the logger. Tracks the current ancestor chain only — the same
+    // object referenced twice from different branches (a DAG, not a cycle)
+    // is still redacted normally, only a true self-reference is replaced.
+    if (ancestors.has(raw))
+        return '[CIRCULAR]';
+    ancestors.add(raw);
+    try {
+        if (Array.isArray(raw)) {
+            return raw.map((item) => redactValue(item, depth + 1, ancestors));
+        }
         const safeObj = {};
         for (const [k, v] of Object.entries(raw)) {
             if (isSensitiveSecretKey(k)) {
@@ -58972,12 +59029,14 @@ function redactValue(raw) {
                 safeObj[k] = redactHorizonUrl(v);
             }
             else {
-                safeObj[k] = redactValue(v);
+                safeObj[k] = redactValue(v, depth + 1, ancestors);
             }
         }
         return safeObj;
     }
-    return raw;
+    finally {
+        ancestors.delete(raw);
+    }
 }
 class StructuredLogger {
     constructor(debugMode = false) {
@@ -60730,9 +60789,136 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.matchesRepoAllowlist = matchesRepoAllowlist;
 exports.updateProjectV2Status = updateProjectV2Status;
 const core = __importStar(__nccwpck_require__(37484));
 const logger_1 = __nccwpck_require__(86999);
+const VALID_OWNER_REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+/**
+ * Classify why a configured pattern is not safe to match against, or `null`
+ * when it is a well-formed `owner` or `owner/repo` (optionally `owner/*`)
+ * pattern.
+ *
+ * Deliberately conservative: the only wildcard this accepts is a literal
+ * `*` as the entire `repo` segment (`owner/*`), meaning "every repository
+ * in this org". Anything else containing `*`, `?`, `**`, or more than one
+ * `/` is rejected as an "ambiguous glob that could over-match" — exactly
+ * the risk the issue calls out (an org-wide automation run must never
+ * accidentally widen to arbitrary forks or unrelated repos because a glob
+ * matched more than the operator intended).
+ */
+function classifyInvalidRepoAllowlistPattern(pattern) {
+    const trimmed = pattern.trim();
+    if (!trimmed)
+        return 'empty';
+    const segments = trimmed.split('/');
+    if (segments.length > 2)
+        return 'multiple_slashes';
+    if (segments.length === 1) {
+        // Bare org pattern, e.g. "Stellar-TrustBridge" — no wildcard characters allowed.
+        return VALID_OWNER_REPO_SEGMENT.test(segments[0]) ? null : 'ambiguous_glob';
+    }
+    const [owner, repo] = segments;
+    if (!VALID_OWNER_REPO_SEGMENT.test(owner))
+        return 'ambiguous_glob';
+    if (repo === '*')
+        return null; // "owner/*" — every repo in that org.
+    return VALID_OWNER_REPO_SEGMENT.test(repo) ? null : 'ambiguous_glob';
+}
+/**
+ * Decide whether `repository` (a `"owner/repo"` string, as reported by
+ * `github.context.repo` / `${{ github.repository }}`) is covered by
+ * `patterns`.
+ *
+ * Supported pattern forms (one per allowlist entry):
+ * - `"owner/repo"` — exact match.
+ * - `"owner"` or `"owner/*"` — matches every repository under that org.
+ *
+ * Matching is **case-insensitive** on both the owner and repo segments
+ * (GitHub treats `owner/repo` names as case-insensitive for routing), and
+ * leading/trailing whitespace on each configured pattern is ignored.
+ *
+ * **Fail-closed design** (Issue #855 — "must not validate arbitrary forks
+ * or unrelated private repos"):
+ * - An **empty allowlist denies every repository**. This is the opposite of
+ *   `filterRosterAddressMap`'s "empty allowlist means allow all" — that
+ *   function is a defense-in-depth filter layered on an already-trusted
+ *   roster, while this function is the *primary* boundary deciding whether
+ *   org-wide automation may touch a repository at all. An operator who
+ *   wants "allow everything" must say so explicitly (e.g. `"owner/*"` per
+ *   org, or `"*"` is intentionally NOT a supported shortcut — see below).
+ * - A pattern this function cannot interpret safely (see
+ *   `classifyInvalidRepoAllowlistPattern`) is collected into
+ *   `rejectedPatterns` and never matches — a malformed or overly broad
+ *   pattern can only ever narrow access, never accidentally widen it.
+ * - `repository` itself must be an exact `"owner/repo"` string; anything
+ *   else (missing slash, extra slash, empty) never matches any pattern.
+ *
+ * **What this function does not do** (by design — it is a pure string
+ * match, not a GitHub API call): it has no way to detect that a repository
+ * was renamed (an allowlist entry for the old name simply fails closed,
+ * exactly like any other non-matching name — there is no fuzzy or
+ * historical matching) or that a repository is archived (archival status
+ * is not encoded in `owner/repo`; a caller that needs to exclude archived
+ * repos must check `github.context.payload.repository.archived` itself
+ * before or after calling this function).
+ */
+function matchesRepoAllowlist(repository, patterns) {
+    const rejectedPatterns = [];
+    const validPatterns = [];
+    for (const pattern of patterns) {
+        const rejection = classifyInvalidRepoAllowlistPattern(pattern);
+        if (rejection) {
+            rejectedPatterns.push({ pattern, reason: rejection });
+        }
+        else {
+            validPatterns.push(pattern.trim());
+        }
+    }
+    if (validPatterns.length === 0) {
+        return {
+            allowed: false,
+            reason: 'Repository allowlist is empty (or every configured pattern was rejected as invalid) — denying by default.',
+            rejectedPatterns,
+        };
+    }
+    const repoSegments = repository.trim().split('/');
+    if (repoSegments.length !== 2 || !repoSegments[0] || !repoSegments[1]) {
+        return {
+            allowed: false,
+            reason: `"${repository}" is not a well-formed "owner/repo" string.`,
+            rejectedPatterns,
+        };
+    }
+    const [repoOwner, repoName] = repoSegments.map((s) => s.toLowerCase());
+    for (const pattern of validPatterns) {
+        const segments = pattern.split('/');
+        const patternOwner = segments[0].toLowerCase();
+        if (patternOwner !== repoOwner)
+            continue;
+        if (segments.length === 1 || segments[1] === '*') {
+            return {
+                allowed: true,
+                reason: `Matched org-wide pattern "${pattern}".`,
+                matchedPattern: pattern,
+                rejectedPatterns,
+            };
+        }
+        if (segments[1].toLowerCase() === repoName) {
+            return {
+                allowed: true,
+                reason: `Matched exact pattern "${pattern}".`,
+                matchedPattern: pattern,
+                rejectedPatterns,
+            };
+        }
+    }
+    return {
+        allowed: false,
+        reason: `"${repository}" does not match any of ${validPatterns.length} configured allowlist pattern(s).`,
+        rejectedPatterns,
+    };
+}
 /**
  * Update the status field of an item in a GitHub Projects v2 board.
  *

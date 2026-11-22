@@ -74,6 +74,48 @@ Horizon response bodies are never logged for retryable (`429` / `5xx`)
 responses, and no other fields are added to these lines. Offline runs never
 call Horizon, so they produce no retry lines.
 
+## Structured log field allowlist and redaction (Issue #858)
+
+`src/logger.ts`'s `redactContext` always redacts values — address-bearing
+keys are masked, token/secret-shaped keys become `[REDACTED]`, and every
+other string is scanned for an embedded address — regardless of mode. By
+default no key is dropped, including nested objects and arrays (a secret or
+address three levels deep inside a logged payload is still caught).
+
+**Strict mode** additionally drops any top-level key that is not on
+`LOG_CONTEXT_KEY_ALLOWLIST`:
+
+```ts
+import { redactContext, LOG_CONTEXT_KEY_ALLOWLIST } from './logger';
+
+redactContext({ component: 'checks', rawPayload: accountResponse }, { strict: true });
+// => { component: 'checks' } — rawPayload is dropped entirely, not just redacted,
+//    because it is not on the allowlist.
+```
+
+The base allowlist covers `component`, `stellarAddress`, `horizonUrl`,
+`reason_code`, `check`, the generic operational metadata keys `operation`,
+`status`, `count`, `durationMs`, and every key with a defined address
+redaction policy (`assetIssuer`, `accountId`, `contractAddress`, etc.). Pass
+`extraAllowedKeys` to accept additional fields at a specific call site:
+
+```ts
+redactContext({ component: 'plugin-loader', pluginId }, { strict: true, extraAllowedKeys: ['pluginId'] });
+```
+
+Strict mode is opt-in per call — it does not change the default behavior of
+any existing `logger.info`/`.warn`/`.error`/`.debug` call, so adopting it is
+always a deliberate, per-call-site decision once that call's context keys
+have been audited.
+
+**Resilience on malformed context values:** a context value with a circular
+reference, or nesting deeper than 10 levels, never crashes or hangs the
+logger — `redactValue` detects the cycle (`[CIRCULAR]`) or caps the depth
+(`[REDACTED_DEPTH_EXCEEDED]`) and returns a stable placeholder instead. See
+`__tests__/logger.test.ts`'s "Issue #858" suites for the full regression
+coverage (nested objects/arrays at multiple depths, strict-mode drop
+behavior, and both malformed-input edge cases).
+
 ## Friendbot funding failed
 
 With `use_friendbot: true`, a failed Friendbot call does not fail the job by

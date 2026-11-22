@@ -306,14 +306,76 @@ export function redactHorizonUrl(url: string): string {
 }
 
 /**
+ * Base allowlist of structured log context keys (Issue #858).
+ *
+ * Includes every key `LogContext` itself declares, every key in
+ * {@link ADDRESS_CONTEXT_KEYS} (already individually redacted, so safe to
+ * admit), and the generic operational metadata keys documented in
+ * docs/ARCHITECTURE.md's "Context key allowlist" section (`operation`,
+ * `status`, `count`, `durationMs`).
+ *
+ * This is the allowlist {@link redactContext}'s `strict` option enforces.
+ * It is intentionally **not** applied by default — see that option's
+ * docstring for why — so adding a key here only ever affects callers that
+ * explicitly opt into strict mode.
+ */
+export const LOG_CONTEXT_KEY_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  'component',
+  'stellarAddress',
+  'horizonUrl',
+  'reason_code',
+  'check',
+  'operation',
+  'status',
+  'count',
+  'durationMs',
+  ...ADDRESS_CONTEXT_KEYS,
+]);
+
+/** True when `key` is in {@link LOG_CONTEXT_KEY_ALLOWLIST} or `extraAllowedKeys`. */
+export function isAllowedLogContextKey(
+  key: string,
+  extraAllowedKeys: readonly string[] = [],
+): boolean {
+  return LOG_CONTEXT_KEY_ALLOWLIST.has(key) || extraAllowedKeys.includes(key);
+}
+
+export interface RedactContextOptions {
+  /**
+   * When `true`, any top-level context key that is not in
+   * {@link LOG_CONTEXT_KEY_ALLOWLIST} (or `extraAllowedKeys`) is dropped
+   * entirely — not redacted-and-kept, simply absent from the result — so an
+   * unreviewed field can never reach the log even in redacted form.
+   *
+   * Defaults to `false`: every existing call site keeps its current
+   * behavior (every key processed, values redacted, nothing dropped)
+   * unless it explicitly opts in. This lets strict mode be adopted
+   * incrementally per call site instead of being a breaking change to
+   * every logger call in the codebase at once.
+   */
+  strict?: boolean;
+  /** Additional keys to accept in strict mode, beyond the base allowlist. */
+  extraAllowedKeys?: readonly string[];
+}
+
+/**
  * Redacts a log context object. Address-bearing keys are masked with
  * {@link redactStellarAddress}; sensitive secret keys are replaced with
  * `[REDACTED]`; all other string values are passed through
  * {@link redactString} so embedded addresses never leak.
+ *
+ * In `strict` mode (Issue #858), a key not on {@link LOG_CONTEXT_KEY_ALLOWLIST}
+ * is dropped instead of redacted-and-kept — see {@link RedactContextOptions}.
  */
-export function redactContext(context: LogContext = {}): LogContext {
+export function redactContext(
+  context: LogContext = {},
+  options: RedactContextOptions = {},
+): LogContext {
   const redacted: LogContext = {};
   for (const [key, value] of Object.entries(context)) {
+    if (options.strict && !isAllowedLogContextKey(key, options.extraAllowedKeys)) {
+      continue;
+    }
     if (value === undefined || value === null) {
       redacted[key] = value;
       continue;
@@ -378,11 +440,32 @@ export function logError(message: string, context: LogContext = {}): void {
 // src/webhook.ts and ~10 other modules still import `logger`.
 // ---------------------------------------------------------------------------
 
-function redactValue(raw: unknown): unknown {
+/**
+ * Maximum nesting depth {@link redactValue} will recurse into. A context
+ * value this deep is already not useful log output; capping it turns a
+ * pathological or accidentally-huge payload into a stable placeholder
+ * instead of a very large log line or a stack overflow (Issue #858).
+ */
+const MAX_REDACT_DEPTH = 10;
+
+function redactValue(raw: unknown, depth = 0, ancestors: Set<unknown> = new Set()): unknown {
   if (typeof raw === 'string') return redactString(raw);
   if (raw === null || raw === undefined) return raw;
-  if (Array.isArray(raw)) return raw.map((item) => redactValue(item));
-  if (typeof raw === 'object') {
+  if (typeof raw !== 'object') return raw;
+
+  if (depth >= MAX_REDACT_DEPTH) return '[REDACTED_DEPTH_EXCEEDED]';
+
+  // Cycle guard (Issue #858): a context value with a circular reference
+  // (e.g. accidentally logging a live object graph) must never hang or
+  // crash the logger. Tracks the current ancestor chain only — the same
+  // object referenced twice from different branches (a DAG, not a cycle)
+  // is still redacted normally, only a true self-reference is replaced.
+  if (ancestors.has(raw)) return '[CIRCULAR]';
+  ancestors.add(raw);
+  try {
+    if (Array.isArray(raw)) {
+      return raw.map((item) => redactValue(item, depth + 1, ancestors));
+    }
     const safeObj: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       if (isSensitiveSecretKey(k)) {
@@ -392,12 +475,13 @@ function redactValue(raw: unknown): unknown {
       } else if (k === 'horizonUrl' && typeof v === 'string') {
         safeObj[k] = redactHorizonUrl(v);
       } else {
-        safeObj[k] = redactValue(v);
+        safeObj[k] = redactValue(v, depth + 1, ancestors);
       }
     }
     return safeObj;
+  } finally {
+    ancestors.delete(raw);
   }
-  return raw;
 }
 
 class StructuredLogger {
