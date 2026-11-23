@@ -3569,6 +3569,10 @@ app.post('/api/webhooks/trustbridge-action', (req, res) => {
     return;
   }
 
+  // Additive fields (new optional keys, new checks, new reason codes) can
+  // appear in any v1.x release without a schema_version bump. Read only the
+  // fields you need and ignore the rest — never reject on an unknown key.
+
   // Process the payload.
   const { event, repository, issue_number, stellar_address, result } = payload;
   console.log(`[${event}] repo=${repository} issue=${issue_number} address=${stellar_address} valid=${result.valid}`);
@@ -3578,6 +3582,26 @@ app.post('/api/webhooks/trustbridge-action', (req, res) => {
 
 app.listen(3000);
 ```
+
+### Handling new fields and reason codes (Issue #917)
+
+Within `schema_version: "1"`, TrustBridge may add optional fields (top-level,
+on `result`, on `result.checks[]` or `assets[]` items) and new reason-code
+values in any minor or patch release. Removing, renaming, or retyping a field
+— or changing what a reason code means — only happens with a new
+`schema_version`. Your receiver should therefore:
+
+- route on `X-TrustBridge-Schema-Version` and reject versions it does not
+  implement (`422`),
+- ignore fields it does not know,
+- treat an unknown `assets[].reason_code` as "not ready for that asset"
+  without rejecting the delivery, and gate on `result.valid`.
+
+`readWebhookPayloadForConsumer(rawBody)` in `src/webhook.ts` applies these
+rules and returns `WEBHOOK_PAYLOAD_TOO_LARGE`, `WEBHOOK_PAYLOAD_MALFORMED`, or
+`WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` on failure, or the known-field payload
+plus `ignoredFields` / `unknownReasonCodes` on success. Full policy and
+examples: [SCHEMA.md — Webhook payload versioning policy](SCHEMA.md#webhook-payload-versioning-policy-issue-917).
 
 ### End-to-end dry-run verification
 
