@@ -6,6 +6,9 @@ import {
   buildAssetChecklist,
   extractChecklistState,
   CHECKLIST_TRUSTLINE_KEY,
+  tableCellText,
+  inlineCodeCell,
+  EMPTY_TABLE_CELL_PLACEHOLDER,
 } from '../src/markdown';
 import { ValidationResult } from '../src/checks';
 
@@ -696,5 +699,49 @@ describe('buildAssetTrustlineTable truncation (Issue #860)', () => {
   it('matches the golden snapshot for a truncated table', () => {
     const md = buildAssetTrustlineTable(makeRows(4), { maxRows: 2 });
     expect(md).toMatchSnapshot();
+  });
+});
+
+describe('table cell hardening (Issue #921)', () => {
+  const columnCount = (row: string): number => row.split(/(?<!\\)\|/).length - 2;
+
+  it('renders blank and missing values as the placeholder, never an empty cell', () => {
+    expect(tableCellText('')).toBe(EMPTY_TABLE_CELL_PLACEHOLDER);
+    expect(tableCellText('   ')).toBe(EMPTY_TABLE_CELL_PLACEHOLDER);
+    expect(tableCellText(undefined)).toBe(EMPTY_TABLE_CELL_PLACEHOLDER);
+    expect(tableCellText(null, '_none_')).toBe('_none_');
+    expect(inlineCodeCell('')).toBe(EMPTY_TABLE_CELL_PLACEHOLDER);
+  });
+
+  it('escapes pipes and collapses line breaks so a value cannot add columns', () => {
+    expect(tableCellText('a|b')).toBe('a\\|b');
+    expect(tableCellText('line one\nline two\r\n')).toBe('line one line two');
+    expect(inlineCodeCell('x|y')).toBe('`x\\|y`');
+  });
+
+  it('keeps every row at four columns for empty, piped and multi-line asset fields', () => {
+    const table = buildAssetTrustlineTable([
+      { assetCode: '', assetIssuer: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX', trustlineExists: true, balance: '1.0000000' },
+      { assetCode: 'FOO|BAR', assetIssuer: '', trustlineExists: false, balance: '0' },
+      { assetCode: 'BAZ\nQUX', assetIssuer: 'GA5Z', trustlineExists: true, balance: '' },
+    ]);
+    const rows = table
+      .split('\n')
+      .filter((line) => line.startsWith('| ') && !line.startsWith('| Asset') && !line.startsWith('| ---'));
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(columnCount(row)).toBe(4);
+    }
+    expect(table).not.toContain('``');
+    expect(rows[0]).toContain(`| ${EMPTY_TABLE_CELL_PLACEHOLDER} | ✅ exists |`);
+    expect(rows[1]).toContain('FOO\\|BAR');
+    expect(rows[2]).toContain('| BAZ QUX | ✅ exists | _unknown_ | `GA5Z` |');
+  });
+
+  it('leaves well-formed rows unchanged', () => {
+    const table = buildAssetTrustlineTable([
+      { assetCode: 'EURC', assetIssuer: 'GCQTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKRR2', trustlineExists: true, balance: '12.5000000' },
+    ]);
+    expect(table).toContain('| EURC | ✅ exists | `12.5000000` | `GCQT…KRR2` |');
   });
 });
