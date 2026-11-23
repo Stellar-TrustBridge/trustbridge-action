@@ -183,6 +183,158 @@ The JSON catalog has a compile-time mirror at [`src/reasonCodes.ts`](../src/reas
   `docs/BREAKING_CHANGES.md`, and keep emitting the previous version for at
   least one deprecation window.
 
+### Webhook payload versioning policy (Issue #917)
+
+This section is the authoritative statement of how the webhook payload and
+the reason codes inside it evolve. Wave subscriber automations can rely on it
+when deciding what to pin, what to tolerate, and what to reject.
+
+#### Field classes
+
+| Class | Fields (v1) | Runtime source | Compatibility promise |
+|-------|-------------|----------------|-----------------------|
+| Frozen required | `schema_version`, `event`, `timestamp`, `repository`, `issue_number`, `stellar_address`, `result` | `WEBHOOK_PAYLOAD_REQUIRED_FIELDS` | Never removed, renamed, or retyped within a `schema_version`. |
+| Frozen `result` | `valid`, `account_funded`, `trustline_exists`, `xlm_balance`, `checks` | `WEBHOOK_RESULT_REQUIRED_FIELDS` | Same as above. |
+| Frozen `result.checks[]` item | `label`, `passed` | `WEBHOOK_CHECK_REQUIRED_FIELDS` | Same as above. The array length is **not** fixed. |
+| Optional additive | `assets`, `snooze_expired`, `truncated`, `dropped_fields` | `WEBHOOK_PAYLOAD_OPTIONAL_FIELDS` | May be absent. Once shipped, keeps its name, type, and meaning. |
+| Closed value sets | `assets[].reason_code`, `dropped_fields[]` | `WEBHOOK_ASSET_REASON_CODES`, `WEBHOOK_TRUNCATABLE_FIELDS` | New values may be **added** in any release; existing values never change meaning. |
+
+#### Additive vs breaking
+
+| Change | Class | `schema_version` |
+|--------|-------|------------------|
+| New optional top-level field (e.g. `run_id`) | Additive | unchanged |
+| New optional field on `result`, a `result.checks[]` item, or an `assets[]` item | Additive | unchanged |
+| New entry in `result.checks[]` (a new check) | Additive | unchanged |
+| New value in a closed set (new asset `reason_code`, new `dropped_fields` entry) | Additive | unchanged |
+| New reason code in `schemas/reason-codes.json` | Additive (records `since`) | unchanged; catalog `version` unchanged |
+| Making an optional field always present | Additive | unchanged |
+| Removing, renaming, or retyping a frozen or shipped optional field | **Breaking** | bump |
+| Making a required field optional / nullable | **Breaking** | bump |
+| Changing the meaning of an existing reason code or closed-set value | **Breaking** | bump (and catalog `version` bump) |
+| Removing or renaming a reason code | **Breaking** | catalog `version` bump |
+| Changing signing (`X-TrustBridge-Signature` name or HMAC-SHA256) | **Breaking** | bump |
+
+Every additive field is added in the same change to
+`schemas/webhook-payload.schema.json` (not in `required`),
+`WEBHOOK_PAYLOAD_OPTIONAL_FIELDS` (or the nested list) in `src/webhook.ts`,
+the frozen-field tables in [`docs/BREAKING_CHANGES.md`](BREAKING_CHANGES.md),
+and the payload reference in [`docs/USAGE.md`](USAGE.md#payload-body-schema-version-1).
+A breaking change follows the version bump procedure above.
+
+#### How reason codes are versioned
+
+- `schemas/reason-codes.json` carries one catalog-wide `version` (currently
+  `1`) and a per-code `since` (the release that introduced the code).
+- **Adding** a code is additive: it gets a `since`, the catalog `version`
+  stays the same, and consumers must treat it as "not one of the codes I
+  branch on" (see below).
+- **Removing, renaming, or re-defining** a code bumps the catalog `version`
+  and is listed in `docs/BREAKING_CHANGES.md`. A webhook closed set
+  (`assets[].reason_code`) that changes meaning also bumps `schema_version`.
+- The action's `reason_code` **output** follows the same catalog; workflow
+  gates should compare `ready == 'true'` rather than enumerating every code.
+
+#### Consumer rules: ignore unknowns
+
+A conforming receiver:
+
+1. **Routes on version first.** Read `X-TrustBridge-Schema-Version` (or the
+   body's `schema_version`). Accept only versions you implement; reject or
+   quarantine others with a stable error. Never "best-effort" parse an
+   unknown major version.
+2. **Ignores unknown fields** at every level: top-level, `result`,
+   `result.checks[]` items, and `assets[]` items. Do not validate the
+   received payload with `additionalProperties: false`.
+3. **Ignores unknown reason codes and closed-set values.** Treat an unknown
+   `assets[].reason_code` as "not ready for that asset" for gating purposes
+   (fail closed) but do not reject the delivery. The overall decision stays
+   `result.valid`.
+4. **Does not depend on optional fields being present**, or on
+   `result.checks[]` having a fixed length or order.
+5. **Still type-checks frozen fields** — a frozen field with the wrong type
+   is a malformed delivery, not an additive change.
+
+`readWebhookPayloadForConsumer` in `src/webhook.ts` implements exactly these
+rules and returns one of three stable error codes:
+
+| Error code | When |
+|------------|------|
+| `WEBHOOK_PAYLOAD_TOO_LARGE` | Raw body exceeds `WEBHOOK_MAX_BODY_BYTES` (900 000 bytes). |
+| `WEBHOOK_PAYLOAD_MALFORMED` | Body is not JSON, not an object, has no string `schema_version`, or a frozen field is missing / mistyped. |
+| `WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` | `schema_version` is not in `WEBHOOK_SUPPORTED_SCHEMA_VERSIONS`. |
+
+On success it returns the payload reduced to known fields, plus
+`ignoredFields` (paths such as `payload.run_id`, capped at 100 entries) and
+`unknownReasonCodes`, so a receiver can log what it skipped.
+
+#### Examples
+
+A v1.x release adds an optional `run_id` and a new per-asset code. Both are
+additive, so `schema_version` stays `"1"`:
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-11-20T10:00:00.000Z",
+  "repository": "acme/payouts",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "run_id": "9876543210",
+  "result": {
+    "valid": false,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5000000",
+    "checks": [{ "label": "Account funded", "passed": true, "duration_ms": 12 }]
+  },
+  "assets": [
+    {
+      "asset_code": "EURC",
+      "asset_issuer": "GDHU...7JQB",
+      "primary": false,
+      "trustline_exists": true,
+      "clawback_enabled": false,
+      "reason_code": "TRUSTLINE_FROZEN"
+    }
+  ]
+}
+```
+
+A v1 receiver accepts it: `ignoredFields` is
+`["payload.run_id", "result.checks[0].duration_ms"]`, `unknownReasonCodes`
+is `["TRUSTLINE_FROZEN"]`, and it gates on `result.valid` (`false`).
+
+These are rejected:
+
+```jsonc
+{ "schema_version": "2", ... }                 // WEBHOOK_SCHEMA_VERSION_UNSUPPORTED
+{ "schema_version": 1, ... }                   // WEBHOOK_PAYLOAD_MALFORMED (number, not string)
+{ "schema_version": "1", "result": { "valid": "true", ... }, ... }
+                                               // WEBHOOK_PAYLOAD_MALFORMED (frozen field retyped)
+```
+
+Receiver sketch (TypeScript):
+
+```ts
+import { readWebhookPayloadForConsumer } from 'trustbridge-action/src/webhook';
+
+const read = readWebhookPayloadForConsumer(rawBody);
+if (!read.ok) {
+  return res.status(read.code === 'WEBHOOK_SCHEMA_VERSION_UNSUPPORTED' ? 422 : 400)
+    .json({ error: read.code, details: read.errors });
+}
+if (read.ignoredFields.length) log.info('ignored additive fields', read.ignoredFields);
+gatePayout(read.payload.result.valid);
+```
+
+Enforced by `__tests__/webhook-consumer-policy.test.ts`:
+
+```bash
+npx jest __tests__/webhook-consumer-policy.test.ts __tests__/schema-versioning-policy.test.ts __tests__/webhook-versioning.test.ts
+```
+
 ### Webhook body size cap (Issue #894)
 
 Outbound webhook bodies are capped at **900 000 UTF-8 bytes**
@@ -214,7 +366,13 @@ the receiver-facing reference in
 - Route on `X-TrustBridge-Schema-Version` (or `schema_version`) and reject or
   quarantine versions you do not recognise; `validateWebhookPayload` in
   `src/webhook.ts` rejects any `schema_version` other than the current one.
-- Ignore unknown fields and unknown reason codes rather than failing.
+- Ignore unknown fields and unknown reason codes rather than failing. See
+  [Consumer rules: ignore unknowns](#consumer-rules-ignore-unknowns) and
+  `readWebhookPayloadForConsumer`.
+- `validateWebhookPayload` is the **producer-side** check (strict: it flags
+  unexpected properties so TrustBridge never ships an undocumented field).
+  Receivers should use the tolerant `readWebhookPayloadForConsumer` rules
+  instead.
 
 ### Enforcement
 
