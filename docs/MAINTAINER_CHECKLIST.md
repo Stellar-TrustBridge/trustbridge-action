@@ -15,6 +15,35 @@ Use this checklist before enabling TrustBridge in a contributor workflow.
 - Test with one unfunded G-address to confirm remediation text is clear.
 - Verify maintainers understand that Horizon outages are treated as failed checks.
 
+## Verify dist/ before tagging a release
+
+`dist/index.js` is the bundle consumers run, so it must match `src/` on every release tag. Two things enforce this:
+
+- `.github/workflows/ci.yml` (`check` job) fails when `dist/` differs from a fresh `npm run build`.
+- `.github/workflows/refresh-dist.yml` is a manual `workflow_dispatch` job. It runs `npm ci`, `npm run build` and `npm run test:map-paths`, then commits `dist/` as `chore: refresh dist` when anything changed.
+
+Before you tag, run these steps on the commit you plan to tag:
+
+1. Refresh the bundle, either by running `refresh-dist.yml` from the Actions tab or locally:
+
+   ```bash
+   npm ci
+   npm run build
+   npm run test:map-paths
+   ```
+
+2. Confirm nothing is left to commit: `git status --porcelain dist` must print nothing. If it prints files, commit the refreshed `dist/` before tagging.
+3. Check the bundle manifest: `npm run verify:dist` must exit `0`. It compares the SHA-256 of `dist/index.js` against the recorded value.
+4. Confirm the tagged commit includes the bundle: `git log -1 --format=%H -- dist` should point at a commit reachable from `main`.
+
+Failure paths and what to do:
+
+- **CI reports `dist/ is out of date`**: run `npm run build` and commit the result. Do not hand-edit anything under `dist/`.
+- **`npm run test:map-paths` fails**: source-map entries point outside the repo or at missing sources. Fix the source paths and rebuild. Do not publish a bundle with a failing map check.
+- **`refresh-dist.yml` cannot push** (for example, branch protection rejects the bot): build locally, open a PR with only the `dist/` change, and tag after it merges.
+
+Once the tag is pushed, follow the build provenance and checksum steps in [RELEASE_CHECKLIST](RELEASE_CHECKLIST.md#verify-build-provenance).
+
 ## Wave freeze labeling
 
 Run these steps in order before a Drips Wave opens so every repository in the org freezes the same way:
