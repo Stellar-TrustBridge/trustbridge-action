@@ -324,8 +324,16 @@ The fields listed in `schemas/webhook-payload.schema.json` under `schema_version
 - Adding new items to `result.checks[]` — the array length is not contractually fixed.
 - Adding new **optional** fields to each `result.checks[]` item.
 - Adding new allowed values to `schema_version` (handled by upgrading to a new schema version alongside the old).
+- Adding new **optional** fields to each `assets[]` item.
+- Adding new values to a closed set — a new `assets[].reason_code`, a new `dropped_fields` entry, or a new code in `schemas/reason-codes.json` (with `since`; the catalog `version` does not change).
 
-Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additionalProperties: false` validation on the receiver side against the v1 schema — use it only as a minimum-field check).
+Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additionalProperties: false` validation on the receiver side against the v1 schema — use it only as a minimum-field check). Unknown reason codes MUST be ignored rather than rejected; gate on `result.valid`.
+
+The full field classification, the reason-code versioning rules, worked
+examples, and the reference receiver `readWebhookPayloadForConsumer`
+(`src/webhook.ts`, stable error codes `WEBHOOK_PAYLOAD_MALFORMED`,
+`WEBHOOK_PAYLOAD_TOO_LARGE`, `WEBHOOK_SCHEMA_VERSION_UNSUPPORTED`) are in
+[`docs/SCHEMA.md`](SCHEMA.md#webhook-payload-versioning-policy-issue-917) (Issue #917).
 
 ### Webhook body size cap and truncation markers (Issue #894)
 
@@ -357,6 +365,9 @@ body was delivered) and `WEBHOOK_SIZE_LIMIT_EXCEEDED` (nothing was sent).
 | Changing `stellar_address` format (e.g. full address instead of redacted) | PII leak + format change |
 | Changing the HMAC header name from `X-TrustBridge-Signature` | Breaks receiver signature verification |
 | Changing the HMAC algorithm from SHA-256 | Breaks receiver verification |
+| Making a required field optional or nullable | Receivers that read it unconditionally break |
+| Changing the meaning of an existing reason code or closed-set value | Silently flips receiver decisions |
+| Removing or renaming a reason code | Also bumps the `schemas/reason-codes.json` catalog `version` |
 
 When introducing a breaking payload change, increment `schema_version` in the payload **and** publish the new JSON Schema as `schemas/webhook-payload-v2.schema.json`. Run both schemas simultaneously for a deprecation window before removing v1 support.
 
@@ -380,6 +391,8 @@ User-Agent: trustbridge-action/1
 - [ ] Is the change additive only? If yes — no schema version bump needed.
 - [ ] Does the change rename or remove a frozen field? If yes — this is a MAJOR bump.
 - [ ] Is a new optional field added? Update `schemas/webhook-payload.schema.json` (mark as not-required).
+- [ ] Is a new optional field added? Also add it to `WEBHOOK_PAYLOAD_OPTIONAL_FIELDS` in `src/webhook.ts`, the field-classes table in `docs/SCHEMA.md`, and the payload reference in `docs/USAGE.md` (Issue #917).
+- [ ] Is a new closed-set value added (asset `reason_code`, `dropped_fields`)? It is additive; receivers report it via `unknownReasonCodes` until they upgrade.
 - [ ] Does the change touch the size cap or truncation order? Keep `WEBHOOK_MAX_BODY_BYTES` / `WEBHOOK_TRUNCATABLE_FIELDS` and the `docs/USAGE.md` truncation section in sync, and cover the boundary + multibyte paths in `__tests__/webhook-size-cap.test.ts`.
 - [ ] Run `npm test -- --testPathPattern 'webhook'` — the contract tests must pass.
 - [ ] If introducing a new `schema_version`, add a new frozen-fields table above and update `buildWebhookPayload` to emit the new version for new consumers while keeping backward compatibility.
