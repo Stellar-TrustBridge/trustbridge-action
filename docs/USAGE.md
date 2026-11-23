@@ -3202,6 +3202,60 @@ All outputs are **strings** (GitHub Actions limitation). Consume them as:
 - Number: `parseFloat('${{ steps.bridge.outputs.timing_total_ms }}')`
 - JSON: `JSON.parse('${{ steps.bridge.outputs.checks_json }}')`
 
+### Boolean outputs in `if:` conditions (Issue #919)
+
+Every boolean output is published as **exactly** the lower-case string
+`"true"` or `"false"` — never empty, never `"True"`, `"1"`/`"0"`, or
+`"undefined"` — on every code path (single-address, batch, dry-run). The
+normalization lives in `src/outputs.ts` (`toBooleanOutput`,
+`normalizeBooleanOutputs`) and runs as the last step before
+`core.setOutput`.
+
+| Output | `"true"` when |
+| --- | --- |
+| `ready` | All validation checks passed. |
+| `trustline_exists` | The account holds the configured asset trustline. |
+| `account_funded` | Horizon found the account on the ledger. |
+| `snooze_expired` | This run posted because a snooze window just lapsed. |
+| `has_conflicts` | At least one input source conflict was detected. |
+| `network_passphrase_mismatch` | Configured and Horizon network passphrases differ. |
+| `friendbot_called` | Friendbot was called to fund a testnet account. |
+| `friendbot_success` | Friendbot funding succeeded. |
+| `outputs_truncated` | A JSON/array output was truncated to fit the size cap. |
+
+Always compare against the string literal:
+
+```yaml
+- name: Pay out
+  if: steps.trustbridge.outputs.ready == 'true'
+  run: ./payout.sh
+
+- name: Explain why not
+  if: steps.trustbridge.outputs.ready != 'true'
+  run: echo "Not ready: ${{ steps.trustbridge.outputs.reason_code }}"
+```
+
+Do **not** write `if: steps.trustbridge.outputs.ready` on its own: GitHub
+expressions treat any non-empty string — including `"false"` — as truthy, so
+that condition is always true. Do **not** use `fromJSON(...)` on the value
+either; the `== 'true'` comparison is the stable contract.
+
+**Legacy `1`/`0` values.** Boolean *inputs* already accept `true`/`false`,
+`1`/`0`, and `yes`/`no` (`parseBooleanInput` in `src/inputs.ts`). For
+*outputs*, an internal producer that hands over a legacy `1`/`0` (number or
+string), `"TRUE"`, or surrounding whitespace is normalized to
+`"true"`/`"false"`; `null`, `undefined`, and `""` mean `"false"`. Any other
+value (for example `"yes"`, `2`, `NaN`, or an object) is a producer bug: the
+output **fails closed** to `"false"` — a payout gate never opens on garbage —
+and a workflow warning is emitted:
+
+```
+Output "ready" expects a boolean (true/false, or legacy 1/0); received string "maybe". Publishing "false" (fail closed).
+```
+
+The warning names the output and the value's type, never a long raw value,
+so it cannot leak addresses into logs. Tests: `npx jest __tests__/outputs-boolean.test.ts`.
+
 ---
 
 ## GitHub Projects v2 status updates (Issue #222)
