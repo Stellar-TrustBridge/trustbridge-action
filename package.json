@@ -20,6 +20,7 @@
     "reason-codes:doc": "node scripts/generate-reason-codes-doc.js",
     "reason-codes:check": "node scripts/generate-reason-codes-doc.js --check",
     "verify:dist": "node scripts/verify-dist-manifest.js",
+    "test:map-paths": "jest __tests__/map-paths.test.ts",
     "prepare": "npm run build"
   },
   "repository": {
