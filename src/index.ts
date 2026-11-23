@@ -45,7 +45,7 @@ import {
   listDeprecatedInputAliases,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
@@ -1045,7 +1045,7 @@ export async function run(): Promise<void> {
     // Authoritative for batch mode — overwrites setValidationOutputs's
     // single-address-derived value above, same precedence as the other
     // batch outputs.
-    core.setOutput('outputs_truncated', String(batchOutputsTruncated));
+    core.setOutput('outputs_truncated', toBooleanOutput(batchOutputsTruncated, 'outputs_truncated'));
   }
 
   // ---------------------------------------------------------------------------
