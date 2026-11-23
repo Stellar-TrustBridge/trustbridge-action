@@ -266,6 +266,8 @@ Rendering rules:
 - Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
 - Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
 - A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+- **Blank values never produce an empty cell** (Issue #921). An empty or whitespace-only asset code, issuer, or balance renders as `_unknown_` instead of an empty code span, so a row always keeps its four columns. A `|` inside a value is escaped as `\|`, and line breaks are collapsed to spaces, since either one would otherwise split the row.
+- An empty or whitespace-only `reason_code` in the Validation gate section falls back to the verdict default (`SUCCESS` or `FAILED`) instead of rendering an empty code span.
 - **Long tables are truncated** (Issue #860): only the first `MAX_ASSET_TABLE_ROWS` (50) rows render. The Trustline status column stays intact for every visible row — truncation only hides rows, never columns. A plain sentence *after* the table (not an extra table row — GitHub Markdown tables have no colspan) summarizes what was cut, e.g.:
 
   ```markdown
