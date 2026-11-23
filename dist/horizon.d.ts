@@ -114,7 +114,12 @@ export declare class HorizonPinMismatchError extends HorizonError {
  * working unchanged.
  */
 export declare class HorizonCircuitOpenError extends HorizonError {
-    constructor(message: string);
+    /**
+     * Issue #920: milliseconds until the breaker admits another probe, copied
+     * from the underlying `CircuitOpenError` when known.
+     */
+    readonly remainingCooldownMs?: number;
+    constructor(message: string, remainingCooldownMs?: number);
 }
 /** Is this error a circuit-breaker fast-fail (Issue #434)? */
 export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
@@ -186,6 +191,7 @@ export interface FetchAccountOptions {
 export declare const DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 export declare const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 export declare const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
+export declare const RETRY_AFTER_JITTER_PERCENT = 10;
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 /**
  * Produce a representation of a configured Horizon URL that is safe to
@@ -198,6 +204,8 @@ export declare function normalizeHorizonUrl(baseUrl: string): string;
 export declare function displayHorizonUrl(url: string, revealHost: boolean): string;
 export declare function isRetryableStatus(status: number): boolean;
 export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
+/** Apply bounded jitter so concurrent Wave jobs do not retry in lockstep. */
+export declare function jitteredRetryDelayMs(delayMs: number, ceilingMs: number): number;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
 /**
  * Fetch the asset issuer account for the SEP-0001 home domain check (Issue
