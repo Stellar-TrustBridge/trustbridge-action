@@ -101,6 +101,17 @@ describe('dist refresh verification docs (#923)', () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
+  it('refresh-dist regenerates and verifies the manifest before committing', () => {
+    const workflow = readRoot('.github/workflows/refresh-dist.yml');
+    const regen = workflow.indexOf('node scripts/generate-dist-manifest.js');
+    const verify = workflow.indexOf('npm run verify:dist');
+    const commit = workflow.indexOf('git commit');
+    expect(regen).toBeGreaterThan(0);
+    expect(verify).toBeGreaterThan(regen);
+    expect(commit).toBeGreaterThan(verify);
+    expect(section()).toContain('node scripts/generate-dist-manifest.js');
+  });
+
   it('keeps the CI drift rule the checklist describes', () => {
     expect(readRoot('.github/workflows/ci.yml')).toContain('dist/ is out of date with src/');
     expect(section()).toContain('dist/ is out of date');
