@@ -141,6 +141,81 @@ export declare function formatStructuredLog(message: string, context?: LogContex
 export declare function logInfo(message: string, context?: LogContext): void;
 export declare function logWarning(message: string, context?: LogContext): void;
 export declare function logError(message: string, context?: LogContext): void;
+/**
+ * Events per key that are emitted in full before sampling starts (Issue #924).
+ * With the default of 3, the first three identical exhaustion warnings in a
+ * window are logged and the rest are counted instead of printed.
+ */
+export declare const HORIZON_RETRY_SAMPLE_BURST = 3;
+/** Length of one sampling window for a key (Issue #924). */
+export declare const HORIZON_RETRY_SAMPLE_WINDOW_MS = 60000;
+/** Summary of events suppressed for one key in one window (Issue #924). */
+export interface RepeatSampleSummary<T> {
+    key: string;
+    /** The first event recorded for the key in this window, kept for context. */
+    sample: T;
+    /** Every event recorded in the window, emitted or not. */
+    total: number;
+    /** Events not emitted because the burst limit was already reached. */
+    suppressed: number;
+    /** Timestamp (ms) of the first event in the window. */
+    firstAt: number;
+    /** Timestamp (ms) of the most recent event in the window. */
+    lastAt: number;
+}
+/**
+ * Sample repeated events by key so a burst of identical warnings does not
+ * flood the Actions log (Issue #924).
+ *
+ * For each key, the first `burst` events in a window are emitted. Later events
+ * in the same window are counted and suppressed. A window ends once
+ * `windowMs` has passed since its first event; the next event for that key
+ * then returns a summary for the window that just closed. {@link flush}
+ * returns summaries for every key that still has suppressed events, so the
+ * last window is not lost at the end of a run.
+ *
+ * The clock is injectable so tests can drive windows without real waits.
+ */
+export declare class RepeatWarningSampler<T> {
+    private readonly burst;
+    private readonly windowMs;
+    private readonly now;
+    private readonly groups;
+    constructor(burst?: number, windowMs?: number, now?: () => number);
+    /**
+     * Record one event for `key`. `emit` says whether this event should be
+     * logged in full. `rolled` is set when a previous window for the same key
+     * just closed with suppressed events.
+     */
+    record(key: string, sample: T): {
+        emit: boolean;
+        rolled?: RepeatSampleSummary<T>;
+    };
+    /**
+     * Return summaries for every key with suppressed events and clear all
+     * state. Call once at the end of a run.
+     */
+    flush(): RepeatSampleSummary<T>[];
+    /** Drop all state without producing summaries (used by tests). */
+    reset(): void;
+    private summarize;
+}
+/** Sampler for Horizon exhaustion warnings, shared by every Horizon call in a run (Issue #924). */
+export declare const horizonRetrySampler: RepeatWarningSampler<LogContext>;
+/**
+ * Group key for sampling: the failure pattern without the account address, so
+ * the same outage across many accounts collapses into one sampled stream.
+ */
+export declare function horizonRetrySampleKey(event: HorizonRetryEvent): string;
+/**
+ * Emit the summary line for one sampled window (Issue #924). Keeps first and
+ * last timestamps and the counts, and reuses the first event's redacted
+ * context so the reason code and endpoint stay greppable.
+ */
+export declare function formatRepeatSampleSummary(summary: RepeatSampleSummary<LogContext>): {
+    message: string;
+    context: LogContext;
+};
 declare class StructuredLogger {
     private debugMode;
     constructor(debugMode?: boolean);
@@ -253,6 +328,12 @@ export declare function buildHorizonRetryLogContext(event: HorizonRetryEvent): L
  */
 export declare function formatHorizonRetryMessage(event: HorizonRetryEvent): string;
 export declare const logger: StructuredLogger;
+/**
+ * Emit a summary for every Horizon retry window that still has suppressed
+ * warnings (Issue #924). Call once when the run ends so the final window is
+ * not lost. Safe to call when nothing was suppressed.
+ */
+export declare function flushHorizonRetrySamples(): number;
 /**
  * Logs an informational message. Context values are redacted before output.
  */

@@ -315,11 +315,24 @@ type Octokit = ReturnType<typeof github.getOctokit>;
  */
 export declare function resolveIssueOrPullRequestNumber(payload: unknown): number | undefined;
 /**
+ * Lines that identify a TrustBridge comment (Issue #900). Each must be a
+ * whole line on its own, exactly as TrustBridge writes it. See
+ * docs/COMMENT_GUIDE.md#marker-format-stability.
+ */
+export declare const TRUSTBRIDGE_IDENTITY_LINES: readonly string[];
+/**
  * Returns true when a comment body matches any of the TrustBridge
  * identifiers: the current versioned sticky marker, the legacy marker
  * (pre-schema-version), or the TrustBridge footer. Matching on any of
  * these provides defense-in-depth across upgrades and accidental
  * marker drift.
+ *
+ * Issue #900: an identifier only counts when it is a whole line outside
+ * code blocks and blockquotes. A plain substring match let another bot's
+ * comment that quotes a TrustBridge marker, or embeds it in a longer HTML
+ * comment such as `<!-- other-bot: <!-- trustbridge-action:sticky-comment --> -->`,
+ * be picked as the sticky comment and overwritten. Other bots' own HTML
+ * comment markers never match.
  */
 export declare function isTrustBridgeComment(body: string | undefined | null): boolean;
 /**

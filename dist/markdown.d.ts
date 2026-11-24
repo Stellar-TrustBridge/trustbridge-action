@@ -3,6 +3,36 @@ import { Locale } from './i18n';
 export declare function escapeMarkdownInline(value: string): string;
 export declare function inlineCode(value: string): string;
 /**
+ * Placeholder rendered in a table cell whose source value is missing or empty
+ * (Issue #921). An empty cell or an empty code span (`` `` ``) reads as
+ * broken output in a Wave comment, so every blank value gets this marker.
+ */
+export declare const EMPTY_TABLE_CELL_PLACEHOLDER = "_unknown_";
+/**
+ * Make an arbitrary value safe to place inside a single GitHub Markdown table
+ * cell (Issue #921).
+ *
+ * - `undefined`, `null`, or a value that is blank after trimming returns the
+ *   placeholder, so a row never has an empty cell or an empty code span.
+ * - Line breaks are collapsed to spaces: a newline ends the table row.
+ * - Pipes are escaped as `\|`, which GitHub honours even inside code spans;
+ *   an unescaped pipe would add a column and break the table.
+ */
+export declare function tableCellText(value: unknown, placeholder?: string): string;
+/**
+ * Trim a value and collapse any line breaks to single spaces, returning `''`
+ * for `undefined`, `null`, or blank input (Issue #921). Does not escape
+ * anything: callers that already run {@link escapeMarkdownInline} must not
+ * escape pipes a second time.
+ */
+export declare function singleLineText(value: unknown): string;
+/**
+ * Table-cell variant of {@link inlineCode}: a blank value renders the
+ * placeholder instead of an empty code span, and pipes/newlines are handled
+ * by {@link tableCellText} (Issue #921).
+ */
+export declare function inlineCodeCell(value: unknown, placeholder?: string): string;
+/**
  * A single per-asset row for {@link buildAssetTrustlineTable} (Issue #552).
  *
  * Mirrors the per-asset trustline status computed for the `assets_json`
@@ -199,3 +229,14 @@ export declare function extractChecklistState(body: string, options?: ExtractChe
  * Checkboxes are comment-only (no GitHub Projects task-list API sync).
  */
 export declare function buildOnboardingChecklist(result: ValidationResult, options: OnboardingChecklistOptions): string;
+/**
+ * Lines of `body` that GitHub renders as normal Markdown, trimmed: lines in
+ * fenced code blocks (```` ``` ```` / `~~~`), indented code blocks (4 spaces
+ * or a tab) and blockquotes (`>`) are dropped.
+ *
+ * TrustBridge uses this to find its hidden HTML markers. Another bot that
+ * quotes or code-formats a TrustBridge marker (for example in a "previous
+ * comment" excerpt) shows it as text, so that comment must not be taken as
+ * TrustBridge's own. A non-string `body` returns an empty array.
+ */
+export declare function markdownLinesOutsideCode(body: unknown): string[];
