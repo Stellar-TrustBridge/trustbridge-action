@@ -1,3 +1,4 @@
+import { effectiveReasonCode } from './reasonCodes';
 import * as core from "@actions/core";
 import * as fs from "fs";
 import * as path from "path";
@@ -347,7 +348,7 @@ export function formatCommentBody(
     // `ready` / `reason_code` action outputs expose. Surfacing it here means a
     // dashboard triager can read the reason code straight from the comment
     // instead of digging through the Actions log.
-    const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+    const reasonCode = effectiveReasonCode(result);
     lines.push(
       "",
       `### ${strings.validationGateHeading}`,

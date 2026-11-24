@@ -425,6 +425,8 @@ A complete caller workflow that passes these inputs through the reusable workflo
 6. On success, TrustBridge fetches the account from Horizon again and runs the normal checks against the funded account.
 7. On failure (HTTP error, timeout, network error), the run continues with the original "account not funded" result.
 
+For timing races and recommended waits, see [Friendbot-funded testnet false negatives](FAQ.md#friendbot-testnet-false-negatives).
+
 #### Safety guarantees
 
 **Network guard:** Friendbot only runs against test networks. Pubnet runs never call Friendbot, even when `use_friendbot: true`.

@@ -10,6 +10,8 @@ import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureRes
 import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
 import { RateBudgetExhaustedError } from './resilience';
+import type { BatchReasonCode } from './reasonCodes';
+import { AdaptiveConcurrency } from './checks-run';
 import { globalMetrics } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 
@@ -51,7 +53,7 @@ export const BATCH_REASON_CODES = {
    * spent, the run was cancelled by the caller.
    */
   cancelled: 'CANCELLED',
-} as const;
+} as const satisfies Record<string, BatchReasonCode>;
 
 /** A single asset that hit `clawback_strict_mode` for one address. */
 export interface BatchAssetFailure {
@@ -498,9 +500,9 @@ function deriveBatchReasonCode(
     trustlineExists?: boolean;
     xlmReserveMet?: boolean;
     /** HOME_DOMAIN_* code from a strict-mode home domain failure (Issue #708). */
-    homeDomainReasonCode?: string;
+    homeDomainReasonCode?: BatchReasonCode;
   },
-): string {
+): BatchReasonCode {
   if (valid) return BATCH_REASON_CODES.success;
   if (options.invalidAddress) return BATCH_REASON_CODES.invalidAddress;
   if (options.accountNotFunded) return BATCH_REASON_CODES.accountNotFunded;
@@ -617,6 +619,8 @@ export async function runBatchValidation(
   const workerCount = Math.min(maxConcurrency, addresses.length);
   let nextIndex = 0;
   let stopDispatch = false;
+  // Issue #946: throttle signals lower the number of usable worker slots.
+  const limiter = new AdaptiveConcurrency(workerCount);
 
   async function worker(): Promise<void> {
     let dispatchedBefore = false;
@@ -625,8 +629,14 @@ export async function runBatchValidation(
         stopDispatch = true;
         return;
       }
+      if (nextIndex >= addresses.length) return;
+      if (!limiter.tryAcquire()) {
+        await limiter.waitForRelease();
+        continue;
+      }
       const i = nextIndex;
-      if (i >= addresses.length) return;
+      const epoch = limiter.epoch;
+      let throttled = false;
       nextIndex = i + 1;
 
       // Issue #852: every address beyond the first wave had to wait for a
@@ -642,14 +652,28 @@ export async function runBatchValidation(
       }
       dispatchedBefore = true;
 
-      const outcome = await validateOneAddress(
+      let outcome: AddressOutcome;
+      try {
+        outcome = await validateOneAddress(
         addresses[i],
         config,
         horizonUrl,
-        fetchOptions,
+        {
+          ...fetchOptions,
+          onThrottle: () => {
+            throttled = true;
+            limiter.onThrottle(epoch);
+            fetchOptions.onThrottle?.();
+          },
+        },
         extraAssets,
         issuerAccount,
-      );
+        );
+      } finally {
+        // Only successful Horizon answers count towards recovery.
+        limiter.release();
+      }
+      if (!throttled && outcome.result.accountFunded) limiter.onSuccess(epoch);
       results[i] = outcome.result;
 
       if (outcome.budgetExhausted || signal?.aborted) {

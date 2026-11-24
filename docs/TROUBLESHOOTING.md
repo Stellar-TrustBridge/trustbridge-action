@@ -135,6 +135,9 @@ account is reported as unfunded. Common messages:
 - Warning `use_friendbot is enabled but horizon_url is not a test network`:
   Friendbot is never called on pubnet.
 
+If funding succeeded but the run still fails, see the
+[false-negative FAQ](FAQ.md#friendbot-testnet-false-negatives).
+
 See [USAGE.md — Friendbot testnet funding](USAGE.md#friendbot-testnet-funding)
 for the input reference.
 

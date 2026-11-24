@@ -139,6 +139,12 @@
             "type": "string",
             "enum": ["SUCCESS", "TRUSTLINE_MISSING", "CLAWBACK_BLOCKED"],
             "description": "Per-asset reason code from schemas/reason-codes.json. TRUSTLINE_MISSING outranks CLAWBACK_BLOCKED; CLAWBACK_BLOCKED is only emitted under clawback_strict_mode: true."
+          },
+          "deprecated_reason_codes": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+            "description": "Optional, additive (Issue #945). Old names of reason_code, present only during a documented rename window."
           }
         }
       }

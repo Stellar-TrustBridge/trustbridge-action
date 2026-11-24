@@ -56,8 +56,8 @@ export interface PluginLoadConfig {
  */
 export declare class PluginLoadError extends Error {
     readonly pluginPath: string;
-    readonly reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id';
-    constructor(message: string, pluginPath: string, reason: 'path_traversal' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id');
+    readonly reason: 'path_traversal' | 'symlink_escape' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id';
+    constructor(message: string, pluginPath: string, reason: 'path_traversal' | 'symlink_escape' | 'not_found' | 'not_file' | 'invalid_export' | 'load_failed' | 'duplicate_id');
 }
 /**
  * Load a single plugin module from a workspace-relative path.

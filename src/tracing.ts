@@ -2142,7 +2142,6 @@ export async function callFriendbot(
  */
 
 import * as core from '@actions/core';
-import { redactStellarAddress, redactHorizonUrl } from './logger';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the OTel data model

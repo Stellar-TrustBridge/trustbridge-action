@@ -15,6 +15,43 @@
 import { ValidationResult } from './checks';
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
 export declare const HOME_DOMAIN_CHECK_LABEL = "SEP-0001 home domain";
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+export declare const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+/** Share of requests since the last change that must be throttled to back off. */
+export declare const ADAPTIVE_THROTTLE_RATE = 0.2;
+/** Consecutive unthrottled successes needed to regain one slot. */
+export declare const ADAPTIVE_RECOVERY_SUCCESSES = 10;
+/**
+ * Concurrency limit for batch Horizon work (Issue #946): halves when the
+ * throttle rate reaches {@link ADAPTIVE_THROTTLE_RATE}, regains one slot per
+ * {@link ADAPTIVE_RECOVERY_SUCCESSES} successes. Always within `[1, max]`.
+ * Requests started before the last decrease are ignored, so one burst of
+ * 429s causes one decrease.
+ */
+export declare class AdaptiveConcurrency {
+    private readonly max;
+    private limitValue;
+    private active;
+    private epochValue;
+    private successes;
+    private streak;
+    private throttles;
+    private waiters;
+    constructor(max: number);
+    get limit(): number;
+    get epoch(): number;
+    tryAcquire(): boolean;
+    waitForRelease(): Promise<void>;
+    release(): void;
+    onThrottle(epoch: number): void;
+    onSuccess(epoch: number): void;
+    private resetWindow;
+    private record;
+    private wake;
+}
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 /**
  * Result of attempting to create a Check Run.

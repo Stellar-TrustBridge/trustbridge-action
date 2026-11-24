@@ -274,7 +274,16 @@ uses the same "stop dispatching, fill the rest" mechanism and keeps its
 existing `RATE_BUDGET_EXHAUSTED` reason code, unchanged from before this
 option existed.
 
-Enforced by `__tests__/batch-concurrency.test.ts`, `__tests__/batch.test.ts`,
+**Adaptive limit (Issue #946):** `AdaptiveConcurrency` (`src/checks-run.ts`)
+keeps the effective limit within `[1, min(maxConcurrency, addresses)]`. It
+halves when at least 20% of requests in the current window are throttled (429,
+or a retryable error with `Retry-After`) and regains one slot per 10
+consecutive successes. Requests started before a decrease are ignored.
+Metrics: `batch_concurrency_limit`, `batch_horizon_throttled`,
+`batch_concurrency_decreased`, `batch_concurrency_increased`. With the default
+`maxConcurrency: 1` the limit stays at 1.
+
+Enforced by `__tests__/adaptive-concurrency.test.ts`, `__tests__/batch-concurrency.test.ts`, `__tests__/batch.test.ts`,
 and `__tests__/batch-metrics-counters.test.ts`.
 
 ---
