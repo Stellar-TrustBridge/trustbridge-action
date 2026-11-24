@@ -119,6 +119,59 @@ export interface TomlFetchOptions {
   maxBodyBytes?: number;
   /** Resolver for the DNS-rebinding guard (injectable for tests). */
   dnsLookup?: SSRFFetchOptions['dnsLookup'];
+  /** Stellar network (`network` input). Pubnet is always HTTPS-only (Issue #960). */
+  network?: string;
+  /**
+   * `stellar_toml_allow_insecure_testnet`. On testnet only, a `http://`
+   * home_domain is tolerated (logged as a warning) and upgraded to HTTPS.
+   * Ignored on pubnet.
+   */
+  allowInsecureTestnet?: boolean;
+}
+
+/** Stable reason code when a plain-HTTP home_domain is rejected (Issue #960). */
+export const TOML_HTTPS_REQUIRED_REASON = 'toml_https_required' as const;
+
+export type TomlTransportDecision =
+  | { ok: true; domain: string; upgraded: boolean }
+  | { ok: false; reasonCode: typeof TOML_HTTPS_REQUIRED_REASON; error: string };
+
+function isPubnet(network: string | undefined): boolean {
+  const n = (network ?? 'public').trim().toLowerCase();
+  return n === '' || n === 'public' || n === 'pubnet' || n === 'mainnet';
+}
+
+/**
+ * Enforce HTTPS-only stellar.toml transport (Issue #960).
+ *
+ * - A bare domain or `https://` prefix is always accepted.
+ * - A `http://` prefix (or any non-HTTPS scheme) is rejected on pubnet with
+ *   reason code `toml_https_required`, regardless of overrides.
+ * - On testnet/futurenet, `allowInsecureTestnet: true` tolerates a `http://`
+ *   prefix: the domain is upgraded and still fetched over HTTPS through the
+ *   SSRF gate (which never performs plain-HTTP requests).
+ */
+export function enforceTomlTransport(
+  rawDomain: string,
+  options: { network?: string; allowInsecureTestnet?: boolean } = {},
+): TomlTransportDecision {
+  const trimmed = rawDomain.trim();
+  const schemeMatch = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (!schemeMatch) return { ok: true, domain: trimmed, upgraded: false };
+  const scheme = schemeMatch[1].toLowerCase();
+  const rest = trimmed.slice(schemeMatch[0].length).replace(/\/.*$/, '');
+  if (scheme === 'https') return { ok: true, domain: rest, upgraded: false };
+  if (scheme === 'http' && !isPubnet(options.network) && options.allowInsecureTestnet) {
+    return { ok: true, domain: rest, upgraded: true };
+  }
+  const where = isPubnet(options.network) ? 'pubnet' : 'this network';
+  return {
+    ok: false,
+    reasonCode: TOML_HTTPS_REQUIRED_REASON,
+    error:
+      `stellar.toml must be served over HTTPS on ${where} (reason_code: ${TOML_HTTPS_REQUIRED_REASON}); ` +
+      `got scheme "${scheme}". See docs/SEP0001_HOME_DOMAIN.md.`,
+  };
 }
 
 function clampTomlTtl(ttl: number | undefined): number {
@@ -149,7 +202,17 @@ export async function fetchTomlWithCache(
 ): Promise<TomlFetchOutcome> {
   const startTime = Date.now();
   const cacheTtlMs = clampTomlTtl(options.cacheTtlMs);
-  const domainNorm = domain.trim().toLowerCase();
+  const transport = enforceTomlTransport(domain, options);
+  if (!transport.ok) {
+    logger.warn(transport.error, { component: 'toml' });
+    return { ok: false, error: transport.error, cachedAt: startTime };
+  }
+  if (transport.upgraded) {
+    logger.warn(`Insecure http:// home_domain upgraded to HTTPS on ${options.network} (stellar_toml_allow_insecure_testnet)`, {
+      component: 'toml',
+    });
+  }
+  const domainNorm = transport.domain.trim().toLowerCase();
   if (!domainNorm) return { ok: false, error: 'Domain is empty', cachedAt: startTime };
 
   if (options.hashPin && !parseHashPin(options.hashPin)) {

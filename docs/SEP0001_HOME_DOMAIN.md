@@ -90,6 +90,27 @@ Add the inputs to your workflow step:
 The domain fetched is `expected_home_domain` when it is set, otherwise the
 on-chain `home_domain`. When neither is known, the TOML step is skipped.
 
+### HTTPS-only transport (Issue #960)
+
+`stellar.toml` is always fetched as `https://{domain}/.well-known/stellar.toml`
+through the SSRF gate (`src/ssrf.ts`), which refuses any non-HTTPS URL and
+any redirect that downgrades the scheme. `src/toml.ts` additionally inspects
+the configured/on-chain domain for an explicit scheme prefix:
+
+| Network | Domain value | `stellar_toml_allow_insecure_testnet` | Result |
+|---|---|---|---|
+| pubnet (default) | `example.com` / `https://example.com` | any | Fetched over HTTPS. |
+| pubnet | `http://example.com` (or any other scheme) | any (ignored) | **Fails** with `reason_code: toml_https_required`; no network call. |
+| testnet / futurenet | `http://example.com` | `false` | **Fails** with `toml_https_required`. |
+| testnet / futurenet | `http://example.com` | `true` | Warning logged; scheme **upgraded** and fetched over HTTPS. |
+| any | `ftp://…`, `file://…` | any | **Fails** with `toml_https_required`. |
+
+The network is inferred from `horizon_url` (same preset logic as the network
+presets). The testnet override exists only so testnet issuers whose
+`home_domain` was set with an `http://` prefix do not hard-fail; it never
+performs a plain-HTTP request. An unset or unrecognised network is treated as
+pubnet (fail closed).
+
 ### Cache TTL semantics
 
 - A cached body is served only while `now − fetchedAt < stellar_toml_cache_ttl_ms`.

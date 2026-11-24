@@ -532,7 +532,9 @@ export interface Inputs {
   fail_label?: string;
   sep0007_origin_domain?: string;
   snooze_window_minutes?: string;
+  snooze_max_override?: string;
   force_comment?: string;
+  summary_emoji_free?: string;
   webhook_url?: string;
   webhook_secret?: string;
   webhook_secret_previous?: string;
@@ -561,6 +563,7 @@ export interface Inputs {
   stellar_toml_fetch_enabled?: string;
   stellar_toml_cache_ttl_ms?: string;
   stellar_toml_hash_pin?: string;
+  stellar_toml_allow_insecure_testnet?: string;
   write_validation_json?: string;
   validation_json_path?: string;
   trustbridge_plugins_path?: string;
@@ -603,4 +606,16 @@ export interface Inputs {
   privacy_mode?: string;
   soroban_rpc_url?: string;
   contract_id?: string;
+}
+
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+export function parseStrictBooleanInput(name: string, raw: string | undefined, defaultValue = false): boolean {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '') return defaultValue;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  throw new Error(`Invalid ${name}: expected "true" or "false", got "${raw}"`);
 }

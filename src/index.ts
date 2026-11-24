@@ -44,6 +44,8 @@ import {
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
 } from './inputs';
+import { capSnoozeWindow } from './snooze';
+import { inferStellarNetworkPreset } from './links';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -511,7 +513,15 @@ export async function run(): Promise<void> {
     min: 0,
     max: 60 * 24 * 30,
   });
-  const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
+  // Issue #962 — cap the snooze window; maintainers may raise the cap (never remove it).
+  const snoozeMaxOverride = parseBooleanInput(core.getInput('snooze_max_override'), false);
+  const snoozeCap = capSnoozeWindow(snoozeWindowMinutes * 60 * 1000, { maintainerOverride: snoozeMaxOverride });
+  if (snoozeCap.capped) {
+    core.warning(
+      `snooze_window_minutes exceeds the maximum snooze window; clamped to ${snoozeCap.windowMs / 60000} minutes (reason_code: ${snoozeCap.reasonCode}).`,
+    );
+  }
+  const snoozeWindowMs = snoozeCap.windowMs;
   const issueNumberInputRaw = core.getInput('issue_number') || '';
   const issueNumberInput = issueNumberInputRaw.trim()
     ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
@@ -714,6 +724,9 @@ export async function run(): Promise<void> {
         enabled: stellarTomlFetchEnabled,
         cacheTtlMs: stellarTomlCacheTtlMs,
         hashPin: stellarTomlHashPin || undefined,
+        // Issue #960 — pubnet is HTTPS-only; testnet may tolerate http:// (upgraded).
+        network: inferStellarNetworkPreset(horizonUrl),
+        allowInsecureTestnet: parseBooleanInput(core.getInput('stellar_toml_allow_insecure_testnet'), false),
       });
       if (tomlOutcome.status !== 'skipped') {
         // A pinned hash always fails closed; otherwise fetch errors only block

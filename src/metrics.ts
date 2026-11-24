@@ -13,6 +13,7 @@ import * as core from '@actions/core';
 import * as crypto from 'crypto';
 import { validateContractAddress } from './validation';
 import { formatJobSummaryMarkdown } from './summary';
+import { parseBooleanInput } from './inputs';
 
 export interface MetricPoint {
   name: string;
@@ -719,7 +720,10 @@ export async function writeJobSummary(
     const labelledReport = runLabel
       ? { ...report, jsonArtifact: `Run label: ${runLabel}\n${report.jsonArtifact}` }
       : report;
-    const rendered = formatJobSummaryMarkdown(labelledReport);
+    const rendered = formatJobSummaryMarkdown(labelledReport, {
+      // Issue #961 — emoji-free summaries for enterprise log drains.
+      emojiFree: parseBooleanInput(process.env.INPUT_SUMMARY_EMOJI_FREE, false),
+    });
     if (!process.env.GITHUB_STEP_SUMMARY) return;
     core.summary.addRaw(rendered.markdown);
     await core.summary.write();

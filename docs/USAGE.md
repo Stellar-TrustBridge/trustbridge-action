@@ -939,6 +939,42 @@ with:
 - `debug_mode: true` enables extra action logs for troubleshooting.
 - `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
 
+## Snooze duration cap (Issue #962)
+
+`snooze_window_minutes` is clamped to **7 days** (10080 minutes). Unbounded
+snoozes would let a failing Wave gate stay skipped indefinitely — a contributor
+(or a stale :zzz: reaction) could otherwise park a payout gate forever. When the
+configured window exceeds the cap the action logs a warning with
+`reason_code: snooze_window_capped` and uses the cap.
+
+Maintainers can raise the ceiling to **30 days** with `snooze_max_override: "true"`.
+The override never removes the cap. Negative, `NaN` or infinite windows disable
+snoozing. `force_comment` still bypasses snooze entirely.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    snooze_window_minutes: "20160"   # 14 days
+    snooze_max_override: "true"      # maintainer opt-in; otherwise clamped to 7 days
+```
+
+## Emoji-free summaries (Issue #961)
+
+Set `summary_emoji_free: "true"` to render the Job Summary and digest with
+ASCII tokens instead of emoji, for enterprise log drains that strip unicode:
+
+| Emoji | Token |
+|---|---|
+| ✅ | `[PASS]` |
+| ❌ | `[FAIL]` |
+| ⚠️ | `[WARN]` |
+| ⏸️ | `[PAUSED]` |
+| ✓ | `[OK]` |
+| 💤 | `[SNOOZED]` |
+
+Other pictographs are dropped. Default output is unchanged. See also
+[GHES compatibility](GHES_COMPATIBILITY.md).
+
 ## Sticky comments across re-runs
 
 ```yaml
@@ -2191,6 +2227,9 @@ When `privacy_mode: true`, addresses and asset issuers in `validation.json` (and
 ## SARIF output for GitHub Advanced Security
 
 TrustBridge can emit validation results as SARIF 2.1.0 for integration with GitHub Advanced Security (GHAS) code scanning. This allows wallet-check failures to appear alongside other security findings in the repository's Security tab.
+
+> Upload failing? See [Troubleshooting SARIF upload failures](TROUBLESHOOTING.md#sarif-upload-failures)
+> and the working example in [`docs/examples/sarif-code-scanning.yml`](examples/sarif-code-scanning.yml).
 
 ### Enable SARIF output
 
