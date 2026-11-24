@@ -153,6 +153,18 @@ export interface ResolvedReadyLabels {
  */
 export declare function resolveReadyLabelInputs(options: ReadyLabelInputOptions): ResolvedReadyLabels;
 /**
+ * Return the deprecated aliases explicitly supplied by a workflow. The action
+ * entrypoint uses this list to emit one consolidated warning per run instead
+ * of repeating warnings for each resolved field.
+ */
+export declare function listDeprecatedInputAliases(options: {
+    maintainerAlias?: string;
+    readyPassAlias?: string;
+    readyLabelPassAlias?: string;
+    readyFailAlias?: string;
+    readyLabelFailAlias?: string;
+}): string[];
+/**
  * Every input declared in `action.yml`, keyed by its exact snake_case name.
  *
  * `inputs-schema-parity.test.ts` locks this list to `action.yml`: adding,

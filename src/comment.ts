@@ -179,6 +179,29 @@ const TRUNCATION_NOTICE =
 export const COMMENT_TRUNCATED_MARKER =
   "<!-- trustbridge-action:comment-truncated -->";
 
+/** Most blockers named in the TL;DR; the remainder is shown as `+N`. */
+const TLDR_MAX_BLOCKERS = 3;
+
+/** Verdict and top reason codes, always rendered above the details (Issue #950). */
+export function buildTldr(result: ValidationResult, config: CommentConfig): string {
+  const strings = getStrings(config.locale ?? "en");
+  const gate = buildValidationGate(result);
+  const ready = result.valid && gate.ready;
+  const codes: string[] = [result.reasonCode ?? (result.valid ? "SUCCESS" : "FAILED")];
+  if ((config.assets ?? []).some((a) => !a.trustlineExists) && !codes.includes("TRUSTLINE_MISSING")) {
+    codes.push("TRUSTLINE_MISSING");
+  }
+  const shown = gate.failedLabels.slice(0, TLDR_MAX_BLOCKERS).map(escapeMarkdownInline).join(", ");
+  const extra = gate.failedLabels.length - TLDR_MAX_BLOCKERS;
+  const verdict = ready
+    ? strings.readyToProceed
+    : `${strings.blockedBy} ${shown || codes[0]}${extra > 0 ? ` +${extra}` : ""}`;
+  return [
+    `> **TL;DR** ${statusIcon(ready)} ${verdict}`,
+    `> ${strings.reasonCode} ${codes.map((c) => inlineCode(c)).join(", ")}`,
+  ].join("\n");
+}
+
 export function formatCommentBody(
   result: ValidationResult,
   config: CommentConfig,
@@ -213,6 +236,8 @@ export function formatCommentBody(
       `<!-- trustbridge-action:schema-version:${COMMENT_SCHEMA_VERSION} -->`,
       snoozeMarker,
       "## TrustBridge — Stellar Account Check",
+      "",
+      buildTldr(result, config),
       "",
       `${strings.checkedAccount} ${inlineCode(displayAddress)}`,
       `${strings.horizon} ${inlineCode(config.horizonUrl)}`,

@@ -310,7 +310,7 @@ export interface WebhookSignatureVerification {
    */
   matchedKeyIndex: number | null;
   /** Stable reason when `valid` is false. */
-  reason?: 'NO_SIGNATURE' | 'MALFORMED_SIGNATURE' | 'NO_SECRETS' | 'SIGNATURE_MISMATCH';
+  reason?: 'NO_SIGNATURE' | 'MALFORMED_SIGNATURE' | 'NO_SECRETS' | 'SIGNATURE_MISMATCH' | 'ROTATION_WINDOW_EXPIRED';
 }
 
 /**
@@ -321,11 +321,17 @@ export interface WebhookSignatureVerification {
  * of the receiver's accepted secrets. Order `secrets` newest first so
  * `matchedKeyIndex` tells you which key matched. Empty secrets are ignored and
  * every comparison is constant-time.
+ *
+ * `options.previousAcceptUntilMs` bounds the overlap (Issue #949): from that
+ * instant only `secrets[0]` (the primary) is accepted, and a match on any other
+ * key fails with `ROTATION_WINDOW_EXPIRED`. An invalid (NaN) deadline fails
+ * closed. Omit it for an open-ended window.
  */
 export function verifyWebhookSignatureWithRotation(
   body: string,
   signatures: Array<string | null | undefined>,
   secrets: Array<string | null | undefined>,
+  options: { previousAcceptUntilMs?: number; nowMs?: number } = {},
 ): WebhookSignatureVerification {
   const presented = signatures
     .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
@@ -338,9 +344,16 @@ export function verifyWebhookSignatureWithRotation(
     .filter((k): k is { s: string; i: number } => typeof k.s === 'string' && k.s !== '');
   if (accepted.length === 0) return { valid: false, matchedKeyIndex: null, reason: 'NO_SECRETS' };
 
+  const deadline = options.previousAcceptUntilMs;
+  const windowOpen = deadline === undefined || (options.nowMs ?? Date.now()) < deadline;
+
   for (const { s, i } of accepted) {
     for (const sig of wellFormed) {
-      if (verifyWebhookSignature(body, sig, s)) return { valid: true, matchedKeyIndex: i };
+      if (verifyWebhookSignature(body, sig, s)) {
+        return i === 0 || windowOpen
+          ? { valid: true, matchedKeyIndex: i }
+          : { valid: false, matchedKeyIndex: null, reason: 'ROTATION_WINDOW_EXPIRED' };
+      }
     }
   }
   return { valid: false, matchedKeyIndex: null, reason: 'SIGNATURE_MISMATCH' };

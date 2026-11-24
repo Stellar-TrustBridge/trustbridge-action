@@ -94,7 +94,7 @@ The scheme does not matter: these hosts are rejected over `https://` too.
 | Link-local / cloud metadata | `169.254.0.0/16` (`169.254.169.254`, `2852039166`, `0xa9.0xfe.0xa9.0xfe`), `fe80::/10`, `metadata.google.internal`, `metadata`, `instance-data` |
 | Carrier-grade NAT | `100.64.0.0/10` (includes Alibaba metadata `100.100.100.200`) |
 | Other non-public IPv4 | `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` multicast, `240.0.0.0/4` reserved |
-| Other non-public IPv6 | `fc00::/7` ULA, `ff00::/8` multicast, `::ffff:<private v4>`, `64:ff9b::<private v4>`, `2002:<private v4>::` |
+| Other non-public IPv6 | `fc00::/7` ULA, `fec0::/10` site-local, `64:ff9b:1::/48`, `::ffff:0:<private v4>`, Teredo with a private client, malformed IPv6 literals, `ff00::/8` multicast, `::ffff:<private v4>`, `64:ff9b::<private v4>`, `2002:<private v4>::` |
 
 Rejections name the normalized host and the category, for example:
 

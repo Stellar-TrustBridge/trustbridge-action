@@ -225,7 +225,7 @@ export interface WebhookSignatureVerification {
      */
     matchedKeyIndex: number | null;
     /** Stable reason when `valid` is false. */
-    reason?: 'NO_SIGNATURE' | 'MALFORMED_SIGNATURE' | 'NO_SECRETS' | 'SIGNATURE_MISMATCH';
+    reason?: 'NO_SIGNATURE' | 'MALFORMED_SIGNATURE' | 'NO_SECRETS' | 'SIGNATURE_MISMATCH' | 'ROTATION_WINDOW_EXPIRED';
 }
 /**
  * Receiver-side verification across a rotation window (Issue #795).
@@ -235,8 +235,16 @@ export interface WebhookSignatureVerification {
  * of the receiver's accepted secrets. Order `secrets` newest first so
  * `matchedKeyIndex` tells you which key matched. Empty secrets are ignored and
  * every comparison is constant-time.
+ *
+ * `options.previousAcceptUntilMs` bounds the overlap (Issue #949): from that
+ * instant only `secrets[0]` (the primary) is accepted, and a match on any other
+ * key fails with `ROTATION_WINDOW_EXPIRED`. An invalid (NaN) deadline fails
+ * closed. Omit it for an open-ended window.
  */
-export declare function verifyWebhookSignatureWithRotation(body: string, signatures: Array<string | null | undefined>, secrets: Array<string | null | undefined>): WebhookSignatureVerification;
+export declare function verifyWebhookSignatureWithRotation(body: string, signatures: Array<string | null | undefined>, secrets: Array<string | null | undefined>, options?: {
+    previousAcceptUntilMs?: number;
+    nowMs?: number;
+}): WebhookSignatureVerification;
 /**
  * Signature headers for a request body. Signs with `webhookSecret` and, during
  * a rotation, also with `webhookSecretPrevious`. A previous secret equal to

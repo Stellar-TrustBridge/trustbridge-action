@@ -554,6 +554,20 @@ interface FetchOnceResult {
   attempts: number;
 }
 
+/** Longest validator header we store or replay. */
+const MAX_VALIDATOR_LENGTH = 512;
+
+/** Read a response validator, ignoring absent, oversized or unprintable values. */
+function readValidator(
+  response: import('node-fetch').Response,
+  name: 'etag' | 'last-modified',
+): string | undefined {
+  const value = response.headers?.get?.(name)?.trim();
+  return value && value.length <= MAX_VALIDATOR_LENGTH && /^[\x20-\x7e]+$/.test(value)
+    ? value
+    : undefined;
+}
+
 async function fetchAccountOnce(
   fetch: FetchLike,
   targetHorizonUrl: string,
@@ -567,11 +581,20 @@ async function fetchAccountOnce(
   rateBudgetTracker?: RateBudgetTracker,
   circuitBreaker?: CircuitBreaker,
   retryBaseDelayMs: number = DEFAULT_RETRY_BASE_DELAY_MS,
+  revalidationCache?: SimpleCache,
 ): Promise<FetchOnceResult> {
   const externalSignal = parentSignal;
   const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
   const safeUrlForLog = redactHorizonUrl(url);
+
+  // Conditional requests (Issue #947): keyed by the endpoint actually queried so
+  // a fallback never replays the primary's validators.
+  const revalidationKey = buildCacheKey(normalizedHorizonUrl, stellarAddress);
+  const prior = revalidationCache?.getRevalidation<HorizonAccount>(revalidationKey) ?? null;
+  const requestHeaders: Record<string, string> = { Accept: 'application/json' };
+  if (prior?.etag) requestHeaders['If-None-Match'] = prior.etag;
+  if (prior?.lastModified) requestHeaders['If-Modified-Since'] = prior.lastModified;
 
   let attempt = 0;
   let totalWaitMs = 0;
@@ -620,19 +643,35 @@ async function fetchAccountOnce(
         ? await circuitBreaker.execute(() =>
             fetch(url, {
               method: 'GET',
-              headers: { Accept: 'application/json' },
+              headers: requestHeaders,
               signal: controller.signal,
             }),
           )
         : await fetch(url, {
             method: 'GET',
-            headers: { Accept: 'application/json' },
+            headers: requestHeaders,
             signal: controller.signal,
           });
 
       const latencyMs = Date.now() - requestStartedAt;
 
+      if (response.status === 304 && prior) {
+        logger.debug('Horizon account not modified (304)', safeHorizonContext({
+          component: 'horizon',
+          stellarAddress,
+          horizonUrl: targetHorizonUrl,
+          endpointKind,
+          status: 304,
+          latencyMs,
+          attempt,
+        }));
+        globalHorizonHistogram.record(endpointKind, latencyMs);
+        recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+        return { account: prior.data, statusCode: 304, latencyMs, attempts: attempt + 1 };
+      }
+
       if (response.status === 404) {
+        revalidationCache?.setRevalidation(revalidationKey, null);
         logger.debug('Horizon account not found (404)', safeHorizonContext({
           component: 'horizon',
           stellarAddress,
@@ -806,6 +845,14 @@ async function fetchAccountOnce(
       }
 
       const parsed = (await response.json()) as HorizonAccount;
+      if (revalidationCache) {
+        const etag = readValidator(response, 'etag');
+        const lastModified = readValidator(response, 'last-modified');
+        revalidationCache.setRevalidation(
+          revalidationKey,
+          etag || lastModified ? { data: parsed, etag, lastModified } : null,
+        );
+      }
       logger.debug('Horizon fetch success', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
@@ -1112,6 +1159,7 @@ export async function fetchAccount(
       rateBudgetTracker,
       circuitBreaker,
       retryBaseDelayMs,
+      cachingEnabled ? cache : undefined,
     );
 
     result.account._servedByUrl = normalizedHorizonUrl;
@@ -1215,6 +1263,7 @@ export async function fetchAccount(
       rateBudgetTracker,
       circuitBreaker,
       retryBaseDelayMs,
+      cachingEnabled ? cache : undefined,
     );
 
     fallbackResult.account._servedByUrl = normalizedFallbackUrl;

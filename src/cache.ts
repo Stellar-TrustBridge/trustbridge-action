@@ -43,6 +43,16 @@ export interface NegativeCacheEntry {
   cachedAt: number;
 }
 
+/** Response kept with its HTTP validators so it can be revalidated (Issue #947). */
+export interface RevalidationEntry<T> {
+  data: T;
+  etag?: string;
+  lastModified?: string;
+}
+
+/** Upper bound on retained revalidation entries; the oldest is evicted first. */
+export const MAX_REVALIDATION_ENTRIES = 1_000;
+
 export interface CacheBackendOptions {
   /**
    * Enable GitHub Actions cache backend persistence (true) or in-memory only (false).
@@ -251,6 +261,8 @@ export class GitHubActionsCacheBackend implements PersistentCacheBackend {
 export class SimpleCache {
   private store = new Map<string, CacheEntry<unknown>>();
   private negativeStore = new Map<string, CacheEntry<NegativeCacheEntry>>();
+  /** Outlives the TTL on purpose: entries are only served after an HTTP 304. */
+  private revalidationStore = new Map<string, RevalidationEntry<unknown>>();
   private backend?: PersistentCacheBackend;
   private useBackend: boolean = false;
 
@@ -361,6 +373,21 @@ export class SimpleCache {
   }
 
 
+  getRevalidation<T>(key: string): RevalidationEntry<T> | null {
+    return (this.revalidationStore.get(key) as RevalidationEntry<T> | undefined) ?? null;
+  }
+
+  /** In-memory only. Passing `null` drops the entry. */
+  setRevalidation<T>(key: string, entry: RevalidationEntry<T> | null): void {
+    this.revalidationStore.delete(key);
+    if (!entry) return;
+    if (this.revalidationStore.size >= MAX_REVALIDATION_ENTRIES) {
+      const oldest = this.revalidationStore.keys().next().value;
+      if (oldest !== undefined) this.revalidationStore.delete(oldest);
+    }
+    this.revalidationStore.set(key, entry);
+  }
+
   /** Return a short-lived account-not-found marker, never a positive payload. */
   getNegative(key: string): NegativeCacheEntry | null {
     const entry = this.negativeStore.get(key);
@@ -440,6 +467,7 @@ export class SimpleCache {
    * @returns    `true` when an entry was removed.
    */
   delete(key: string): boolean {
+    this.revalidationStore.delete(key);
     return this.store.delete(key);
   }
 
@@ -453,6 +481,7 @@ export class SimpleCache {
   async clear(): Promise<void> {
     this.store.clear();
     this.negativeStore.clear();
+    this.revalidationStore.clear();
     if (this.backend?.dispose) {
       await this.backend.dispose();
     }

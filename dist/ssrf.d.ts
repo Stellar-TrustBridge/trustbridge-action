@@ -34,6 +34,8 @@
  * - Reserved: 240.0.0.0/4
  * - Localhost IPv6: ::1
  * - Link-local IPv6: fe80::/10
+ * - Site-local IPv6: fec0::/10, unique-local fc00::/7, and any IPv6 form that
+ *   embeds a blocked IPv4 address (Issue #948)
  */
 export declare const SSRF_BLOCKED_RANGES: {
     name: string;

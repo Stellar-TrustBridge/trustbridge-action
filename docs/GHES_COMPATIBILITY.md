@@ -180,3 +180,7 @@ If `HTTPS_PROXY` / `HTTP_PROXY` contains a malformed URL, TrustBridge logs a war
 ## Verification Without a Live GHES Instance
 
 See [USAGE.md — Verification checklist](USAGE.md#verification-checklist-no-live-ghes-instance-required) for steps to validate TrustBridge on your GHES org.
+
+## Horizon conditional requests (Issue #947)
+
+When Horizon returns `ETag` or `Last-Modified`, refetches after the cache TTL send `If-None-Match` / `If-Modified-Since`, and a `304` counts as a cache hit. Validators are in-memory per process and disabled with `cache_ttl` 0. Limitations: a proxy that strips validators causes normal full fetches; a proxy that rewrites or pins ETags can return stale `304`s, so disable caching there. A `304` to an unconditional request is an error, and a `304` still counts against the request budget.

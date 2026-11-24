@@ -10,6 +10,7 @@ Every TrustBridge issue comment follows a fixed section order:
 
 1. **Hidden markers** — `<!-- trustbridge-action:sticky-comment:schema-v… -->` and a snooze marker. Used for upsert detection and snooze state.
 2. **Header** — `## TrustBridge — Stellar Account Check`
+3. **TL;DR** — always-on pass/fail verdict, up to three blocking checks (`+N` for the rest) and the top reason codes (Issue #950). Localized with the rest of the comment and kept when long comments are truncated.
 3. **Account/Horizon/Asset summary** — checked account address, Horizon URL, and asset identity.
 4. **Results** — one bullet per check (`✅`/`❌`), with a `[→ FAQ]` link on each failing check.
 5. **Circuit-breaker banner** *(only when the Horizon circuit breaker was open)* — see [Circuit-breaker banner](#circuit-breaker-banner-issue-434).

@@ -3354,8 +3354,10 @@ const check = verifyWebhookSignatureWithRotation(
   [process.env.WEBHOOK_SECRET_NEW, process.env.WEBHOOK_SECRET_OLD],
 );
 if (!check.valid) return res.status(401).send(check.reason);
-// reason: NO_SIGNATURE | MALFORMED_SIGNATURE | NO_SECRETS | SIGNATURE_MISMATCH
+// reason: NO_SIGNATURE | MALFORMED_SIGNATURE | NO_SECRETS | SIGNATURE_MISMATCH | ROTATION_WINDOW_EXPIRED
 ```
+
+To bound the overlap, pass `{ previousAcceptUntilMs: <epoch ms> }` as the fourth argument (Issue #949). From that instant only the first secret is accepted; a match on an older key fails with `ROTATION_WINDOW_EXPIRED`, and a `NaN` deadline fails closed. Keep the primary at index 0.
 
 ### Payload body (schema version `"1"`)
 

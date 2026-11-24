@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "generated_at": "2026-11-21T15:42:52.393Z",
+  "generated_at": "2026-11-24T16:43:13.734Z",
   "files": {
     "dist/index.js": {
-      "sha256": "c15c7eabede0196f26a02a82c4b4b31a612c1ccae0ab37fd7b1c9d496a63e670"
+      "sha256": "701476aee45cdb27bf2d435262e6c9ca37c8c8efcbf474a32a3a89240604b959"
     }
   }
 }

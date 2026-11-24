@@ -6,6 +6,9 @@ exports[`e2e parser harness — comment snapshots failure comment snapshot match
 <!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
 
+> **TL;DR** ❌ Blocked by: Account funded, USDC trustline, XLM reserve
+> Reason code: \`ACCOUNT_NOT_FUNDED\`
+
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`
 Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
@@ -90,6 +93,9 @@ exports[`e2e parser harness — comment snapshots horizon failure comment snapsh
 <!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
 
+> **TL;DR** ❌ Blocked by: Horizon availability, USDC trustline, XLM reserve
+> Reason code: \`HORIZON_ERROR\`
+
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`
 Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
@@ -169,6 +175,9 @@ exports[`e2e parser harness — comment snapshots success comment snapshot match
 <!-- trustbridge-action:schema-version:1.1.0 -->
 <!-- trustbridge-action:snooze:status=pass,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
+
+> **TL;DR** ✅ Ready to proceed: all checks passed.
+> Reason code: \`SUCCESS\`
 
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`

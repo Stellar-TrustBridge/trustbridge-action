@@ -113,6 +113,36 @@ export declare function formatConflictReportMarkdown(report: ConflictReport | nu
  * output written in the same step.
  */
 export declare const MAX_OUTPUT_VALUE_BYTES = 900000;
+/**
+ * GitHub's documented limit for one step output value: 1 MiB, the same on
+ * github.com and GHES. `MAX_OUTPUT_VALUE_BYTES` stays below it. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+export declare const GITHUB_OUTPUT_VALUE_LIMIT_BYTES: number;
+/**
+ * GitHub's documented limits on workflow-command annotations
+ * (`core.warning` / `core.error` / `core.notice`). Annotations past these
+ * caps are dropped from the run UI but still printed to the log.
+ */
+export declare const WORKFLOW_ANNOTATION_LIMITS: Readonly<{
+    errorsPerStep: 10;
+    warningsPerStep: 10;
+    perJob: 50;
+}>;
+/**
+ * How `core.setOutput()` delivers outputs on this runner.
+ *
+ * - `file-command`: the runner sets `GITHUB_OUTPUT` (current github.com
+ *   runners and up-to-date GHES runners).
+ * - `workflow-command`: `GITHUB_OUTPUT` is missing (older GHES runners), so
+ *   `@actions/core` falls back to the deprecated `::set-output` command.
+ *   Outputs still work, but the runner logs a deprecation warning, and
+ *   multi-line values are less reliable.
+ *
+ * Mirrors `@actions/core`, which only checks that the variable is non-empty.
+ */
+export type OutputTransport = 'file-command' | 'workflow-command';
+export declare function resolveOutputTransport(env?: Record<string, string | undefined>): OutputTransport;
 /** Result of truncating an array-shaped JSON output to fit a byte budget. */
 export interface TruncatedJsonResult {
     /** The (possibly truncated) JSON string, always within `maxBytes`. */

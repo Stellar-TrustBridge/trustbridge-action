@@ -25,6 +25,14 @@ export interface NegativeCacheEntry {
     message: string;
     cachedAt: number;
 }
+/** Response kept with its HTTP validators so it can be revalidated (Issue #947). */
+export interface RevalidationEntry<T> {
+    data: T;
+    etag?: string;
+    lastModified?: string;
+}
+/** Upper bound on retained revalidation entries; the oldest is evicted first. */
+export declare const MAX_REVALIDATION_ENTRIES = 1000;
 export interface CacheBackendOptions {
     /**
      * Enable GitHub Actions cache backend persistence (true) or in-memory only (false).
@@ -100,6 +108,8 @@ export declare class GitHubActionsCacheBackend implements PersistentCacheBackend
 export declare class SimpleCache {
     private store;
     private negativeStore;
+    /** Outlives the TTL on purpose: entries are only served after an HTTP 304. */
+    private revalidationStore;
     private backend?;
     private useBackend;
     constructor(options?: CacheBackendOptions);
@@ -135,6 +145,9 @@ export declare class SimpleCache {
      * @returns    The restored value, or `null` if not found, expired, or on error.
      */
     restoreAsync<T>(key: string): Promise<T | null>;
+    getRevalidation<T>(key: string): RevalidationEntry<T> | null;
+    /** In-memory only. Passing `null` drops the entry. */
+    setRevalidation<T>(key: string, entry: RevalidationEntry<T> | null): void;
     /** Return a short-lived account-not-found marker, never a positive payload. */
     getNegative(key: string): NegativeCacheEntry | null;
     /** Store only a redacted 404 marker; no address or response body is persisted. */

@@ -38,6 +38,8 @@ import { isIP } from 'net';
  * - Reserved: 240.0.0.0/4
  * - Localhost IPv6: ::1
  * - Link-local IPv6: fe80::/10
+ * - Site-local IPv6: fec0::/10, unique-local fc00::/7, and any IPv6 form that
+ *   embeds a blocked IPv4 address (Issue #948)
  */
 export const SSRF_BLOCKED_RANGES = [
   { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
@@ -161,6 +163,7 @@ function classifyIPv6(ip: string): string | null {
   if (allZeroUntil(8)) return 'ipv6_unspecified';
   if (allZeroUntil(7) && g[7] === 1) return 'ipv6_loopback';
   if ((g[0] & 0xffc0) === 0xfe80) return 'ipv6_link_local';
+  if ((g[0] & 0xffc0) === 0xfec0) return 'ipv6_site_local';
   if ((g[0] & 0xfe00) === 0xfc00) return 'ipv6_ula';
   if ((g[0] & 0xff00) === 0xff00) return 'ipv6_multicast';
 
@@ -168,6 +171,18 @@ function classifyIPv6(ip: string): string | null {
   if (allZeroUntil(5) && (g[5] === 0xffff || g[5] === 0)) {
     const embedded = classifyIPv4(groupsToIPv4(g[6], g[7]));
     if (embedded) return g[5] === 0xffff ? `ipv6_mapped_${embedded}` : `ipv6_compat_${embedded}`;
+  }
+  // IPv4-translated (SIIT) ::ffff:0:a.b.c.d
+  if (allZeroUntil(4) && g[4] === 0xffff && g[5] === 0) {
+    const embedded = classifyIPv4(groupsToIPv4(g[6], g[7]));
+    if (embedded) return `ipv6_translated_${embedded}`;
+  }
+  // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215) is never globally routable
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return 'ipv6_nat64_local_use';
+  // Teredo 2001::/32 stores the client IPv4 address bit-inverted in groups 6-7
+  if (g[0] === 0x2001 && g[1] === 0) {
+    const embedded = classifyIPv4(groupsToIPv4(g[6] ^ 0xffff, g[7] ^ 0xffff));
+    if (embedded) return `ipv6_teredo_${embedded}`;
   }
   // NAT64 well-known prefix 64:ff9b::/96
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) {
@@ -245,6 +260,10 @@ export function isSSRFBlocked(
   }
 
   const family = isIP(normalized);
+  // Fail closed: looks like an IPv6 literal but cannot be parsed as one.
+  if (family === 0 && /^[0-9a-f:.]*:[0-9a-f.]*:[0-9a-f:.]*$/.test(normalized)) {
+    return { blocked: true, reason: 'Host matches SSRF blocklist: ipv6_malformed' };
+  }
   const reason =
     family === 4 ? classifyIPv4(normalized) : family === 6 ? classifyIPv6(normalized) : null;
   if (reason) {

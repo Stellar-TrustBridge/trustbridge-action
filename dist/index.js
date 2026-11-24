@@ -48867,7 +48867,7 @@ function wrappy (fn, cb) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CAMPAIGN_PRESETS = exports.MAX_DECIMAL_PLACES = exports.DECIMAL_PRECISION = exports.TESTNET_USDC_ISSUER = exports.MAINNET_USDC_ISSUER = void 0;
+exports.ISSUER_AUTH_FLAG_DECISION_TABLE = exports.ISSUER_AUTH_FLAG_PRECEDENCE = exports.CAMPAIGN_PRESETS = exports.MAX_DECIMAL_PLACES = exports.DECIMAL_PRECISION = exports.TESTNET_USDC_ISSUER = exports.MAINNET_USDC_ISSUER = void 0;
 exports.getCampaignPreset = getCampaignPreset;
 exports.validateNetworkAssetCompatibility = validateNetworkAssetCompatibility;
 exports.normalizeAssetCode = normalizeAssetCode;
@@ -48885,6 +48885,7 @@ exports.meetsMinimumBalance = meetsMinimumBalance;
 exports.deriveAssetReasonCode = deriveAssetReasonCode;
 exports.evaluateAssetReasonCodes = evaluateAssetReasonCodes;
 exports.getAssetClawbackStatus = getAssetClawbackStatus;
+exports.resolveIssuerAuthFlagVerdict = resolveIssuerAuthFlagVerdict;
 const horizon_1 = __nccwpck_require__(9164);
 const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
 const STELLAR_ISSUER_G_REGEX = /^G[A-Z2-7]{55}$/;
@@ -49172,6 +49173,89 @@ function evaluateAssetReasonCodes(account, primary, extraAssets, clawbackStrictM
 function getAssetClawbackStatus(balance) {
     return { clawbackEnabled: balance?.is_clawback_enabled === true };
 }
+/**
+ * Ordered precedence of the blocking rules. The first rule that matches
+ * decides the reason code; later rules are not consulted.
+ *
+ * 1. `TRUSTLINE_MISSING` — no trustline, so no trustline flag can apply.
+ * 2. `TRUSTLINE_UNAUTHORIZED` — `is_authorized: false` under policy `fail`.
+ *    The actionable fix is issuer approval (SetTrustLineFlags), so it
+ *    outranks clawback even when both flags are set.
+ * 3. `CLAWBACK_BLOCKED` — `is_clawback_enabled: true` under strict mode.
+ * 4. `SUCCESS`.
+ *
+ * `auth_required`, `auth_revocable` and `auth_immutable` are issuer
+ * capabilities. They never change the reason code; only the trustline's
+ * present `is_authorized` / `is_clawback_enabled` state does.
+ */
+exports.ISSUER_AUTH_FLAG_PRECEDENCE = Object.freeze([
+    'TRUSTLINE_MISSING',
+    'TRUSTLINE_UNAUTHORIZED',
+    'CLAWBACK_BLOCKED',
+    'SUCCESS',
+]);
+/**
+ * Apply the issuer authorization flag decision table.
+ *
+ * Inputs are compared with `=== true` / `=== false`, so a malformed or
+ * missing Horizon field falls back to the permissive default (authorized,
+ * clawback disabled, flag unset) instead of throwing. An unknown policy
+ * string is treated as the default `warn`.
+ */
+function resolveIssuerAuthFlagVerdict(state) {
+    const trustlineExists = state.trustlineExists === true;
+    const unauthorized = trustlineExists && state.trustlineAuthorized === false;
+    const clawbackEnabled = trustlineExists && state.clawbackEnabled === true;
+    const policy = state.unauthorizedTrustlinePolicy === 'fail' || state.unauthorizedTrustlinePolicy === 'ignore'
+        ? state.unauthorizedTrustlinePolicy
+        : 'warn';
+    const strict = state.clawbackStrictMode === true;
+    const authorizationBlocks = unauthorized && policy === 'fail';
+    const clawbackBlocks = clawbackEnabled && strict;
+    const notes = [];
+    if (unauthorized && policy === 'warn')
+        notes.push('unauthorized_warn');
+    if (clawbackEnabled && !strict)
+        notes.push('clawback_warn');
+    if (state.authRequired === true)
+        notes.push('auth_required');
+    if (state.authRevocable === true)
+        notes.push('auth_revocable');
+    if (state.authImmutable === true)
+        notes.push('auth_immutable');
+    let reasonCode;
+    if (!trustlineExists)
+        reasonCode = 'TRUSTLINE_MISSING';
+    else if (authorizationBlocks)
+        reasonCode = 'TRUSTLINE_UNAUTHORIZED';
+    else if (clawbackBlocks)
+        reasonCode = 'CLAWBACK_BLOCKED';
+    else
+        reasonCode = 'SUCCESS';
+    return { reasonCode, authorizationBlocks, clawbackBlocks, notes };
+}
+/**
+ * The published decision table. `docs/USAGE.md` renders the same rows and
+ * `__tests__/issuer-auth-flag-precedence.test.ts` asserts that each row
+ * matches {@link resolveIssuerAuthFlagVerdict} and the full `runAccountChecks`
+ * pipeline.
+ */
+exports.ISSUER_AUTH_FLAG_DECISION_TABLE = Object.freeze([
+    { id: 'no-trustline', state: { trustlineExists: false, authRequired: true, authRevocable: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: true }, reasonCode: 'TRUSTLINE_MISSING' },
+    { id: 'authorized-plain', state: { trustlineExists: true, trustlineAuthorized: true }, reasonCode: 'SUCCESS' },
+    { id: 'authorized-all-issuer-flags', state: { trustlineExists: true, trustlineAuthorized: true, authRequired: true, authRevocable: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'SUCCESS' },
+    { id: 'unauthorized-warn', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'warn' }, reasonCode: 'SUCCESS' },
+    { id: 'unauthorized-ignore', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'ignore' }, reasonCode: 'SUCCESS' },
+    { id: 'unauthorized-fail', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+    { id: 'unauthorized-fail-revocable', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, authRevocable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+    { id: 'unauthorized-fail-immutable', state: { trustlineExists: true, trustlineAuthorized: false, authRequired: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail' }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+    { id: 'clawback-warn', state: { trustlineExists: true, trustlineAuthorized: true, clawbackEnabled: true, authRevocable: true, clawbackStrictMode: false }, reasonCode: 'SUCCESS' },
+    { id: 'clawback-strict', state: { trustlineExists: true, trustlineAuthorized: true, clawbackEnabled: true, authRevocable: true, clawbackStrictMode: true }, reasonCode: 'CLAWBACK_BLOCKED' },
+    { id: 'unauthorized-fail-clawback-strict', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, authImmutable: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: true }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+    { id: 'unauthorized-warn-clawback-strict', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, unauthorizedTrustlinePolicy: 'warn', clawbackStrictMode: true }, reasonCode: 'CLAWBACK_BLOCKED' },
+    { id: 'unauthorized-fail-clawback-warn', state: { trustlineExists: true, trustlineAuthorized: false, clawbackEnabled: true, authRequired: true, unauthorizedTrustlinePolicy: 'fail', clawbackStrictMode: false }, reasonCode: 'TRUSTLINE_UNAUTHORIZED' },
+    { id: 'legacy-horizon-no-flags', state: { trustlineExists: true }, reasonCode: 'SUCCESS' },
+]);
 
 
 /***/ }),
@@ -50089,7 +50173,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = void 0;
+exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = exports.MAX_REVALIDATION_ENTRIES = void 0;
 const core = __importStar(__nccwpck_require__(37484));
 const actionsCache = __importStar(__nccwpck_require__(5116));
 const crypto = __importStar(__nccwpck_require__(76982));
@@ -50099,6 +50183,8 @@ const path = __importStar(__nccwpck_require__(16928));
 const logger_1 = __nccwpck_require__(86999);
 /** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
 const SUPPORTED_NAMED_BACKENDS = new Set(['memory', 'github-actions']);
+/** Upper bound on retained revalidation entries; the oldest is evicted first. */
+exports.MAX_REVALIDATION_ENTRIES = 1000;
 /**
  * GitHub Actions cache backend implementation.
  * Uses the @actions/cache module to store and retrieve check-result data in the
@@ -50233,6 +50319,8 @@ class SimpleCache {
     constructor(options = {}) {
         this.store = new Map();
         this.negativeStore = new Map();
+        /** Outlives the TTL on purpose: entries are only served after an HTTP 304. */
+        this.revalidationStore = new Map();
         this.useBackend = false;
         // Warn when an unsupported named backend is requested so operators learn
         // immediately instead of silently getting in-memory-only behaviour.
@@ -50334,6 +50422,21 @@ class SimpleCache {
         }
         return null;
     }
+    getRevalidation(key) {
+        return this.revalidationStore.get(key) ?? null;
+    }
+    /** In-memory only. Passing `null` drops the entry. */
+    setRevalidation(key, entry) {
+        this.revalidationStore.delete(key);
+        if (!entry)
+            return;
+        if (this.revalidationStore.size >= exports.MAX_REVALIDATION_ENTRIES) {
+            const oldest = this.revalidationStore.keys().next().value;
+            if (oldest !== undefined)
+                this.revalidationStore.delete(oldest);
+        }
+        this.revalidationStore.set(key, entry);
+    }
     /** Return a short-lived account-not-found marker, never a positive payload. */
     getNegative(key) {
         const entry = this.negativeStore.get(key);
@@ -50411,6 +50514,7 @@ class SimpleCache {
      * @returns    `true` when an entry was removed.
      */
     delete(key) {
+        this.revalidationStore.delete(key);
         return this.store.delete(key);
     }
     /**
@@ -50423,6 +50527,7 @@ class SimpleCache {
     async clear() {
         this.store.clear();
         this.negativeStore.clear();
+        this.revalidationStore.clear();
         if (this.backend?.dispose) {
             await this.backend.dispose();
         }
@@ -50509,7 +50614,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.HOME_DOMAIN_CHECK_LABEL = void 0;
+exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST = exports.HOME_DOMAIN_CHECK_LABEL = void 0;
 exports.determineCheckConclusion = determineCheckConclusion;
 exports.buildCheckAnnotations = buildCheckAnnotations;
 exports.buildCheckRunSummary = buildCheckRunSummary;
@@ -50520,6 +50625,11 @@ const logger_1 = __nccwpck_require__(86999);
 const proxy_1 = __nccwpck_require__(28903);
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
 exports.HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
 function cancelledResult() {
     const message = 'Check Run creation cancelled before completion; no Check Run was written.';
     logger_1.logger.warn(message, { component: 'checks-run' });
@@ -50612,9 +50722,9 @@ async function createCheckRun(result, token, options = {}) {
         const { owner, repo } = github.context.repo;
         const conclusion = determineCheckConclusion(result);
         const annotations = buildCheckAnnotations(result, { stellarAddress: options.stellarAddress || '' });
-        // Octokit Checks API supports up to 50 annotations per request.
-        // For simplicity, we truncate to the first 50 checks.
-        const annotationsSlice = annotations.slice(0, 50);
+        // Octokit Checks API supports up to 50 annotations per request on
+        // github.com and GHES. For simplicity, we truncate to the first 50 checks.
+        const annotationsSlice = annotations.slice(0, exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST);
         // Annotations are built synchronously, but re-check so a cancel that
         // landed while preparing never reaches the API.
         if (options.signal?.aborted)
@@ -51257,11 +51367,24 @@ issuerAccount) {
     // issuer's immutable/revocable flags: those flags describe future state,
     // while this policy evaluates the account's present authorization state.
     const isUnauthorized = trustlineExistsRaw && trustlineAuthorized === false;
-    const authorizationBlocks = isUnauthorized && unauthorizedPolicy === "fail";
     // Detect issuer flags for enhanced messaging (Issue #248)
     const issuerAuthRevocable = account.flags?.auth_revocable ?? false;
     const clawbackStrictMode = config.clawbackStrictMode ?? false;
-    const clawbackBlocks = trustlineExistsRaw && clawbackEnabled && clawbackStrictMode;
+    // Issue #898: the authorization/clawback precedence lives in one decision
+    // table (`ISSUER_AUTH_FLAG_DECISION_TABLE` in src/assets.ts) so per-asset
+    // webhook codes, docs and this check cannot drift apart.
+    const authFlagVerdict = (0, assets_1.resolveIssuerAuthFlagVerdict)({
+        trustlineExists: trustlineExistsRaw,
+        trustlineAuthorized,
+        clawbackEnabled,
+        authRequired: account.flags?.auth_required,
+        authRevocable: account.flags?.auth_revocable,
+        authImmutable: account.flags?.auth_immutable,
+        unauthorizedTrustlinePolicy: unauthorizedPolicy,
+        clawbackStrictMode,
+    });
+    const authorizationBlocks = authFlagVerdict.authorizationBlocks;
+    const clawbackBlocks = authFlagVerdict.clawbackBlocks;
     const trustlineExists = trustlineExistsRaw && !authorizationBlocks;
     const reserveRequirement = buildReserveRequirement(config.minXlmReserve, xlmNumeric, account);
     const xlmReserveMet = reserveRequirement.met;
@@ -52214,7 +52337,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.VALID_POSTING_MODES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.COMMENT_TRUNCATED_MARKER = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.TRUSTBRIDGE_IDENTITY_LINES = exports.VALID_POSTING_MODES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.COMMENT_TRUNCATED_MARKER = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.buildTldr = buildTldr;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
@@ -52276,6 +52400,27 @@ function statusIcon(passed) {
 exports.MAX_COMMENT_LENGTH = 64000;
 const TRUNCATION_NOTICE = "\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_";
 exports.COMMENT_TRUNCATED_MARKER = "<!-- trustbridge-action:comment-truncated -->";
+/** Most blockers named in the TL;DR; the remainder is shown as `+N`. */
+const TLDR_MAX_BLOCKERS = 3;
+/** Verdict and top reason codes, always rendered above the details (Issue #950). */
+function buildTldr(result, config) {
+    const strings = (0, i18n_1.getStrings)(config.locale ?? "en");
+    const gate = (0, checks_1.buildValidationGate)(result);
+    const ready = result.valid && gate.ready;
+    const codes = [result.reasonCode ?? (result.valid ? "SUCCESS" : "FAILED")];
+    if ((config.assets ?? []).some((a) => !a.trustlineExists) && !codes.includes("TRUSTLINE_MISSING")) {
+        codes.push("TRUSTLINE_MISSING");
+    }
+    const shown = gate.failedLabels.slice(0, TLDR_MAX_BLOCKERS).map(markdown_1.escapeMarkdownInline).join(", ");
+    const extra = gate.failedLabels.length - TLDR_MAX_BLOCKERS;
+    const verdict = ready
+        ? strings.readyToProceed
+        : `${strings.blockedBy} ${shown || codes[0]}${extra > 0 ? ` +${extra}` : ""}`;
+    return [
+        `> **TL;DR** ${statusIcon(ready)} ${verdict}`,
+        `> ${strings.reasonCode} ${codes.map((c) => (0, markdown_1.inlineCode)(c)).join(", ")}`,
+    ].join("\n");
+}
 function formatCommentBody(result, config) {
     const stellarLabNetwork = (0, links_1.inferStellarNetwork)(config.horizonUrl);
     const gate = (0, checks_1.buildValidationGate)(result);
@@ -52303,6 +52448,8 @@ function formatCommentBody(result, config) {
             `<!-- trustbridge-action:schema-version:${exports.COMMENT_SCHEMA_VERSION} -->`,
             snoozeMarker,
             "## TrustBridge — Stellar Account Check",
+            "",
+            buildTldr(result, config),
             "",
             `${strings.checkedAccount} ${(0, markdown_1.inlineCode)(displayAddress)}`,
             `${strings.horizon} ${(0, markdown_1.inlineCode)(config.horizonUrl)}`,
@@ -52793,18 +52940,33 @@ function resolveIssueOrPullRequestNumber(payload) {
     return undefined;
 }
 /**
+ * Lines that identify a TrustBridge comment (Issue #900). Each must be a
+ * whole line on its own, exactly as TrustBridge writes it. See
+ * docs/COMMENT_GUIDE.md#marker-format-stability.
+ */
+exports.TRUSTBRIDGE_IDENTITY_LINES = Object.freeze([
+    exports.STICKY_COMMENT_MARKER,
+    exports.STICKY_COMMENT_MARKER_LEGACY,
+    exports.TRUSTBRIDGE_FOOTER,
+]);
+/**
  * Returns true when a comment body matches any of the TrustBridge
  * identifiers: the current versioned sticky marker, the legacy marker
  * (pre-schema-version), or the TrustBridge footer. Matching on any of
  * these provides defense-in-depth across upgrades and accidental
  * marker drift.
+ *
+ * Issue #900: an identifier only counts when it is a whole line outside
+ * code blocks and blockquotes. A plain substring match let another bot's
+ * comment that quotes a TrustBridge marker, or embeds it in a longer HTML
+ * comment such as `<!-- other-bot: <!-- trustbridge-action:sticky-comment --> -->`,
+ * be picked as the sticky comment and overwritten. Other bots' own HTML
+ * comment markers never match.
  */
 function isTrustBridgeComment(body) {
     if (!body)
         return false;
-    return (body.includes(exports.STICKY_COMMENT_MARKER) ||
-        body.includes(exports.STICKY_COMMENT_MARKER_LEGACY) ||
-        body.includes(exports.TRUSTBRIDGE_FOOTER));
+    return (0, markdown_1.markdownLinesOutsideCode)(body).some((line) => exports.TRUSTBRIDGE_IDENTITY_LINES.includes(line));
 }
 /**
  * Detect a revalidation slash command on an issue comment.
@@ -54665,13 +54827,14 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.ALL_WALLET_LABELS = exports.RETRY_AFTER_JITTER_PERCENT = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
 exports.isCircuitOpenError = isCircuitOpenError;
 exports.checkCertificatePin = checkCertificatePin;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
 exports.displayHorizonUrl = displayHorizonUrl;
 exports.isRetryableStatus = isRetryableStatus;
 exports.parseRetryAfterMs = parseRetryAfterMs;
+exports.jitteredRetryDelayMs = jitteredRetryDelayMs;
 exports.fetchAccount = fetchAccount;
 exports.fetchHomeDomainIssuerAccount = fetchHomeDomainIssuerAccount;
 exports.waitForFundedAccount = waitForFundedAccount;
@@ -54882,6 +55045,7 @@ const DEFAULT_CACHE_TTL_MS = 60000;
 exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 exports.DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
+exports.RETRY_AFTER_JITTER_PERCENT = 10;
 function normalizeHorizonUrl(baseUrl) {
     const trimmed = baseUrl.trim();
     if (!trimmed) {
@@ -54942,6 +55106,14 @@ function parseRetryAfterMs(response) {
         return Math.max(0, date - Date.now());
     }
     return null;
+}
+/** Apply bounded jitter so concurrent Wave jobs do not retry in lockstep. */
+function jitteredRetryDelayMs(delayMs, ceilingMs) {
+    if (!Number.isFinite(delayMs) || delayMs < 0)
+        return 0;
+    if (!Number.isFinite(ceilingMs) || ceilingMs < 0)
+        return 0;
+    return Math.min(Math.max(0, Math.round((0, resilience_1.addJitter)(Math.min(delayMs, ceilingMs), exports.RETRY_AFTER_JITTER_PERCENT))), ceilingMs);
 }
 async function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -55021,11 +55193,29 @@ function safeAccountSummary(account) {
         subentryCount: account.subentry_count,
     };
 }
-async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind, retryMaxDelayMs = exports.DEFAULT_RETRY_MAX_DELAY_MS, retryMaxTotalWaitMs = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS, parentSignal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS) {
+/** Longest validator header we store or replay. */
+const MAX_VALIDATOR_LENGTH = 512;
+/** Read a response validator, ignoring absent, oversized or unprintable values. */
+function readValidator(response, name) {
+    const value = response.headers?.get?.(name)?.trim();
+    return value && value.length <= MAX_VALIDATOR_LENGTH && /^[\x20-\x7e]+$/.test(value)
+        ? value
+        : undefined;
+}
+async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind, retryMaxDelayMs = exports.DEFAULT_RETRY_MAX_DELAY_MS, retryMaxTotalWaitMs = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS, parentSignal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS, revalidationCache) {
     const externalSignal = parentSignal;
     const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
     const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
     const safeUrlForLog = (0, logger_1.redactHorizonUrl)(url);
+    // Conditional requests (Issue #947): keyed by the endpoint actually queried so
+    // a fallback never replays the primary's validators.
+    const revalidationKey = buildCacheKey(normalizedHorizonUrl, stellarAddress);
+    const prior = revalidationCache?.getRevalidation(revalidationKey) ?? null;
+    const requestHeaders = { Accept: 'application/json' };
+    if (prior?.etag)
+        requestHeaders['If-None-Match'] = prior.etag;
+    if (prior?.lastModified)
+        requestHeaders['If-Modified-Since'] = prior.lastModified;
     let attempt = 0;
     let totalWaitMs = 0;
     let lastError;
@@ -55063,16 +55253,31 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
             const response = circuitBreaker
                 ? await circuitBreaker.execute(() => fetch(url, {
                     method: 'GET',
-                    headers: { Accept: 'application/json' },
+                    headers: requestHeaders,
                     signal: controller.signal,
                 }))
                 : await fetch(url, {
                     method: 'GET',
-                    headers: { Accept: 'application/json' },
+                    headers: requestHeaders,
                     signal: controller.signal,
                 });
             const latencyMs = Date.now() - requestStartedAt;
+            if (response.status === 304 && prior) {
+                logger_1.logger.debug('Horizon account not modified (304)', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    status: 304,
+                    latencyMs,
+                    attempt,
+                }));
+                metrics_1.globalHorizonHistogram.record(endpointKind, latencyMs);
+                recordCacheMetric('hit', normalizedHorizonUrl, stellarAddress);
+                return { account: prior.data, statusCode: 304, latencyMs, attempts: attempt + 1 };
+            }
             if (response.status === 404) {
+                revalidationCache?.setRevalidation(revalidationKey, null);
                 logger_1.logger.debug('Horizon account not found (404)', safeHorizonContext({
                     component: 'horizon',
                     stellarAddress,
@@ -55137,7 +55342,7 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     let retryAfter;
                     let retryAfterCapped = false;
                     if (retryAfterHeader !== null) {
-                        retryAfter = Math.min(retryAfterHeader, retryMaxDelayMs);
+                        retryAfter = jitteredRetryDelayMs(retryAfterHeader, retryMaxDelayMs);
                         retryAfterCapped = retryAfterHeader > retryMaxDelayMs;
                         if (retryAfterHeader > retryMaxDelayMs) {
                             // Issue #705: surface the cap. Only the parsed millisecond
@@ -55155,7 +55360,7 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                         }
                     }
                     else {
-                        retryAfter = Math.min(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
+                        retryAfter = jitteredRetryDelayMs(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
                         retryAfterCapped = retryBaseDelayMs * 2 ** attempt > retryMaxDelayMs;
                     }
                     if (totalWaitMs + retryAfter > retryMaxTotalWaitMs) {
@@ -55176,6 +55381,11 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                         throw new HorizonRateLimitError(`Horizon retry wait budget exhausted (total wait ${totalWaitMs + retryAfter}ms exceeds cap of ${retryMaxTotalWaitMs}ms). Please try again later.`, retryAfter);
                     }
                     totalWaitMs += retryAfter;
+                    if (retryAfterHeader !== null) {
+                        metrics_1.globalMetrics.incrementCounter('horizon_retry_after_waits');
+                        metrics_1.globalMetrics.incrementCounter('horizon_retry_after_wait_ms', Math.round(retryAfter));
+                        metrics_1.globalMetrics.recordMetric('horizon_retry_after_wait', retryAfter, 'ms');
+                    }
                     logger_1.logger.horizonRetry({
                         phase: 'scheduled',
                         attempt,
@@ -55215,6 +55425,11 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                 throw new HorizonError(`Horizon request failed (${response.status}): ${detail}`, response.status, retryable);
             }
             const parsed = (await response.json());
+            if (revalidationCache) {
+                const etag = readValidator(response, 'etag');
+                const lastModified = readValidator(response, 'last-modified');
+                revalidationCache.setRevalidation(revalidationKey, etag || lastModified ? { data: parsed, etag, lastModified } : null);
+            }
             logger_1.logger.debug('Horizon fetch success', safeHorizonContext({
                 component: 'horizon',
                 stellarAddress,
@@ -55300,7 +55515,7 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
             lastError = new HorizonError(message, isAbort ? 408 : 0, true);
             const transportKind = isAbort ? "timeout" : "network";
             if (attempt < maxRetries) {
-                const backoffMs = Math.min(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
+                const backoffMs = jitteredRetryDelayMs(retryBaseDelayMs * 2 ** attempt, retryMaxDelayMs);
                 const backoffCapped = retryBaseDelayMs * 2 ** attempt > retryMaxDelayMs;
                 if (totalWaitMs + backoffMs > retryMaxTotalWaitMs) {
                     logger_1.logger.horizonRetry({
@@ -55468,7 +55683,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     let primaryError;
     const circuitBreaker = options.circuitBreaker;
     try {
-        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs, cachingEnabled ? cache : undefined);
         result.account._servedByUrl = normalizedHorizonUrl;
         if (cachingEnabled) {
             cache.set(cacheKey, result.account, cacheTtlMs);
@@ -55548,7 +55763,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
         primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
     }));
     try {
-        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs, cachingEnabled ? cache : undefined);
         fallbackResult.account._servedByUrl = normalizedFallbackUrl;
         if (cachingEnabled) {
             cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
@@ -56855,6 +57070,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.VALID_POSTING_MODES = void 0;
+exports.emitDeprecatedInputWarnings = emitDeprecatedInputWarnings;
 exports.resolveCommentModes = resolveCommentModes;
 exports.handleAutoUnassign = handleAutoUnassign;
 exports.evaluateMilestoneGate = evaluateMilestoneGate;
@@ -56883,6 +57099,20 @@ const resilience_1 = __nccwpck_require__(12334);
 const toml_1 = __nccwpck_require__(65887);
 exports.VALID_POSTING_MODES = ['post', 'dry-run', 'off'];
 const VALID_COMMENT_THREADING_MODES = ['sticky', 'new', 'reply'];
+/** Emit legacy input migration guidance once for the current action run. */
+function emitDeprecatedInputWarnings() {
+    const aliases = (0, inputs_1.listDeprecatedInputAliases)({
+        maintainerAlias: core.getInput('skip_if_maintainer'),
+        readyPassAlias: core.getInput('ready_pass_label'),
+        readyLabelPassAlias: core.getInput('ready_label_pass'),
+        readyFailAlias: core.getInput('ready_fail_label'),
+        readyLabelFailAlias: core.getInput('ready_label_fail'),
+    });
+    if (aliases.length === 0)
+        return;
+    core.warning(`[TrustBridge] Deprecated input alias${aliases.length === 1 ? '' : 'es'} detected: ${aliases.join(', ')}. ` +
+        'Use the canonical input names; aliases remain supported for this major version but may be removed in a future release.');
+}
 function resolveCommentModes(postingModeInput, commentModeInput) {
     const normalizedPostingMode = postingModeInput.trim().toLowerCase();
     const normalizedCommentMode = commentModeInput.trim().toLowerCase();
@@ -57071,6 +57301,9 @@ function evaluateMilestoneGate(milestoneAllowlistRaw, _milestoneFailOnSkip, payl
 }
 async function run() {
     const jobController = new AbortController();
+    emitDeprecatedInputWarnings();
+    // Issue #899: each run records exactly one job outcome.
+    metrics_1.globalMetrics.resetJobOutcome();
     try {
         process.on('SIGINT', () => jobController.abort());
         process.on('SIGTERM', () => jobController.abort());
@@ -57094,6 +57327,9 @@ async function run() {
         core.setOutput('ready', 'false');
         core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
         core.setOutput('checks_json', '[]');
+        // Issue #899: a gate skip is its own outcome, never pass or fail.
+        metrics_1.globalMetrics.recordJobOutcome('skipped');
+        await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary(metrics_1.globalHorizonHistogram));
         return;
     }
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
@@ -57575,7 +57811,7 @@ async function run() {
     // ---------------------------------------------------------------------------
     let checkRunId;
     let checkRunConclusion;
-    if (useCheckRuns) {
+    if (useCheckRuns && postingMode === 'post') {
         if (!githubToken) {
             core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
         }
@@ -57603,6 +57839,15 @@ async function run() {
                 `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`);
             fullReportPath = (0, comment_1.writeFullReport)(commentBody, reportOutputPath) ?? undefined;
         }
+    }
+    // Issue #897: older GHES runners lack GITHUB_OUTPUT / GITHUB_STEP_SUMMARY.
+    // Both degrade without failing the run; say so in the debug log so an
+    // operator can tell a GHES gap from a TrustBridge bug.
+    if ((0, outputs_1.resolveOutputTransport)() === 'workflow-command') {
+        core.debug('GITHUB_OUTPUT is not set; outputs use the legacy ::set-output command. See docs/GHES_COMPATIBILITY.md.');
+    }
+    if (!(0, summary_1.isJobSummaryAvailable)()) {
+        core.debug('GITHUB_STEP_SUMMARY is not set; the TrustBridge Job Summary will be skipped. See docs/GHES_COMPATIBILITY.md.');
     }
     const validatedAt = new Date().toISOString();
     (0, outputs_1.setValidationOutputs)(result, commentUrl, fullReportPath, {
@@ -57642,7 +57887,7 @@ async function run() {
     // When auto_wallet_labels is true and we're in an issue context, apply
     // the appropriate wallet state label to the issue.
     // ---------------------------------------------------------------------------
-    if (autoWalletLabels) {
+    if (autoWalletLabels && postingMode === 'post') {
         const issueNumber = github.context.payload.issue?.number;
         if (issueNumber) {
             const { owner, repo } = github.context.repo;
@@ -57668,7 +57913,7 @@ async function run() {
     }
     // Ready labels (Issue #669): pass/fail label sync on the issue.
     const readyLabels = resolveConfiguredReadyLabels();
-    if ((readyLabels.passLabel || readyLabels.failLabel)) {
+    if ((readyLabels.passLabel || readyLabels.failLabel) && postingMode === 'post') {
         const issueNumber = github.context.payload.issue?.number;
         if (issueNumber) {
             const { owner, repo } = github.context.repo;
@@ -57697,7 +57942,7 @@ async function run() {
     // When unassign_on_not_ready is true and readiness checks fail,
     // automatically unassign the GitHub assignee(s) from the issue.
     // ---------------------------------------------------------------------------
-    if (unassignOnNotReady && !result.valid) {
+    if (unassignOnNotReady && !result.valid && postingMode === 'post') {
         const issueNumber = github.context.payload.issue?.number;
         const { owner, repo } = github.context.repo;
         const octokit = github.getOctokit(githubToken, (0, proxy_1.getOctokitProxyOptions)());
@@ -57715,7 +57960,7 @@ async function run() {
     const targetProjectStatus = result.valid
         ? projectStatusPass
         : projectStatusFail;
-    if (projectId.trim() && targetProjectStatus.trim()) {
+    if (projectId.trim() && targetProjectStatus.trim() && postingMode === 'post') {
         const contentNodeId = github.context.payload.issue?.node_id ??
             github.context.payload.pull_request?.node_id ??
             '';
@@ -57764,6 +58009,9 @@ async function run() {
             core.debug(JSON.stringify(spans, null, 2));
         }
     }
+    // Issue #899: job-level outcome plus per-check skipped counts, recorded
+    // before the Job Summary so they land in the metrics JSON artifact.
+    metrics_1.globalMetrics.recordJobOutcome(result.valid ? 'pass' : 'fail', (0, summary_1.listSkippedCheckKinds)(result));
     await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary(metrics_1.globalHorizonHistogram));
     if (result.valid) {
         core.info('All TrustBridge checks passed.');
@@ -57799,6 +58047,9 @@ function writeSarifOutput(sarifOutputPath, result, context) {
 // Skip auto-run under Jest so performance / integration tests can import `run`.
 if (process.env.JEST_WORKER_ID === undefined) {
     run().catch((error) => {
+        // Issue #899: an aborted run counts as `fail` unless an outcome was
+        // already recorded (recordJobOutcome is first-wins).
+        metrics_1.globalMetrics.recordJobOutcome('fail');
         core.setFailed((0, inputs_1.getErrorMessage)(error));
     });
 }
@@ -57857,6 +58108,7 @@ exports.resolveInput = resolveInput;
 exports.parsePresetInput = parsePresetInput;
 exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
 exports.resolveReadyLabelInputs = resolveReadyLabelInputs;
+exports.listDeprecatedInputAliases = listDeprecatedInputAliases;
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 function parseBooleanInput(value, defaultValue) {
@@ -58180,6 +58432,21 @@ function resolveReadyLabelInputs(options) {
         failLabel: fail.value,
         usedDeprecatedAlias: pass.deprecated || fail.deprecated,
     };
+}
+/**
+ * Return the deprecated aliases explicitly supplied by a workflow. The action
+ * entrypoint uses this list to emit one consolidated warning per run instead
+ * of repeating warnings for each resolved field.
+ */
+function listDeprecatedInputAliases(options) {
+    const aliases = [
+        ['skip_if_maintainer', options.maintainerAlias],
+        ['ready_pass_label', options.readyPassAlias],
+        ['ready_label_pass', options.readyLabelPassAlias],
+        ['ready_fail_label', options.readyFailAlias],
+        ['ready_label_fail', options.readyLabelFailAlias],
+    ];
+    return aliases.filter(([, value]) => Boolean(value?.trim())).map(([name]) => name);
 }
 
 
@@ -59461,6 +59728,7 @@ exports.buildAssetTrustlineTable = buildAssetTrustlineTable;
 exports.buildAssetChecklist = buildAssetChecklist;
 exports.extractChecklistState = extractChecklistState;
 exports.buildOnboardingChecklist = buildOnboardingChecklist;
+exports.markdownLinesOutsideCode = markdownLinesOutsideCode;
 const links_1 = __nccwpck_require__(73346);
 const i18n_1 = __nccwpck_require__(84859);
 function escapeMarkdownInline(value) {
@@ -59830,6 +60098,48 @@ function buildOnboardingChecklist(result, options) {
     ];
     return lines.join('\n');
 }
+// ---------------------------------------------------------------------------
+// Issue #900 — marker-safe line scanning
+// ---------------------------------------------------------------------------
+/**
+ * Lines of `body` that GitHub renders as normal Markdown, trimmed: lines in
+ * fenced code blocks (```` ``` ```` / `~~~`), indented code blocks (4 spaces
+ * or a tab) and blockquotes (`>`) are dropped.
+ *
+ * TrustBridge uses this to find its hidden HTML markers. Another bot that
+ * quotes or code-formats a TrustBridge marker (for example in a "previous
+ * comment" excerpt) shows it as text, so that comment must not be taken as
+ * TrustBridge's own. A non-string `body` returns an empty array.
+ */
+function markdownLinesOutsideCode(body) {
+    if (typeof body !== 'string' || body.length === 0)
+        return [];
+    const out = [];
+    let fence = null;
+    for (const raw of body.split(/\r?\n/)) {
+        const line = raw.trim();
+        const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+        if (fence) {
+            if (fenceMatch &&
+                fenceMatch[1][0] === fence.char &&
+                fenceMatch[1].length >= fence.length &&
+                line.slice(fenceMatch[1].length).trim() === '') {
+                fence = null;
+            }
+            continue;
+        }
+        if (fenceMatch && raw.search(/\S/) < 4) {
+            fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+            continue;
+        }
+        if (/^( {4}|\t)/.test(raw))
+            continue;
+        if (line.startsWith('>'))
+            continue;
+        out.push(line);
+    }
+    return out;
+}
 
 
 /***/ }),
@@ -59883,14 +60193,17 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.globalOctokitMetrics = exports.globalHorizonHistogram = exports.globalMetrics = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.globalOctokitMetrics = exports.globalHorizonHistogram = exports.globalMetrics = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.JOB_OUTCOME_PROMETHEUS_METRICS = exports.CHECK_KINDS = exports.JOB_OUTCOMES = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
 exports.hashAddressForMetrics = hashAddressForMetrics;
 exports.classifyOctokitStatus = classifyOctokitStatus;
+exports.jobOutcomeCounterName = jobOutcomeCounterName;
+exports.checkSkippedCounterName = checkSkippedCounterName;
 exports.writeJobSummary = writeJobSummary;
 exports.normalizeMetricHost = normalizeMetricHost;
 const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const validation_1 = __nccwpck_require__(24344);
+const summary_1 = __nccwpck_require__(28855);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
  * Metrics tagged this way are validated against the contract address
@@ -60072,6 +60385,60 @@ class OctokitMetrics {
     }
 }
 exports.OctokitMetrics = OctokitMetrics;
+// ---------------------------------------------------------------------------
+// Issue #899 — job-level outcome counters
+// ---------------------------------------------------------------------------
+/**
+ * Overall outcome of one Action job. Exactly one is recorded per job:
+ *   - `pass`    — validation ran and every check passed (`ready = true`)
+ *   - `fail`    — validation ran and at least one check failed, or the run
+ *                 aborted with an error before a verdict
+ *   - `skipped` — validation was intentionally not run (milestone gate)
+ */
+exports.JOB_OUTCOMES = ['pass', 'fail', 'skipped'];
+/**
+ * Bounded set of check kinds used as the `check` label on
+ * `check_skipped`. Check labels embed the operator-supplied asset code, so
+ * they are never used as labels directly; anything unrecognised is `other`.
+ */
+exports.CHECK_KINDS = [
+    'horizon_available',
+    'account_funded',
+    'trustline',
+    'xlm_reserve',
+    'asset_balance',
+    'trustline_limit',
+    'clawback',
+    'home_domain',
+    'other',
+];
+/** In-process counter name for a job outcome, e.g. `job_outcome_pass`. */
+function jobOutcomeCounterName(outcome) {
+    return `job_outcome_${outcome}`;
+}
+/** In-process counter name for a skipped check kind, e.g. `check_skipped_trustline`. */
+function checkSkippedCounterName(kind) {
+    return `check_skipped_${kind}`;
+}
+/**
+ * Prometheus names for the job outcome metrics, as documented in
+ * docs/ARCHITECTURE.md#job-outcome-counters. Exporters that turn the JSON
+ * artifact into Prometheus series must use exactly these names and labels.
+ */
+exports.JOB_OUTCOME_PROMETHEUS_METRICS = Object.freeze({
+    /** Counter, label `outcome` ∈ JOB_OUTCOMES. Sums to 1 per job. */
+    jobOutcome: 'trustbridge_job_outcome_total',
+    /** Counter, label `check` ∈ CHECK_KINDS. */
+    checkSkipped: 'trustbridge_check_skipped_total',
+});
+function isJobOutcome(value) {
+    return typeof value === 'string' && exports.JOB_OUTCOMES.includes(value);
+}
+function toCheckKind(value) {
+    return typeof value === 'string' && exports.CHECK_KINDS.includes(value)
+        ? value
+        : 'other';
+}
 class MetricsCollector {
     constructor() {
         this.metrics = [];
@@ -60203,6 +60570,51 @@ class MetricsCollector {
         this.metrics = [];
         this.counters.clear();
         this.timers.clear();
+        this.jobOutcome = undefined;
+    }
+    /**
+     * Record the job-level outcome (Issue #899).
+     *
+     * Outcomes are mutually exclusive: the first call wins and later calls are
+     * ignored (returning the already-recorded outcome), so an error handler
+     * that runs after a verdict cannot double-count a job as both `pass` and
+     * `fail`. `skippedCheckKinds` is only counted on the winning call.
+     *
+     * @throws When `outcome` is not one of {@link JOB_OUTCOMES}.
+     */
+    recordJobOutcome(outcome, skippedCheckKinds = []) {
+        if (!isJobOutcome(outcome)) {
+            throw new Error(`recordJobOutcome(): outcome must be one of ${exports.JOB_OUTCOMES.join(', ')}. Received: ${JSON.stringify(outcome)}`);
+        }
+        if (this.jobOutcome)
+            return this.jobOutcome;
+        const skippedChecks = {};
+        for (const raw of Array.isArray(skippedCheckKinds) ? skippedCheckKinds : []) {
+            const kind = toCheckKind(raw);
+            skippedChecks[kind] = (skippedChecks[kind] ?? 0) + 1;
+        }
+        this.incrementCounter(jobOutcomeCounterName(outcome));
+        this.recordMetric('job_outcome', 1, 'count', { outcome });
+        for (const kind of exports.CHECK_KINDS) {
+            const count = skippedChecks[kind];
+            if (!count)
+                continue;
+            this.incrementCounter(checkSkippedCounterName(kind), count);
+            this.recordMetric('check_skipped', count, 'count', { check: kind });
+        }
+        this.jobOutcome = { outcome, skippedChecks };
+        return this.jobOutcome;
+    }
+    /**
+     * Forget the recorded job outcome so a new job can record one. Called at
+     * the start of `run()`; counters already incremented are kept.
+     */
+    resetJobOutcome() {
+        this.jobOutcome = undefined;
+    }
+    /** The recorded job outcome, or `undefined` before `recordJobOutcome()`. */
+    getJobOutcome() {
+        return this.jobOutcome;
     }
     /**
      * Record campaign preset metric.
@@ -60263,6 +60675,9 @@ class MetricsCollector {
                 timestamp: m.timestamp,
             })),
         };
+        if (this.jobOutcome) {
+            safeArtifact.jobOutcome = this.jobOutcome;
+        }
         // Include the Horizon fetch latency histogram when provided.
         const histogramSnapshot = horizonHistogram?.toSnapshot();
         if (histogramSnapshot) {
@@ -60275,6 +60690,7 @@ class MetricsCollector {
             totalErrors: this.counters.get('errors') ?? 0,
             jsonArtifact: JSON.stringify(safeArtifact, null, 2),
             horizonFetchLatencyHistogram: histogramSnapshot,
+            jobOutcome: this.jobOutcome?.outcome,
         };
     }
 }
@@ -60296,26 +60712,13 @@ exports.MetricsCollector = MetricsCollector;
  */
 async function writeJobSummary(report, runLabel) {
     try {
-        const label = runLabel ? ` — ${runLabel}` : '';
-        core.summary.addHeading(`TrustBridge Metrics${label}`, 2);
-        // Overview table
-        core.summary.addTable([
-            [
-                { data: 'Metric', header: true },
-                { data: 'Value', header: true },
-            ],
-            ['Total runs', String(report.totalRuns)],
-            ['Total errors', String(report.totalErrors)],
-            ['Avg latency', report.latencyMs !== null ? `${report.latencyMs.toFixed(1)} ms` : '_none recorded_'],
-            [
-                'Failure codes',
-                report.failureCodes.length > 0
-                    ? report.failureCodes.map((c) => `HTTP ${c}`).join(', ')
-                    : '_none_',
-            ],
-        ]);
-        // JSON artifact in a collapsible details block
-        core.summary.addDetails('Metrics JSON artifact', `\`\`\`json\n${report.jsonArtifact}\n\`\`\``);
+        const labelledReport = runLabel
+            ? { ...report, jsonArtifact: `Run label: ${runLabel}\n${report.jsonArtifact}` }
+            : report;
+        const rendered = (0, summary_1.formatJobSummaryMarkdown)(labelledReport);
+        if (!process.env.GITHUB_STEP_SUMMARY)
+            return;
+        core.summary.addRaw(rendered.markdown);
         await core.summary.write();
     }
     catch {
@@ -60483,9 +60886,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_OUTPUT_VALUE_BYTES = void 0;
+exports.WORKFLOW_ANNOTATION_LIMITS = exports.GITHUB_OUTPUT_VALUE_LIMIT_BYTES = exports.MAX_OUTPUT_VALUE_BYTES = void 0;
 exports.buildConflictReport = buildConflictReport;
 exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
+exports.resolveOutputTransport = resolveOutputTransport;
 exports.truncateJsonArray = truncateJsonArray;
 exports.toActionOutputs = toActionOutputs;
 exports.setValidationOutputs = setValidationOutputs;
@@ -60588,6 +60992,27 @@ function formatConflictReportMarkdown(report) {
  * output written in the same step.
  */
 exports.MAX_OUTPUT_VALUE_BYTES = 900000;
+/**
+ * GitHub's documented limit for one step output value: 1 MiB, the same on
+ * github.com and GHES. `MAX_OUTPUT_VALUE_BYTES` stays below it. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+exports.GITHUB_OUTPUT_VALUE_LIMIT_BYTES = 1024 * 1024;
+/**
+ * GitHub's documented limits on workflow-command annotations
+ * (`core.warning` / `core.error` / `core.notice`). Annotations past these
+ * caps are dropped from the run UI but still printed to the log.
+ */
+exports.WORKFLOW_ANNOTATION_LIMITS = Object.freeze({
+    errorsPerStep: 10,
+    warningsPerStep: 10,
+    perJob: 50,
+});
+function resolveOutputTransport(env = process.env) {
+    return env && typeof env.GITHUB_OUTPUT === 'string' && env.GITHUB_OUTPUT !== ''
+        ? 'file-command'
+        : 'workflow-command';
+}
 /** UTF-8 byte length of a string — never its UTF-16 `.length` (wrong for multibyte characters). */
 function byteLength(value) {
     return Buffer.byteLength(value, 'utf8');
@@ -61245,6 +61670,20 @@ exports.shouldBypassProxy = shouldBypassProxy;
 exports.createProxyAgent = createProxyAgent;
 exports.createProxiedFetch = createProxiedFetch;
 exports.getOctokitProxyOptions = getOctokitProxyOptions;
+exports.isTracingEnabled = isTracingEnabled;
+exports.getExporterType = getExporterType;
+exports.getTraceSpans = getTraceSpans;
+exports.clearTraceSpans = clearTraceSpans;
+exports.redactSpanAttributes = redactSpanAttributes;
+exports.withSpan = withSpan;
+exports.withHorizonSpan = withHorizonSpan;
+exports.withSpanSync = withSpanSync;
+exports.exportSpan = exportSpan;
+exports.traceHorizonFetch = traceHorizonFetch;
+exports.traceCommentPost = traceCommentPost;
+exports.traceWebhookDeliver = traceWebhookDeliver;
+exports.traceActionRun = traceActionRun;
+exports.emitTraceSummary = emitTraceSummary;
 const https_proxy_agent_1 = __nccwpck_require__(3669);
 const url_1 = __nccwpck_require__(87016);
 const logger_1 = __nccwpck_require__(86999);
@@ -61461,6 +61900,450 @@ function getOctokitProxyOptions(baseUrl) {
         return { baseUrl };
     return { baseUrl, request: { agent } };
 }
+/**
+ * Lightweight opt-in OpenTelemetry-compatible tracing for TrustBridge Action.
+ * (Issue #299)
+ *
+ * ## Design goals
+ * - Default OFF: zero overhead when tracing is not enabled.
+ * - No required SaaS or external collector.
+ * - Zero new production dependencies: uses only Node.js built-ins.
+ * - PII safe: Stellar addresses are redacted to first-4…last-4 before any
+ *   span attribute is recorded or exported.
+ * - Compatible with the OTel data model (Span, SpanStatus, Attributes) so
+ *   a future upgrade to @opentelemetry/sdk-trace-node is a drop-in swap.
+ *
+ * ## Enabling tracing
+ *
+ * Set the environment variable before running the action:
+ *
+ *   OTEL_TRACES_ENABLED=true   # opt in to trace collection
+ *   OTEL_TRACES_EXPORTER=log   # (default) emit spans as core.debug JSON lines
+ *   OTEL_TRACES_EXPORTER=console  # emit to process.stdout (local dev)
+ *   OTEL_TRACES_EXPORTER=none  # collect but do not export (for tests)
+ *
+ * All options are case-insensitive for the value.
+ *
+ * ## Instrumented phases
+ *
+ * | Phase | Span name |
+ * |-------|-----------|
+ * | Horizon account fetch | `horizon.fetch_account` |
+ * | GitHub issue comment post/update | `github.post_comment` |
+ * | Dashboard webhook delivery | `webhook.deliver` |
+ * | Full action run | `trustbridge.run` |
+ *
+ * ## PII redaction
+ *
+ * - `stellar_address` attributes are masked to `first4…last4`.
+ * - `horizon_url` attributes have the path stripped (host only).
+ * - `webhook_url` attributes have the path stripped.
+ * - `github_token` and `webhook_secret` are NEVER placed in any attribute.
+ *
+ * ## Exporting to a real collector
+ *
+ * When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, TrustBridge will attempt to
+ * export spans via HTTP/JSON OTLP to that endpoint. The payload follows the
+ * OTLP/HTTP JSON format so any standard OpenTelemetry collector can receive
+ * it. Requires `OTEL_TRACES_EXPORTER=otlp` as well.
+ *
+ * Example for a local collector:
+ * ```yaml
+ * env:
+ *   OTEL_TRACES_ENABLED: 'true'
+ *   OTEL_TRACES_EXPORTER: 'otlp'
+ *   OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
+ * ```
+ *
+ * See docs/USAGE.md#opentelemetry-tracing for the full guide.
+ */
+const core = __importStar(__nccwpck_require__(37484));
+const logger_2 = __nccwpck_require__(86999);
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+/**
+ * Whether tracing is enabled.
+ * Reads `OTEL_TRACES_ENABLED` environment variable.
+ * Default: false.
+ */
+function isTracingEnabled() {
+    const val = process.env['OTEL_TRACES_ENABLED'] ?? '';
+    return val.toLowerCase() === 'true' || val === '1';
+}
+function getExporterType() {
+    const val = (process.env['OTEL_TRACES_EXPORTER'] ?? 'log').toLowerCase();
+    if (val === 'console')
+        return 'console';
+    if (val === 'none')
+        return 'none';
+    if (val === 'otlp')
+        return 'otlp';
+    return 'log';
+}
+// ---------------------------------------------------------------------------
+// In-process span store
+// ---------------------------------------------------------------------------
+const _traceSpans = [];
+/**
+ * Return all recorded trace spans (for testing).
+ * Returns a shallow copy so callers cannot mutate the internal store.
+ */
+function getTraceSpans() {
+    return [..._traceSpans];
+}
+/**
+ * Clear all recorded trace spans.
+ * Call at the start of each test or action run.
+ */
+function clearTraceSpans() {
+    _traceSpans.length = 0;
+}
+/** Internal: record a completed span into the store. */
+function storeSpan(span) {
+    try {
+        _traceSpans.push(span);
+    }
+    catch {
+        // Observability must never break the action.
+    }
+}
+// ---------------------------------------------------------------------------
+// PII redaction for span attributes
+// ---------------------------------------------------------------------------
+/**
+ * Redact a span attributes record so no PII escapes into exported spans.
+ * - Stellar addresses (G…/C…, 56 chars) → first4…last4.
+ * - Horizon / webhook URLs → host only (path stripped).
+ * - Token / secret fields → [REDACTED].
+ */
+function redactSpanAttributes(attrs) {
+    const safe = {};
+    const SECRET_KEYS = new Set(['token', 'secret', 'password', 'api_key', 'private_key', 'github_token', 'webhook_secret', 'webhook_secret_previous']);
+    for (const [key, value] of Object.entries(attrs)) {
+        if (SECRET_KEYS.has(key.toLowerCase())) {
+            safe[key] = '[REDACTED]';
+            continue;
+        }
+        if (typeof value === 'string') {
+            // Redact embedded Stellar addresses
+            let v = value.replace(/\b[GC][A-Z2-7]{55}\b/g, (addr) => (0, logger_2.redactStellarAddress)(addr));
+            // Redact Horizon/webhook URL paths (keep scheme + host only)
+            if (key.toLowerCase().includes('url')) {
+                v = (0, logger_2.redactHorizonUrl)(v);
+            }
+            safe[key] = v;
+        }
+        else {
+            safe[key] = value;
+        }
+    }
+    return safe;
+}
+// ---------------------------------------------------------------------------
+// Span recording
+// ---------------------------------------------------------------------------
+/**
+ * Execute an async operation within a named trace span.
+ *
+ * When tracing is disabled, `fn` is called directly with zero overhead.
+ * When enabled, the span is recorded and exported after `fn` completes.
+ *
+ * @param opts  Span options (name, attributes, parentName).
+ * @param fn    The async operation to trace.
+ * @returns     The resolved value from `fn`.
+ */
+async function withSpan(opts, fn) {
+    if (!isTracingEnabled()) {
+        return fn();
+    }
+    const startTimeMs = Date.now();
+    let status = 'OK';
+    let error;
+    try {
+        const result = await fn();
+        return result;
+    }
+    catch (err) {
+        status = 'ERROR';
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+    }
+    finally {
+        const durationMs = Date.now() - startTimeMs;
+        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
+        const span = {
+            name: opts.name,
+            startTimeMs,
+            durationMs,
+            status,
+            attributes: safeAttrs,
+            error,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+}
+/**
+ * Execute a Horizon fetch operation within an OTel-compatible span
+ * (issue #757). Emits consistent span attributes for latency and retry
+ * counts so operators can correlate Wave CI flakes without scraping logs.
+ *
+ * Attributes recorded on the span:
+ * - `horizon.url`        — host-only Horizon endpoint (path stripped).
+ * - `stellar_address`    — redacted account id (first4…last4), when provided.
+ * - `horizon.retry_count`— number of retries performed (default 0).
+ * - `horizon.latency_ms` — wall-clock latency of the fetch in milliseconds.
+ *
+ * When tracing is disabled, `fn` is called directly with zero overhead and
+ * existing auth/pause/happy-path semantics are preserved.
+ *
+ * @param opts  Horizon span options (url, account, retryCount, parentName).
+ * @param fn    The async Horizon fetch operation to trace.
+ * @returns     The resolved value from `fn`.
+ */
+async function withHorizonSpan(opts, fn) {
+    if (!isTracingEnabled()) {
+        return fn();
+    }
+    const startTimeMs = Date.now();
+    const retryCount = opts.retryCount ?? 0;
+    let status = 'OK';
+    let error;
+    try {
+        const result = await fn();
+        return result;
+    }
+    catch (err) {
+        status = 'ERROR';
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+    }
+    finally {
+        const durationMs = Date.now() - startTimeMs;
+        const attributes = {
+            'horizon.url': opts.horizonUrl,
+            'horizon.retry_count': retryCount,
+            'horizon.latency_ms': durationMs,
+        };
+        if (opts.accountId) {
+            attributes['stellar_address'] = opts.accountId;
+        }
+        const span = {
+            name: 'horizon.fetch_account',
+            startTimeMs,
+            durationMs,
+            status,
+            attributes: redactSpanAttributes(attributes),
+            error,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+}
+/**
+ * Record a synchronous operation within a named trace span.
+ *
+ * @param opts  Span options.
+ * @param fn    Synchronous operation to trace.
+ * @returns     The value returned by `fn`.
+ */
+function withSpanSync(opts, fn) {
+    if (!isTracingEnabled()) {
+        return fn();
+    }
+    const startTimeMs = Date.now();
+    let status = 'OK';
+    let error;
+    try {
+        const result = fn();
+        return result;
+    }
+    catch (err) {
+        status = 'ERROR';
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+    }
+    finally {
+        const durationMs = Date.now() - startTimeMs;
+        const safeAttrs = redactSpanAttributes(opts.attributes ?? {});
+        const span = {
+            name: opts.name,
+            startTimeMs,
+            durationMs,
+            status,
+            attributes: safeAttrs,
+            error,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+}
+// ---------------------------------------------------------------------------
+// Span export
+// ---------------------------------------------------------------------------
+/**
+ * Export a completed span to the configured exporter.
+ * Never throws — observability must not break the action.
+ */
+function exportSpan(span) {
+    try {
+        const exporter = getExporterType();
+        switch (exporter) {
+            case 'log':
+                core.debug(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+                break;
+            case 'console':
+                console.log(`[TrustBridge][trace] ${JSON.stringify(span)}`);
+                break;
+            case 'none':
+                // Collect but do not emit (used in tests to inspect spans without log noise).
+                break;
+            case 'otlp':
+                // OTLP export is fire-and-forget — errors are swallowed so they never
+                // affect the action result. The collector must be running at
+                // OTEL_EXPORTER_OTLP_ENDPOINT for this to have any effect.
+                void exportOtlp(span).catch(() => {
+                    // Silently ignore export failures.
+                });
+                break;
+        }
+    }
+    catch {
+        // Swallow all export errors.
+    }
+}
+/**
+ * Fire-and-forget OTLP/HTTP JSON export for a single span.
+ * Only called when OTEL_TRACES_EXPORTER=otlp and OTEL_EXPORTER_OTLP_ENDPOINT is set.
+ */
+async function exportOtlp(span) {
+    const endpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
+    if (!endpoint)
+        return;
+    // Minimal OTLP/JSON payload for a single span
+    const otlpPayload = {
+        resourceSpans: [
+            {
+                resource: { attributes: [{ key: 'service.name', value: { stringValue: 'trustbridge-action' } }] },
+                scopeSpans: [
+                    {
+                        scope: { name: 'trustbridge-action', version: '1' },
+                        spans: [
+                            {
+                                name: span.name,
+                                kind: 1, // SPAN_KIND_INTERNAL
+                                startTimeUnixNano: String(span.startTimeMs * 1000000),
+                                endTimeUnixNano: String((span.startTimeMs + span.durationMs) * 1000000),
+                                status: {
+                                    code: span.status === 'OK' ? 1 : span.status === 'ERROR' ? 2 : 0,
+                                    message: span.error ?? '',
+                                },
+                                attributes: Object.entries(span.attributes).map(([k, v]) => ({
+                                    key: k,
+                                    value: typeof v === 'boolean'
+                                        ? { boolValue: v }
+                                        : typeof v === 'number'
+                                            ? { intValue: String(v) }
+                                            : { stringValue: String(v) },
+                                })),
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    };
+    const url = endpoint.replace(/\/$/, '') + '/v1/traces';
+    await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(otlpPayload),
+        signal: AbortSignal.timeout(3000),
+    });
+}
+// ---------------------------------------------------------------------------
+// Named span helpers for the three instrumented phases
+// ---------------------------------------------------------------------------
+/**
+ * Trace the Horizon account fetch phase.
+ * Attributes: endpoint kind (primary/fallback), redacted URL, redacted address.
+ */
+async function traceHorizonFetch(horizonUrl, stellarAddress, fn) {
+    return withSpan({
+        name: 'horizon.fetch_account',
+        attributes: {
+            'horizon_url': horizonUrl,
+            'stellar_address': stellarAddress,
+        },
+    }, fn);
+}
+/**
+ * Trace the GitHub issue comment post/update phase.
+ * Attributes: comment action (create/update), issue number.
+ */
+async function traceCommentPost(issueNumber, action, fn) {
+    return withSpan({
+        name: 'github.post_comment',
+        attributes: {
+            'issue_number': issueNumber ?? 0,
+            'comment_action': action,
+        },
+    }, fn);
+}
+/**
+ * Trace the dashboard webhook delivery phase.
+ * Attributes: redacted webhook URL, auth mode.
+ */
+async function traceWebhookDeliver(webhookUrl, authMode, fn) {
+    return withSpan({
+        name: 'webhook.deliver',
+        attributes: {
+            'webhook_url': webhookUrl,
+            'auth_mode': authMode,
+        },
+    }, fn);
+}
+/**
+ * Trace the full action run (root span).
+ * Attributes: redacted address, reason code, valid flag.
+ */
+async function traceActionRun(stellarAddress, fn) {
+    return withSpan({
+        name: 'trustbridge.run',
+        attributes: {
+            'stellar_address': stellarAddress,
+        },
+    }, fn);
+}
+// ---------------------------------------------------------------------------
+// Summary export
+// ---------------------------------------------------------------------------
+/**
+ * Emit a human-readable summary of all collected spans to `core.info`.
+ * Called at the end of a run when tracing is enabled.
+ * Never throws.
+ */
+function emitTraceSummary() {
+    if (!isTracingEnabled())
+        return;
+    try {
+        const spans = getTraceSpans();
+        if (spans.length === 0)
+            return;
+        const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
+        const errorCount = spans.filter((s) => s.status === 'ERROR').length;
+        core.info(`[TrustBridge][trace] Run complete — ${spans.length} span(s), ` +
+            `${totalMs}ms total, ${errorCount} error(s). ` +
+            `Set OTEL_TRACES_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT to forward to a collector.`);
+    }
+    catch {
+        // Never throw from observability.
+    }
+}
 
 
 /***/ }),
@@ -61481,6 +62364,16 @@ function getOctokitProxyOptions(baseUrl) {
  * Wave #36: Horizon HTTP mock matrix — deterministic per-scenario mock
  * factories (timeout, rate-limit, outage, success) for use in unit tests and
  * local dev without a live Horizon endpoint.
+ *
+ * Issue #888: Half-open probe budget — the circuit breaker now enforces a
+ * configurable limit on the number of concurrent probe calls permitted while
+ * the circuit is in half-open state. Without this guard, a burst of parallel
+ * callers (e.g. a Wave batch run) can all pass the half-open gate
+ * simultaneously and stampede a recovering Horizon endpoint. The budget is
+ * enforced by tracking `halfOpenProbesInFlight`; calls beyond the budget
+ * receive a `CircuitOpenError` immediately (fast-fail), identical to full-open
+ * behavior. See `CircuitBreakerOptions.halfOpenMaxProbes` and
+ * `docs/ARCHITECTURE.md#circuit-breaker-half-open-probe-budget`.
  *
  * Also exposes a local CLI check command that exercises the full resilience
  * pipeline against a live or stubbed Horizon endpoint (with optional secondary
@@ -61723,12 +62616,20 @@ async function retryWithBackoff(fn, policy = exports.DEFAULT_RETRY_POLICY, shoul
  * circuit trips and recoveries are always visible as GitHub Check Run
  * annotations in the Actions UI, even without `debug_mode: true`.
  *
+ * Issue #888 — half-open probe budget: `halfOpenMaxProbes` (default: 1)
+ * limits how many concurrent probe calls may be in-flight while the circuit
+ * is in `half-open` state. Additional callers beyond the budget receive a
+ * `CircuitOpenError` immediately (identical to open-state fast-fail) and
+ * the rejection is counted in `halfOpenProbeBudgetExhaustedCount`. This
+ * prevents stampeding retries during Horizon recovery under Wave batch peaks.
+ *
  * States:
  *  - **closed** — normal operation; failures are counted.
  *  - **open**   — requests are short-circuited (fast-fail); a recovery timer
  *                 controls transition to 'half-open'.
- *  - **half-open** — a single probe request is allowed; success closes the
- *                    circuit, failure re-opens it.
+ *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
+ *                    allowed; enough consecutive successes closes the circuit,
+ *                    any failure re-opens it.
  */
 class CircuitBreaker {
     constructor(options = {}) {
@@ -61737,9 +62638,23 @@ class CircuitBreaker {
         this.consecutiveSuccesses = 0;
         this.openedAt = null;
         this.lastErrorClass = null;
+        /** Issue #888: in-flight probe count while in half-open state. */
+        this.halfOpenProbesInFlight = 0;
+        /** Issue #888: total rejections due to probe budget exhaustion. */
+        this.halfOpenProbeBudgetExhaustedCount = 0;
+        /** Issue #888: total probes that completed (resolved or rejected) in half-open. */
+        this.halfOpenProbesCompleted = 0;
+        /**
+         * One-shot flag: set by `_recordFailure` when the circuit was half-open at
+         * the time of the failure (and was re-opened). Used by the `finally` block
+         * in `execute` to know it should still decrement `halfOpenProbesInFlight`
+         * even though `this.state` is now `'open'` by the time `finally` runs.
+         */
+        this._wasHalfOpenBeforeFailure = false;
         this.failureThreshold = options.failureThreshold ?? 5;
         this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30000;
         this.successThreshold = options.successThreshold ?? 2;
+        this.halfOpenMaxProbes = options.halfOpenMaxProbes ?? 1;
         // Wave #26: default handler surfaces state changes as Check Run annotations.
         this.onStateChange =
             options.onStateChange ??
@@ -61754,6 +62669,14 @@ class CircuitBreaker {
                         core.notice(`[TrustBridge CircuitBreaker] Circuit state changed (${from} → ${to}): ${reason}`);
                     }
                 });
+        // Issue #888: default probe-budget-exhausted handler emits a warning annotation.
+        this.onProbeBudgetExhausted =
+            options.onProbeBudgetExhausted ??
+                ((inFlight, maxProbes) => {
+                    core.warning(`[TrustBridge CircuitBreaker] Half-open probe budget exhausted ` +
+                        `(${inFlight}/${maxProbes} probes in flight). ` +
+                        `Caller fast-failed without reaching Horizon.`);
+                });
     }
     /**
      * Current circuit state.
@@ -61765,13 +62688,28 @@ class CircuitBreaker {
     /**
      * Execute `fn` through the circuit breaker.
      *
-     * - **closed / half-open**: delegates to `fn`; records success or failure.
+     * - **closed**: delegates to `fn`; records success or failure.
      * - **open**: throws a `CircuitOpenError` immediately without calling `fn`.
+     * - **half-open**: allows up to `halfOpenMaxProbes` concurrent probes.
+     *   Callers beyond the budget receive `CircuitOpenError` immediately.
+     *   Success closes the circuit after `successThreshold` consecutive wins;
+     *   any failure re-opens it and resets the in-flight count.
      */
     async execute(fn) {
         this._maybeTransitionToHalfOpen();
         if (this.state === 'open') {
             throw new CircuitOpenError(`Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures).`);
+        }
+        // Issue #888: enforce probe budget in half-open state.
+        if (this.state === 'half-open') {
+            if (this.halfOpenProbesInFlight >= this.halfOpenMaxProbes) {
+                this.halfOpenProbeBudgetExhaustedCount += 1;
+                this.onProbeBudgetExhausted(this.halfOpenProbesInFlight, this.halfOpenMaxProbes);
+                throw new CircuitOpenError(`Circuit breaker is half-open but the probe budget is exhausted ` +
+                    `(${this.halfOpenProbesInFlight}/${this.halfOpenMaxProbes} probes in flight). ` +
+                    `Request fast-failed to prevent stampeding retries on the recovering endpoint.`);
+            }
+            this.halfOpenProbesInFlight += 1;
         }
         try {
             const result = await fn();
@@ -61781,6 +62719,19 @@ class CircuitBreaker {
         catch (err) {
             this._recordFailure(err);
             throw err;
+        }
+        finally {
+            // Decrement the in-flight count whenever we were tracking a probe.
+            if (this.state === 'half-open' || this._wasHalfOpenBeforeFailure) {
+                // _wasHalfOpenBeforeFailure is a one-shot flag set by _recordFailure
+                // when a probe failure immediately re-opened the circuit; we still
+                // need to decrement the counter.
+                if (this.halfOpenProbesInFlight > 0) {
+                    this.halfOpenProbesInFlight -= 1;
+                }
+                this.halfOpenProbesCompleted += 1;
+                this._wasHalfOpenBeforeFailure = false;
+            }
         }
     }
     /**
@@ -61793,6 +62744,9 @@ class CircuitBreaker {
         this.consecutiveFailures = 0;
         this.consecutiveSuccesses = 0;
         this.openedAt = null;
+        this.halfOpenProbesInFlight = 0;
+        this.halfOpenProbesCompleted = 0;
+        this.halfOpenProbeBudgetExhaustedCount = 0;
         if (prev !== 'closed') {
             this.onStateChange(prev, 'closed', 'manual reset');
         }
@@ -61808,12 +62762,17 @@ class CircuitBreaker {
             consecutiveFailures: this.consecutiveFailures,
             consecutiveSuccesses: this.consecutiveSuccesses,
             openedAt: this.openedAt,
+            halfOpenProbesInFlight: this.halfOpenProbesInFlight,
+            halfOpenProbeBudgetExhaustedCount: this.halfOpenProbeBudgetExhaustedCount,
+            halfOpenMaxProbes: this.halfOpenMaxProbes,
         };
     }
     /**
      * Circuit-open metrics for the Job Summary (#788). Reports only the error
      * class name — never the error message — so raw Horizon response bodies
      * cannot leak into the summary.
+     *
+     * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
      */
     getOpenMetrics(now = Date.now()) {
         const stats = this.getStats();
@@ -61824,6 +62783,12 @@ class CircuitBreaker {
                 : 0,
             lastErrorClass: this.lastErrorClass,
             consecutiveFailures: stats.consecutiveFailures,
+            halfOpenProbeStats: {
+                inFlight: stats.halfOpenProbesInFlight,
+                maxProbes: stats.halfOpenMaxProbes,
+                budgetExhaustedCount: stats.halfOpenProbeBudgetExhaustedCount,
+                completed: this.halfOpenProbesCompleted,
+            },
         };
     }
     // ---- private helpers ----
@@ -61834,6 +62799,9 @@ class CircuitBreaker {
             const prev = this.state;
             this.state = 'half-open';
             this.consecutiveSuccesses = 0;
+            this.halfOpenProbesInFlight = 0;
+            this.halfOpenProbesCompleted = 0;
+            this.halfOpenProbeBudgetExhaustedCount = 0;
             this.onStateChange(prev, 'half-open', `recovery timeout of ${this.recoveryTimeoutMs}ms elapsed`);
         }
     }
@@ -61846,6 +62814,9 @@ class CircuitBreaker {
                 this.consecutiveFailures = 0;
                 this.consecutiveSuccesses = 0;
                 this.openedAt = null;
+                this.halfOpenProbesInFlight = 0;
+                this.halfOpenProbesCompleted = 0;
+                this.halfOpenProbeBudgetExhaustedCount = 0;
                 this.onStateChange(prev, 'closed', `${this.successThreshold} consecutive successes in half-open`);
             }
         }
@@ -61858,6 +62829,7 @@ class CircuitBreaker {
         this.lastErrorClass = errorClassOf(err);
         if (this.state === 'half-open') {
             // Any failure in half-open immediately re-opens the circuit.
+            this._wasHalfOpenBeforeFailure = true;
             const prev = this.state;
             this.state = 'open';
             this.openedAt = Date.now();
@@ -63715,6 +64687,8 @@ const net_1 = __nccwpck_require__(69278);
  * - Reserved: 240.0.0.0/4
  * - Localhost IPv6: ::1
  * - Link-local IPv6: fe80::/10
+ * - Site-local IPv6: fec0::/10, unique-local fc00::/7, and any IPv6 form that
+ *   embeds a blocked IPv4 address (Issue #948)
  */
 exports.SSRF_BLOCKED_RANGES = [
     { name: 'loopback', pattern: /^127\.|^::1$|^localhost$/i },
@@ -63843,6 +64817,8 @@ function classifyIPv6(ip) {
         return 'ipv6_loopback';
     if ((g[0] & 0xffc0) === 0xfe80)
         return 'ipv6_link_local';
+    if ((g[0] & 0xffc0) === 0xfec0)
+        return 'ipv6_site_local';
     if ((g[0] & 0xfe00) === 0xfc00)
         return 'ipv6_ula';
     if ((g[0] & 0xff00) === 0xff00)
@@ -63852,6 +64828,21 @@ function classifyIPv6(ip) {
         const embedded = classifyIPv4(groupsToIPv4(g[6], g[7]));
         if (embedded)
             return g[5] === 0xffff ? `ipv6_mapped_${embedded}` : `ipv6_compat_${embedded}`;
+    }
+    // IPv4-translated (SIIT) ::ffff:0:a.b.c.d
+    if (allZeroUntil(4) && g[4] === 0xffff && g[5] === 0) {
+        const embedded = classifyIPv4(groupsToIPv4(g[6], g[7]));
+        if (embedded)
+            return `ipv6_translated_${embedded}`;
+    }
+    // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215) is never globally routable
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1)
+        return 'ipv6_nat64_local_use';
+    // Teredo 2001::/32 stores the client IPv4 address bit-inverted in groups 6-7
+    if (g[0] === 0x2001 && g[1] === 0) {
+        const embedded = classifyIPv4(groupsToIPv4(g[6] ^ 0xffff, g[7] ^ 0xffff));
+        if (embedded)
+            return `ipv6_teredo_${embedded}`;
     }
     // NAT64 well-known prefix 64:ff9b::/96
     if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) {
@@ -63927,6 +64918,10 @@ function isSSRFBlocked(host) {
         }
     }
     const family = (0, net_1.isIP)(normalized);
+    // Fail closed: looks like an IPv6 literal but cannot be parsed as one.
+    if (family === 0 && /^[0-9a-f:.]*:[0-9a-f.]*:[0-9a-f:.]*$/.test(normalized)) {
+        return { blocked: true, reason: 'Host matches SSRF blocklist: ipv6_malformed' };
+    }
     const reason = family === 4 ? classifyIPv4(normalized) : family === 6 ? classifyIPv6(normalized) : null;
     if (reason) {
         return { blocked: true, reason: `Host matches SSRF blocklist: ${reason}` };
@@ -64181,8 +65176,11 @@ async function fetchSSRFSafe(urlStr, options = {}) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.JOB_SUMMARY_TRUNCATED_MARKER = exports.JOB_SUMMARY_MAX_BYTES = exports.DIGEST_MAX_LISTED_ISSUES = void 0;
+exports.JOB_SUMMARY_TRUNCATED_MARKER = exports.JOB_SUMMARY_MAX_BYTES = exports.DIGEST_MAX_LISTED_ISSUES = exports.CHECK_KINDS = void 0;
 exports.summarizeChecks = summarizeChecks;
+exports.isCheckSkipped = isCheckSkipped;
+exports.classifyCheckKind = classifyCheckKind;
+exports.listSkippedCheckKinds = listSkippedCheckKinds;
 exports.formatFailureSummary = formatFailureSummary;
 exports.formatCircuitOpenSummary = formatCircuitOpenSummary;
 exports.isClawbackStrictFailure = isClawbackStrictFailure;
@@ -64191,8 +65189,12 @@ exports.aggregateDigest = aggregateDigest;
 exports.formatDigestComment = formatDigestComment;
 exports.computeDelta = computeDelta;
 exports.formatDeltaSection = formatDeltaSection;
+exports.isJobSummaryAvailable = isJobSummaryAvailable;
 exports.guardJobSummaryMarkdown = guardJobSummaryMarkdown;
+exports.formatJobSummaryMarkdown = formatJobSummaryMarkdown;
 const delta_1 = __nccwpck_require__(61493);
+const metrics_1 = __nccwpck_require__(35670);
+Object.defineProperty(exports, "CHECK_KINDS", ({ enumerable: true, get: function () { return metrics_1.CHECK_KINDS; } }));
 function summarizeChecks(result) {
     const failedLabels = result.checks
         .filter((check) => !check.passed)
@@ -64203,6 +65205,45 @@ function summarizeChecks(result) {
         failed: failedLabels.length,
         failedLabels,
     };
+}
+/**
+ * Detail prefixes the check builders in `src/checks.ts` use for a row that
+ * was not actually evaluated (missing prerequisite, Horizon unreachable,
+ * circuit open, rate budget exhausted).
+ */
+const SKIPPED_DETAIL_PATTERN = /^(Cannot verify|Check skipped)\b/;
+/** True when a check row was not evaluated and only reports why. */
+function isCheckSkipped(check) {
+    return typeof check.detail === 'string' && SKIPPED_DETAIL_PATTERN.test(check.detail.trim());
+}
+/** Map a check label to its bounded {@link CheckKind}. */
+function classifyCheckKind(label) {
+    const l = (typeof label === 'string' ? label : '').toLowerCase();
+    if (l.includes('horizon'))
+        return 'horizon_available';
+    if (l.includes('account funded'))
+        return 'account_funded';
+    if (l.includes('clawback'))
+        return 'clawback';
+    if (l.includes('trustline limit'))
+        return 'trustline_limit';
+    if (l.includes('trustline'))
+        return 'trustline';
+    if (l.includes('xlm reserve') || l.includes('xlm balance'))
+        return 'xlm_reserve';
+    if (l.includes('minimum balance'))
+        return 'asset_balance';
+    if (l.includes('home domain'))
+        return 'home_domain';
+    return 'other';
+}
+/**
+ * Kinds of every skipped check in `result`, in check order. A kind repeats
+ * when several rows of the same kind were skipped.
+ */
+function listSkippedCheckKinds(result) {
+    const checks = Array.isArray(result?.checks) ? result.checks : [];
+    return checks.filter((c) => isCheckSkipped(c)).map((c) => classifyCheckKind(c.label));
 }
 function formatFailureSummary(result) {
     const summary = summarizeChecks(result);
@@ -64461,6 +65502,19 @@ exports.JOB_SUMMARY_MAX_BYTES = 1024 * 1024;
 /** Stable marker appended to every truncated Job Summary. */
 exports.JOB_SUMMARY_TRUNCATED_MARKER = '<!-- trustbridge-action:summary-truncated -->';
 /**
+ * True when the runner exposes a Job Summary file (`GITHUB_STEP_SUMMARY`).
+ *
+ * github.com runners always set it. GHES runners only set it on releases
+ * that support Job Summaries; elsewhere `core.summary.write()` throws and
+ * `writeJobSummary()` (src/metrics.ts) skips the summary without failing the
+ * run. The size limit, when supported, is the same
+ * {@link JOB_SUMMARY_MAX_BYTES} on both. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+function isJobSummaryAvailable(env = process.env) {
+    return Boolean(env && typeof env.GITHUB_STEP_SUMMARY === 'string' && env.GITHUB_STEP_SUMMARY !== '');
+}
+/**
  * Ensure `markdown` fits within the GitHub Job Summary size limit.
  *
  * Content under the limit is returned unchanged. Oversized content is cut at
@@ -64496,6 +65550,49 @@ function guardJobSummaryMarkdown(markdown, options = {}) {
     if (lastNewline > 0)
         head = head.slice(0, lastNewline);
     return { markdown: head + notice, truncated: true, originalBytes };
+}
+/**
+ * Render the metrics report in priority order before applying the byte guard.
+ * The overview is always retained; the JSON artifact is lower priority and is
+ * removed before failure-code detail when the configured budget is tight.
+ */
+function formatJobSummaryMarkdown(report, options = {}) {
+    if (!report || typeof report !== 'object') {
+        throw new Error('summary: Job Summary report must be an object');
+    }
+    if (!Array.isArray(report.failureCodes)) {
+        throw new Error('summary: Job Summary failureCodes must be an array');
+    }
+    const overview = [
+        '## TrustBridge Metrics',
+        '',
+        '| Metric | Value |',
+        '| --- | --- |',
+        `| Total runs | ${report.totalRuns} |`,
+        `| Total errors | ${report.totalErrors} |`,
+        `| Average latency | ${report.latencyMs === null ? '_none recorded_' : `${report.latencyMs.toFixed(1)} ms`} |`,
+    ];
+    const failureCodes = report.failureCodes.length > 0
+        ? [`| Failure codes | ${report.failureCodes.map((code) => `HTTP ${code}`).join(', ')} |`]
+        : ['| Failure codes | _none_ |'];
+    const artifact = [
+        '',
+        '<details>',
+        '<summary>Metrics JSON artifact</summary>',
+        '',
+        '```json',
+        report.jsonArtifact,
+        '```',
+        '</details>',
+    ];
+    const maxBytes = options.maxBytes ?? exports.JOB_SUMMARY_MAX_BYTES;
+    const full = [...overview, ...failureCodes, ...artifact].join('\n') + '\n';
+    if (Buffer.byteLength(full, 'utf8') <= maxBytes) {
+        return { markdown: full, truncated: false, originalBytes: Buffer.byteLength(full, 'utf8') };
+    }
+    // Drop the verbose artifact first, then retain only the compact overview.
+    const compact = [...overview, ...failureCodes].join('\n') + '\n';
+    return guardJobSummaryMarkdown(compact, { maxBytes });
 }
 
 
@@ -82273,42 +83370,6 @@ class StorageContextClient extends import_src.StorageClient {
 
 /***/ }),
 
-/***/ 83627:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var generatedModels_exports = {};
-__export(generatedModels_exports, {
-  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
-});
-module.exports = __toCommonJS(generatedModels_exports);
-var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
-  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
-  return KnownEncryptionAlgorithmType2;
-})(KnownEncryptionAlgorithmType || {});
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=generatedModels.js.map
-
-
-/***/ }),
-
 /***/ 30247:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -93258,176 +94319,6 @@ const listType = {
 
 /***/ }),
 
-/***/ 56635:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var appendBlob_exports = {};
-module.exports = __toCommonJS(appendBlob_exports);
-//# sourceMappingURL=appendBlob.js.map
-
-
-/***/ }),
-
-/***/ 68355:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blob_exports = {};
-module.exports = __toCommonJS(blob_exports);
-//# sourceMappingURL=blob.js.map
-
-
-/***/ }),
-
-/***/ 17188:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var blockBlob_exports = {};
-module.exports = __toCommonJS(blockBlob_exports);
-//# sourceMappingURL=blockBlob.js.map
-
-
-/***/ }),
-
-/***/ 15337:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var container_exports = {};
-module.exports = __toCommonJS(container_exports);
-//# sourceMappingURL=container.js.map
-
-
-/***/ }),
-
-/***/ 82354:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var operationsInterfaces_exports = {};
-module.exports = __toCommonJS(operationsInterfaces_exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
-__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
-// Annotate the CommonJS export names for ESM import in node:
-0 && (0);
-//# sourceMappingURL=index.js.map
-
-
-/***/ }),
-
-/***/ 14400:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var pageBlob_exports = {};
-module.exports = __toCommonJS(pageBlob_exports);
-//# sourceMappingURL=pageBlob.js.map
-
-
-/***/ }),
-
-/***/ 26865:
-/***/ ((module) => {
-
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var service_exports = {};
-module.exports = __toCommonJS(service_exports);
-//# sourceMappingURL=service.js.map
-
-
-/***/ }),
-
 /***/ 40535:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -97095,6 +97986,176 @@ const filterBlobsOperationSpec = {
 
 /***/ }),
 
+/***/ 56635:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var appendBlob_exports = {};
+module.exports = __toCommonJS(appendBlob_exports);
+//# sourceMappingURL=appendBlob.js.map
+
+
+/***/ }),
+
+/***/ 68355:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blob_exports = {};
+module.exports = __toCommonJS(blob_exports);
+//# sourceMappingURL=blob.js.map
+
+
+/***/ }),
+
+/***/ 17188:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var blockBlob_exports = {};
+module.exports = __toCommonJS(blockBlob_exports);
+//# sourceMappingURL=blockBlob.js.map
+
+
+/***/ }),
+
+/***/ 15337:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var container_exports = {};
+module.exports = __toCommonJS(container_exports);
+//# sourceMappingURL=container.js.map
+
+
+/***/ }),
+
+/***/ 82354:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var operationsInterfaces_exports = {};
+module.exports = __toCommonJS(operationsInterfaces_exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(26865), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(15337), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(68355), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(14400), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(56635), module.exports);
+__reExport(operationsInterfaces_exports, __nccwpck_require__(17188), module.exports);
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 14400:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var pageBlob_exports = {};
+module.exports = __toCommonJS(pageBlob_exports);
+//# sourceMappingURL=pageBlob.js.map
+
+
+/***/ }),
+
+/***/ 26865:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var service_exports = {};
+module.exports = __toCommonJS(service_exports);
+//# sourceMappingURL=service.js.map
+
+
+/***/ }),
+
 /***/ 5313:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -97181,6 +98242,42 @@ class StorageClient extends coreHttpCompat.ExtendedServiceClient {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (0);
 //# sourceMappingURL=storageClient.js.map
+
+
+/***/ }),
+
+/***/ 83627:
+/***/ ((module) => {
+
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var generatedModels_exports = {};
+__export(generatedModels_exports, {
+  KnownEncryptionAlgorithmType: () => KnownEncryptionAlgorithmType
+});
+module.exports = __toCommonJS(generatedModels_exports);
+var KnownEncryptionAlgorithmType = /* @__PURE__ */ ((KnownEncryptionAlgorithmType2) => {
+  KnownEncryptionAlgorithmType2["AES256"] = "AES256";
+  return KnownEncryptionAlgorithmType2;
+})(KnownEncryptionAlgorithmType || {});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (0);
+//# sourceMappingURL=generatedModels.js.map
 
 
 /***/ }),

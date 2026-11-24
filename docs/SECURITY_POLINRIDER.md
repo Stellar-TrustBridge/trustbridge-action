@@ -121,3 +121,7 @@ This tooling **does not** rotate credentials. If malware was confirmed on a mach
 1. Stop using that machine for privileged work.
 2. From a clean device, rotate GitHub, npm, cloud, SSH, wallet, and CI secrets.
 3. Review recent publishes and force-pushes on your accounts.
+
+## IPv6 SSRF denials (Issue #948)
+
+`src/ssrf.ts` rejects IPv6 link-local, site-local, unique-local and multicast hosts, plus blocked IPv4 addresses embedded in mapped, compatible, translated, NAT64, 6to4 or Teredo forms. NAT64 local-use addresses and malformed IPv6 literals fail closed. Full table: [INPUT_VALIDATION.md](INPUT_VALIDATION.md).

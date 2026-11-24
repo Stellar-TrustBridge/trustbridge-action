@@ -6,6 +6,9 @@ exports[`formatCommentBody golden snapshots matches golden snapshot for missing 
 <!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
 
+> **TL;DR** ❌ Blocked by: USDC trustline
+> Reason code: \`FAILED\`
+
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`
 Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
@@ -86,6 +89,9 @@ exports[`formatCommentBody golden snapshots matches golden snapshot for successf
 <!-- trustbridge-action:snooze:status=pass,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
 
+> **TL;DR** ✅ Ready to proceed: all checks passed.
+> Reason code: \`SUCCESS\`
+
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`
 Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN\`
@@ -161,6 +167,9 @@ exports[`formatCommentBody golden snapshots matches golden snapshot for unfunded
 <!-- trustbridge-action:schema-version:1.1.0 -->
 <!-- trustbridge-action:snooze:status=fail,timestamp=1000000000000 -->
 ## TrustBridge — Stellar Account Check
+
+> **TL;DR** ❌ Blocked by: Account funded, USDC trustline, XLM reserve
+> Reason code: \`FAILED\`
 
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
 Horizon: \`https://horizon.stellar.org\`
