@@ -20,7 +20,7 @@ Use this checklist before enabling TrustBridge in a contributor workflow.
 `dist/index.js` is the bundle consumers run, so it must match `src/` on every release tag. Two things enforce this:
 
 - `.github/workflows/ci.yml` (`check` job) fails when `dist/` differs from a fresh `npm run build`.
-- `.github/workflows/refresh-dist.yml` is a manual `workflow_dispatch` job. It runs `npm ci`, `npm run build` and `npm run test:map-paths`, then commits `dist/` as `chore: refresh dist` when anything changed.
+- `.github/workflows/refresh-dist.yml` is a manual `workflow_dispatch` job. It runs `npm ci`, `npm run build`, `npm run test:map-paths`, regenerates the manifest and runs `npm run verify:dist`, then commits `dist/` as `chore: refresh dist` when anything changed.
 
 Before you tag, run these steps on the commit you plan to tag:
 
@@ -30,7 +30,10 @@ Before you tag, run these steps on the commit you plan to tag:
    npm ci
    npm run build
    npm run test:map-paths
+   node scripts/generate-dist-manifest.js
    ```
+
+   `npm run build` does not write `dist/dist-manifest.json`. The `generate-dist-manifest.js` step must run after every build, or `verify:dist` checks the old bundle hash.
 
 2. Confirm nothing is left to commit: `git status --porcelain dist` must print nothing. If it prints files, commit the refreshed `dist/` before tagging.
 3. Check the bundle manifest: `npm run verify:dist` must exit `0`. It compares the SHA-256 of `dist/index.js` against the recorded value.
