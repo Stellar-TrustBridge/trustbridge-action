@@ -406,3 +406,12 @@ The runtime keeps validation separate from mutation. `posting_mode: dry-run` run
 Job Summary rendering is budget-aware. The compact overview is higher priority than the verbose metrics JSON artifact; the artifact is removed first, followed by safe line-boundary truncation with a visible marker if the compact report still exceeds the 1 MiB UTF-8 budget.
 
 Horizon retry scheduling accepts both Retry-After encodings, applies a bounded 10% jitter, and enforces both the per-sleep ceiling and cumulative wait budget. Retry-After waits are exported as privacy-safe numeric metrics without addresses, URLs, or response bodies.
+
+
+## Per-address check latency histogram
+
+Issue #956. `globalCheckLatencyHistogram` (`src/metrics.ts`) records the wall-clock duration of each per-address check in `src/batch.ts` into the fixed `LATENCY_BUCKETS_MS` buckets (`<=50ms` … `+Inf`). Labels are limited to the bounded outcome set `pass | fail | invalid | error`; addresses are never labels, and only aggregates (count, total, min, max, avg, bucket counts) are stored, so memory and cardinality stay constant. Negative, NaN and non-finite durations are rejected and counted in `rejected`.
+
+## Cache single-flight
+
+Issue #958. `SimpleCache.getOrFetch(key, fetcher, { waiterTimeoutMs })` de-duplicates concurrent fetches for one key. Waiters time out after `waiterTimeoutMs` (default 30000) with `SingleFlightTimeoutError` (`code: SINGLE_FLIGHT_WAIT_TIMEOUT`) instead of hanging on a stuck leader. Counters: `cache_single_flight_leaders`, `cache_single_flight_waiters`, `cache_single_flight_waiter_timeouts` (also via `getSingleFlightStats()`).

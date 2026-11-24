@@ -225,6 +225,21 @@ inputs:
       instead of only logging a warning. Default false.
     required: false
     default: "false"
+  required_labels:
+    description: >-
+      Comma- or newline-separated label names that must all be present on the
+      issue/PR before Horizon checks run (case-insensitive). When any is
+      missing the run skips with reason_code REQUIRED_LABELS_MISSING. Empty
+      disables the gate. Max 20 labels, 50 characters each. See
+      docs/LABEL_GATE_DESIGN.md.
+    required: false
+    default: ""
+  required_labels_fail_on_skip:
+    description: >-
+      When true and the required_labels gate skips validation, fail the
+      workflow step instead of only logging. Default false.
+    required: false
+    default: "false"
   github_token:
     description: >-
       GitHub token used to post issue comments. Requires `issues: write`

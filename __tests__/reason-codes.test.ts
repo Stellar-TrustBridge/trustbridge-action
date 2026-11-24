@@ -175,6 +175,7 @@ const KNOWN_REASON_CODES = [
   'CIRCUIT_OPEN',
   'RATE_BUDGET_EXHAUSTED',
   'MILESTONE_GATE_SKIPPED',
+  'REQUIRED_LABELS_MISSING',
   'MAINTAINER_SKIPPED',
   // Issue #856: codes that were emitted at runtime (src/checks.ts,
   // src/index.ts) and covered by their own tests, but missing from the

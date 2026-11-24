@@ -250,6 +250,20 @@
       ],
       "default": "false"
     },
+    "required_labels": {
+      "type": "string",
+      "description": "Comma/newline-separated labels that must all be present before Horizon checks run. Empty disables the gate.",
+      "default": ""
+    },
+    "required_labels_fail_on_skip": {
+      "type": "string",
+      "description": "Fail the workflow when the required_labels gate skips validation.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
     "assets_json": {
       "type": "string",
       "description": "JSON array of additional assets to validate trustlines for.",

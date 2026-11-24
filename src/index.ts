@@ -1,5 +1,10 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import {
+  evaluateRequiredLabels,
+  parseRequiredLabels,
+  REASON_CODE_REQUIRED_LABELS_MISSING,
+} from './preflight';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -410,6 +415,38 @@ export async function run(): Promise<void> {
     globalMetrics.recordJobOutcome('skipped');
     await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
 
+    return;
+  }
+
+  // Issue #955: required-label gate. Runs after the milestone gate and before
+  // any Horizon traffic, so a skip leaves no partial state.
+  const requiredLabelsFailOnSkip = parseBooleanInput(
+    core.getInput('required_labels_fail_on_skip'),
+    false,
+  );
+  let requiredLabels: string[];
+  try {
+    requiredLabels = parseRequiredLabels(core.getInput('required_labels'));
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.setFailed(msg);
+    return;
+  }
+  const labelDecision = evaluateRequiredLabels(
+    requiredLabels,
+    github.context.payload as Record<string, unknown>,
+  );
+  if (labelDecision.shouldSkip) {
+    if (requiredLabelsFailOnSkip) {
+      core.setFailed(labelDecision.message);
+    } else {
+      core.info(labelDecision.message);
+    }
+    core.setOutput('ready', 'false');
+    core.setOutput('reason_code', REASON_CODE_REQUIRED_LABELS_MISSING);
+    core.setOutput('checks_json', '[]');
+    globalMetrics.recordJobOutcome('skipped');
+    await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
     return;
   }
 

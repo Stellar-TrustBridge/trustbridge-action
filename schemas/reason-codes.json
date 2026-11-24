@@ -166,6 +166,16 @@
       "since": "v1"
     },
     {
+      "code": "REQUIRED_LABELS_MISSING",
+      "description": "The required_labels gate skipped validation because one or more labels listed in `required_labels` are absent from the issue or pull request. No account checks were performed, so this is a skip rather than a validation failure. Set `required_labels_fail_on_skip: true` to hard-fail instead.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/index.ts (required_labels gate, before any Horizon request)",
+      "since": "v1"
+    },
+    {
       "code": "MAINTAINER_SKIPPED",
       "description": "Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`).",
       "accountFunded": true,
