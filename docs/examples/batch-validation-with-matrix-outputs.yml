@@ -131,3 +131,76 @@ jobs:
               echo "⏭️  Skip $assignee: $reason"
             fi
           done
+
+  # ── Large roster split (Issue #952) ───────────────────────────────────────
+  # Split a big roster into fixed-size shards so each matrix leg stays well
+  # under MAX_BATCH_CONCURRENCY / MAX_OUTPUT_VALUE_BYTES and never truncates.
+  # See docs/USAGE.md#matrix-strategy-patterns-for-large-roster-splits-issue-952.
+  plan-shards:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+      shard_count: ${{ steps.split.outputs.shard_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: split
+        run: |
+          SHARD_SIZE=200
+          jq -R -s -c --argjson n "$SHARD_SIZE" \
+            'split("\n") | map(select(length > 0)) | unique as $a
+             | [range(0; $a|length; $n) as $i | {index: ($i / $n), addresses: ($a[$i:$i+$n] | join("\n"))}]' \
+            roster.txt > shards.json
+          echo "shards=$(cat shards.json)" >> "$GITHUB_OUTPUT"
+          echo "shard_count=$(jq length shards.json)" >> "$GITHUB_OUTPUT"
+
+  sharded-validate:
+    needs: plan-shards
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: ${{ fromJSON(needs.plan-shards.outputs.shards) }}
+    steps:
+      - name: Validate shard
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
+        with:
+          stellar_addresses: ${{ matrix.shard.addresses }}
+          posting_mode: off
+      - name: Persist shard summary
+        env:
+          SUMMARY: ${{ steps.trustbridge.outputs.batch_summary_json }}
+          TRUNCATED: ${{ steps.trustbridge.outputs.outputs_truncated }}
+        run: |
+          echo "$SUMMARY" > "summary-${{ matrix.shard.index }}.json"
+          if [ "$TRUNCATED" = "true" ]; then
+            echo "::warning::Shard ${{ matrix.shard.index }} failures list truncated — lower SHARD_SIZE."
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-shard-${{ matrix.shard.index }}
+          path: summary-*.json
+
+  aggregate-shards:
+    needs: [plan-shards, sharded-validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: trustbridge-shard-*
+          merge-multiple: true
+      - name: Merge and gate
+        env:
+          EXPECTED: ${{ needs.plan-shards.outputs.shard_count }}
+        run: |
+          FOUND=$(ls summary-*.json 2>/dev/null | wc -l)
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
+            echo "::error::Only $FOUND of $EXPECTED shard summaries found — a leg failed."
+            exit 1
+          fi
+          jq -s '{total: map(.total) | add, passed: map(.passed) | add,
+                  failed: map(.failed) | add, failures: map(.failures) | add}' summary-*.json > batch.json
+          cat batch.json
+          test "$(jq .failed batch.json)" -eq 0

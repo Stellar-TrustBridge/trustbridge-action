@@ -357,3 +357,27 @@ export function buildSponsorshipDiagnostics(
 
   return lines.join('\n');
 }
+
+/**
+ * Render captured plugin stderr (Issue #954) as a Markdown diagnostics
+ * section. Captures arrive already capped and redacted by
+ * `captureStderr` in `src/pluginRunner.ts`; this only formats them, and
+ * returns an empty string when no plugin wrote to stderr.
+ */
+export function buildPluginStderrDiagnostics(
+  captures: ReadonlyArray<{ pluginId: string; text: string; totalBytes: number; truncated: boolean }>,
+): string {
+  const nonEmpty = captures.filter((c) => c.totalBytes > 0);
+  if (nonEmpty.length === 0) return '';
+  const lines = ['### Plugin stderr'];
+  for (const c of nonEmpty) {
+    lines.push(
+      '',
+      `**\`${c.pluginId}\`** — ${c.totalBytes} byte(s)${c.truncated ? ', truncated' : ''}`,
+      '```text',
+      c.text.replace(/```/g, '`​``'),
+      '```',
+    );
+  }
+  return lines.join('\n');
+}

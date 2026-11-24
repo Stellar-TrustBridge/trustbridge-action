@@ -218,3 +218,14 @@ The plugin loader tests under `__tests__/plugin-loader.test.ts` cover:
 - Failure isolation: a bad plugin in the allowlist is skipped; remaining
   plugins still load.
 - Duplicate id detection.
+
+## Plugin stderr capture (Issue #954)
+
+`runPlugins` (`src/pluginRunner.ts`) intercepts `process.stderr.write` while each plugin runs:
+
+- **Capped:** the runner keeps at most `stderrMaxBytes` per plugin (default `DEFAULT_PLUGIN_STDERR_MAX_BYTES` = 8 KiB). It drops the rest, sets `truncated: true`, and appends `…[stderr truncated]`. `totalBytes` always holds the full attempted size.
+- **Redacted:** captured text goes through `redactString` (`src/logger.ts`), the same policy the logger uses. Stellar G-/C-/M-addresses, JWTs, PEM keys, and `token=`/`secret=` style assignments are masked. Error messages from plugins that throw are redacted too.
+- **Delivered:** each non-empty capture is passed to `options.onPluginStderr({ pluginId, text, totalBytes, truncated })`. When no callback is given, it is re-emitted to the real stderr as `[plugin <id> stderr] <text>`, still capped and redacted. `buildPluginStderrDiagnostics` (`src/diagnostics.ts`) renders captures as a Markdown section.
+- **Safe on failure:** the original writer is restored even if a plugin throws. The capture from a throwing plugin is still delivered.
+
+Tests: `__tests__/plugin-runner-stderr.test.ts`.
