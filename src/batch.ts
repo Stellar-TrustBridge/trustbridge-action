@@ -12,6 +12,7 @@ import { FetchAccountOptions } from './horizon';
 import { RateBudgetExhaustedError } from './resilience';
 import { globalMetrics } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
+import { runWithAddressDeadline } from './checks-run';
 
 // ---------------------------------------------------------------------------
 // Issue #725 — `clawback_strict_mode` propagation into batch summaries.
@@ -51,6 +52,11 @@ export const BATCH_REASON_CODES = {
    * spent, the run was cancelled by the caller.
    */
   cancelled: 'CANCELLED',
+  /**
+   * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+   * fails; remaining addresses keep being validated.
+   */
+  addressTimeout: 'ADDRESS_TIMEOUT',
 } as const;
 
 /** A single asset that hit `clawback_strict_mode` for one address. */
@@ -175,6 +181,14 @@ export interface BatchRunOptions {
    * orphaned.
    */
   signal?: AbortSignal;
+  /**
+   * Per-address deadline in milliseconds (Issue #928), independent of the
+   * global `signal`. When one address takes longer, its in-flight requests
+   * are aborted and the row is reported as `ADDRESS_TIMEOUT`; the batch moves
+   * on. Global cancellation (`signal`) always takes precedence. Unset, `0`,
+   * or non-finite disables the deadline (previous behavior).
+   */
+  perAddressTimeoutMs?: number;
 }
 
 /** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
@@ -204,6 +218,22 @@ function cancelledBatchRow(address: string): BatchAddressResult {
     xlmReserveMet: false,
     failureReason: 'Batch run cancelled before checking this address',
     reasonCode: BATCH_REASON_CODES.cancelled,
+    clawbackStrictFailure: false,
+    clawbackStrictAssets: [],
+  };
+}
+
+/** Row for an address that exceeded `perAddressTimeoutMs` (Issue #928). */
+function addressTimeoutRow(address: string, deadlineMs: number): BatchAddressResult {
+  return {
+    address,
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    failureReason: `Address validation exceeded the per-address deadline of ${deadlineMs} ms`,
+    reasonCode: BATCH_REASON_CODES.addressTimeout,
     clawbackStrictFailure: false,
     clawbackStrictAssets: [],
   };
@@ -642,14 +672,50 @@ export async function runBatchValidation(
       }
       dispatchedBefore = true;
 
-      const outcome = await validateOneAddress(
-        addresses[i],
-        config,
-        horizonUrl,
-        fetchOptions,
-        extraAssets,
-        issuerAccount,
+      // Issue #928: each address gets its own deadline; the per-address
+      // signal also follows the batch-level signal so cancellation wins.
+      // Without a deadline the original call path is used unchanged.
+      const deadlineOutcome = !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+        ? {
+            status: 'completed' as const,
+            value: await validateOneAddress(
+              addresses[i],
+              config,
+              horizonUrl,
+              fetchOptions,
+              extraAssets,
+              issuerAccount,
+            ),
+          }
+        : await runWithAddressDeadline(
+        (addressSignal) =>
+          validateOneAddress(
+            addresses[i],
+            config,
+            horizonUrl,
+            { ...fetchOptions, signal: addressSignal },
+            extraAssets,
+            issuerAccount,
+          ),
+        options.perAddressTimeoutMs,
+        fetchOptions.signal,
       );
+      if (deadlineOutcome.status === 'cancelled') {
+        // Leave the row unset: the fill loop below marks it CANCELLED.
+        stopDispatch = true;
+        return;
+      }
+      let outcome: AddressOutcome;
+      if (deadlineOutcome.status === 'timed_out') {
+        globalMetrics.incrementCounter('batch_fail_address_timeout');
+        globalMetrics.incrementCounter('batch_address_failed');
+        outcome = {
+          budgetExhausted: false,
+          result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+        };
+      } else {
+        outcome = deadlineOutcome.value;
+      }
       results[i] = outcome.result;
 
       if (outcome.budgetExhausted || signal?.aborted) {

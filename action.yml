@@ -95,6 +95,15 @@ inputs:
     description: "Horizon request timeout in milliseconds (1000-60000)"
     required: false
     default: "15000"
+  per_address_timeout_ms:
+    description: >-
+      Batch mode only: deadline in milliseconds for validating one address
+      (all of its Horizon requests and retries). An address that exceeds it is
+      reported as ADDRESS_TIMEOUT and the batch continues with the next one.
+      A global cancellation/job timeout always takes precedence. "0" (default)
+      disables the per-address deadline. (Issue #928)
+    required: false
+    default: "0"
   sticky_comment:
     description: >-
       Update TrustBridge's previous comment on the issue instead of posting a
@@ -212,6 +221,15 @@ inputs:
       config file entirely.
     required: false
     default: ".trustbridge.yml"
+
+  trustbridge_config_strict:
+    description: >-
+      When "true", unknown top-level keys in the trustbridge config file fail
+      the run with a "did you mean" hint instead of being silently ignored, so
+      typos cannot fall back to defaults. Default "false" (lenient mode keeps
+      the previous behavior). (Issue #927)
+    required: false
+    default: 'false'
   milestone_allowlist:
     description: >-
       Comma-separated list of allowed milestone names. When set, runs will skip

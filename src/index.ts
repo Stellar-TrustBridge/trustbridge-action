@@ -557,7 +557,9 @@ export async function run(): Promise<void> {
   // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
   // validation errors surface via result.validation.errors so we fail fast
   // with a clear message rather than silently ignoring bad configuration.
-  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath);
+  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath, undefined, {
+    strict: core.getInput('trustbridge_config_strict').trim().toLowerCase() === 'true',
+  });
   if (consumerConfig.found && !consumerConfig.validation.valid) {
     core.setFailed(
       `trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`,
@@ -865,6 +867,8 @@ export async function run(): Promise<void> {
           retryBaseDelayMs,
           retryMaxDelayMs,
         },
+        // Issue #928: optional per-address deadline (0/empty disables it).
+        perAddressTimeoutMs: Number(core.getInput('per_address_timeout_ms') || '0') || undefined,
       },
     );
 
