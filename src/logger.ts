@@ -484,6 +484,166 @@ function redactValue(raw: unknown, depth = 0, ancestors: Set<unknown> = new Set(
   }
 }
 
+/**
+ * Events per key that are emitted in full before sampling starts (Issue #924).
+ * With the default of 3, the first three identical exhaustion warnings in a
+ * window are logged and the rest are counted instead of printed.
+ */
+export const HORIZON_RETRY_SAMPLE_BURST = 3;
+
+/** Length of one sampling window for a key (Issue #924). */
+export const HORIZON_RETRY_SAMPLE_WINDOW_MS = 60_000;
+
+/** Summary of events suppressed for one key in one window (Issue #924). */
+export interface RepeatSampleSummary<T> {
+  key: string;
+  /** The first event recorded for the key in this window, kept for context. */
+  sample: T;
+  /** Every event recorded in the window, emitted or not. */
+  total: number;
+  /** Events not emitted because the burst limit was already reached. */
+  suppressed: number;
+  /** Timestamp (ms) of the first event in the window. */
+  firstAt: number;
+  /** Timestamp (ms) of the most recent event in the window. */
+  lastAt: number;
+}
+
+interface SampleGroup<T> {
+  sample: T;
+  windowStart: number;
+  total: number;
+  emitted: number;
+  lastAt: number;
+}
+
+/**
+ * Sample repeated events by key so a burst of identical warnings does not
+ * flood the Actions log (Issue #924).
+ *
+ * For each key, the first `burst` events in a window are emitted. Later events
+ * in the same window are counted and suppressed. A window ends once
+ * `windowMs` has passed since its first event; the next event for that key
+ * then returns a summary for the window that just closed. {@link flush}
+ * returns summaries for every key that still has suppressed events, so the
+ * last window is not lost at the end of a run.
+ *
+ * The clock is injectable so tests can drive windows without real waits.
+ */
+export class RepeatWarningSampler<T> {
+  private readonly groups = new Map<string, SampleGroup<T>>();
+
+  constructor(
+    private readonly burst: number = HORIZON_RETRY_SAMPLE_BURST,
+    private readonly windowMs: number = HORIZON_RETRY_SAMPLE_WINDOW_MS,
+    private readonly now: () => number = () => Date.now(),
+  ) {
+    if (!Number.isInteger(burst) || burst < 0) {
+      throw new RangeError('burst must be a non-negative integer');
+    }
+    if (!(windowMs > 0)) {
+      throw new RangeError('windowMs must be a positive number');
+    }
+  }
+
+  /**
+   * Record one event for `key`. `emit` says whether this event should be
+   * logged in full. `rolled` is set when a previous window for the same key
+   * just closed with suppressed events.
+   */
+  record(key: string, sample: T): { emit: boolean; rolled?: RepeatSampleSummary<T> } {
+    const t = this.now();
+    let rolled: RepeatSampleSummary<T> | undefined;
+    let group = this.groups.get(key);
+    if (group && t - group.windowStart >= this.windowMs) {
+      rolled = this.summarize(key, group);
+      group = undefined;
+    }
+    if (!group) {
+      group = { sample, windowStart: t, total: 0, emitted: 0, lastAt: t };
+      this.groups.set(key, group);
+    }
+    group.total += 1;
+    group.lastAt = t;
+    const emit = group.emitted < this.burst;
+    if (emit) group.emitted += 1;
+    return rolled ? { emit, rolled } : { emit };
+  }
+
+  /**
+   * Return summaries for every key with suppressed events and clear all
+   * state. Call once at the end of a run.
+   */
+  flush(): RepeatSampleSummary<T>[] {
+    const out: RepeatSampleSummary<T>[] = [];
+    for (const [key, group] of this.groups) {
+      const summary = this.summarize(key, group);
+      if (summary) out.push(summary);
+    }
+    this.groups.clear();
+    return out;
+  }
+
+  /** Drop all state without producing summaries (used by tests). */
+  reset(): void {
+    this.groups.clear();
+  }
+
+  private summarize(key: string, group: SampleGroup<T>): RepeatSampleSummary<T> | undefined {
+    const suppressed = group.total - group.emitted;
+    this.groups.delete(key);
+    if (suppressed <= 0) return undefined;
+    return {
+      key,
+      sample: group.sample,
+      total: group.total,
+      suppressed,
+      firstAt: group.windowStart,
+      lastAt: group.lastAt,
+    };
+  }
+}
+
+/** Sampler for Horizon exhaustion warnings, shared by every Horizon call in a run (Issue #924). */
+export const horizonRetrySampler = new RepeatWarningSampler<LogContext>();
+
+/**
+ * Group key for sampling: the failure pattern without the account address, so
+ * the same outage across many accounts collapses into one sampled stream.
+ */
+export function horizonRetrySampleKey(event: HorizonRetryEvent): string {
+  return [
+    horizonRetryReasonCode(event),
+    event.endpointKind,
+    event.kind,
+    String(event.status),
+    redactHorizonBaseUrl(event.horizonUrl),
+  ].join('|');
+}
+
+/**
+ * Emit the summary line for one sampled window (Issue #924). Keeps first and
+ * last timestamps and the counts, and reuses the first event's redacted
+ * context so the reason code and endpoint stay greppable.
+ */
+export function formatRepeatSampleSummary(summary: RepeatSampleSummary<LogContext>): {
+  message: string;
+  context: LogContext;
+} {
+  const reasonCode = String(summary.sample.reasonCode ?? 'unknown');
+  return {
+    message: `Horizon retry warnings sampled (${reasonCode}): ${summary.suppressed} suppressed of ${summary.total}`,
+    context: {
+      ...summary.sample,
+      event: 'horizon_retry_sampled',
+      suppressedCount: summary.suppressed,
+      totalCount: summary.total,
+      firstAt: new Date(summary.firstAt).toISOString(),
+      lastAt: new Date(summary.lastAt).toISOString(),
+    },
+  };
+}
+
 class StructuredLogger {
   private debugMode: boolean;
 
@@ -549,7 +709,16 @@ class StructuredLogger {
     const message = formatHorizonRetryMessage(event);
     const context = buildHorizonRetryLogContext(event);
     if (level === 'warning') {
-      this.warn(message, context);
+      // Issue #924: exhaustion warnings are sampled per failure pattern so a
+      // rate-limit storm cannot flood the log. Counts are kept, not dropped.
+      const { emit, rolled } = horizonRetrySampler.record(horizonRetrySampleKey(event), context);
+      if (rolled) {
+        const summary = formatRepeatSampleSummary(rolled);
+        this.warn(summary.message, summary.context);
+      }
+      if (emit) {
+        this.warn(message, context);
+      }
     } else if (level === 'info') {
       this.info(message, context);
     } else {
@@ -745,6 +914,20 @@ export function formatHorizonRetryMessage(event: HorizonRetryEvent): string {
 }
 
 export const logger = new StructuredLogger();
+
+/**
+ * Emit a summary for every Horizon retry window that still has suppressed
+ * warnings (Issue #924). Call once when the run ends so the final window is
+ * not lost. Safe to call when nothing was suppressed.
+ */
+export function flushHorizonRetrySamples(): number {
+  const summaries = horizonRetrySampler.flush();
+  for (const summary of summaries) {
+    const formatted = formatRepeatSampleSummary(summary);
+    logger.warn(formatted.message, formatted.context);
+  }
+  return summaries.length;
+}
 
 /**
  * Logs an informational message. Context values are redacted before output.
