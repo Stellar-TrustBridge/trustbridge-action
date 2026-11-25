@@ -58,7 +58,41 @@ export interface ContractConfig {
     /** Request timeout in milliseconds. */
     timeoutMs?: number;
     pageLimit?: number;
+    /**
+     * Expected network passphrase (the `network_passphrase` input). When set,
+     * the RPC's `getNetwork` passphrase is verified before any contract call,
+     * and a mismatch throws {@link NetworkPassphraseMismatchError}.
+     */
+    networkPassphrase?: string;
 }
+/** `reason_code` reported when the Soroban RPC serves a different network. */
+export declare const SOROBAN_NETWORK_MISMATCH_REASON_CODE = "SOROBAN_NETWORK_MISMATCH";
+/**
+ * Thrown when the configured network passphrase does not match the network
+ * the Soroban RPC endpoint reports. Never retryable: retrying the same
+ * endpoint cannot change which network it serves, and continuing would
+ * interpret another network's state as this one's.
+ */
+export declare class NetworkPassphraseMismatchError extends ContractLookupError {
+    readonly expected: string;
+    readonly actual: string;
+    readonly reasonCode = "SOROBAN_NETWORK_MISMATCH";
+    constructor(expected: string, actual: string);
+}
+/** Test-only: forget previously verified RPC/passphrase pairs. */
+export declare function __resetVerifiedSorobanNetworksForTests(): void;
+/**
+ * Returns the network passphrase reported by the RPC's `getNetwork` method.
+ * Throws `ContractLookupError` on transport, HTTP, or malformed responses.
+ */
+export declare function fetchSorobanNetworkPassphrase(sorobanRpcUrl: string, timeoutMs?: number): Promise<string>;
+/**
+ * Verifies the RPC serves `config.networkPassphrase` before any balance or
+ * contract read is interpreted. No-op when no passphrase is configured.
+ * Successful checks are cached per (RPC URL, passphrase), so repeated lookups
+ * cost one `getNetwork` call per run.
+ */
+export declare function assertSorobanNetworkPassphrase(config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs' | 'networkPassphrase'>): Promise<void>;
 export interface ContractLookupResult {
     /** Resolved Stellar G-address, or null if not registered. */
     address: string | null;
@@ -112,7 +146,7 @@ export declare function parseAddressFromSimulateResult(json: unknown): string | 
  * A C-address is treated as a contract payout target only when the Soroban RPC
  * confirms the contract exists; no Horizon account fetch is attempted for C-addresses.
  */
-export declare function contractExistsOnChain(contractAddress: string, config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>): Promise<boolean>;
+export declare function contractExistsOnChain(contractAddress: string, config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs' | 'networkPassphrase'>): Promise<boolean>;
 export declare function parseContractExistsResult(json: unknown): boolean;
 /**
  * True when `value` is a well-formed Soroban contract id (C-address).

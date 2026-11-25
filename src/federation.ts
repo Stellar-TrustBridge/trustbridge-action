@@ -18,7 +18,8 @@
  *  - Full SEP-0002 client functionality is explicitly out of scope
  */
 
-import { fetchSSRFSafe } from './ssrf';
+import { fetchSSRFSafe, defaultSSRFDnsLookup } from './ssrf';
+import type { SSRFDnsLookup } from './ssrf';
 import { isValidStellarAddress } from './checks';
 import { logger } from './logger';
 
@@ -31,8 +32,137 @@ const USERNAME_REGEX = /^[a-zA-Z0-9._-]+$/;
 /** Maximum federation response body size (64 KB). */
 const MAX_FEDERATION_BODY_BYTES = 64 * 1024;
 
-/** Federation response timeout (10 seconds). */
-const FEDERATION_TIMEOUT_MS = 10_000;
+/**
+ * Default DNS/resolve timeout for each federation host lookup (5 seconds).
+ *
+ * Applied independently of {@link FEDERATION_HTTP_TIMEOUT_MS}: the DNS budget
+ * is spent resolving the `stellar.toml` / `FEDERATION_SERVER` hostname, and
+ * the HTTP budget only starts once the host has resolved. A slow resolver can
+ * therefore never eat into the HTTP budget, and a slow server can never be
+ * misreported as a DNS failure (Issue #906).
+ */
+export const FEDERATION_DNS_TIMEOUT_MS = 5_000;
+
+/** Default HTTP request timeout for each federation fetch (10 seconds). */
+export const FEDERATION_HTTP_TIMEOUT_MS = 10_000;
+
+/** Upper bound accepted for either federation timeout knob (60 seconds). */
+export const FEDERATION_MAX_TIMEOUT_MS = 60_000;
+
+/**
+ * Per-call tuning knobs for {@link resolveFederationAddress} (Issue #906).
+ */
+export interface FederationResolveOptions {
+  /**
+   * DNS/resolve timeout in milliseconds for each host lookup.
+   * Default {@link FEDERATION_DNS_TIMEOUT_MS}. Must be a positive finite
+   * number no greater than {@link FEDERATION_MAX_TIMEOUT_MS}; anything else
+   * falls back to the default with a warning.
+   */
+  dnsTimeoutMs?: number;
+  /**
+   * HTTP request timeout in milliseconds for each federation fetch.
+   * Default {@link FEDERATION_HTTP_TIMEOUT_MS}. Same validation rules as
+   * `dnsTimeoutMs`.
+   */
+  httpTimeoutMs?: number;
+  /**
+   * Resolver used for the DNS step. Defaults to the OS resolver
+   * (`defaultSSRFDnsLookup`). Injectable so tests never touch real DNS.
+   */
+  dnsLookup?: SSRFDnsLookup;
+}
+
+/**
+ * Normalize one federation timeout knob. Non-numeric, non-finite,
+ * non-positive, or over-the-cap values fall back to `fallback` and log a
+ * warning so a malformed value never silently disables the timeout.
+ */
+export function normalizeFederationTimeout(
+  value: unknown,
+  fallback: number,
+  name: 'dnsTimeoutMs' | 'httpTimeoutMs',
+): number {
+  if (value === undefined || value === null) return fallback;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > FEDERATION_MAX_TIMEOUT_MS
+  ) {
+    logger.warn(
+      `Invalid federation ${name} ${JSON.stringify(value)}; expected a number in (0, ${FEDERATION_MAX_TIMEOUT_MS}]. Using default ${fallback}ms.`,
+      { component: 'federation', code: 'INVALID_TIMEOUT' },
+    );
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+/**
+ * Resolve the effective, independent DNS and HTTP timeouts for a federation
+ * lookup (Issue #906).
+ */
+export function resolveFederationTimeouts(
+  options: FederationResolveOptions = {},
+): { dnsTimeoutMs: number; httpTimeoutMs: number } {
+  return {
+    dnsTimeoutMs: normalizeFederationTimeout(options.dnsTimeoutMs, FEDERATION_DNS_TIMEOUT_MS, 'dnsTimeoutMs'),
+    httpTimeoutMs: normalizeFederationTimeout(options.httpTimeoutMs, FEDERATION_HTTP_TIMEOUT_MS, 'httpTimeoutMs'),
+  };
+}
+
+/** Result of {@link resolveHostWithTimeout}. */
+export type FederationDnsResult =
+  | { ok: true; addresses: string[]; durationMs: number }
+  | { ok: false; kind: 'timeout' | 'nxdomain'; error: string; durationMs: number };
+
+/**
+ * Resolve `hostname` with its own DNS timeout, independent of any HTTP
+ * timeout (Issue #906). Never throws: resolver errors and empty answers are
+ * reported as `nxdomain`, an expired budget as `timeout`.
+ */
+export async function resolveHostWithTimeout(
+  hostname: string,
+  timeoutMs: number,
+  lookup: SSRFDnsLookup = defaultSSRFDnsLookup,
+): Promise<FederationDnsResult> {
+  const start = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve()
+        .then(() => lookup(hostname))
+        .then(
+          (addresses) => ({ addresses }),
+          (err: unknown) => ({ err }),
+        ),
+      timeout,
+    ]);
+    const durationMs = Date.now() - start;
+    if (outcome === 'timeout') {
+      return {
+        ok: false,
+        kind: 'timeout',
+        error: `DNS lookup for ${hostname} timed out after ${timeoutMs}ms`,
+        durationMs,
+      };
+    }
+    if ('err' in outcome) {
+      const message = outcome.err instanceof Error ? outcome.err.message : String(outcome.err);
+      return { ok: false, kind: 'nxdomain', error: `DNS lookup for ${hostname} failed: ${message}`, durationMs };
+    }
+    if (!Array.isArray(outcome.addresses) || outcome.addresses.length === 0) {
+      return { ok: false, kind: 'nxdomain', error: `DNS lookup for ${hostname} returned no addresses`, durationMs };
+    }
+    return { ok: true, addresses: outcome.addresses, durationMs };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Stable error codes surfaced by federation resolution failures.
@@ -48,12 +178,14 @@ const FEDERATION_TIMEOUT_MS = 10_000;
  * | `TOML_FETCH_FAILED` | Fetching `stellar.toml` failed for an unclassified reason. |
  * | `TOML_NXDOMAIN` | `stellar.toml` host DNS lookup failed. |
  * | `TOML_TRUNCATED` | `stellar.toml` response body exceeded the size limit. |
- * | `TOML_TIMEOUT` | `stellar.toml` fetch timed out. |
+ * | `TOML_TIMEOUT` | `stellar.toml` HTTP fetch timed out (HTTP timeout). |
+ * | `TOML_DNS_TIMEOUT` | `stellar.toml` host DNS lookup timed out (DNS timeout, Issue #906). |
  * | `NO_FEDERATION_SERVER` | `stellar.toml` exists but has no `FEDERATION_SERVER`. |
  * | `FEDERATION_FETCH_FAILED` | Federation server request failed for an unclassified reason. |
  * | `FEDERATION_NXDOMAIN` | Federation server host DNS lookup failed. |
  * | `FEDERATION_TRUNCATED` | Federation server response body exceeded the size limit. |
- * | `FEDERATION_TIMEOUT` | Federation server request timed out. |
+ * | `FEDERATION_TIMEOUT` | Federation server HTTP request timed out (HTTP timeout). |
+ * | `FEDERATION_DNS_TIMEOUT` | Federation server host DNS lookup timed out (DNS timeout, Issue #906). |
  * | `INVALID_ACCOUNT_ID` | Federation response contained no valid Stellar G-address. |
  * | `MEMO_REQUIRED` | Federation response includes `memo_type` but omits the `memo` value. |
  * | `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized or the `memo` value is incompatible with the declared type (e.g. non-numeric `id`, non-hex `hash`). |
@@ -66,11 +198,13 @@ export type FederationErrorCode =
   | 'TOML_NXDOMAIN'
   | 'TOML_TRUNCATED'
   | 'TOML_TIMEOUT'
+  | 'TOML_DNS_TIMEOUT'
   | 'NO_FEDERATION_SERVER'
   | 'FEDERATION_FETCH_FAILED'
   | 'FEDERATION_NXDOMAIN'
   | 'FEDERATION_TRUNCATED'
   | 'FEDERATION_TIMEOUT'
+  | 'FEDERATION_DNS_TIMEOUT'
   | 'INVALID_ACCOUNT_ID'
   | 'MEMO_REQUIRED'
   | 'MEMO_TYPE_MISMATCH';
@@ -317,13 +451,52 @@ export function validateFederationDomain(
  * NXDOMAIN, truncated responses, and timeouts are surfaced as stable error
  * codes (see {@link FederationErrorCode}) and never hang the job.
  *
+ * DNS resolution and the HTTP request use **separate** timeouts (Issue #906):
+ * each host is first resolved under `dnsTimeoutMs`, and only then is the
+ * request sent under `httpTimeoutMs`. A DNS timeout surfaces as
+ * `TOML_DNS_TIMEOUT` / `FEDERATION_DNS_TIMEOUT`; an HTTP timeout as
+ * `TOML_TIMEOUT` / `FEDERATION_TIMEOUT`.
+ *
  * @param input The federation address (e.g., "user*domain.com")
+ * @param options Optional DNS/HTTP timeout knobs and resolver override
  * @returns Resolution result or null on failure
  */
 export async function resolveFederationAddress(
   input: string,
+  options: FederationResolveOptions = {},
 ): Promise<FederationResolution | null> {
   const startTime = Date.now();
+  const { dnsTimeoutMs, httpTimeoutMs } = resolveFederationTimeouts(options);
+  const dnsLookup = options.dnsLookup ?? defaultSSRFDnsLookup;
+
+  /**
+   * Resolve `url`'s host under the DNS budget. On success returns a resolver
+   * pinned to the answer so `fetchSSRFSafe`'s rebinding guard re-uses it
+   * instead of spending (part of) the HTTP budget on a second lookup.
+   */
+  const resolveStageHost = async (
+    url: string,
+    prefix: 'TOML' | 'FEDERATION',
+  ): Promise<SSRFDnsLookup | null> => {
+    const hostname = new URL(url).hostname;
+    const dns = await resolveHostWithTimeout(hostname, dnsTimeoutMs, dnsLookup);
+    if (!dns.ok) {
+      const code = (
+        dns.kind === 'timeout' ? `${prefix}_DNS_TIMEOUT` : `${prefix}_NXDOMAIN`
+      ) as FederationErrorCode;
+      logger.warn(`Federation DNS lookup failed for ${hostname}: ${dns.error}`, {
+        component: 'federation',
+        domain: hostname,
+        error: dns.error,
+        code,
+        dnsTimeoutMs,
+        durationMs: dns.durationMs,
+      });
+      return null;
+    }
+    const pinned = dns.addresses;
+    return async () => pinned;
+  };
 
   try {
     // Step 1: Parse the federation address
@@ -367,10 +540,16 @@ export async function resolveFederationAddress(
       domain,
     });
 
+    const tomlLookup = await resolveStageHost(tomlUrl, 'TOML');
+    if (!tomlLookup) {
+      return null;
+    }
+
     const tomlResult = await fetchSSRFSafe(tomlUrl, {
       maxBodyBytes: 256 * 1024, // 256 KB
-      timeoutMs: FEDERATION_TIMEOUT_MS,
+      timeoutMs: httpTimeoutMs,
       followRedirects: false,
+      dnsLookup: tomlLookup,
     });
 
     if (!tomlResult.ok) {
@@ -381,6 +560,7 @@ export async function resolveFederationAddress(
         domain,
         error,
         code,
+        httpTimeoutMs,
       });
       return null;
     }
@@ -403,11 +583,17 @@ export async function resolveFederationAddress(
     federationUrl.searchParams.set('type', 'name');
     federationUrl.searchParams.set('addr', input);
 
+    const federationLookup = await resolveStageHost(federationUrl.toString(), 'FEDERATION');
+    if (!federationLookup) {
+      return null;
+    }
+
     const federationResult = await fetchSSRFSafe(federationUrl.toString(), {
       maxBodyBytes: MAX_FEDERATION_BODY_BYTES,
-      timeoutMs: FEDERATION_TIMEOUT_MS,
+      timeoutMs: httpTimeoutMs,
       followRedirects: true,
       maxRedirects: 3,
+      dnsLookup: federationLookup,
     });
 
     if (!federationResult.ok) {
@@ -418,6 +604,7 @@ export async function resolveFederationAddress(
         domain,
         error,
         code,
+        httpTimeoutMs,
       });
       return null;
     }

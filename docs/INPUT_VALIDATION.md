@@ -52,6 +52,30 @@ Notes:
     unauthorized_trustline_policy: fail   # or: warn (default)
 ```
 
+## Enum inputs: network and enforcement modes
+
+TrustBridge rejects unknown enum values **before any Horizon call** (Issue #901), so a typo in a Wave workflow fails the step immediately with the list of allowed values instead of failing late (wrong Horizon, wrong asset defaults) or silently downgrading enforcement.
+
+| Input | Allowed values | Empty value | Parser |
+| --- | --- | --- | --- |
+| `network` | `testnet`, `public`, `mainnet` (alias of `public`) | no network preset | `parseNetworkInput` |
+| `home_domain_check_mode` | `warn`, `strict` | `warn` | `parseHomeDomainCheckModeInput` |
+| `unauthorized_trustline_policy` | `warn`, `fail`, `ignore` | `warn` | `parseUnauthorizedTrustlinePolicy` (see below) |
+| `posting_mode` | `post`, `dry-run`, `off` | `post` (or legacy `comment_mode`) | `resolveCommentModes` |
+
+**Case-sensitivity policy.** Enum values are matched **case-insensitively** after trimming surrounding whitespace: `Testnet`, ` PUBLIC ` and `Strict` are accepted and normalized to lowercase. Internal whitespace or punctuation is not normalized (`test net`, `strict!` are rejected). The JSON schema (`schemas/action-inputs.schema.json`) lists the canonical lowercase spellings.
+
+**Error format.** `network` and `home_domain_check_mode` share one stable message, produced by `validateEnumInput` in `src/validation.ts`:
+
+```
+network must be one of "testnet", "public", "mainnet". Received: "testnett"
+home_domain_check_mode must be one of "warn", "strict". Received: "stirct"
+```
+
+Received values longer than 32 characters are truncated with `…` so an oversized or mistakenly pasted value never floods the log. The validation span records only the field name and input length, never the raw value.
+
+**Behavior change.** Before #901 an unknown `home_domain_check_mode` (for example `stirct`) silently fell back to `warn`, and an unknown `network` was ignored. Both now fail the step. Workflows that already use a documented value are unaffected.
+
 ## Timeout values
 
 `horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.
@@ -185,3 +209,35 @@ The precedence is deliberate: a trustline that exists but is unauthorized must
 never be reported as missing. Stable remediation is to ask the issuer to
 submit `SetTrustLineFlags` (or legacy `AllowTrust`); adding another Change
 Trust operation is not the fix.
+
+## Mutually exclusive inputs
+
+Issue #951. Some boolean inputs contradict each other. Before doing any network work, the action checks every pair in `INPUT_CONFLICT_MATRIX` (`src/inputs.ts`). If both inputs in a pair are true (`true`/`1`/`yes`, case-insensitive), the step fails at once. Each conflict is logged as an `INPUT_CONFLICT: <a> and <b> cannot both be true. …` error annotation. Unset, empty, or unrecognised values never count as true, so they never trigger a conflict.
+
+| Pair | Why it is rejected |
+| --- | --- |
+| `preflight_only` + `wait_until_funded` | Preflight exits before any Horizon call, so polling could never run. |
+| `preflight_only` + `use_friendbot` | Preflight exits before any Horizon call, so Friendbot could never be invoked. |
+| `fixture_mode` + `wait_until_funded` | A static fixture never changes, so polling until funded would never succeed. |
+| `fixture_mode` + `use_friendbot` | Fixture mode makes no network calls, so funding would not be reflected. |
+
+`INPUT_CONFLICT` is an error-message prefix, not a `reason_code` output, because the run fails before validation starts. To fix a conflict, disable one input in the pair. `__tests__/inputs-conflict-matrix.test.ts` checks that this table, the matrix, and `action.yml` stay in sync.
+
+## Strict config mode: unknown keys (Issue #927)
+
+`trustbridge_config_strict` (default `"false"`) controls how unknown top-level keys in `.github/trustbridge.yml` and `.trustbridge.yml` are handled.
+
+| Mode | Unknown key behavior |
+| --- | --- |
+| Lenient (`false`, default) | Ignored, exactly as before. Existing configs keep working. |
+| Strict (`true`) | Validation error. The run fails with `trustbridge_config_path validation failed`. |
+
+Known keys: `horizon_url`, `horizon_url_fallback`, `rpc_fallback_url`, `asset_code`, `asset_issuer`, `min_xlm_reserve`, `min_asset_balance`, `fail_on_missing` (`KNOWN_CONFIG_KEYS` in `src/configReader.ts`).
+
+Each unknown key produces one stable error that includes a "did you mean" hint when a known key is within edit distance 3. Hyphens are treated as underscores when matching:
+
+```
+Unknown trustbridge config key "min_xlm_reserv" (did you mean "min_xlm_reserve"?). Known keys: horizon_url, ...
+```
+
+Key names are passed through `redactString` before being echoed, so a secret pasted as a key is not logged.

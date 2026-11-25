@@ -25,16 +25,71 @@
  *
  * FAILURE ISOLATION
  * -----------------
- * A single bad plugin (missing file, invalid export, import error, duplicate
- * id) is logged as a warning and skipped; it never aborts loading of the
+ * A single bad plugin (missing file, invalid export, malformed id, import
+ * error) is logged as a warning and skipped; it never aborts loading of the
  * remaining plugins and never blocks core Horizon checks. Only the offending
  * plugin is dropped.
+ *
+ * ID COLLISIONS FAIL CLOSED (Issue #918)
+ * --------------------------------------
+ * Id collisions are the exception: a plugin whose id would shadow another
+ * check is never skipped silently, because the shadowed check would simply
+ * vanish from the Wave readiness gate. Loading throws a `PluginLoadError`:
+ * - `duplicate_id` — two allowlisted plugins export the same id (compared
+ *   case-insensitively), or an external id is already in the target
+ *   registry (`registerExternalPlugins`).
+ * - `reserved_id`  — an external plugin uses the reserved `trustbridge/`
+ *   namespace or an id listed in `reservedIds` (core plugin ids).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from './logger';
-import { CheckPlugin } from './plugin';
+import { CheckPlugin, PluginRegistry } from './plugin';
+
+/**
+ * Namespace reserved for built-in checks in `src/corePlugins.ts`. External
+ * plugins may not use it (Issue #918). Compared case-insensitively.
+ */
+export const RESERVED_PLUGIN_ID_PREFIX = 'trustbridge/';
+
+/** Longest plugin id accepted from an external plugin (Issue #918). */
+export const MAX_PLUGIN_ID_LENGTH = 128;
+
+/**
+ * Validate the shape of an external plugin id (Issue #918). Returns a stable
+ * reason string, or `null` when the id is acceptable.
+ *
+ * Rules: non-empty, at most {@link MAX_PLUGIN_ID_LENGTH} characters, no
+ * whitespace or control characters. The `<owner>/<check-name>` convention
+ * (e.g. `acme/kyc-verified`) is recommended but not enforced here.
+ */
+export function validatePluginId(id: string): string | null {
+  if (id.length === 0) return 'Plugin id must not be empty';
+  if (id.length > MAX_PLUGIN_ID_LENGTH) {
+    return `Plugin id is ${id.length} characters; the maximum is ${MAX_PLUGIN_ID_LENGTH}`;
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(id)) {
+    return 'Plugin id must not contain whitespace or control characters';
+  }
+  return null;
+}
+
+/** Case-insensitive collision key for plugin ids. */
+function pluginIdKey(id: string): string {
+  return id.toLowerCase();
+}
+
+/**
+ * True when `id` falls in the reserved `trustbridge/` namespace or matches
+ * one of `reservedIds` (case-insensitive).
+ */
+export function isReservedPluginId(id: string, reservedIds: readonly string[] = []): boolean {
+  const key = pluginIdKey(id);
+  if (key.startsWith(RESERVED_PLUGIN_ID_PREFIX)) return true;
+  return reservedIds.some((reserved) => pluginIdKey(reserved) === key);
+}
 
 export interface PluginLoadConfig {
   /**
@@ -57,6 +112,14 @@ export interface PluginLoadConfig {
    * validation steps, export inspection). Useful for troubleshooting.
    */
   debugMode?: boolean;
+
+  /**
+   * Extra ids external plugins may not use, in addition to the reserved
+   * `trustbridge/` namespace — typically `CORE_PLUGIN_IDS` from
+   * `src/corePlugins.ts`, or any other ids already registered. A match
+   * throws `PluginLoadError` with reason `reserved_id` (Issue #918).
+   */
+  reservedIds?: readonly string[];
 }
 
 /**
@@ -73,7 +136,9 @@ export class PluginLoadError extends Error {
       | 'not_file'
       | 'invalid_export'
       | 'load_failed'
-      | 'duplicate_id',
+      | 'invalid_id'
+      | 'duplicate_id'
+      | 'reserved_id',
   ) {
     super(message);
     this.name = 'PluginLoadError';
@@ -274,6 +339,13 @@ export async function loadPlugin(
     );
   }
 
+  // Step 7 (Issue #918): reject malformed ids before they can reach a
+  // registry, a comment row, or a collision check.
+  const idProblem = validatePluginId(plugin.id);
+  if (idProblem !== null) {
+    throw new PluginLoadError(`Invalid plugin id: ${idProblem}.`, pluginPath, 'invalid_id');
+  }
+
   if (debugMode) {
     logger.debug(`Plugin loaded successfully`, {
       component: 'pluginLoader',
@@ -326,15 +398,20 @@ export function sortPluginPaths(pluginPaths: string[]): string[] {
  * Only paths listed in `allowedPluginPaths` are loaded, in deterministic
  * sorted order (see `sortPluginPaths`). Missing or invalid plugins are logged
  * as warnings but do not block the run (fail-open) — a bad plugin is isolated
- * and skipped so core Horizon checks still run. Two plugins exporting the same
- * `id` throw a `PluginLoadError` with reason `duplicate_id`.
+ * and skipped so core Horizon checks still run.
+ *
+ * Id collisions fail closed (Issue #918): two plugins exporting the same id
+ * (case-insensitive) throw a `PluginLoadError` with reason `duplicate_id`, and
+ * a plugin using the reserved `trustbridge/` namespace or an id in
+ * `reservedIds` throws with reason `reserved_id`. No partial list is
+ * returned when a collision is found.
  *
  * Returns an array of successfully loaded plugins in discovery order.
  */
 export async function loadPluginsFromAllowlist(
   config: PluginLoadConfig,
 ): Promise<CheckPlugin[]> {
-  const { workspaceRoot, allowedPluginPaths = [], debugMode = false } = config;
+  const { workspaceRoot, allowedPluginPaths = [], debugMode = false, reservedIds = [] } = config;
 
   if (allowedPluginPaths.length === 0) {
     if (debugMode) {
@@ -353,7 +430,7 @@ export async function loadPluginsFromAllowlist(
   }
 
   const loaded: CheckPlugin[] = [];
-  const pathById = new Map<string, string>();
+  const pathById = new Map<string, { id: string; path: string }>();
 
   for (const pluginPath of orderedPaths) {
     let plugin: CheckPlugin;
@@ -368,16 +445,28 @@ export async function loadPluginsFromAllowlist(
       continue;
     }
 
-    const existingPath = pathById.get(plugin.id);
-    if (existingPath !== undefined) {
+    if (isReservedPluginId(plugin.id, reservedIds)) {
       throw new PluginLoadError(
-        `Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existingPath}. Plugin ids must be unique.`,
+        `Reserved plugin id "${plugin.id}": ${pluginPath} uses an id reserved for built-in TrustBridge checks. ` +
+          `Use your own namespace, e.g. "<org>/<check-name>".`,
+        pluginPath,
+        'reserved_id',
+      );
+    }
+
+    const existing = pathById.get(pluginIdKey(plugin.id));
+    if (existing !== undefined) {
+      const sameCase = existing.id === plugin.id;
+      throw new PluginLoadError(
+        sameCase
+          ? `Duplicate plugin id "${plugin.id}": ${pluginPath} exports the same id as ${existing.path}. Plugin ids must be unique.`
+          : `Duplicate plugin id "${plugin.id}": ${pluginPath} collides with "${existing.id}" from ${existing.path} (ids are compared case-insensitively). Plugin ids must be unique.`,
         pluginPath,
         'duplicate_id',
       );
     }
 
-    pathById.set(plugin.id, pluginPath);
+    pathById.set(pluginIdKey(plugin.id), { id: plugin.id, path: pluginPath });
     loaded.push(plugin);
   }
 
@@ -389,4 +478,48 @@ export async function loadPluginsFromAllowlist(
   }
 
   return loaded;
+}
+
+/**
+ * Register externally loaded plugins into `registry` (typically after
+ * `registerCorePlugins()`), failing closed on any id collision (Issue #918).
+ *
+ * `PluginRegistry.register()` is first-wins and silently ignores a repeated
+ * id, which is right for idempotent core registration but would let an
+ * external plugin quietly disappear — or, registered first, shadow a core
+ * check. This helper checks every plugin against the registry's current
+ * contents (case-insensitive) and against the reserved `trustbridge/`
+ * namespace **before** registering anything, so a collision leaves the
+ * registry unchanged (no partial registration).
+ *
+ * Throws `PluginLoadError` with reason `reserved_id` or `duplicate_id`.
+ */
+export function registerExternalPlugins(registry: PluginRegistry, plugins: readonly CheckPlugin[]): void {
+  const taken = new Map<string, string>();
+  for (const existing of registry.list()) {
+    taken.set(pluginIdKey(existing.id), existing.id);
+  }
+
+  for (const plugin of plugins) {
+    if (isReservedPluginId(plugin.id)) {
+      throw new PluginLoadError(
+        `Reserved plugin id "${plugin.id}": external plugins may not use the "${RESERVED_PLUGIN_ID_PREFIX}" namespace.`,
+        plugin.id,
+        'reserved_id',
+      );
+    }
+    const clash = taken.get(pluginIdKey(plugin.id));
+    if (clash !== undefined) {
+      throw new PluginLoadError(
+        `Duplicate plugin id "${plugin.id}": collides with already registered plugin "${clash}". Plugin ids must be unique.`,
+        plugin.id,
+        'duplicate_id',
+      );
+    }
+    taken.set(pluginIdKey(plugin.id), plugin.id);
+  }
+
+  for (const plugin of plugins) {
+    registry.register(plugin);
+  }
 }

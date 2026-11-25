@@ -8,7 +8,7 @@ branding:
   icon: "shield"
   color: "blue"
 
-# Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md
+# Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md, ensure guidance matches freshness of check results. 
 inputs:
   max_retries:
     description: "Maximum number of retry attempts for Horizon API requests"
@@ -95,6 +95,15 @@ inputs:
     description: "Horizon request timeout in milliseconds (1000-60000)"
     required: false
     default: "15000"
+  per_address_timeout_ms:
+    description: >-
+      Batch mode only: deadline in milliseconds for validating one address
+      (all of its Horizon requests and retries). An address that exceeds it is
+      reported as ADDRESS_TIMEOUT and the batch continues with the next one.
+      A global cancellation/job timeout always takes precedence. "0" (default)
+      disables the per-address deadline. (Issue #928)
+    required: false
+    default: "0"
   sticky_comment:
     description: >-
       Update TrustBridge's previous comment on the issue instead of posting a
@@ -212,6 +221,15 @@ inputs:
       config file entirely.
     required: false
     default: ".trustbridge.yml"
+
+  trustbridge_config_strict:
+    description: >-
+      When "true", unknown top-level keys in the trustbridge config file fail
+      the run with a "did you mean" hint instead of being silently ignored, so
+      typos cannot fall back to defaults. Default "false" (lenient mode keeps
+      the previous behavior). (Issue #927)
+    required: false
+    default: 'false'
   milestone_allowlist:
     description: >-
       Comma-separated list of allowed milestone names. When set, runs will skip
@@ -386,7 +404,10 @@ inputs:
       Stellar network shorthand: "testnet", "public", or "mainnet". When set
       (and "preset" is empty), the matching campaign preset overrides
       horizon_url, asset_code, and asset_issuer defaults. Explicit action
-      inputs always win over preset values. (Issue #207)
+      inputs always win over preset values. (Issue #207) Matching is
+      case-insensitive and surrounding whitespace is ignored; any other value
+      fails the step before any Horizon call with an error listing the
+      allowed values. (Issue #901)
     required: false
     default: ""
   preset:
@@ -505,7 +526,9 @@ inputs:
   home_domain_check_mode:
     description: >-
       How to treat home_domain mismatches: "warn" (default) or "strict"
-      (blocks valid).
+      (blocks valid). Case-insensitive; any other value fails the step
+      before any Horizon call instead of silently falling back to "warn".
+      (Issue #901)
     required: false
     default: "warn"
   stellar_toml_fetch_enabled:
@@ -588,6 +611,16 @@ inputs:
       stellar_address_input instead. (Issue #199)
     required: false
     default: ""
+
+  batch_max_addresses:
+    description: >-
+      Hard cap on unique addresses validated per run in batch mode
+      (stellar_addresses). Must be a whole number between 1 and 2000.
+      A larger list fails with BATCH_ADDRESS_LIMIT_EXCEEDED before any
+      Horizon request, telling you how many matrix legs to split into.
+      Default 500. (Issue #911)
+    required: false
+    default: "500"
 
   unassign_on_not_ready:
     description: >-
@@ -880,11 +913,11 @@ inputs:
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
-    description: "Whether the account has a trustline for the configured asset"
+    description: "Whether the account has a trustline for the configured asset. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   xlm_balance:
     description: "Current native XLM balance as reported by Horizon"
   account_funded:
-    description: "Whether the account exists and is activated on the Stellar network"
+    description: "Whether the account exists and is activated on the Stellar network. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   comment_url:
     description: "URL of the created or updated issue comment, when run in an issue context"
   comment_id:
@@ -901,7 +934,7 @@ outputs:
 
   # ── Audit & Integration outputs (Issue #66, #67) ─────────────────────────
   ready:
-    description: "Whether all validation checks passed (true/false)"
+    description: "Whether all validation checks passed. Always \"true\" or \"false\" (never empty or 1/0); gate with steps.trustbridge.outputs.ready == 'true' (Issue #919)"
   validated_at:
     description: "ISO-8601 timestamp when the validation checks were performed"
   horizon_url:
@@ -949,7 +982,7 @@ outputs:
   num_sponsored:
     description: 'Number of accounts sponsoring this account (numeric string)'
   network_passphrase_mismatch:
-    description: 'Whether the configured and Horizon network passphrases differ'
+    description: 'Whether the configured and Horizon network passphrases differ (true/false)'
   expected_network_passphrase:
     description: 'Configured or inferred network passphrase'
   actual_network_passphrase:

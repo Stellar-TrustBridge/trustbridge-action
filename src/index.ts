@@ -48,10 +48,16 @@ import {
   parseNumberInput,
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
+  detectInputConflicts,
+  INPUT_CONFLICT_MATRIX,
+  parseBatchMaxAddressesInput,
+  parseNetworkInput,
+  parseHomeDomainCheckModeInput,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
-import { logger, emitInputsLogRecord } from './logger';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
+import { logger, emitInputsLogRecord, flushHorizonRetrySamples, logInfo, logWarning } from './logger';
+import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
@@ -378,6 +384,36 @@ export async function run(): Promise<void> {
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
+
+  // Issue #951: fail early on mutually exclusive inputs, before any network work.
+  const conflictInputNames = [...new Set(INPUT_CONFLICT_MATRIX.flatMap((rule) => [...rule.inputs]))];
+  const inputConflicts = detectInputConflicts(
+    Object.fromEntries(conflictInputNames.map((name) => [name, core.getInput(name)])),
+  );
+  if (inputConflicts.length > 0) {
+    for (const conflict of inputConflicts) core.error(conflict.message);
+    core.setFailed(
+      `Conflicting inputs detected (${inputConflicts.length}). ` +
+        'See docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.',
+    );
+    return;
+  }
+
+  // Issue #904: one correlation id per run, attached to every structured log
+  // line (and the comment footer when debug_mode is on).
+  const correlation = initCorrelationId();
+  globalMetrics.setCorrelationId(correlation.correlationId);
+  if (correlation.rejectedReason) {
+    logWarning(
+      `Ignoring ${CORRELATION_ID_ENV}: ${correlation.rejectedReason}. Generated a new correlation id instead.`,
+      { component: 'diagnostics', reason_code: CORRELATION_ID_INVALID_REASON_CODE, check: 'correlation_id' },
+    );
+  }
+  logInfo(`TrustBridge correlation id: ${correlation.correlationId} (source=${correlation.source})`, {
+    component: 'diagnostics',
+    reason_code: 'CORRELATION_ID',
+    check: 'correlation_id',
+  });
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
@@ -449,6 +485,14 @@ export async function run(): Promise<void> {
     await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
     return;
   }
+
+  // Issue #901: reject unknown enum values (network, enforcement modes)
+  // before any Horizon traffic so a workflow typo fails fast with the list
+  // of allowed values. See docs/INPUT_VALIDATION.md.
+  parseNetworkInput(core.getInput('network'));
+  const homeDomainCheckMode: HomeDomainCheckMode = parseHomeDomainCheckModeInput(
+    core.getInput('home_domain_check_mode'),
+  );
 
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
@@ -534,8 +578,6 @@ export async function run(): Promise<void> {
   // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
   const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
   const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
-  const homeDomainCheckMode: HomeDomainCheckMode =
-    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
   const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Comment threading + batch inputs.
@@ -548,12 +590,20 @@ export async function run(): Promise<void> {
     min: 0,
     max: 60 * 24 * 30,
   });
+  // Snooze window duration in milliseconds (Issue #873: UTC physical duration invariant across DST boundaries).
   const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
   const issueNumberInputRaw = core.getInput('issue_number') || '';
   const issueNumberInput = issueNumberInputRaw.trim()
     ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
     : undefined;
   const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+  const batchMaxAddresses = parseBatchMaxAddressesInput(core.getInput('batch_max_addresses'));
+  // Issue #911: parse and cap the batch list up front so an oversized matrix
+  // throws BatchAddressLimitError before *any* Horizon request (including the
+  // single-address checks below) is made.
+  const batchAddresses = stellarAddressesRaw.trim()
+    ? parseBatchAddresses(stellarAddressesRaw, { maxAddresses: batchMaxAddresses })
+    : [];
 
   // Check runs, labels, unassign, Projects v2 (Issues #228, #222, #200, #421).
   const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
@@ -594,7 +644,9 @@ export async function run(): Promise<void> {
   // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
   // validation errors surface via result.validation.errors so we fail fast
   // with a clear message rather than silently ignoring bad configuration.
-  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath);
+  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath, undefined, {
+    strict: core.getInput('trustbridge_config_strict').trim().toLowerCase() === 'true',
+  });
   if (consumerConfig.found && !consumerConfig.validation.valid) {
     core.setFailed(
       `trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`,
@@ -876,8 +928,7 @@ export async function run(): Promise<void> {
   // summary comment. Batch outputs are published after the single-address
   // outputs below so they are never clobbered by the defaults.
   let batchSummary: BatchSummary | undefined;
-  if (stellarAddressesRaw.trim()) {
-    const batchAddresses = parseBatchAddresses(stellarAddressesRaw);
+  if (batchAddresses.length > 0) {
     core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
 
     const batchCheckConfig: CheckConfig = {
@@ -902,6 +953,9 @@ export async function run(): Promise<void> {
           retryBaseDelayMs,
           retryMaxDelayMs,
         },
+        maxAddresses: batchMaxAddresses,
+        // Issue #928: optional per-address deadline (0/empty disables it).
+        perAddressTimeoutMs: Number(core.getInput('per_address_timeout_ms') || '0') || undefined,
       },
     );
 
@@ -963,6 +1017,8 @@ export async function run(): Promise<void> {
     sep0007DeepLinks,
     sep0007OriginDomain,
     assets: assetsTrustlineStatusExtras,
+    correlationId: correlation.correlationId,
+    correlationFooter: debugMode,
   });
 
   // Issue #696 — comment_id is only published from a successful
@@ -1082,7 +1138,7 @@ export async function run(): Promise<void> {
     // Authoritative for batch mode — overwrites setValidationOutputs's
     // single-address-derived value above, same precedence as the other
     // batch outputs.
-    core.setOutput('outputs_truncated', String(batchOutputsTruncated));
+    core.setOutput('outputs_truncated', toBooleanOutput(batchOutputsTruncated, 'outputs_truncated'));
   }
 
   // ---------------------------------------------------------------------------
@@ -1291,5 +1347,9 @@ if (process.env.JEST_WORKER_ID === undefined) {
     // already recorded (recordJobOutcome is first-wins).
     globalMetrics.recordJobOutcome('fail');
     core.setFailed(getErrorMessage(error));
+  }).finally(() => {
+    // Issue #924: emit the summary for any Horizon retry window that was
+    // still open, so suppressed warnings are counted rather than lost.
+    flushHorizonRetrySamples();
   });
 }

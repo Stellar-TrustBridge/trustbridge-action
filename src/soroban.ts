@@ -79,6 +79,112 @@ export interface ContractConfig {
   /** Request timeout in milliseconds. */
   timeoutMs?: number;
   pageLimit?: number;
+  /**
+   * Expected network passphrase (the `network_passphrase` input). When set,
+   * the RPC's `getNetwork` passphrase is verified before any contract call,
+   * and a mismatch throws {@link NetworkPassphraseMismatchError}.
+   */
+  networkPassphrase?: string;
+}
+
+/** `reason_code` reported when the Soroban RPC serves a different network. */
+export const SOROBAN_NETWORK_MISMATCH_REASON_CODE = 'SOROBAN_NETWORK_MISMATCH';
+
+/**
+ * Thrown when the configured network passphrase does not match the network
+ * the Soroban RPC endpoint reports. Never retryable: retrying the same
+ * endpoint cannot change which network it serves, and continuing would
+ * interpret another network's state as this one's.
+ */
+export class NetworkPassphraseMismatchError extends ContractLookupError {
+  public readonly reasonCode = SOROBAN_NETWORK_MISMATCH_REASON_CODE;
+  constructor(
+    public readonly expected: string,
+    public readonly actual: string,
+  ) {
+    super(
+      `${SOROBAN_NETWORK_MISMATCH_REASON_CODE}: configured network passphrase "${expected}" ` +
+        `does not match the Soroban RPC network "${actual}". Make sure soroban_rpc_url and ` +
+        `network_passphrase point at the same network.`,
+      false,
+    );
+    this.name = 'NetworkPassphraseMismatchError';
+  }
+}
+
+/** `${rpcUrl}\n${passphrase}` pairs already verified in this process. */
+const verifiedNetworks = new Set<string>();
+
+/** Test-only: forget previously verified RPC/passphrase pairs. */
+export function __resetVerifiedSorobanNetworksForTests(): void {
+  verifiedNetworks.clear();
+}
+
+/**
+ * Returns the network passphrase reported by the RPC's `getNetwork` method.
+ * Throws `ContractLookupError` on transport, HTTP, or malformed responses.
+ */
+export async function fetchSorobanNetworkPassphrase(
+  sorobanRpcUrl: string,
+  timeoutMs = 15000,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: import('node-fetch').Response;
+  try {
+    response = await fetch(sorobanRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getNetwork' }),
+      signal: controller.signal as never,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isAbort = message.includes('abort') || message.includes('timeout');
+    throw new ContractLookupError(`Soroban RPC getNetwork failed: ${message}`, isAbort);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (RETRYABLE_STATUS_CODES.has(response.status)) {
+    throw new ContractLookupError(`Soroban RPC getNetwork returned retryable status ${response.status}`, true);
+  }
+  if (!response.ok) {
+    throw new ContractLookupError(`Soroban RPC getNetwork returned non-retryable status ${response.status}`, false);
+  }
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    throw new ContractLookupError('Soroban RPC getNetwork returned invalid JSON', false);
+  }
+  const passphrase = (json as { result?: { passphrase?: unknown } } | null)?.result?.passphrase;
+  if (typeof passphrase !== 'string' || passphrase.trim() === '') {
+    throw new ContractLookupError('Soroban RPC getNetwork response did not include a network passphrase', false);
+  }
+  return passphrase;
+}
+
+/**
+ * Verifies the RPC serves `config.networkPassphrase` before any balance or
+ * contract read is interpreted. No-op when no passphrase is configured.
+ * Successful checks are cached per (RPC URL, passphrase), so repeated lookups
+ * cost one `getNetwork` call per run.
+ */
+export async function assertSorobanNetworkPassphrase(
+  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs' | 'networkPassphrase'>,
+): Promise<void> {
+  const expected = config.networkPassphrase?.trim();
+  if (!expected) return;
+  const key = `${config.sorobanRpcUrl}\n${expected}`;
+  if (verifiedNetworks.has(key)) return;
+
+  const actual = await fetchSorobanNetworkPassphrase(config.sorobanRpcUrl, config.timeoutMs);
+  if (actual.trim() !== expected) {
+    throw new NetworkPassphraseMismatchError(expected, actual);
+  }
+  verifiedNetworks.add(key);
 }
 
 export interface ContractLookupResult {
@@ -113,6 +219,7 @@ export async function lookupAddressFromContract(
   config: ContractConfig,
 ): Promise<ContractLookupResult> {
   const { sorobanRpcUrl, contractId, timeoutMs = 15000 } = config;
+  await assertSorobanNetworkPassphrase(config);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -241,7 +348,7 @@ export function parseAddressFromSimulateResult(json: unknown): string | null {
  */
 export async function contractExistsOnChain(
   contractAddress: string,
-  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>,
+  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs' | 'networkPassphrase'>,
 ): Promise<boolean> {
   const trimmed = contractAddress.trim();
   if (!trimmed) {
@@ -262,6 +369,7 @@ export async function contractExistsOnChain(
       false,
     );
   }
+  await assertSorobanNetworkPassphrase(config);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

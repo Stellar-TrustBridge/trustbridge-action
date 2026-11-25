@@ -363,6 +363,22 @@ export class MetricsCollector {
   private counters: Map<string, number> = new Map();
   private timers: Map<string, number> = new Map();
   private jobOutcome: JobOutcomeRecord | undefined;
+  /**
+   * Per-run correlation id (Issue #904). Kept as a top-level field of the
+   * summary — never as a metric tag — so it cannot become an unbounded
+   * label series.
+   */
+  private correlationId: string | undefined;
+
+  /** Attach the per-run correlation id to the metrics summary (Issue #904). */
+  setCorrelationId(id: string | undefined): void {
+    this.correlationId = id && id.trim() !== '' ? id.trim() : undefined;
+  }
+
+  /** The correlation id attached via {@link setCorrelationId}, if any. */
+  getCorrelationId(): string | undefined {
+    return this.correlationId;
+  }
 
   /**
    * Record a numeric metric. A `contractAddress` tag is rejected outright:
@@ -495,12 +511,21 @@ export class MetricsCollector {
     metrics: MetricPoint[];
     counters: Record<string, number>;
     totalMetrics: number;
+    correlationId?: string;
   } {
-    return {
+    const summary: {
+      metrics: MetricPoint[];
+      counters: Record<string, number>;
+      totalMetrics: number;
+      correlationId?: string;
+    } = {
       metrics: this.metrics,
       counters: Object.fromEntries(this.counters),
       totalMetrics: this.metrics.length,
     };
+    // Only present once a run attaches one, so existing snapshots are unchanged.
+    if (this.correlationId) summary.correlationId = this.correlationId;
+    return summary;
   }
 
   /**
