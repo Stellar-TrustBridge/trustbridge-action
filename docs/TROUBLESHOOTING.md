@@ -82,6 +82,17 @@ so rate-limit problems can be searched in the Actions log:
 | `retryAfterFromHeader` | `true` when the wait came from a `Retry-After` header. |
 | `reasonCode` | `HORIZON_RETRY_SCHEDULED`, `HORIZON_RETRIES_EXHAUSTED`, or `HORIZON_WAIT_BUDGET_EXHAUSTED`. |
 
+### Sampled exhaustion warnings (Issue #924)
+
+Exhaustion warnings (`HORIZON_RETRIES_EXHAUSTED` and `HORIZON_WAIT_BUDGET_EXHAUSTED`) are sampled so a rate-limit storm does not flood the log and bury the root error:
+
+- For each failure pattern, the first **3** warnings in a **60-second** window are logged in full. A pattern is the reason code, endpoint kind (`primary` or `fallback`), error kind, HTTP status, and redacted Horizon base URL. Account addresses are not part of the pattern, so one outage across many accounts is one stream.
+- Later warnings in the same window are counted, not printed.
+- When a window closes, or when the run ends, one summary line is written: `Horizon retry warnings sampled (<reasonCode>): N suppressed of M`. Its structured context has `event=horizon_retry_sampled`, `suppressedCount`, `totalCount`, `firstAt` and `lastAt` (UTC ISO timestamps for the first and last events in the window).
+- Scheduled retries are debug lines and are never sampled.
+
+To see every warning, count the summary lines against the full log. Each `suppressedCount` plus the printed warnings for that pattern equals `totalCount`. The sampling only affects log output. The `horizon_retry_*` metrics and the Job Summary counters still count every retry.
+
 Horizon response bodies are never logged for retryable (`429` / `5xx`)
 responses, and no other fields are added to these lines. Offline runs never
 call Horizon, so they produce no retry lines.

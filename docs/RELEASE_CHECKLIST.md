@@ -10,6 +10,7 @@ Related docs: [Breaking Changes](BREAKING_CHANGES.md) · [License Report](LICENS
 - Run test coverage and verify comment golden snapshots and Jest coverage gate pass (`npm run test:coverage`).
 - Run linting (`npm run lint`).
 - Run the build so `dist/` matches `src/` (`npm run build`). CI fails the build if `dist/` drifts from a fresh `npm run build` (see `.github/workflows/ci.yml`), but re-run it locally before tagging to be sure.
+  The full dist refresh and verification steps are in [Maintainer Checklist](MAINTAINER_CHECKLIST.md#verify-dist-before-tagging-a-release).
 - Confirm `action.yml` inputs and README inputs stay aligned.
 - Confirm the release workflow passes for the commit you plan to tag. The release guard accepts only a new full SemVer tag such as `v1.2.3`; major aliases such as `v1` are rejected.
 - Keep an eye on XLM fee buffer guidance in the docs if the validation defaults change; the release checklist should point maintainers back to the current remediation copy.

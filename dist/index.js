@@ -52662,7 +52662,10 @@ function formatCommentBody(result, config) {
         // `ready` / `reason_code` action outputs expose. Surfacing it here means a
         // dashboard triager can read the reason code straight from the comment
         // instead of digging through the Actions log.
-        const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+        // Issue #921: an empty or whitespace-only reason code falls back to the
+        // verdict default instead of rendering an empty code span (`??` alone
+        // would keep the empty string).
+        const reasonCode = result.reasonCode?.trim() || (result.valid ? 'SUCCESS' : 'FAILED');
         lines.push("", `### ${strings.validationGateHeading}`, "", gate.ready
             ? `- ${strings.readyToProceed}`
             : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, `- ${strings.readyFlag} \`${String(gate.ready)}\``, `- ${strings.reasonCode} ${(0, markdown_1.inlineCode)(reasonCode)}`, "", `### ${strings.balancesHeading}`, "", `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
@@ -56843,10 +56846,13 @@ async function callFriendbot(stellarAddress, options, horizonUrl) {
  * making it easy for consumers to add new locales or adjust copy.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SUPPORTED_LOCALES = void 0;
+exports.ASSET_FAILURE_PHRASES = exports.SUPPORTED_LOCALES = void 0;
 exports.getStrings = getStrings;
 exports.isValidLocale = isValidLocale;
 exports.parseLocaleInput = parseLocaleInput;
+exports.normalizeFailureCount = normalizeFailureCount;
+exports.failureCountCategory = failureCountCategory;
+exports.formatAssetFailureCount = formatAssetFailureCount;
 /**
  * Every supported locale, in canonical order.
  *
@@ -57466,6 +57472,75 @@ function parseLocaleInput(input) {
         return normalized;
     }
     return 'en';
+}
+/**
+ * Per-locale phrases for "N assets failed". Each locale lists only the CLDR
+ * categories it needs; `other` is mandatory and is the fallback for any
+ * category a locale does not list (for example `many` in `fr`, or every
+ * category in `ja`, which has no grammatical plural).
+ *
+ * Translators: add or change a phrase here, not at the call site. Keep the
+ * `{n}`-style argument as the first word so the count always reads first.
+ */
+exports.ASSET_FAILURE_PHRASES = {
+    en: {
+        one: (n) => `${n} asset failed`,
+        other: (n) => `${n} assets failed`,
+    },
+    es: {
+        one: (n) => `${n} activo falló`,
+        other: (n) => `${n} activos fallaron`,
+    },
+    pt: {
+        one: (n) => `${n} ativo falhou`,
+        other: (n) => `${n} ativos falharam`,
+    },
+    ja: {
+        other: (n) => `${n} 件のアセットが失敗`,
+    },
+    fr: {
+        one: (n) => `${n} actif a échoué`,
+        other: (n) => `${n} actifs ont échoué`,
+    },
+    de: {
+        one: (n) => `${n} Asset fehlgeschlagen`,
+        other: (n) => `${n} Assets fehlgeschlagen`,
+    },
+};
+/**
+ * Normalize a failure count before pluralization (Issue #922).
+ *
+ * Non-finite and negative values become `0`, and fractions are truncated, so
+ * a bad count can never render as `NaN assets failed` or `-1 assets failed`.
+ */
+function normalizeFailureCount(count) {
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0)
+        return 0;
+    return Math.trunc(count);
+}
+/**
+ * Pick the CLDR plural category for `count` in `locale` (Issue #922).
+ *
+ * Uses `Intl.PluralRules`, so the rules follow CLDR rather than hand-written
+ * `=== 1` checks: French treats `0` as singular, and Portuguese treats `0`
+ * and `1` as singular. Unknown locales use English rules.
+ */
+function failureCountCategory(locale, count) {
+    const resolved = parseLocaleInput(locale ?? undefined);
+    return new Intl.PluralRules(resolved).select(normalizeFailureCount(count));
+}
+/**
+ * Render "N assets failed" in `locale` with the correct plural form for
+ * 0, 1 and many (Issue #922). Categories a locale does not define fall back
+ * to `other`, and the count is normalized by {@link normalizeFailureCount}.
+ */
+function formatAssetFailureCount(locale, count) {
+    const resolved = parseLocaleInput(locale ?? undefined);
+    const safeCount = normalizeFailureCount(count);
+    const phrases = exports.ASSET_FAILURE_PHRASES[resolved];
+    const category = failureCountCategory(resolved, safeCount);
+    const phrase = phrases[category] ?? phrases.other;
+    return phrase(safeCount.toLocaleString('en-US'));
 }
 
 
@@ -58523,6 +58598,10 @@ if (process.env.JEST_WORKER_ID === undefined) {
         // already recorded (recordJobOutcome is first-wins).
         metrics_1.globalMetrics.recordJobOutcome('fail');
         core.setFailed((0, inputs_1.getErrorMessage)(error));
+    }).finally(() => {
+        // Issue #924: emit the summary for any Horizon retry window that was
+        // still open, so suppressed warnings are counted rather than lost.
+        (0, logger_1.flushHorizonRetrySamples)();
     });
 }
 
@@ -59676,7 +59755,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.LOG_CONTEXT_KEY_ALLOWLIST = exports.CORRELATION_ID_LOG_KEY = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
+exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.horizonRetrySampler = exports.RepeatWarningSampler = exports.HORIZON_RETRY_SAMPLE_WINDOW_MS = exports.HORIZON_RETRY_SAMPLE_BURST = exports.LOG_CONTEXT_KEY_ALLOWLIST = exports.CORRELATION_ID_LOG_KEY = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
 exports.setLogCorrelationId = setLogCorrelationId;
 exports.getLogCorrelationId = getLogCorrelationId;
 exports.withStructuredFields = withStructuredFields;
@@ -59691,10 +59770,13 @@ exports.formatStructuredLog = formatStructuredLog;
 exports.logInfo = logInfo;
 exports.logWarning = logWarning;
 exports.logError = logError;
+exports.horizonRetrySampleKey = horizonRetrySampleKey;
+exports.formatRepeatSampleSummary = formatRepeatSampleSummary;
 exports.horizonRetryLogLevel = horizonRetryLogLevel;
 exports.redactHorizonBaseUrl = redactHorizonBaseUrl;
 exports.buildHorizonRetryLogContext = buildHorizonRetryLogContext;
 exports.formatHorizonRetryMessage = formatHorizonRetryMessage;
+exports.flushHorizonRetrySamples = flushHorizonRetrySamples;
 exports.log = log;
 exports.debug = debug;
 exports.warning = warning;
@@ -60148,6 +60230,132 @@ function redactValue(raw, depth = 0, ancestors = new Set()) {
         ancestors.delete(raw);
     }
 }
+/**
+ * Events per key that are emitted in full before sampling starts (Issue #924).
+ * With the default of 3, the first three identical exhaustion warnings in a
+ * window are logged and the rest are counted instead of printed.
+ */
+exports.HORIZON_RETRY_SAMPLE_BURST = 3;
+/** Length of one sampling window for a key (Issue #924). */
+exports.HORIZON_RETRY_SAMPLE_WINDOW_MS = 60000;
+/**
+ * Sample repeated events by key so a burst of identical warnings does not
+ * flood the Actions log (Issue #924).
+ *
+ * For each key, the first `burst` events in a window are emitted. Later events
+ * in the same window are counted and suppressed. A window ends once
+ * `windowMs` has passed since its first event; the next event for that key
+ * then returns a summary for the window that just closed. {@link flush}
+ * returns summaries for every key that still has suppressed events, so the
+ * last window is not lost at the end of a run.
+ *
+ * The clock is injectable so tests can drive windows without real waits.
+ */
+class RepeatWarningSampler {
+    constructor(burst = exports.HORIZON_RETRY_SAMPLE_BURST, windowMs = exports.HORIZON_RETRY_SAMPLE_WINDOW_MS, now = () => Date.now()) {
+        this.burst = burst;
+        this.windowMs = windowMs;
+        this.now = now;
+        this.groups = new Map();
+        if (!Number.isInteger(burst) || burst < 0) {
+            throw new RangeError('burst must be a non-negative integer');
+        }
+        if (!(windowMs > 0)) {
+            throw new RangeError('windowMs must be a positive number');
+        }
+    }
+    /**
+     * Record one event for `key`. `emit` says whether this event should be
+     * logged in full. `rolled` is set when a previous window for the same key
+     * just closed with suppressed events.
+     */
+    record(key, sample) {
+        const t = this.now();
+        let rolled;
+        let group = this.groups.get(key);
+        if (group && t - group.windowStart >= this.windowMs) {
+            rolled = this.summarize(key, group);
+            group = undefined;
+        }
+        if (!group) {
+            group = { sample, windowStart: t, total: 0, emitted: 0, lastAt: t };
+            this.groups.set(key, group);
+        }
+        group.total += 1;
+        group.lastAt = t;
+        const emit = group.emitted < this.burst;
+        if (emit)
+            group.emitted += 1;
+        return rolled ? { emit, rolled } : { emit };
+    }
+    /**
+     * Return summaries for every key with suppressed events and clear all
+     * state. Call once at the end of a run.
+     */
+    flush() {
+        const out = [];
+        for (const [key, group] of this.groups) {
+            const summary = this.summarize(key, group);
+            if (summary)
+                out.push(summary);
+        }
+        this.groups.clear();
+        return out;
+    }
+    /** Drop all state without producing summaries (used by tests). */
+    reset() {
+        this.groups.clear();
+    }
+    summarize(key, group) {
+        const suppressed = group.total - group.emitted;
+        this.groups.delete(key);
+        if (suppressed <= 0)
+            return undefined;
+        return {
+            key,
+            sample: group.sample,
+            total: group.total,
+            suppressed,
+            firstAt: group.windowStart,
+            lastAt: group.lastAt,
+        };
+    }
+}
+exports.RepeatWarningSampler = RepeatWarningSampler;
+/** Sampler for Horizon exhaustion warnings, shared by every Horizon call in a run (Issue #924). */
+exports.horizonRetrySampler = new RepeatWarningSampler();
+/**
+ * Group key for sampling: the failure pattern without the account address, so
+ * the same outage across many accounts collapses into one sampled stream.
+ */
+function horizonRetrySampleKey(event) {
+    return [
+        horizonRetryReasonCode(event),
+        event.endpointKind,
+        event.kind,
+        String(event.status),
+        redactHorizonBaseUrl(event.horizonUrl),
+    ].join('|');
+}
+/**
+ * Emit the summary line for one sampled window (Issue #924). Keeps first and
+ * last timestamps and the counts, and reuses the first event's redacted
+ * context so the reason code and endpoint stay greppable.
+ */
+function formatRepeatSampleSummary(summary) {
+    const reasonCode = String(summary.sample.reasonCode ?? 'unknown');
+    return {
+        message: `Horizon retry warnings sampled (${reasonCode}): ${summary.suppressed} suppressed of ${summary.total}`,
+        context: {
+            ...summary.sample,
+            event: 'horizon_retry_sampled',
+            suppressedCount: summary.suppressed,
+            totalCount: summary.total,
+            firstAt: new Date(summary.firstAt).toISOString(),
+            lastAt: new Date(summary.lastAt).toISOString(),
+        },
+    };
+}
 class StructuredLogger {
     constructor(debugMode = false) {
         this.debugMode = debugMode;
@@ -60214,7 +60422,16 @@ class StructuredLogger {
         const message = formatHorizonRetryMessage(event);
         const context = buildHorizonRetryLogContext(event);
         if (level === 'warning') {
-            this.warn(message, context);
+            // Issue #924: exhaustion warnings are sampled per failure pattern so a
+            // rate-limit storm cannot flood the log. Counts are kept, not dropped.
+            const { emit, rolled } = exports.horizonRetrySampler.record(horizonRetrySampleKey(event), context);
+            if (rolled) {
+                const summary = formatRepeatSampleSummary(rolled);
+                this.warn(summary.message, summary.context);
+            }
+            if (emit) {
+                this.warn(message, context);
+            }
         }
         else if (level === 'info') {
             this.info(message, context);
@@ -60372,6 +60589,19 @@ function formatHorizonRetryMessage(event) {
 }
 exports.logger = new StructuredLogger();
 /**
+ * Emit a summary for every Horizon retry window that still has suppressed
+ * warnings (Issue #924). Call once when the run ends so the final window is
+ * not lost. Safe to call when nothing was suppressed.
+ */
+function flushHorizonRetrySamples() {
+    const summaries = exports.horizonRetrySampler.flush();
+    for (const summary of summaries) {
+        const formatted = formatRepeatSampleSummary(summary);
+        exports.logger.warn(formatted.message, formatted.context);
+    }
+    return summaries.length;
+}
+/**
  * Logs an informational message. Context values are redacted before output.
  */
 function log(message, context) {
@@ -60481,9 +60711,12 @@ function emitInputsLogRecord(inputs) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = exports.MAX_ASSET_TABLE_ROWS = void 0;
+exports.CHECKLIST_TRUSTLINE_KEY = exports.CHECKLIST_TRUSTLINE_LABEL_SUFFIX = exports.CHECKLIST_TRUSTLINE_LABEL_PREFIX = exports.CHECKLIST_LABEL_KEYS = exports.CHECKLIST_RESERVE_KEY = exports.CHECKLIST_FUND_KEY = exports.MAX_ASSET_TABLE_ROWS = exports.EMPTY_TABLE_CELL_PLACEHOLDER = void 0;
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
+exports.tableCellText = tableCellText;
+exports.singleLineText = singleLineText;
+exports.inlineCodeCell = inlineCodeCell;
 exports.buildAssetTrustlineTable = buildAssetTrustlineTable;
 exports.buildAssetChecklist = buildAssetChecklist;
 exports.extractChecklistState = extractChecklistState;
@@ -60499,6 +60732,48 @@ function escapeMarkdownInline(value) {
 }
 function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
+}
+/**
+ * Placeholder rendered in a table cell whose source value is missing or empty
+ * (Issue #921). An empty cell or an empty code span (`` `` ``) reads as
+ * broken output in a Wave comment, so every blank value gets this marker.
+ */
+exports.EMPTY_TABLE_CELL_PLACEHOLDER = '_unknown_';
+/**
+ * Make an arbitrary value safe to place inside a single GitHub Markdown table
+ * cell (Issue #921).
+ *
+ * - `undefined`, `null`, or a value that is blank after trimming returns the
+ *   placeholder, so a row never has an empty cell or an empty code span.
+ * - Line breaks are collapsed to spaces: a newline ends the table row.
+ * - Pipes are escaped as `\|`, which GitHub honours even inside code spans;
+ *   an unescaped pipe would add a column and break the table.
+ */
+function tableCellText(value, placeholder = exports.EMPTY_TABLE_CELL_PLACEHOLDER) {
+    const text = singleLineText(value);
+    if (text === '')
+        return placeholder;
+    return text.replace(/\|/g, '\\|');
+}
+/**
+ * Trim a value and collapse any line breaks to single spaces, returning `''`
+ * for `undefined`, `null`, or blank input (Issue #921). Does not escape
+ * anything: callers that already run {@link escapeMarkdownInline} must not
+ * escape pipes a second time.
+ */
+function singleLineText(value) {
+    if (value === undefined || value === null)
+        return '';
+    return String(value).replace(/\s*[\r\n]+\s*/g, ' ').trim();
+}
+/**
+ * Table-cell variant of {@link inlineCode}: a blank value renders the
+ * placeholder instead of an empty code span, and pipes/newlines are handled
+ * by {@link tableCellText} (Issue #921).
+ */
+function inlineCodeCell(value, placeholder = exports.EMPTY_TABLE_CELL_PLACEHOLDER) {
+    const text = tableCellText(value, '');
+    return text === '' ? placeholder : inlineCode(text);
 }
 /**
  * Render the per-asset trustline status table for the `assets_json` input
@@ -60542,7 +60817,8 @@ function buildAssetTrustlineTable(rows, options = {}) {
             return '_unknown_';
         if (!row.trustlineExists)
             return '`0` — no trustline';
-        return `\`${row.balance}\``;
+        // Issue #921: a blank balance must not render as an empty code span.
+        return inlineCodeCell(row.balance);
     };
     const lines = [
         `### ${escapeMarkdownInline(heading)}`,
@@ -60561,9 +60837,13 @@ function buildAssetTrustlineTable(rows, options = {}) {
     const visibleRows = maxRows > 0 ? rows.slice(0, maxRows) : rows;
     const hiddenCount = rows.length - visibleRows.length;
     for (const row of visibleRows) {
-        const asset = escapeMarkdownInline(row.assetCode);
+        // Issue #921: every cell goes through a table-safe helper so an empty
+        // asset code/issuer or a value containing `|` or a newline cannot add,
+        // drop or split columns.
+        const assetText = singleLineText(row.assetCode);
+        const asset = assetText === '' ? exports.EMPTY_TABLE_CELL_PLACEHOLDER : escapeMarkdownInline(assetText);
         const status = row.trustlineExists ? '✅ exists' : '❌ missing';
-        const issuer = inlineCode(shortenIssuer(row.assetIssuer));
+        const issuer = inlineCodeCell(shortenIssuer(singleLineText(row.assetIssuer)));
         lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
     }
     if (hiddenCount > 0) {

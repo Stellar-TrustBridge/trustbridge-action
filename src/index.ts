@@ -49,7 +49,7 @@ import {
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
-import { logger, emitInputsLogRecord, logInfo, logWarning } from './logger';
+import { logger, emitInputsLogRecord, flushHorizonRetrySamples, logInfo, logWarning } from './logger';
 import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
@@ -1293,5 +1293,9 @@ if (process.env.JEST_WORKER_ID === undefined) {
     // already recorded (recordJobOutcome is first-wins).
     globalMetrics.recordJobOutcome('fail');
     core.setFailed(getErrorMessage(error));
+  }).finally(() => {
+    // Issue #924: emit the summary for any Horizon retry window that was
+    // still open, so suppressed warnings are counted rather than lost.
+    flushHorizonRetrySamples();
   });
 }
