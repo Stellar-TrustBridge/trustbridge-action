@@ -48871,6 +48871,7 @@ exports.ISSUER_AUTH_FLAG_DECISION_TABLE = exports.ISSUER_AUTH_FLAG_PRECEDENCE = 
 exports.getCampaignPreset = getCampaignPreset;
 exports.validateNetworkAssetCompatibility = validateNetworkAssetCompatibility;
 exports.normalizeAssetCode = normalizeAssetCode;
+exports.assetCodesEqual = assetCodesEqual;
 exports.assertValidAssetCode = assertValidAssetCode;
 exports.assertValidAssetIssuer = assertValidAssetIssuer;
 exports.normalizeAssetConfig = normalizeAssetConfig;
@@ -48967,8 +48968,22 @@ function validateNetworkAssetCompatibility(horizonUrl, assetCode, assetIssuer, p
         }
     }
 }
+/**
+ * Canonicalize a Stellar asset code for comparison. Trims surrounding
+ * whitespace and uppercases mixed-case codes; validation is handled by
+ * `assertValidAssetCode()` so callers can normalize before deciding whether to
+ * accept the value.
+ */
 function normalizeAssetCode(assetCode) {
-    return assetCode.trim().toUpperCase();
+    return (0, horizon_1.normalizeAssetCodeForComparison)(assetCode);
+}
+/**
+ * Compare two asset codes in their canonical form (Issue #968). This is the
+ * single predicate callers should use when casing/whitespace may differ
+ * between an action input and a Horizon balance.
+ */
+function assetCodesEqual(a, b) {
+    return normalizeAssetCode(a) === normalizeAssetCode(b);
 }
 function assertValidAssetCode(assetCode) {
     const normalized = normalizeAssetCode(assetCode);
@@ -51378,7 +51393,7 @@ issuerAccount) {
     const assetBalanceRequirement = buildAssetBalanceRequirement(toStroops(config.minAssetBalance ?? 0, 'ceil'), toStroops(assetBalanceRaw));
     const assetBalanceCheckEnabled = assetBalanceRequirement.required > 0n;
     const assetBalanceMet = !assetBalanceCheckEnabled || assetBalanceRequirement.met;
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const reserveExplanation = explainReserveRequirement(reserveRequirement);
     const trustlineLimit = (0, horizon_1.getTrustlineLimit)(account, config.assetCode, config.assetIssuer);
     const trustlineLimitNumeric = (0, horizon_1.parseHorizonBalance)(trustlineLimit);
@@ -51612,7 +51627,7 @@ issuerAccount) {
     return buildResult();
 }
 function unfundedAccountResult(stellarAddress, config, mismatchHint, claimableCount) {
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
     const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? "");
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
@@ -51787,7 +51802,7 @@ function horizonFailureResult(message, config) {
     // in the Markdown comment so it can't dump a stack trace, inject
     // formatting/links, or break out of the comment structure.
     const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const waitBudgetExhausted = /retry wait budget exhausted|total wait .* cap/i.test(message);
     const failureDetail = waitBudgetExhausted
         ? `Horizon retry wait budget exhausted: ${safeMessage}`
@@ -51876,7 +51891,7 @@ function horizonFailureResult(message, config) {
  */
 function circuitOpenFailureResult(message, config) {
     const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
     const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
     const checks = [
@@ -51954,7 +51969,7 @@ function circuitOpenFailureResult(message, config) {
  */
 function tlsFailureResult(message, config) {
     const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const checks = [
         {
             passed: false,
@@ -52000,7 +52015,7 @@ function tlsFailureResult(message, config) {
  */
 function rateBudgetExhaustedResult(message, config) {
     const safeMessage = (0, markdown_1.escapeMarkdownInline)(sanitizeErrorMessageForComment(message));
-    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
+    const safeAssetCode = (0, markdown_1.escapeMarkdownInline)((0, assets_1.normalizeAssetCode)(config.assetCode));
     const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
     const checks = [
         {
@@ -54795,6 +54810,7 @@ exports.fetchHomeDomainIssuerAccount = fetchHomeDomainIssuerAccount;
 exports.waitForFundedAccount = waitForFundedAccount;
 exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
+exports.normalizeAssetCodeForComparison = normalizeAssetCodeForComparison;
 exports.hasTrustline = hasTrustline;
 exports.findTrustlineBalance = findTrustlineBalance;
 exports.isTrustlineAuthorized = isTrustlineAuthorized;
@@ -55807,9 +55823,21 @@ function getNativeBalance(account) {
     const native = account.balances.find((b) => b.asset_type === 'native');
     return native?.balance ?? '0';
 }
+/**
+ * Canonical form used for every asset-code comparison (Issue #968).
+ *
+ * Kept in `horizon.ts` because this is where Horizon balances are compared;
+ * `src/assets.ts` re-exports it as `normalizeAssetCode` and owns validation of
+ * the Stellar asset-code grammar. Trimming and uppercasing make mixed-case
+ * custom codes (e.g. `yXLM`, `usd1`) match the canonical code Horizon reports.
+ */
+function normalizeAssetCodeForComparison(assetCode) {
+    return (assetCode ?? '').trim().toUpperCase();
+}
 function hasTrustline(account, assetCode, assetIssuer) {
+    const expectedCode = normalizeAssetCodeForComparison(assetCode);
     return account.balances.some((balance) => isCreditBalance(balance) &&
-        balance.asset_code === assetCode &&
+        normalizeAssetCodeForComparison(balance.asset_code) === expectedCode &&
         balance.asset_issuer === assetIssuer);
 }
 /**
@@ -55818,8 +55846,9 @@ function hasTrustline(account, assetCode, assetIssuer) {
  * `is_clawback_enabled`.
  */
 function findTrustlineBalance(account, assetCode, assetIssuer) {
+    const expectedCode = normalizeAssetCodeForComparison(assetCode);
     return account.balances.find((balance) => isCreditBalance(balance) &&
-        balance.asset_code === assetCode &&
+        normalizeAssetCodeForComparison(balance.asset_code) === expectedCode &&
         balance.asset_issuer === assetIssuer);
 }
 /**

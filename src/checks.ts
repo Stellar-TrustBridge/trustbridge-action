@@ -9,7 +9,7 @@ import {
   isTrustlineAuthorized,
   parseHorizonBalance,
 } from "./horizon";
-import { getAssetClawbackStatus, classifyAssetIssuer, isSorobanContractIssuer, resolveIssuerAuthFlagVerdict, type AssetIssuerKind } from "./assets";
+import { getAssetClawbackStatus, classifyAssetIssuer, isSorobanContractIssuer, normalizeAssetCode, resolveIssuerAuthFlagVerdict, type AssetIssuerKind } from "./assets";
 import { escapeMarkdownInline, inlineCode } from "./markdown";
 import {
   buildChangeTrustLink,
@@ -1001,7 +1001,7 @@ export function runAccountChecks(
   const assetBalanceCheckEnabled = assetBalanceRequirement.required > 0n;
   const assetBalanceMet = !assetBalanceCheckEnabled || assetBalanceRequirement.met;
 
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
   const reserveExplanation = explainReserveRequirement(reserveRequirement);
 
   const trustlineLimit = getTrustlineLimit(
@@ -1273,7 +1273,7 @@ export function unfundedAccountResult(
   mismatchHint?: NetworkMismatchHint,
   claimableCount?: number,
 ): ValidationResult {
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
   const safeAddress = inlineCode(stellarAddress);
   const network = inferStellarNetwork(config.horizonUrl ?? "");
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
@@ -1468,7 +1468,7 @@ export function horizonFailureResult(
   const safeMessage = escapeMarkdownInline(
     sanitizeErrorMessageForComment(message),
   );
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
   const waitBudgetExhausted = /retry wait budget exhausted|total wait .* cap/i.test(message);
   const failureDetail = waitBudgetExhausted
     ? `Horizon retry wait budget exhausted: ${safeMessage}`
@@ -1567,7 +1567,7 @@ export function circuitOpenFailureResult(
   const safeMessage = escapeMarkdownInline(
     sanitizeErrorMessageForComment(message),
   );
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
 
   const skipped = 'Check skipped — the Horizon circuit breaker was open (no request was sent).';
@@ -1657,7 +1657,7 @@ export function tlsFailureResult(
   const safeMessage = escapeMarkdownInline(
     sanitizeErrorMessageForComment(message),
   );
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
 
   const checks: CheckResultItem[] = [
     {
@@ -1710,7 +1710,7 @@ export function rateBudgetExhaustedResult(
   config: CheckConfig,
 ): ValidationResult {
   const safeMessage = escapeMarkdownInline(sanitizeErrorMessageForComment(message));
-  const safeAssetCode = escapeMarkdownInline(config.assetCode);
+  const safeAssetCode = escapeMarkdownInline(normalizeAssetCode(config.assetCode));
   const assetBalanceCheckEnabled = Number(config.minAssetBalance ?? 0) > 0;
 
   const checks: CheckResultItem[] = [

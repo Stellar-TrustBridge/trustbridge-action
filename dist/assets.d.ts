@@ -33,7 +33,19 @@ export interface AssetJsonEntry {
     code: string;
     issuer: string;
 }
+/**
+ * Canonicalize a Stellar asset code for comparison. Trims surrounding
+ * whitespace and uppercases mixed-case codes; validation is handled by
+ * `assertValidAssetCode()` so callers can normalize before deciding whether to
+ * accept the value.
+ */
 export declare function normalizeAssetCode(assetCode: string): string;
+/**
+ * Compare two asset codes in their canonical form (Issue #968). This is the
+ * single predicate callers should use when casing/whitespace may differ
+ * between an action input and a Horizon balance.
+ */
+export declare function assetCodesEqual(a: string, b: string): boolean;
 export declare function assertValidAssetCode(assetCode: string): void;
 export declare function assertValidAssetIssuer(assetIssuer: string): void;
 export declare function normalizeAssetConfig(input: AssetConfigInput): AssetConfigInput;

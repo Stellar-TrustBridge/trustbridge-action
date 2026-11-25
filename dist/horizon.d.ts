@@ -244,6 +244,15 @@ export declare function waitForFundedAccount(horizonUrl: string, stellarAddress:
  */
 export declare function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit;
 export declare function getNativeBalance(account: HorizonAccount): string;
+/**
+ * Canonical form used for every asset-code comparison (Issue #968).
+ *
+ * Kept in `horizon.ts` because this is where Horizon balances are compared;
+ * `src/assets.ts` re-exports it as `normalizeAssetCode` and owns validation of
+ * the Stellar asset-code grammar. Trimming and uppercasing make mixed-case
+ * custom codes (e.g. `yXLM`, `usd1`) match the canonical code Horizon reports.
+ */
+export declare function normalizeAssetCodeForComparison(assetCode: string): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;
 /**
  * Locate the credit trustline balance entry for a specific asset so callers
