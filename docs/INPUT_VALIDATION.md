@@ -210,6 +210,19 @@ never be reported as missing. Stable remediation is to ask the issuer to
 submit `SetTrustLineFlags` (or legacy `AllowTrust`); adding another Change
 Trust operation is not the fix.
 
+## Mutually exclusive inputs
+
+Issue #951. Some boolean inputs contradict each other. Before doing any network work, the action checks every pair in `INPUT_CONFLICT_MATRIX` (`src/inputs.ts`). If both inputs in a pair are true (`true`/`1`/`yes`, case-insensitive), the step fails at once. Each conflict is logged as an `INPUT_CONFLICT: <a> and <b> cannot both be true. …` error annotation. Unset, empty, or unrecognised values never count as true, so they never trigger a conflict.
+
+| Pair | Why it is rejected |
+| --- | --- |
+| `preflight_only` + `wait_until_funded` | Preflight exits before any Horizon call, so polling could never run. |
+| `preflight_only` + `use_friendbot` | Preflight exits before any Horizon call, so Friendbot could never be invoked. |
+| `fixture_mode` + `wait_until_funded` | A static fixture never changes, so polling until funded would never succeed. |
+| `fixture_mode` + `use_friendbot` | Fixture mode makes no network calls, so funding would not be reflected. |
+
+`INPUT_CONFLICT` is an error-message prefix, not a `reason_code` output, because the run fails before validation starts. To fix a conflict, disable one input in the pair. `__tests__/inputs-conflict-matrix.test.ts` checks that this table, the matrix, and `action.yml` stay in sync.
+
 ## Strict config mode: unknown keys (Issue #927)
 
 `trustbridge_config_strict` (default `"false"`) controls how unknown top-level keys in `.github/trustbridge.yml` and `.trustbridge.yml` are handled.

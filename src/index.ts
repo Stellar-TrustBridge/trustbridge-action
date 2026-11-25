@@ -43,6 +43,8 @@ import {
   parseNumberInput,
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
+  detectInputConflicts,
+  INPUT_CONFLICT_MATRIX,
   parseBatchMaxAddressesInput,
   parseNetworkInput,
   parseHomeDomainCheckModeInput,
@@ -377,6 +379,21 @@ export async function run(): Promise<void> {
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
+
+  // Issue #951: fail early on mutually exclusive inputs, before any network work.
+  const conflictInputNames = [...new Set(INPUT_CONFLICT_MATRIX.flatMap((rule) => [...rule.inputs]))];
+  const inputConflicts = detectInputConflicts(
+    Object.fromEntries(conflictInputNames.map((name) => [name, core.getInput(name)])),
+  );
+  if (inputConflicts.length > 0) {
+    for (const conflict of inputConflicts) core.error(conflict.message);
+    core.setFailed(
+      `Conflicting inputs detected (${inputConflicts.length}). ` +
+        'See docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.',
+    );
+    return;
+  }
+
   // Issue #904: one correlation id per run, attached to every structured log
   // line (and the comment footer when debug_mode is on).
   const correlation = initCorrelationId();

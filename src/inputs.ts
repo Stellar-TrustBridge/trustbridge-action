@@ -723,6 +723,103 @@ export interface Inputs {
   contract_id?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Mutually exclusive input conflict matrix (Issue #951)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+export const INPUT_CONFLICT_REASON_CODE = 'INPUT_CONFLICT';
+
+/** One row of the mutually exclusive input matrix. */
+export interface InputConflictRule {
+  /** Stable identifier, e.g. `preflight_only+wait_until_funded`. */
+  id: string;
+  /** The two boolean inputs that cannot both be `true`. */
+  inputs: readonly [string, string];
+  /** Actionable explanation appended to the error message. */
+  reason: string;
+}
+
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+export const INPUT_CONFLICT_MATRIX: readonly InputConflictRule[] = [
+  {
+    id: 'preflight_only+wait_until_funded',
+    inputs: ['preflight_only', 'wait_until_funded'],
+    reason:
+      'preflight_only exits before any Horizon call, so wait_until_funded could never poll. Disable one of them.',
+  },
+  {
+    id: 'preflight_only+use_friendbot',
+    inputs: ['preflight_only', 'use_friendbot'],
+    reason:
+      'preflight_only exits before any Horizon call, so Friendbot could never be invoked. Disable one of them.',
+  },
+  {
+    id: 'fixture_mode+wait_until_funded',
+    inputs: ['fixture_mode', 'wait_until_funded'],
+    reason:
+      'fixture_mode reads a static local fixture, so polling until funded would never observe a change. Disable one of them.',
+  },
+  {
+    id: 'fixture_mode+use_friendbot',
+    inputs: ['fixture_mode', 'use_friendbot'],
+    reason:
+      'fixture_mode makes no network calls, so Friendbot funding would not be reflected in the result. Disable one of them.',
+  },
+];
+
+/** A detected conflict between two enabled inputs. */
+export interface InputConflict {
+  id: string;
+  inputs: readonly [string, string];
+  reasonCode: typeof INPUT_CONFLICT_REASON_CODE;
+  message: string;
+}
+
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+export function detectInputConflicts(
+  rawInputs: Record<string, string | undefined>,
+): InputConflict[] {
+  const enabled = (name: string): boolean => parseBooleanInput(rawInputs[name] ?? '', false);
+  return INPUT_CONFLICT_MATRIX.filter((rule) => enabled(rule.inputs[0]) && enabled(rule.inputs[1])).map(
+    (rule) => ({
+      id: rule.id,
+      inputs: rule.inputs,
+      reasonCode: INPUT_CONFLICT_REASON_CODE,
+      message: `${INPUT_CONFLICT_REASON_CODE}: ${rule.inputs[0]} and ${rule.inputs[1]} cannot both be true. ${rule.reason}`,
+    }),
+  );
+}
+
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+export function assertNoInputConflicts(rawInputs: Record<string, string | undefined>): void {
+  const conflicts = detectInputConflicts(rawInputs);
+  if (conflicts.length === 0) return;
+  throw new Error(
+    `Conflicting inputs detected (${conflicts.length}):\n` +
+      conflicts.map((c) => `- ${c.message}`).join('\n') +
+      '\nSee docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.',
+  );
+}
+
 /**
  * Build the Soroban registry client config from raw action inputs. Returns
  * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`

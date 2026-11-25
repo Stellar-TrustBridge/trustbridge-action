@@ -1860,6 +1860,17 @@ This is a library function for workflow authors who maintain a CSV roster upstre
 
 ---
 
+
+#### Accepted CSV dialects (Issue #953)
+
+`parseRosterCsv` accepts what Excel and Google Sheets export:
+
+- **UTF-8 BOM:** a leading `\uFEFF` (Excel's "CSV UTF-8") is stripped, so the header row is still recognised.
+- **Line endings:** CRLF, LF, and bare CR.
+- **Quoted fields (RFC 4180 subset):** `"Doe, Jane"` keeps its comma, and `""` inside quotes is a literal `"`. Whitespace outside quotes is trimmed. Multi-line quoted cells are not supported.
+- **Formulas rejected:** a row with any cell starting with `=`, `+`, `-`, `@`, tab, or CR is rejected into `invalid` with a "spreadsheet formula" reason (CSV-injection guard). The rest of the roster is still imported.
+- **Malformed quotes:** a row with an unterminated quoted field is rejected into `invalid` with `Roster CSV has an unterminated quoted field.`
+
 ## Per-check named outputs (fine-grained gating)
 
 > **Note:** `check_account_funded`, `check_trustline` and `check_xlm_reserve` are **not declared in `action.yml`** and are not emitted by `src/outputs.ts`, so in a workflow they read as `''`. Until they are added to the output contract, gate on `account_funded`, `trustline_exists`, `ready` and `reason_code`, or parse `checks_json`. The authoritative output list is the [README Outputs section](../README.md#outputs).
@@ -4611,6 +4622,83 @@ labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
 applies only after the gate is open. Label-check failures should fail open and
 run validation, while an optional skip comment is best effort and must not
 block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).
+
+## Matrix strategy patterns for large roster splits (Issue #952)
+
+One job that validates a huge `stellar_addresses` list runs into several limits. Batch concurrency is capped at `MAX_BATCH_CONCURRENCY` (20, `src/batch.ts`). Each output is capped at `MAX_OUTPUT_VALUE_BYTES` (~900 KB, `src/outputs.ts`), and when the `failures` array is cut to fit, `outputs_truncated` is set to `"true"`. A GitHub matrix also caps out at 256 jobs. To stay inside these limits, split the roster into shards and give each shard its own matrix leg.
+
+**Pattern 1: fixed shards (copy-paste)**
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: split
+        # roster.txt: one address per line. SHARD_SIZE ≤ a few hundred keeps
+        # each batch_summary_json far below the output cap.
+        run: |
+          SHARD_SIZE=200
+          jq -R -s -c --argjson n "$SHARD_SIZE" \
+            'split("\n") | map(select(length > 0)) | unique as $a
+             | [range(0; $a|length; $n) as $i | {index: ($i / $n), addresses: ($a[$i:$i+$n] | join("\n"))}]' \
+            roster.txt > shards.json
+          echo "shards=$(cat shards.json)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one bad shard must not cancel the others
+      max-parallel: 4           # stay friendly to Horizon rate limits
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - id: tb
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_addresses: ${{ matrix.shard.addresses }}
+          posting_mode: off      # aggregate once instead of N comments
+      - name: Persist shard result
+        run: echo '${{ steps.tb.outputs.batch_summary_json }}' > "summary-${{ matrix.shard.index }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-shard-${{ matrix.shard.index }}
+          path: summary-*.json
+```
+
+**Pattern 2: aggregate shard outputs**
+
+Matrix legs cannot pass outputs to a downstream job reliably, because only one leg's value survives. Upload each shard's `batch_summary_json` as an artifact and merge them:
+
+```yaml
+  aggregate:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: trustbridge-shard-*, merge-multiple: true }
+      - env:
+          EXPECTED: ${{ needs.plan.outputs.shard_count }}   # add `shard_count=$(jq length shards.json)` in plan
+        run: |
+          test "$(ls summary-*.json | wc -l)" -eq "$EXPECTED"   # a missing shard is a failure, not "0 failures"
+          jq -s '{total: map(.total) | add, passed: map(.passed) | add,
+                  failed: map(.failed) | add, failures: map(.failures) | add}' summary-*.json > batch.json
+          test "$(jq .failed batch.json)" -eq 0
+```
+
+**Aggregation notes**
+
+- **Count every shard.** Compare the number of summary files to the number of shards from `plan`. A missing file means a leg crashed. Never treat it as "0 failures".
+- **Check truncation per shard.** If any leg reports `outputs_truncated == 'true'`, that shard's `failures` array is incomplete, so lower `SHARD_SIZE`. `total`, `passed`, and `failed` are always exact.
+- **Sort and deduplicate before splitting.** Shards then stay stable between runs, and one address can never land in two shards.
+- **Keep shards ≤ 256** (the GitHub matrix limit). For bigger rosters, raise `SHARD_SIZE` or chain workflows.
+
+A full working example (including `shard_count`) is in [`docs/examples/batch-validation-with-matrix-outputs.yml`](examples/batch-validation-with-matrix-outputs.yml) (job `sharded-validate`).
 
 ## Delta ignore-list for volatile fields (Issue #926)
 

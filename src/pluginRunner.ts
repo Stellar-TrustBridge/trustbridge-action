@@ -13,6 +13,7 @@
 import { ValidationResult, CheckResultItem } from './checks';
 import { CheckPlugin, CheckPluginContext, PluginRegistry, defaultRegistry } from './plugin';
 import { escapeMarkdownInline } from './markdown';
+import { redactString } from './logger';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -31,6 +32,90 @@ export const DEFAULT_PLUGIN_TIMEOUT_MS = 5000;
 export interface RunPluginsOptions {
   /** Per-plugin timeout in milliseconds. Defaults to {@link DEFAULT_PLUGIN_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /**
+   * Maximum bytes of stderr kept per plugin (Issue #954). Output beyond the
+   * cap is dropped and the capture is flagged `truncated`. Defaults to
+   * {@link DEFAULT_PLUGIN_STDERR_MAX_BYTES}.
+   */
+  stderrMaxBytes?: number;
+  /**
+   * Receives each plugin's captured, capped and redacted stderr. When
+   * omitted, non-empty captures are re-emitted to the real stderr (still
+   * capped and redacted) so diagnostics are never silently lost.
+   */
+  onPluginStderr?: (capture: PluginStderrCapture) => void;
+}
+
+/** Default per-plugin stderr capture cap: 8 KiB (Issue #954). */
+export const DEFAULT_PLUGIN_STDERR_MAX_BYTES = 8 * 1024;
+
+/** Marker appended to a capture that hit the byte cap. */
+export const PLUGIN_STDERR_TRUNCATION_MARKER = '…[stderr truncated]';
+
+/** Captured stderr for one plugin run (Issue #954). */
+export interface PluginStderrCapture {
+  pluginId: string;
+  /** Redacted text, at most `stderrMaxBytes` bytes plus the truncation marker. */
+  text: string;
+  /** Total bytes the plugin attempted to write. */
+  totalBytes: number;
+  /** True when output exceeded the cap and was cut. */
+  truncated: boolean;
+}
+
+/**
+ * Run `fn` while intercepting `process.stderr.write`, keeping at most
+ * `maxBytes` bytes and redacting secrets/addresses with `redactString`
+ * (the same policy as the logger). The original writer is always restored,
+ * even when `fn` throws.
+ *
+ * Redaction runs on the capped buffer *before* the marker is appended; a
+ * secret straddling the cap boundary is cut, so only a partial prefix can
+ * survive, and the redaction regexes still mask complete matches.
+ */
+export function captureStderr<T>(
+  fn: () => T,
+  maxBytes: number = DEFAULT_PLUGIN_STDERR_MAX_BYTES,
+): { value: T; capture: Omit<PluginStderrCapture, 'pluginId'> } {
+  const cap = Math.max(0, Math.floor(maxBytes));
+  const chunks: Buffer[] = [];
+  let kept = 0;
+  let totalBytes = 0;
+  const original = process.stderr.write;
+  const intercept = (chunk: unknown, encodingOrCb?: unknown, cb?: unknown): boolean => {
+    const buf = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(String(chunk), typeof encodingOrCb === 'string' ? (encodingOrCb as BufferEncoding) : 'utf8');
+    totalBytes += buf.length;
+    if (kept < cap) {
+      const slice = buf.subarray(0, cap - kept);
+      chunks.push(slice);
+      kept += slice.length;
+    }
+    const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
+    if (typeof callback === 'function') (callback as () => void)();
+    return true;
+  };
+  process.stderr.write = intercept as typeof process.stderr.write;
+  const finish = () => {
+    const truncated = totalBytes > cap;
+    // Drop a trailing partial UTF-8 sequence produced by the byte cut.
+    let text = Buffer.concat(chunks).toString('utf8').replace(/\uFFFD+$/, '');
+    text = redactString(text);
+    return { text: truncated ? text + PLUGIN_STDERR_TRUNCATION_MARKER : text, totalBytes, truncated };
+  };
+  try {
+    const value = fn();
+    process.stderr.write = original;
+    return { value, capture: finish() };
+  } catch (err) {
+    process.stderr.write = original;
+    const capture = finish();
+    if (err && typeof err === 'object') {
+      (err as { pluginStderr?: typeof capture }).pluginStderr = capture;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -100,6 +185,16 @@ export function runPlugins(
 ): ValidationResult {
   const plugins = registry.list();
   const timeoutMs = options.timeoutMs ?? DEFAULT_PLUGIN_TIMEOUT_MS;
+  const stderrMaxBytes = options.stderrMaxBytes ?? DEFAULT_PLUGIN_STDERR_MAX_BYTES;
+  const emitStderr = (pluginId: string, capture: Omit<PluginStderrCapture, 'pluginId'> | undefined) => {
+    if (!capture || capture.totalBytes === 0) return;
+    const entry: PluginStderrCapture = { pluginId, ...capture };
+    if (options.onPluginStderr) {
+      options.onPluginStderr(entry);
+    } else {
+      process.stderr.write(`[plugin ${pluginId} stderr] ${entry.text}\n`);
+    }
+  };
 
   // Run each plugin, wrapping any unexpected throw so one bad plugin
   // cannot silently kill the whole action.
@@ -109,9 +204,15 @@ export function runPlugins(
       // `src/plugin.ts`) overrides the runner-wide default so a plugin
       // that's known to be slower or faster than average can declare its
       // own budget without changing the default for every other plugin.
-      return { plugin, result: runWithTimeout(plugin, ctx, plugin.timeoutMs ?? timeoutMs) };
+      const { value, capture } = captureStderr(
+        () => runWithTimeout(plugin, ctx, plugin.timeoutMs ?? timeoutMs),
+        stderrMaxBytes,
+      );
+      emitStderr(plugin.id, capture);
+      return { plugin, result: value };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      emitStderr(plugin.id, (err as { pluginStderr?: Omit<PluginStderrCapture, 'pluginId'> } | null)?.pluginStderr);
+      const message = redactString(err instanceof Error ? err.message : String(err));
       return {
         plugin,
         result: {

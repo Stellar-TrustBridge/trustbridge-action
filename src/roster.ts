@@ -143,23 +143,77 @@ export interface RosterCsvImportResult {
 }
 
 /**
- * Split one CSV line into trimmed cells.
+ * Split one CSV record into trimmed cells (Issue #953).
  *
- * Supports plain comma-separated values with optional surrounding double
- * quotes on a cell (`"G..."`, `"alice"`). Does not support embedded commas,
- * embedded quotes, or multi-line quoted cells — a roster of usernames and
- * Stellar addresses never needs them, and a minimal parser here avoids
- * inventing a parallel CSV-parsing subsystem for a one-off import path.
+ * Accepted dialect (RFC 4180 subset, what Excel / Google Sheets export):
+ * - Comma delimiter.
+ * - Optional double quotes around a cell; a quoted cell may contain commas
+ *   (`"Doe, Jane"`) and escaped quotes written as `""`.
+ * - Surrounding whitespace outside quotes is trimmed.
+ *
+ * Records are split on CRLF, CR or LF before this is called, so multi-line
+ * quoted cells are not supported (a roster never needs them).
+ *
+ * @throws If a quoted cell is not terminated on the same line.
  */
 function splitCsvLine(line: string): string[] {
-  return line.split(',').map((cell) => {
-    const trimmed = cell.trim();
-    if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-      return trimmed.slice(1, -1).trim();
+  const cells: string[] = [];
+  let i = 0;
+  const n = line.length;
+  for (;;) {
+    while (i < n && (line[i] === ' ' || line[i] === '\t')) i++;
+    let cell = '';
+    if (line[i] === '"') {
+      i++;
+      let closed = false;
+      while (i < n) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') {
+            cell += '"';
+            i += 2;
+            continue;
+          }
+          i++;
+          closed = true;
+          break;
+        }
+        cell += line[i++];
+      }
+      if (!closed) {
+        throw new Error('Roster CSV has an unterminated quoted field.');
+      }
+      while (i < n && line[i] !== ',') i++;
+    } else {
+      while (i < n && line[i] !== ',') cell += line[i++];
     }
-    return trimmed;
-  });
+    cells.push(cell.trim());
+    if (i >= n) break;
+    i++; // skip comma
+  }
+  return cells;
 }
+
+/**
+ * True when a cell starts with a spreadsheet formula trigger (`=`, `+`, `-`,
+ * `@`, tab or CR). Such cells are rejected rather than imported so an
+ * Excel-exported roster can never smuggle a formula (CSV injection) into
+ * downstream reports (Issue #953).
+ */
+export function isCsvFormulaCell(cell: string): boolean {
+  return /^[=+\-@\t\r]/.test(cell);
+}
+
+/** Column count of a record, tolerating a malformed row (rejected later). */
+function countCsvColumns(line: string): number {
+  try {
+    return splitCsvLine(line).length;
+  } catch {
+    return line.split(',').length;
+  }
+}
+
+/** UTF-8 byte order mark that Excel prepends to "CSV UTF-8" exports. */
+const UTF8_BOM = '\uFEFF';
 
 /** True when `cells` looks like a header row naming known login/address columns. */
 function looksLikeHeaderRow(cells: string[]): boolean {
@@ -232,7 +286,10 @@ export function parseRosterCsv(csvText: string): RosterCsvImportResult {
     throw new Error('Roster CSV is empty. Provide at least a header row and one address row.');
   }
 
-  const rawLines = csvText.split(/\r\n|\r|\n/);
+  // Excel "CSV UTF-8" exports start with a BOM, which would otherwise glue
+  // itself onto the first header cell and hide the header (Issue #953).
+  const withoutBom = csvText.startsWith(UTF8_BOM) ? csvText.slice(1) : csvText;
+  const rawLines = withoutBom.split(/\r\n|\r|\n/);
   // (line numbers are 1-based against the original, un-trimmed input)
   const nonBlankLineNumbers: number[] = [];
   rawLines.forEach((line, i) => {
@@ -257,7 +314,7 @@ export function parseRosterCsv(csvText: string): RosterCsvImportResult {
 
   const { loginIndex, addressIndex } = resolveColumns(
     hasHeader ? firstCells : null,
-    splitCsvLine(rawLines[dataLineNumbers[0] - 1]).length,
+    countCsvColumns(rawLines[dataLineNumbers[0] - 1]),
   );
 
   const addressMap: AssigneeAddressMap = {};
@@ -268,7 +325,22 @@ export function parseRosterCsv(csvText: string): RosterCsvImportResult {
 
   for (const lineNumber of dataLineNumbers) {
     const raw = rawLines[lineNumber - 1];
-    const cells = splitCsvLine(raw);
+    let cells: string[];
+    try {
+      cells = splitCsvLine(raw);
+    } catch (err) {
+      invalid.push({ lineNumber, raw, reason: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+    const formulaCell = cells.find(isCsvFormulaCell);
+    if (formulaCell !== undefined) {
+      invalid.push({
+        lineNumber,
+        raw,
+        reason: 'Row contains a spreadsheet formula cell (starts with =, +, -, @); formulas are rejected.',
+      });
+      continue;
+    }
     const address = (cells[addressIndex] ?? '').trim();
     const login = loginIndex !== null ? (cells[loginIndex] ?? '').trim() : '';
 
