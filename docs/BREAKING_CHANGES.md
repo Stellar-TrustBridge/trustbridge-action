@@ -16,6 +16,12 @@ TrustBridge Action follows **Semantic Versioning** ([semver.org](https://semver.
 | **MINOR** (`v1.1.0`) | New optional inputs, new outputs, or safe behaviour additions |
 | **PATCH** (`v1.0.1`) | Bug fixes, documentation corrections, dependency updates with no behaviour change |
 
+The plugin API has an independent semantic version. See
+[PLUGIN_ARCHITECTURE.md](PLUGIN_ARCHITECTURE.md) for compatibility ranges,
+negotiation rules, and examples. An incompatible plugin API change must also
+ship in an action major because it changes an action-supported integration
+surface. Do not infer plugin API compatibility from the action major number.
+
 ### Immutable release tag contract
 
 Consumers should pin either an immutable full SemVer tag or, for the strongest change control, a commit SHA:

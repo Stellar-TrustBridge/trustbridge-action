@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { redactProxyCredentials } from './proxy';
 
 /**
  * Enhanced logging with context and structured output.
@@ -276,7 +277,8 @@ export function redactContractAddress(contractId: string): string {
  */
 export function redactString(value: string): string {
   if (!value) return value;
-  let masked = value.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
+  let masked = redactProxyCredentials(value);
+  masked = masked.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
   masked = masked.replace(SECRET_ASSIGNMENT_REGEX, (_match, prefix: string, rawValue: string) => {
     if (rawValue.startsWith('-----') || rawValue.startsWith('[REDACTED')) {
       return `${prefix}${rawValue}`;

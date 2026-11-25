@@ -773,6 +773,8 @@ Full index: [docs/README.md](docs/README.md)
 | [README.md](README.md) | Overview, quick start, inputs/outputs (this file) |
 | [docs/USAGE.md](docs/USAGE.md) | Workflow recipes and configuration examples |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flow, module responsibilities |
+| [docs/PLUGIN_ARCHITECTURE.md](docs/PLUGIN_ARCHITECTURE.md) | Plugin API semver and compatibility negotiation policy |
+| [docs/COMMENT_GUIDE.md](docs/COMMENT_GUIDE.md) | Comment formatting and result reason wrapping |
 | [docs/STRUCTURE.md](docs/STRUCTURE.md) | File and directory reference |
 | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error cases and retry behavior |
 | [docs/BREAKING_CHANGES.md](docs/BREAKING_CHANGES.md) | Versioning policy — breaking vs safe changes, `@v` tag expectations, deprecation process |

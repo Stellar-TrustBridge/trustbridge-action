@@ -142,6 +142,9 @@ All FAQ anchor names are declared in `src/links.ts` in the `FAQ_ANCHORS` constan
 - The Horizon endpoint used for verification.
 - The target asset code and issuer.
 - Per-check status for funding, trustline readiness, and XLM reserve.
+- Result reasons are shown in a three-column Markdown table. Long cells wrap at
+  80 characters with `<br>` line breaks, and literal pipes are rendered as
+  `&#124;` so dynamic Horizon text cannot create extra columns.
 - An optional **Onboarding checklist** (default on via `onboarding_checklist: true`) with Markdown task-list checkboxes that auto-check from live `ValidationResult` state, plus FAQ links for each step.
 - A machine-readable validation-gate summary that callers can use to tell whether the run is release-ready or blocked.
 - Links to Stellar Laboratory and LOBSTR for remediation.

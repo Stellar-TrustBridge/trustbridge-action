@@ -18,6 +18,7 @@ import {
   DEFAULT_RETRY_POLICY,
   RetryPolicy,
   CircuitBreaker,
+  CircuitOpenDurationTracker,
   CircuitOpenError,
   CircuitState,
   emitCheckRunAnnotation,
@@ -28,6 +29,7 @@ import {
   HttpMockMatrix,
   HorizonScenario,
 } from '../src/resilience';
+import { MetricsCollector } from '../src/metrics';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1270,5 +1272,41 @@ describe('Retry-After cap and total wait budget (Issue #705)', () => {
     it('returns null when the header is missing', () => {
       expect(parseRetryAfterMs(response(429))).toBeNull();
     });
+  });
+});
+
+describe('CircuitOpenDurationTracker', () => {
+  it('records an open duration once using the injected clock', () => {
+    const metrics = new MetricsCollector();
+    let now = 100;
+    const tracker = new CircuitOpenDurationTracker('horizon', metrics, () => now);
+    tracker.open();
+    now = 250;
+    tracker.open();
+    expect(tracker.close()).toBe(150);
+    expect(metrics.getSummary().metrics[0]).toMatchObject({
+      name: 'circuit_open_duration', value: 150, unit: 'ms', tags: { circuit: 'horizon' },
+    });
+    expect(tracker.close()).toBeNull();
+  });
+
+  it('does not emit a metric when closed without opening', () => {
+    const metrics = new MetricsCollector();
+    const tracker = new CircuitOpenDurationTracker('rpc', metrics, () => 10);
+    expect(tracker.close()).toBeNull();
+    expect(metrics.getSummary().totalMetrics).toBe(0);
+  });
+
+  it('rejects an empty circuit name', () => {
+    expect(() => new CircuitOpenDurationTracker('  ')).toThrow('Circuit name must not be empty.');
+  });
+
+  it('clamps a backwards fake clock to a zero duration', () => {
+    const metrics = new MetricsCollector();
+    let now = 10;
+    const tracker = new CircuitOpenDurationTracker('horizon', metrics, () => now);
+    tracker.open();
+    now = 5;
+    expect(tracker.close()).toBe(0);
   });
 });

@@ -2,6 +2,7 @@ import * as tls from 'tls';
 import * as crypto from 'crypto';
 import { defaultCache, SimpleCache } from './cache';
 import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
+import { redactProxyCredentials } from './proxy';
 import { inferStellarNetwork } from './links';
 import { globalMetrics, globalHorizonHistogram } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, CircuitOpenError, addJitter } from './resilience';
@@ -102,7 +103,7 @@ export class HorizonError extends Error {
     public readonly statusCode: number,
     public readonly retryable: boolean = false,
   ) {
-    super(message);
+    super(redactProxyCredentials(message));
     this.name = 'HorizonError';
   }
 }

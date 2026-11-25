@@ -219,7 +219,10 @@ export function parseBatchMaxAddressesInput(value: string | undefined): number {
 }
 
 export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  // Lazy require avoids a circular import with proxy.ts → logger → … paths.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { safeProxyErrorMessage } = require('./proxy') as typeof import('./proxy');
+  return safeProxyErrorMessage(error);
 }
 
 /**

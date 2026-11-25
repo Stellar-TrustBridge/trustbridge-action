@@ -28,6 +28,15 @@ The account exists but its native XLM balance is below `min_xlm_reserve`. Send a
 
 Retry later or switch `horizon_url` to a trusted endpoint for the target network.
 
+## Proxy credentials appear in network errors
+
+TrustBridge redacts URL userinfo (the `username:password@` portion) from
+free-form log and error messages before writing them. The proxy scheme and host
+remain visible for diagnosis. Keep proxy credentials in runner environment
+secrets and avoid printing raw proxy environment variables in workflow steps;
+redaction is a last line of defense, not a substitute for secret-safe workflow
+logging.
+
 ## Cron sweep fails across many issues during a Horizon incident
 
 If a scheduled re-validation sweep reports `HORIZON_TIMEOUT`, `HORIZON_ERROR`,

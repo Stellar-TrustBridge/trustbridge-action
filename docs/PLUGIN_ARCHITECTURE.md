@@ -315,3 +315,43 @@ listed twice), order-independent error reporting, and that
 ```bash
 npx jest __tests__/plugin-loader.test.ts __tests__/plugin-id-collisions.test.ts
 ```
+
+## Plugin API versioning policy
+
+Keep these versions independent:
+
+- **Action version** is the Git tag consumers pin (for example, `v2`). A new
+  action major signals a breaking change to action inputs, outputs, defaults,
+  or behavior.
+- **Plugin API version** is a `major.minor.patch` contract version describing
+  the host hooks, context, and result types available to a plugin.
+- **Plugin package version** is owned by each plugin author and follows that
+  package's own compatibility policy.
+
+An action major is not a plugin API version. An action release may add a
+backward-compatible plugin API minor without requiring an action major bump.
+Removing or changing a plugin API contract incompatibly requires a plugin API
+major and, because it changes a supported action surface, an action major.
+
+### Semver rules for the plugin API
+
+- **Patch:** bug fixes and clarifications that do not change accepted inputs,
+  outputs, ordering guarantees, or failure behavior.
+- **Minor:** additive optional hooks, optional context fields, new capabilities,
+  and new non-fatal result metadata. Existing plugins must continue to work.
+- **Major:** removal or rename of hooks/fields, changed types or requiredness,
+  changed lifecycle ordering, changed error semantics, or tightened validation
+  that rejects previously valid plugins.
+
+Never reuse a removed field or hook name for a different meaning. Deprecate it
+for at least one plugin API major cycle where practical, emit an actionable
+warning, and document the removal in `docs/BREAKING_CHANGES.md`.
+
+### Negotiation
+
+When implemented, each plugin should declare a supported plugin API range,
+using a standard semver range such as `^1.2.0`. The loader must compare this
+range with the API version exposed by the selected action release before
+initializing the plugin. It must fail closed with a stable diagnostic when
+there is no compatible version; it must never silently load against an
+incompatible major.

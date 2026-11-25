@@ -28,6 +28,7 @@ import {
   extractChecklistState,
   inlineCode,
   markdownLinesOutsideCode,
+  wrapMarkdownTableCell,
   type AssetTrustlineRow,
 } from './markdown';
 import { buildTemplateContext, loadCommentTemplate } from './template';
@@ -282,6 +283,8 @@ export function formatCommentBody(
       "",
       `### ${strings.resultsHeading}`,
       "",
+      '| Status | Check | Reason |',
+      '| --- | --- | --- |',
     );
 
     for (const check of result.checks) {
@@ -296,7 +299,7 @@ export function formatCommentBody(
         }
       }
       lines.push(
-        `- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}${faqSuffix}`,
+        `| ${statusIcon(check.passed)} | **${wrapMarkdownTableCell(check.label)}** | ${wrapMarkdownTableCell(check.detail)}${faqSuffix} |`,
       );
     }
 

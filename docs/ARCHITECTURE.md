@@ -177,6 +177,11 @@ rejected, and that unknown check kinds become `other`.
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
 
+`CircuitOpenDurationTracker` measures each open interval and records the
+`circuit_open_duration` metric in milliseconds when the circuit closes. A
+repeated open notification does not reset the start time; closing an already
+closed circuit records nothing. The injected clock keeps tests deterministic.
+
 ### Horizon error spans
 
 When tracing is enabled (`OTEL_TRACES_ENABLED=true`), every non-2xx Horizon response — including the `404` unfunded path and each retried `429`/`5xx` attempt — records one `ERROR` span named `horizon.http_error` via `recordHorizonHttpError` in `src/tracing.ts` (Issue #913). The span is recorded in `fetchOnce` **before** the response body is read.
