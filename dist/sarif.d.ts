@@ -27,6 +27,7 @@
  *
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
+import { type ReasonCode } from './reasonCodes';
 import type { CheckResultItem, HomeDomainCheckMode, HomeDomainOutcome, ValidationResult } from './checks';
 export declare const SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
 export declare const SARIF_VERSION = "2.1.0";
@@ -95,7 +96,7 @@ export declare function computeSarifFingerprint(inputs: SarifFingerprintInputs):
  * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
  * `FAILED` for a failing one.
  */
-export declare function sarifRunReasonCode(result: Pick<ValidationResult, 'reasonCode' | 'valid'>): string;
+export declare function sarifRunReasonCode(result: Pick<ValidationResult, 'reasonCode' | 'valid'>): ReasonCode;
 /** Build the `partialFingerprints` property bag for one result. */
 export declare function sarifPartialFingerprints(inputs: SarifFingerprintInputs): Record<string, string>;
 export interface SarifRun {

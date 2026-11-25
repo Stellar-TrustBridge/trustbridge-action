@@ -114,7 +114,12 @@ export declare class HorizonPinMismatchError extends HorizonError {
  * working unchanged.
  */
 export declare class HorizonCircuitOpenError extends HorizonError {
-    constructor(message: string);
+    /**
+     * Issue #920: milliseconds until the breaker admits another probe, copied
+     * from the underlying `CircuitOpenError` when known.
+     */
+    readonly remainingCooldownMs?: number;
+    constructor(message: string, remainingCooldownMs?: number);
 }
 /** Is this error a circuit-breaker fast-fail (Issue #434)? */
 export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
@@ -141,6 +146,8 @@ export interface FetchAccountOptions {
     negativeCacheTtlMs?: number;
     cache?: SimpleCache;
     fetchFn?: FetchLike;
+    /** Called on every Horizon 429, or any error response with Retry-After (Issue #946). */
+    onThrottle?: () => void;
     /**
      * Optional AbortSignal from a parent controller (e.g. job cancellation).
      * When the signal fires, in-flight and pending requests are aborted
@@ -186,6 +193,7 @@ export interface FetchAccountOptions {
 export declare const DEFAULT_NEGATIVE_CACHE_TTL_MS = 15000;
 export declare const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
 export declare const DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = 120000;
+export declare const RETRY_AFTER_JITTER_PERCENT = 10;
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 /**
  * Produce a representation of a configured Horizon URL that is safe to
@@ -198,6 +206,8 @@ export declare function normalizeHorizonUrl(baseUrl: string): string;
 export declare function displayHorizonUrl(url: string, revealHost: boolean): string;
 export declare function isRetryableStatus(status: number): boolean;
 export declare function parseRetryAfterMs(response: import('node-fetch').Response): number | null;
+/** Apply bounded jitter so concurrent Wave jobs do not retry in lockstep. */
+export declare function jitteredRetryDelayMs(delayMs: number, ceilingMs: number): number;
 export declare function fetchAccount(horizonUrl: string, stellarAddress: string, options?: FetchAccountOptions): Promise<HorizonAccount>;
 /**
  * Fetch the asset issuer account for the SEP-0001 home domain check (Issue
@@ -241,6 +251,15 @@ export declare function waitForFundedAccount(horizonUrl: string, stellarAddress:
  */
 export declare function isCreditBalance(balance: HorizonBalance): balance is HorizonBalanceCredit;
 export declare function getNativeBalance(account: HorizonAccount): string;
+/**
+ * Canonical form used for every asset-code comparison (Issue #968).
+ *
+ * Kept in `horizon.ts` because this is where Horizon balances are compared;
+ * `src/assets.ts` re-exports it as `normalizeAssetCode` and owns validation of
+ * the Stellar asset-code grammar. Trimming and uppercasing make mixed-case
+ * custom codes (e.g. `yXLM`, `usd1`) match the canonical code Horizon reports.
+ */
+export declare function normalizeAssetCodeForComparison(assetCode: string): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;
 /**
  * Locate the credit trustline balance entry for a specific asset so callers

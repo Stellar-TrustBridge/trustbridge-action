@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as fs from 'fs';
 import * as path from 'path';
+import Ajv, { ErrorObject, ValidateFunction } from 'ajv';
 
 import { ValidationResult } from './checks';
 import { generateBadgeSnippets } from './badge';
@@ -67,6 +68,123 @@ export interface ActionOutputExtras {
    * `false`, publishing `snooze_expired` as `"false"` when absent.
    */
   snoozeExpired?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// #919 — Boolean output normalization for workflow `if:` conditions
+// ---------------------------------------------------------------------------
+
+/** The only two values a boolean action output may ever carry. */
+export type BooleanOutputString = 'true' | 'false';
+
+/**
+ * Every action output that carries a boolean. Each one is always published
+ * as exactly `"true"` or `"false"` — lower-case, no whitespace, never empty,
+ * never `"1"`/`"0"`/`"undefined"` — so a workflow can gate with
+ * `if: steps.trustbridge.outputs.<name> == 'true'` and get a stable answer.
+ */
+export const BOOLEAN_OUTPUT_NAMES = Object.freeze([
+  'ready',
+  'trustline_exists',
+  'account_funded',
+  'snooze_expired',
+  'has_conflicts',
+  'network_passphrase_mismatch',
+  'friendbot_called',
+  'friendbot_success',
+  'outputs_truncated',
+] as const);
+
+export type BooleanOutputName = (typeof BOOLEAN_OUTPUT_NAMES)[number];
+
+/**
+ * Thrown by {@link parseBooleanOutput} for a value that is not a recognised
+ * boolean. `received` is a short type/shape description, never the raw
+ * value, so an unexpected object cannot leak into logs.
+ */
+export class BooleanOutputError extends TypeError {
+  constructor(
+    public readonly outputName: string,
+    public readonly received: string,
+  ) {
+    super(
+      `Output "${outputName}" expects a boolean (true/false, or legacy 1/0); received ${received}.`,
+    );
+    this.name = 'BooleanOutputError';
+  }
+}
+
+const TRUE_STRINGS = new Set(['true', '1']);
+const FALSE_STRINGS = new Set(['false', '0', '']);
+
+function describeReceived(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.length > 32 ? `a ${value.length}-character string` : `string ${JSON.stringify(value)}`;
+  }
+  if (typeof value === 'number') return `number ${String(value)}`;
+  if (Array.isArray(value)) return 'an array';
+  return typeof value;
+}
+
+/**
+ * Strictly parse a boolean-like value into a real boolean.
+ *
+ * Accepted (case-insensitive, surrounding whitespace ignored for strings):
+ * - `true` / `false` (boolean or string)
+ * - legacy `1` / `0` (number or string)
+ * - `null`, `undefined`, and `""` → `false` (an absent flag is off)
+ *
+ * Anything else — `"yes"`, `2`, `NaN`, objects, arrays — throws a
+ * {@link BooleanOutputError}. Outputs are a machine contract; guessing at
+ * `"yes"` here would hide a producer bug.
+ */
+export function parseBooleanOutput(value: unknown, outputName = 'value'): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    throw new BooleanOutputError(outputName, describeReceived(value));
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (TRUE_STRINGS.has(normalized)) return true;
+    if (FALSE_STRINGS.has(normalized)) return false;
+  }
+  throw new BooleanOutputError(outputName, describeReceived(value));
+}
+
+/**
+ * Normalize a boolean-like value to the `"true"` / `"false"` string contract.
+ *
+ * Fails closed: a malformed value publishes `"false"` (so a payout gate
+ * never opens on garbage) and emits a `core.warning` naming the output.
+ */
+export function toBooleanOutput(value: unknown, outputName = 'value'): BooleanOutputString {
+  try {
+    return parseBooleanOutput(value, outputName) ? 'true' : 'false';
+  } catch (error) {
+    core.warning(
+      `${error instanceof Error ? error.message : String(error)} Publishing "false" (fail closed).`,
+    );
+    return 'false';
+  }
+}
+
+/**
+ * Re-normalize every {@link BOOLEAN_OUTPUT_NAMES} entry of an outputs map in
+ * place-safe fashion (returns a new object). Non-boolean outputs pass
+ * through untouched. Used as the last step before `core.setOutput` so no
+ * code path can publish `"True"`, `"1"`, or `"undefined"`.
+ */
+export function normalizeBooleanOutputs<T extends Partial<Record<BooleanOutputName, string>>>(outputs: T): T {
+  const normalized: Record<string, unknown> = { ...outputs };
+  for (const name of BOOLEAN_OUTPUT_NAMES) {
+    if (name in normalized) {
+      normalized[name] = toBooleanOutput(normalized[name], name);
+    }
+  }
+  return normalized as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,13 +592,13 @@ export function toActionOutputs(
   );
   
   return {
-    trustline_exists: String(result.trustlineExists),
+    trustline_exists: toBooleanOutput(result.trustlineExists, 'trustline_exists'),
     xlm_balance: result.xlmBalance,
-    account_funded: String(result.accountFunded),
+    account_funded: toBooleanOutput(result.accountFunded, 'account_funded'),
     comment_url: commentUrl ?? '',
     comment_id: extras.commentId ?? '',
     full_report_path: fullReportPath ?? '',
-    ready: String(result.valid),
+    ready: toBooleanOutput(result.valid, 'ready'),
     validated_at: validatedAt,
     reason_code: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
     horizon_url: extras.horizonUrl ?? '',
@@ -499,7 +617,7 @@ export function toActionOutputs(
     badge_markdown: badgeMarkdown,
     badge_url: badgeUrl,
     badge_etag: badgeEtag,
-    snooze_expired: String(extras.snoozeExpired ?? false),
+    snooze_expired: toBooleanOutput(extras.snoozeExpired, 'snooze_expired'),
     timings_json: JSON.stringify({
       input_parse_ms: timings.input_parse_ms ?? 0,
       horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
@@ -518,8 +636,8 @@ export function toActionOutputs(
     conflict_report: extras.conflictReport
       ? JSON.stringify(extras.conflictReport)
       : '',
-    has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
-    network_passphrase_mismatch: String(Boolean(mismatch)),
+    has_conflicts: toBooleanOutput(extras.conflictReport?.hasConflicts, 'has_conflicts'),
+    network_passphrase_mismatch: toBooleanOutput(Boolean(mismatch), 'network_passphrase_mismatch'),
     expected_network_passphrase: mismatch?.expectedPassphrase ?? '',
     actual_network_passphrase: mismatch?.actualPassphrase ?? '',
     assignee_results_json: assigneeResultsJson,
@@ -528,8 +646,8 @@ export function toActionOutputs(
     // Empty strings when no Check Run was created, per the action.yml contract.
     check_run_id: extras.checkRunId ?? '',
     check_run_conclusion: extras.checkRunConclusion ?? '',
-    friendbot_called: String(Boolean(extras.friendbotCalled)),
-    friendbot_success: String(Boolean(extras.friendbotSuccess)),
+    friendbot_called: toBooleanOutput(extras.friendbotCalled, 'friendbot_called'),
+    friendbot_success: toBooleanOutput(extras.friendbotSuccess, 'friendbot_success'),
     friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
     assets_trustline_status: assetsTrustlineStatusTruncation.json,
     trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
@@ -546,7 +664,319 @@ export function toActionOutputs(
     // Issue #965 — overwritten by index.ts when diagnostics_zip_path is set.
     diagnostics_zip_path: '',
     diagnostics_zip_status: 'disabled',
+
+    outputs_truncated: toBooleanOutput(assetsTrustlineStatusTruncation.truncated, 'outputs_truncated'),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Structured output schema validation (Issue #969)
+// ---------------------------------------------------------------------------
+
+/** One path-aware schema violation found in a structured action output. */
+export interface ActionOutputViolation {
+  output: string;
+  path: string;
+  message: string;
+}
+
+/** Thrown before any `core.setOutput` call when a structured output is invalid. */
+export class ActionOutputSchemaError extends Error {
+  readonly violations: ActionOutputViolation[];
+
+  constructor(violations: ActionOutputViolation[]) {
+    const summary = violations
+      .map((violation) => `${violation.path}: ${violation.message}`)
+      .join('; ');
+    super(`Invalid action output — ${summary}`);
+    this.name = 'ActionOutputSchemaError';
+    this.violations = violations;
+    Object.setPrototypeOf(this, ActionOutputSchemaError.prototype);
+  }
+}
+
+type OutputSchema = Record<string, unknown>;
+
+const TIMING_FIELDS = [
+  'input_parse_ms',
+  'horizon_fetch_ms',
+  'checks_ms',
+  'comment_post_ms',
+  'total_ms',
+] as const;
+
+const ASSIGNEE_RESULT_FIELDS = [
+  'ready',
+  'stellar_address',
+  'xlm_balance',
+  'account_funded',
+  'trustline_exists',
+  'reason_code',
+  'validated_at',
+] as const;
+
+function propertiesOf(
+  fields: readonly string[],
+  schema: OutputSchema,
+): Record<string, OutputSchema> {
+  return Object.fromEntries(fields.map((field) => [field, schema]));
+}
+
+/**
+ * Schemas for every JSON-encoded output published by this action. Scalar
+ * outputs are already strings by construction and are covered by the
+ * `action.yml` output contract; these schemas protect the structured values
+ * downstream Wave workflows parse with `fromJSON()`.
+ */
+export const STRUCTURED_OUTPUT_SCHEMAS: Record<string, OutputSchema> = {
+  checks_json: {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['label', 'passed', 'detail'],
+      additionalProperties: false,
+      properties: {
+        label: { type: 'string' },
+        passed: { type: 'boolean' },
+        detail: { type: 'string' },
+      },
+    },
+  },
+  timings_json: {
+    type: 'object',
+    required: [...TIMING_FIELDS],
+    additionalProperties: false,
+    properties: propertiesOf(TIMING_FIELDS, { type: 'number' }),
+  },
+  assignee_results_json: {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      required: [...ASSIGNEE_RESULT_FIELDS],
+      additionalProperties: false,
+      properties: {
+        ready: { type: 'boolean' },
+        stellar_address: { type: 'string' },
+        xlm_balance: { type: 'string' },
+        account_funded: { type: 'boolean' },
+        trustline_exists: { type: 'boolean' },
+        reason_code: { type: 'string' },
+        validated_at: { type: 'string' },
+      },
+    },
+  },
+  matrix_ready_map: {
+    type: 'object',
+    additionalProperties: { type: 'boolean' },
+  },
+  conflict_report: {
+    type: 'object',
+    required: ['hasConflicts', 'conflicts', 'generatedAt'],
+    additionalProperties: false,
+    properties: {
+      hasConflicts: { type: 'boolean' },
+      generatedAt: { type: 'string' },
+      conflicts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['field', 'resolvedValue', 'sources'],
+          additionalProperties: false,
+          properties: {
+            field: { type: 'string' },
+            resolvedValue: { type: 'string' },
+            sources: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['source', 'value'],
+                additionalProperties: false,
+                properties: {
+                  source: { type: 'string' },
+                  value: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  assets_trustline_status: {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['asset_code', 'asset_issuer', 'trustline_exists', 'balance'],
+      additionalProperties: false,
+      properties: {
+        asset_code: { type: 'string' },
+        asset_issuer: { type: 'string' },
+        trustline_exists: { type: 'boolean' },
+        balance: { type: 'string' },
+      },
+    },
+  },
+  batch_summary_json: {
+    type: 'object',
+    required: [
+      'total',
+      'passed',
+      'failed',
+      'failures',
+      'failureTaxonomy',
+      'clawbackStrictFailures',
+      'clawbackStrictMode',
+    ],
+    additionalProperties: false,
+    properties: {
+      total: { type: 'number' },
+      passed: { type: 'number' },
+      failed: { type: 'number' },
+      clawbackStrictFailures: { type: 'number' },
+      clawbackStrictMode: { type: 'boolean' },
+      fatal: { type: 'boolean' },
+      fatalReasonCodes: { type: 'array', items: { type: 'string' } },
+      failures: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['address', 'reason', 'reasonCode', 'clawbackStrict'],
+          additionalProperties: false,
+          properties: {
+            address: { type: 'string' },
+            reason: { type: 'string' },
+            reasonCode: { type: 'string' },
+            clawbackStrict: { type: 'boolean' },
+          },
+        },
+      },
+      failureTaxonomy: {
+        type: 'object',
+        required: [
+          'accountNotFunded',
+          'trustlineMissing',
+          'reserveInsufficient',
+          'horizonError',
+          'invalidAddress',
+          'clawbackStrict',
+        ],
+        additionalProperties: false,
+        properties: propertiesOf(
+          [
+            'accountNotFunded',
+            'trustlineMissing',
+            'reserveInsufficient',
+            'horizonError',
+            'invalidAddress',
+            'clawbackStrict',
+          ],
+          { type: 'number' },
+        ),
+      },
+    },
+  },
+};
+
+/** Empty string is the documented "not present" sentinel for these outputs. */
+const EMPTY_OUTPUT_SENTINELS = new Set(['conflict_report', 'batch_summary_json']);
+
+const ajv = new Ajv({ allErrors: true, strict: false });
+const outputValidators = new Map<string, ValidateFunction>();
+
+function getOutputValidator(name: string): ValidateFunction {
+  const cached = outputValidators.get(name);
+  if (cached) return cached;
+
+  const schema = STRUCTURED_OUTPUT_SCHEMAS[name];
+  if (!schema) {
+    throw new Error(`No output schema is registered for "${name}".`);
+  }
+  const compiled = ajv.compile(schema);
+  outputValidators.set(name, compiled);
+  return compiled;
+}
+
+function decodePointerSegment(segment: string): string {
+  return segment.replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+function appendProperty(path: string, property: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(property)
+    ? `${path}.${property}`
+    : `${path}[${JSON.stringify(property)}]`;
+}
+
+/** Render an AJV error as a readable `$.output[0].field` path. */
+export function formatOutputErrorPath(output: string, error: ErrorObject): string {
+  let result = `$.${output}`;
+  for (const rawSegment of (error.instancePath ?? '').split('/').filter(Boolean)) {
+    const segment = decodePointerSegment(rawSegment);
+    result = /^\d+$/.test(segment) ? `${result}[${segment}]` : appendProperty(result, segment);
+  }
+  const params = error.params as Record<string, unknown>;
+  if (error.keyword === 'required' && typeof params['missingProperty'] === 'string') {
+    result = appendProperty(result, params['missingProperty']);
+  }
+  if (error.keyword === 'additionalProperties' && typeof params['additionalProperty'] === 'string') {
+    result = appendProperty(result, params['additionalProperty']);
+  }
+  return result;
+}
+
+/** Validate one structured output value before it is published. */
+export function validateActionOutput(name: string, value: string): void {
+  if (!Object.prototype.hasOwnProperty.call(STRUCTURED_OUTPUT_SCHEMAS, name)) return;
+  if (value === '' && EMPTY_OUTPUT_SENTINELS.has(name)) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new ActionOutputSchemaError([
+      {
+        output: name,
+        path: `$.${name}`,
+        message: 'must be valid JSON',
+      },
+    ]);
+  }
+
+  const validate = getOutputValidator(name);
+  if (validate(parsed)) return;
+
+  const violations = (validate.errors ?? []).map((error) => ({
+    output: name,
+    path: formatOutputErrorPath(name, error),
+    message: error.message ?? 'is invalid',
+  }));
+  throw new ActionOutputSchemaError(
+    violations.length > 0
+      ? violations
+      : [{ output: name, path: `$.${name}`, message: 'is invalid' }],
+  );
+}
+
+/**
+ * Validate every structured output in an `ActionOutputs` object. Validation is
+ * all-or-nothing: callers must finish this successfully before publishing any
+ * output so a failure cannot leave a partially populated step output set.
+ */
+export function validateActionOutputs(outputs: ActionOutputs): void {
+  const violations: ActionOutputViolation[] = [];
+  for (const [name, value] of Object.entries(outputs)) {
+    try {
+      validateActionOutput(name, value);
+    } catch (error) {
+      if (error instanceof ActionOutputSchemaError) {
+        violations.push(...error.violations);
+      } else {
+        throw error;
+      }
+    }
+  }
+  if (violations.length > 0) {
+    throw new ActionOutputSchemaError(violations);
+  }
 }
 
 export function setValidationOutputs(
@@ -555,7 +985,12 @@ export function setValidationOutputs(
   fullReportPath?: string,
   extras: ActionOutputExtras = {},
 ): void {
-  const outputs = toActionOutputs(result, commentUrl, fullReportPath, extras);
+  // #919: final normalization pass so every boolean output is exactly
+  // "true" or "false", whatever path produced it.
+  const outputs = normalizeBooleanOutputs(toActionOutputs(result, commentUrl, fullReportPath, extras));
+  // Issue #969 — validate the complete set first so a malformed structured
+  // output can never leave half of the step outputs published.
+  validateActionOutputs(outputs);
   for (const [name, value] of Object.entries(outputs)) {
     core.setOutput(name, value);
   }

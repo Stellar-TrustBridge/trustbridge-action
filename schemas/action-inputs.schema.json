@@ -139,6 +139,18 @@
       "pattern": "^[0-9]+$",
       "default": "15000"
     },
+    "per_address_timeout_ms": {
+      "type": "string",
+      "description": "Batch mode: per-address deadline in milliseconds; exceeding it yields ADDRESS_TIMEOUT for that address only. \"0\" disables it (Issue #928).",
+      "pattern": "^[0-9]+$",
+      "default": "0"
+    },
+    "trustbridge_config_strict": {
+      "type": "string",
+      "description": "When \"true\", unknown keys in the trustbridge config fail validation with a did-you-mean hint; \"false\" ignores them (Issue #927).",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
     "sticky_comment": {
       "type": "string",
       "description": "Update TrustBridge's previous issue comment instead of posting a new one each run.",
@@ -250,6 +262,20 @@
       ],
       "default": "false"
     },
+    "required_labels": {
+      "type": "string",
+      "description": "Comma/newline-separated labels that must all be present before Horizon checks run. Empty disables the gate.",
+      "default": ""
+    },
+    "required_labels_fail_on_skip": {
+      "type": "string",
+      "description": "Fail the workflow when the required_labels gate skips validation.",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
     "assets_json": {
       "type": "string",
       "description": "JSON array of additional assets to validate trustlines for.",
@@ -323,6 +349,24 @@
       "description": "Time window in minutes to suppress duplicate failure comments. 0 disables snoozing.",
       "pattern": "^[0-9]+$",
       "default": "30"
+    },
+    "snooze_max_override": {
+      "type": "string",
+      "description": "Maintainer override raising the snooze cap from 7 to 30 days (Issue #962).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "summary_emoji_free": {
+      "type": "string",
+      "description": "Replace emoji with ASCII tokens in summaries for enterprise log drains (Issue #961).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     },
     "force_comment": {
       "type": "string",
@@ -492,6 +536,15 @@
       "description": "Optional integrity hash for stellar.toml content validation.",
       "default": ""
     },
+    "stellar_toml_allow_insecure_testnet": {
+      "type": "string",
+      "description": "Testnet only: tolerate and upgrade an http:// home_domain to HTTPS (Issue #960).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
     "expected_home_domain": {
       "type": "string",
       "description": "Expected issuer home_domain value.",
@@ -499,23 +552,43 @@
     },
     "home_domain_check_mode": {
       "type": "string",
-      "description": "Home domain check mode: warn or strict.",
-      "default": "warn"
+      "description": "Home domain check mode: warn or strict. Case-insensitive; unknown values fail before any Horizon call. (Issue #901)",
+      "default": "warn",
+      "enum": [
+        "",
+        "warn",
+        "strict"
+      ]
     },
     "locale": {
       "type": "string",
-      "description": "Language for issue comments. Supported: en, es, pt. Invalid falls back to en.",
+      "description": "Language for issue comments. Supported: en, es, pt, ja, fr, de. Empty negotiates from the Actions runner language; invalid falls back to en (Issue #974).",
       "enum": [
+        "",
         "en",
         "es",
-        "pt"
+        "pt",
+        "ja",
+        "fr",
+        "de"
       ],
-      "default": "en"
+      "default": ""
+    },
+    "trace_sampling_ratio": {
+      "type": "string",
+      "description": "Fraction of tracing-enabled runs that record/export spans, from 0 to 1 inclusive. Empty uses the event default: 0 on pull_request, 1 otherwise. Invalid/out-of-range values fail closed to 0 (Issue #967).",
+      "pattern": "^(|0(\\.[0-9]+)?|1(\\.0+)?|\\.[0-9]+)$",
+      "default": ""
     },
     "stellar_addresses": {
       "type": "string",
       "description": "Newline-separated or JSON array of Stellar addresses for batch validation.",
       "default": ""
+    },
+    "batch_max_addresses": {
+      "type": "string",
+      "description": "Hard cap on unique addresses validated per run in batch mode (stellar_addresses). Whole number between 1 and 2000. A larger list fails with BATCH_ADDRESS_LIMIT_EXCEEDED before any Horizon request. Default 500. (Issue #911)",
+      "default": "500"
     },
     "use_actions_cache_backend": {
       "type": "string",

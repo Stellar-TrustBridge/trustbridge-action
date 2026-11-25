@@ -990,14 +990,145 @@ export function isValidLocale(locale: string | null | undefined): boolean {
 }
 
 /**
+ * Resolve a locale string to a supported locale without applying a fallback.
+ *
+ * Accepts canonical codes (`es`), upper-case codes (`ES`) and the language
+ * values found on Actions runners / POSIX systems (`es_ES.UTF-8`, `pt-BR`,
+ * `ja_JP@calendar=japanese`). Only the base language is used: TrustBridge
+ * ships whole-language packs, not regional variants.
+ */
+function toSupportedLocale(input: string | null | undefined): Locale | undefined {
+  if (!input) return undefined;
+  const trimmed = input.trim();
+  if (!trimmed || /\s/.test(trimmed)) return undefined;
+  // Two- or three-letter language subtag, optionally followed by a region,
+  // charset or modifier. Anything else (symbols, free text, long codes) is
+  // not a locale value TrustBridge can negotiate.
+  const match = /^([A-Za-z]{2,3})(?:[-_@.].*)?$/.exec(trimmed);
+  const base = match?.[1]?.toLowerCase();
+  return base && isValidLocale(base) ? (base as Locale) : undefined;
+}
+
+/**
  * Parse and validate a locale input from action configuration.
  * Falls back to 'en' if the input is invalid or unset.
  */
 export function parseLocaleInput(input: string | undefined): Locale {
-  if (!input) return 'en';
-  const normalized = input.trim().toLowerCase();
-  if (isValidLocale(normalized)) {
-    return normalized as Locale;
+  return toSupportedLocale(input) ?? 'en';
+}
+
+/**
+ * Inputs to locale negotiation (Issue #974).
+ *
+ * `explicitLocale` is the optional `locale` action input. `runnerLanguage`
+ * is the Actions runner language value (usually `LANG`, `LC_ALL` or
+ * `LANGUAGE`) and may be a colon-separated preference list.
+ */
+export interface LocaleNegotiationOptions {
+  explicitLocale?: string | null;
+  runnerLanguage?: string | null;
+}
+
+/**
+ * Negotiate the comment locale with a deterministic fallback chain:
+ *
+ * 1. explicit `locale` action input, when valid;
+ * 2. first supported language from the runner language value;
+ * 3. English.
+ *
+ * Unknown values are skipped rather than throwing, so a runner with an
+ * unusual locale can never break comment rendering.
+ */
+export function negotiateLocale(options: LocaleNegotiationOptions = {}): Locale {
+  const explicit = toSupportedLocale(options.explicitLocale);
+  if (explicit) return explicit;
+
+  for (const candidate of (options.runnerLanguage ?? '').split(/[:;,]/)) {
+    const locale = toSupportedLocale(candidate);
+    if (locale) return locale;
   }
+
   return 'en';
+}
+
+// ---------------------------------------------------------------------------
+// Plural forms for failure counts (Issue #922)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phrase builder for one plural category. `n` is the already formatted count
+ * (for example `"3"`), so the phrase controls word order and noun agreement.
+ */
+export type PluralPhrase = (n: string) => string;
+
+/**
+ * Per-locale phrases for "N assets failed". Each locale lists only the CLDR
+ * categories it needs; `other` is mandatory and is the fallback for any
+ * category a locale does not list (for example `many` in `fr`, or every
+ * category in `ja`, which has no grammatical plural).
+ *
+ * Translators: add or change a phrase here, not at the call site. Keep the
+ * `{n}`-style argument as the first word so the count always reads first.
+ */
+export const ASSET_FAILURE_PHRASES: Readonly<Record<Locale, Partial<Record<Intl.LDMLPluralRule, PluralPhrase>> & { other: PluralPhrase }>> = {
+  en: {
+    one: (n) => `${n} asset failed`,
+    other: (n) => `${n} assets failed`,
+  },
+  es: {
+    one: (n) => `${n} activo falló`,
+    other: (n) => `${n} activos fallaron`,
+  },
+  pt: {
+    one: (n) => `${n} ativo falhou`,
+    other: (n) => `${n} ativos falharam`,
+  },
+  ja: {
+    other: (n) => `${n} 件のアセットが失敗`,
+  },
+  fr: {
+    one: (n) => `${n} actif a échoué`,
+    other: (n) => `${n} actifs ont échoué`,
+  },
+  de: {
+    one: (n) => `${n} Asset fehlgeschlagen`,
+    other: (n) => `${n} Assets fehlgeschlagen`,
+  },
+};
+
+/**
+ * Normalize a failure count before pluralization (Issue #922).
+ *
+ * Non-finite and negative values become `0`, and fractions are truncated, so
+ * a bad count can never render as `NaN assets failed` or `-1 assets failed`.
+ */
+export function normalizeFailureCount(count: number): number {
+  if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return 0;
+  return Math.trunc(count);
+}
+
+/**
+ * Pick the CLDR plural category for `count` in `locale` (Issue #922).
+ *
+ * Uses `Intl.PluralRules`, so the rules follow CLDR rather than hand-written
+ * `=== 1` checks: French treats `0` as singular, and Portuguese treats `0`
+ * and `1` as singular. Unknown locales use English rules.
+ */
+export function failureCountCategory(locale: string | null | undefined, count: number): Intl.LDMLPluralRule {
+  const resolved = parseLocaleInput(locale ?? undefined);
+  return new Intl.PluralRules(resolved).select(normalizeFailureCount(count));
+}
+
+/**
+ * Render "N assets failed" in `locale` with the correct plural form for
+ * 0, 1 and many (Issue #922). Categories a locale does not define fall back
+ * to `other`, and the count is normalized by {@link normalizeFailureCount}.
+ */
+export function formatAssetFailureCount(locale: string | null | undefined, count: number): string {
+  const resolved = parseLocaleInput(locale ?? undefined);
+  const safeCount = normalizeFailureCount(count);
+  const phrases = ASSET_FAILURE_PHRASES[resolved];
+  const category = failureCountCategory(resolved, safeCount);
+  const phrase = phrases[category] ?? phrases.other;
+  return phrase(safeCount.toLocaleString('en-US'));
 }

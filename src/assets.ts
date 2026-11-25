@@ -1,4 +1,10 @@
-import { HorizonAccount, HorizonBalanceCredit, findTrustlineBalance } from './horizon';
+import type { AssetReasonCode, ReasonCode } from './reasonCodes';
+import {
+  HorizonAccount,
+  HorizonBalanceCredit,
+  findTrustlineBalance,
+  normalizeAssetCodeForComparison,
+} from './horizon';
 
 const ASSET_CODE_REGEX = /^[A-Z0-9]{1,12}$/;
 const STELLAR_ISSUER_G_REGEX = /^G[A-Z2-7]{55}$/;
@@ -123,8 +129,23 @@ export interface AssetJsonEntry {
   issuer: string;
 }
 
+/**
+ * Canonicalize a Stellar asset code for comparison. Trims surrounding
+ * whitespace and uppercases mixed-case codes; validation is handled by
+ * `assertValidAssetCode()` so callers can normalize before deciding whether to
+ * accept the value.
+ */
 export function normalizeAssetCode(assetCode: string): string {
-  return assetCode.trim().toUpperCase();
+  return normalizeAssetCodeForComparison(assetCode);
+}
+
+/**
+ * Compare two asset codes in their canonical form (Issue #968). This is the
+ * single predicate callers should use when casing/whitespace may differ
+ * between an action input and a Horizon balance.
+ */
+export function assetCodesEqual(a: string, b: string): boolean {
+  return normalizeAssetCode(a) === normalizeAssetCode(b);
 }
 
 export function assertValidAssetCode(assetCode: string): void {
@@ -321,7 +342,7 @@ export function meetsMinimumBalance(balance: string, minimum: string): boolean {
  * `schemas/reason-codes.json` so webhook receivers can switch on the same
  * strings as the top-level `reason_code` output.
  */
-export type AssetReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'CLAWBACK_BLOCKED';
+export type { AssetReasonCode };
 
 /** Evaluated trustline/clawback state for one asset (primary or `assets_json`). */
 export interface AssetReasonEvaluation {
@@ -409,11 +430,10 @@ export function getAssetClawbackStatus(
  * Reason codes the authorization/clawback layer can produce. Every value is
  * part of the public catalog in `schemas/reason-codes.json`.
  */
-export type IssuerAuthFlagReasonCode =
-  | 'SUCCESS'
-  | 'TRUSTLINE_MISSING'
-  | 'TRUSTLINE_UNAUTHORIZED'
-  | 'CLAWBACK_BLOCKED';
+export type IssuerAuthFlagReasonCode = Extract<
+  ReasonCode,
+  'SUCCESS' | 'TRUSTLINE_MISSING' | 'TRUSTLINE_UNAUTHORIZED' | 'CLAWBACK_BLOCKED'
+>;
 
 /**
  * Non-blocking signals surfaced alongside the verdict. They never change the

@@ -23,7 +23,47 @@ export declare const DEFAULT_PLUGIN_TIMEOUT_MS = 5000;
 export interface RunPluginsOptions {
     /** Per-plugin timeout in milliseconds. Defaults to {@link DEFAULT_PLUGIN_TIMEOUT_MS}. */
     timeoutMs?: number;
+    /**
+     * Maximum bytes of stderr kept per plugin (Issue #954). Output beyond the
+     * cap is dropped and the capture is flagged `truncated`. Defaults to
+     * {@link DEFAULT_PLUGIN_STDERR_MAX_BYTES}.
+     */
+    stderrMaxBytes?: number;
+    /**
+     * Receives each plugin's captured, capped and redacted stderr. When
+     * omitted, non-empty captures are re-emitted to the real stderr (still
+     * capped and redacted) so diagnostics are never silently lost.
+     */
+    onPluginStderr?: (capture: PluginStderrCapture) => void;
 }
+/** Default per-plugin stderr capture cap: 8 KiB (Issue #954). */
+export declare const DEFAULT_PLUGIN_STDERR_MAX_BYTES: number;
+/** Marker appended to a capture that hit the byte cap. */
+export declare const PLUGIN_STDERR_TRUNCATION_MARKER = "\u2026[stderr truncated]";
+/** Captured stderr for one plugin run (Issue #954). */
+export interface PluginStderrCapture {
+    pluginId: string;
+    /** Redacted text, at most `stderrMaxBytes` bytes plus the truncation marker. */
+    text: string;
+    /** Total bytes the plugin attempted to write. */
+    totalBytes: number;
+    /** True when output exceeded the cap and was cut. */
+    truncated: boolean;
+}
+/**
+ * Run `fn` while intercepting `process.stderr.write`, keeping at most
+ * `maxBytes` bytes and redacting secrets/addresses with `redactString`
+ * (the same policy as the logger). The original writer is always restored,
+ * even when `fn` throws.
+ *
+ * Redaction runs on the capped buffer *before* the marker is appended; a
+ * secret straddling the cap boundary is cut, so only a partial prefix can
+ * survive, and the redaction regexes still mask complete matches.
+ */
+export declare function captureStderr<T>(fn: () => T, maxBytes?: number): {
+    value: T;
+    capture: Omit<PluginStderrCapture, 'pluginId'>;
+};
 /**
  * Run every plugin registered in `registry` against `ctx`, then
  * compose their `CheckPluginResult`s into a `ValidationResult`.
@@ -42,6 +82,8 @@ export interface RunPluginsOptions {
  * remaining plugins (including core Horizon checks) still run. A bad
  * custom plugin therefore fails the gate but never prevents core checks
  * from executing or reporting.
+
+ Clarify whether plugins may perform network I/O, which hosts are allowlisted, and how SSRF controls apply. Add a negative test if enforcement exists.
  *
  * Timeout boundary
  * ----------------

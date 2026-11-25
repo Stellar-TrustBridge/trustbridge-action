@@ -143,10 +143,58 @@ export interface TimingBreakdown {
     comment_post_ms: number;
     total_ms: number;
 }
+/**
+ * Overall outcome of one Action job. Exactly one is recorded per job:
+ *   - `pass`    — validation ran and every check passed (`ready = true`)
+ *   - `fail`    — validation ran and at least one check failed, or the run
+ *                 aborted with an error before a verdict
+ *   - `skipped` — validation was intentionally not run (milestone gate)
+ */
+export declare const JOB_OUTCOMES: readonly ["pass", "fail", "skipped"];
+export type JobOutcome = (typeof JOB_OUTCOMES)[number];
+/**
+ * Bounded set of check kinds used as the `check` label on
+ * `check_skipped`. Check labels embed the operator-supplied asset code, so
+ * they are never used as labels directly; anything unrecognised is `other`.
+ */
+export declare const CHECK_KINDS: readonly ["horizon_available", "account_funded", "trustline", "xlm_reserve", "asset_balance", "trustline_limit", "clawback", "home_domain", "other"];
+export type CheckKind = (typeof CHECK_KINDS)[number];
+/** In-process counter name for a job outcome, e.g. `job_outcome_pass`. */
+export declare function jobOutcomeCounterName(outcome: JobOutcome): string;
+/** In-process counter name for a skipped check kind, e.g. `check_skipped_trustline`. */
+export declare function checkSkippedCounterName(kind: CheckKind): string;
+/**
+ * Prometheus names for the job outcome metrics, as documented in
+ * docs/ARCHITECTURE.md#job-outcome-counters. Exporters that turn the JSON
+ * artifact into Prometheus series must use exactly these names and labels.
+ */
+export declare const JOB_OUTCOME_PROMETHEUS_METRICS: Readonly<{
+    /** Counter, label `outcome` ∈ JOB_OUTCOMES. Sums to 1 per job. */
+    jobOutcome: "trustbridge_job_outcome_total";
+    /** Counter, label `check` ∈ CHECK_KINDS. */
+    checkSkipped: "trustbridge_check_skipped_total";
+}>;
+/** Result of `MetricsCollector.recordJobOutcome()`. */
+export interface JobOutcomeRecord {
+    outcome: JobOutcome;
+    /** Skipped-check counts keyed by kind; kinds with zero skips are omitted. */
+    skippedChecks: Partial<Record<CheckKind, number>>;
+}
 export declare class MetricsCollector {
     private metrics;
     private counters;
     private timers;
+    private jobOutcome;
+    /**
+     * Per-run correlation id (Issue #904). Kept as a top-level field of the
+     * summary — never as a metric tag — so it cannot become an unbounded
+     * label series.
+     */
+    private correlationId;
+    /** Attach the per-run correlation id to the metrics summary (Issue #904). */
+    setCorrelationId(id: string | undefined): void;
+    /** The correlation id attached via {@link setCorrelationId}, if any. */
+    getCorrelationId(): string | undefined;
     /**
      * Record a numeric metric. A `contractAddress` tag is rejected outright:
      * callers must go through `recordContractMetric()`, which validates the
@@ -194,6 +242,7 @@ export declare class MetricsCollector {
         metrics: MetricPoint[];
         counters: Record<string, number>;
         totalMetrics: number;
+        correlationId?: string;
     };
     /**
      * Export metrics in JSON format.
@@ -203,6 +252,24 @@ export declare class MetricsCollector {
      * Clear all metrics.
      */
     reset(): void;
+    /**
+     * Record the job-level outcome (Issue #899).
+     *
+     * Outcomes are mutually exclusive: the first call wins and later calls are
+     * ignored (returning the already-recorded outcome), so an error handler
+     * that runs after a verdict cannot double-count a job as both `pass` and
+     * `fail`. `skippedCheckKinds` is only counted on the winning call.
+     *
+     * @throws When `outcome` is not one of {@link JOB_OUTCOMES}.
+     */
+    recordJobOutcome(outcome: JobOutcome, skippedCheckKinds?: readonly CheckKind[]): JobOutcomeRecord;
+    /**
+     * Forget the recorded job outcome so a new job can record one. Called at
+     * the start of `run()`; counters already incremented are kept.
+     */
+    resetJobOutcome(): void;
+    /** The recorded job outcome, or `undefined` before `recordJobOutcome()`. */
+    getJobOutcome(): JobOutcomeRecord | undefined;
     /**
      * Record campaign preset metric.
      */
@@ -247,6 +314,11 @@ export interface JobSummaryReport {
      * passed to `buildJobSummary()`; `undefined` otherwise.
      */
     horizonFetchLatencyHistogram?: HorizonLatencyHistogramSnapshot;
+    /**
+     * Job-level outcome recorded via `recordJobOutcome()` (Issue #899);
+     * `undefined` when none was recorded yet.
+     */
+    jobOutcome?: JobOutcome;
 }
 /**
  * Write a `JobSummaryReport` to the GitHub Actions Job Summary markdown
@@ -325,9 +397,50 @@ export declare class HorizonLatencyHistogram {
     /** Reset all recorded samples. */
     reset(): void;
 }
+/**
+ * Issue #956 — bounded outcome labels for the per-address check latency
+ * histogram. The address itself is NEVER a label: every observation is
+ * aggregated under one of these fixed outcomes so cardinality is constant
+ * regardless of batch size.
+ */
+export declare const CHECK_LATENCY_OUTCOMES: readonly ["pass", "fail", "invalid", "error"];
+export type CheckLatencyOutcome = (typeof CHECK_LATENCY_OUTCOMES)[number];
+/** Snapshot shape of {@link CheckLatencyHistogram}, keyed by outcome. */
+export type CheckLatencyHistogramSnapshot = Record<CheckLatencyOutcome, LatencyStats>;
+/**
+ * Issue #956 — per-address check latency histogram.
+ *
+ * Records the wall-clock duration of each per-address check (fetch + rule
+ * evaluation) into the fixed {@link LATENCY_BUCKETS_MS} buckets. Storage is
+ * bounded: only counts, totals, min and max are kept per outcome — no raw
+ * samples and no addresses — so memory and label cardinality are O(1).
+ *
+ * Invalid observations (negative, NaN, non-finite) are rejected and counted
+ * under `rejected` instead of skewing the buckets.
+ */
+export declare class CheckLatencyHistogram {
+    private stats;
+    private rejectedCount;
+    constructor();
+    private static emptyStats;
+    /**
+     * Record one per-address check duration.
+     * @returns `true` when recorded, `false` when the input was rejected.
+     */
+    record(outcome: CheckLatencyOutcome, latencyMs: number): boolean;
+    /** Number of observations rejected as malformed. */
+    get rejected(): number;
+    /** Total accepted observations across all outcomes. */
+    get totalSamples(): number;
+    /** Deep-copied, address-free snapshot for the metrics JSON artifact. */
+    toSnapshot(): CheckLatencyHistogramSnapshot;
+    reset(): void;
+}
 export declare const globalMetrics: MetricsCollector;
 /** Global Horizon fetch latency histogram — wired into `fetchAccountOnce` in `horizon.ts`. */
 export declare const globalHorizonHistogram: HorizonLatencyHistogram;
+/** Issue #956 — global per-address check latency histogram, wired into `batch.ts`. */
+export declare const globalCheckLatencyHistogram: CheckLatencyHistogram;
 /** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
 export declare const globalOctokitMetrics: OctokitMetrics;
 /**

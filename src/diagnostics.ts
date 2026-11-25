@@ -27,6 +27,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import { redactStellarAddress, redactHorizonUrl, redactString } from './logger';
+
+import * as crypto from 'crypto';
+import {
+  redactStellarAddress,
+  redactHorizonUrl,
+  redactString,
+  setLogCorrelationId,
+} from './logger';
 import { escapeMarkdownInline as escapeMarkdown } from './markdown';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +72,11 @@ export interface DiagnosticsRunInfo {
 }
 
 export interface DiagnosticsConfig {
+  /**
+   * Per-run correlation id (Issue #904). When set, rendered as the first row
+   * of the diagnostics block so support can match the comment to the run log.
+   */
+  correlationId?: string;
   /** Resolved action inputs snapshot. */
   inputs: DiagnosticsInputSnapshot;
   /** Runtime information about the Horizon request. */
@@ -81,6 +94,151 @@ export interface DiagnosticsConfig {
     met: boolean;
     subentryCount: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Correlation id (Issue #904)
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment variable a caller can set to propagate an existing correlation
+ * id into this run (e.g. a reusable workflow fanning out to several jobs).
+ */
+export const CORRELATION_ID_ENV = 'TRUSTBRIDGE_CORRELATION_ID';
+
+/** Prefix of every generated correlation id. */
+export const CORRELATION_ID_PREFIX = 'tb-';
+
+/** Minimum / maximum accepted correlation id length. */
+export const CORRELATION_ID_MIN_LENGTH = 8;
+export const CORRELATION_ID_MAX_LENGTH = 64;
+
+/** Stable reason code logged when a propagated correlation id is rejected. */
+export const CORRELATION_ID_INVALID_REASON_CODE = 'CORRELATION_ID_INVALID';
+
+/** Hidden comment marker prefix carrying the correlation id. */
+export const CORRELATION_ID_MARKER_PREFIX = '<!-- trustbridge-action:correlation-id:';
+
+const CORRELATION_ID_CHARSET = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Generate a fresh correlation id: `tb-` followed by 16 random hex chars.
+ * Random (not derived from tokens, addresses or run metadata) so it can be
+ * quoted publicly without leaking anything.
+ */
+export function generateCorrelationId(): string {
+  return `${CORRELATION_ID_PREFIX}${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Validate a correlation id. Returns `undefined` when valid, otherwise a
+ * stable human-readable reason. A value is rejected when it is empty,
+ * shorter than {@link CORRELATION_ID_MIN_LENGTH} or longer than
+ * {@link CORRELATION_ID_MAX_LENGTH}, uses characters outside
+ * `[A-Za-z0-9._-]`, or would be altered by the log redaction policy
+ * (i.e. it looks like a token, secret, or Stellar address).
+ */
+export function validateCorrelationId(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) {
+    return 'correlation id must be a non-empty string';
+  }
+  if (value.length < CORRELATION_ID_MIN_LENGTH || value.length > CORRELATION_ID_MAX_LENGTH) {
+    return `correlation id must be ${CORRELATION_ID_MIN_LENGTH}-${CORRELATION_ID_MAX_LENGTH} characters (got ${value.length})`;
+  }
+  if (!CORRELATION_ID_CHARSET.test(value)) {
+    return 'correlation id may only contain letters, digits, ".", "_" and "-"';
+  }
+  if (redactString(value) !== value) {
+    return 'correlation id resembles a secret or Stellar address and would be redacted';
+  }
+  return undefined;
+}
+
+/** True when `value` is an acceptable correlation id. */
+export function isValidCorrelationId(value: unknown): value is string {
+  return validateCorrelationId(value) === undefined;
+}
+
+let currentCorrelationId: string | undefined;
+let currentCorrelationInit: CorrelationIdInit | undefined;
+
+/** Result of {@link initCorrelationId}. */
+export interface CorrelationIdInit {
+  correlationId: string;
+  /** Where the id came from. */
+  source: 'env' | 'generated';
+  /** Set when a propagated id was present but rejected (it is never echoed). */
+  rejectedReason?: string;
+}
+
+/**
+ * Resolve this run's correlation id and propagate it to the logger so every
+ * structured log line carries `correlation_id` (Issue #904).
+ *
+ * A valid `TRUSTBRIDGE_CORRELATION_ID` is reused; a missing value yields a
+ * freshly generated id; a malformed value is **not** used or echoed — a new
+ * id is generated and `rejectedReason` explains why. Idempotent: repeated
+ * calls in the same process return the same id until
+ * {@link resetCorrelationId} is called.
+ */
+export function initCorrelationId(
+  env: Record<string, string | undefined> = process.env,
+): CorrelationIdInit {
+  if (currentCorrelationInit) {
+    return currentCorrelationInit;
+  }
+  const raw = env[CORRELATION_ID_ENV]?.trim();
+  let result: CorrelationIdInit;
+  if (raw) {
+    const reason = validateCorrelationId(raw);
+    result = reason
+      ? { correlationId: generateCorrelationId(), source: 'generated', rejectedReason: reason }
+      : { correlationId: raw, source: 'env' };
+  } else {
+    result = { correlationId: generateCorrelationId(), source: 'generated' };
+  }
+  currentCorrelationInit = result;
+  currentCorrelationId = result.correlationId;
+  setLogCorrelationId(currentCorrelationId);
+  return result;
+}
+
+/** The current run's correlation id, or `undefined` before {@link initCorrelationId}. */
+export function getCorrelationId(): string | undefined {
+  return currentCorrelationId;
+}
+
+/** Forget the current correlation id (tests / a new run in the same process). */
+export function resetCorrelationId(): void {
+  currentCorrelationId = undefined;
+  currentCorrelationInit = undefined;
+  setLogCorrelationId(undefined);
+}
+
+/**
+ * Hidden marker embedding the correlation id in a comment body, so support
+ * tooling can grep it even when the visible footer is not rendered.
+ * Returns an empty string for an invalid id.
+ */
+export function formatCorrelationMarker(correlationId: string | undefined): string {
+  if (!isValidCorrelationId(correlationId)) return '';
+  return `${CORRELATION_ID_MARKER_PREFIX}${correlationId} -->`;
+}
+
+/** Extract a correlation id from a comment body's hidden marker, if present. */
+export function parseCorrelationMarker(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  const match = /<!-- trustbridge-action:correlation-id:([A-Za-z0-9._-]{8,64}) -->/.exec(body);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * Visible comment footer line quoting the correlation id. Returns an empty
+ * string for an invalid id so callers can append unconditionally.
+ */
+export function formatCorrelationFooter(correlationId: string | undefined): string {
+  if (!isValidCorrelationId(correlationId)) return '';
+  return `<sub>Correlation ID: \`${correlationId}\` — quote this when contacting support.</sub>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +365,11 @@ export function buildDiagnosticsBlock(config: DiagnosticsConfig): string {
     '> **No secrets are included.** All addresses are redacted to first-4/last-4.',
     '',
   ];
+
+  // --- Correlation id (Issue #904) ---
+  if (isValidCorrelationId(config.correlationId)) {
+    lines.push(`**Correlation ID:** \`${config.correlationId}\``, '');
+  }
 
   // --- Horizon run info ---
   if (runInfo) {
@@ -804,4 +967,27 @@ export function writeDiagnosticsZip(options: DiagnosticsZipOptions): Diagnostics
       message: `Could not write diagnostics bundle to ${resolved}${hint}: ${redactBundleText(err instanceof Error ? err.message : String(err))}`,
     };
   }
+
+/**
+ * Render captured plugin stderr (Issue #954) as a Markdown diagnostics
+ * section. Captures arrive already capped and redacted by
+ * `captureStderr` in `src/pluginRunner.ts`; this only formats them, and
+ * returns an empty string when no plugin wrote to stderr.
+ */
+export function buildPluginStderrDiagnostics(
+  captures: ReadonlyArray<{ pluginId: string; text: string; totalBytes: number; truncated: boolean }>,
+): string {
+  const nonEmpty = captures.filter((c) => c.totalBytes > 0);
+  if (nonEmpty.length === 0) return '';
+  const lines = ['### Plugin stderr'];
+  for (const c of nonEmpty) {
+    lines.push(
+      '',
+      `**\`${c.pluginId}\`** — ${c.totalBytes} byte(s)${c.truncated ? ', truncated' : ''}`,
+      '```text',
+      c.text.replace(/```/g, '`​``'),
+      '```',
+    );
+  }
+  return lines.join('\n');
 }

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { logger } from './logger';
 
@@ -477,6 +478,102 @@ export interface LoadCodeownersOptions {
   baseRef?: string;
   owner?: string;
   repo?: string;
+  /**
+   * What to do when no CODEOWNERS file exists at any searched path
+   * (Issue #912). Defaults to `'warn'`.
+   */
+  missingMode?: CodeownersMissingMode;
+  /**
+   * Injectable warning sink for tests. Defaults to `core.warning`, which
+   * emits a GitHub warning annotation.
+   */
+  warn?: (message: string, properties?: core.AnnotationProperties) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #912 — missing CODEOWNERS graceful degrade
+// ---------------------------------------------------------------------------
+
+/**
+ * How a missing CODEOWNERS file is handled (Issue #912).
+ *
+ * - `warn` (default): emit a warning annotation and continue with no
+ *   CODEOWNERS-derived maintainers (`maintainers_allowlist` still applies).
+ * - `strict`: throw {@link CodeownersMissingError} so the run fails.
+ */
+export type CodeownersMissingMode = 'warn' | 'strict';
+
+/** Every supported {@link CodeownersMissingMode}. */
+export const CODEOWNERS_MISSING_MODES: readonly CodeownersMissingMode[] = ['warn', 'strict'];
+
+/** Stable reason code carried by {@link CodeownersMissingError}. */
+export const CODEOWNERS_MISSING_REASON_CODE = 'CODEOWNERS_MISSING';
+
+/** Title of the warning annotation emitted in `warn` mode. */
+export const CODEOWNERS_MISSING_ANNOTATION_TITLE = 'TrustBridge: CODEOWNERS not found';
+
+/**
+ * Parse a CODEOWNERS missing-mode value. Empty input yields `'warn'`.
+ *
+ * @throws On any value other than `warn` / `strict` (case-insensitive).
+ */
+export function parseCodeownersMissingMode(value: string | undefined): CodeownersMissingMode {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === '') return 'warn';
+  if ((CODEOWNERS_MISSING_MODES as readonly string[]).includes(normalized)) {
+    return normalized as CodeownersMissingMode;
+  }
+  throw new Error(
+    `Invalid CODEOWNERS missing mode "${value}". Expected one of: ${CODEOWNERS_MISSING_MODES.join(', ')}.`,
+  );
+}
+
+/** Thrown in `strict` mode when no CODEOWNERS file is found (Issue #912). */
+export class CodeownersMissingError extends Error {
+  readonly reasonCode = CODEOWNERS_MISSING_REASON_CODE;
+  /** Repository-relative paths that were searched, in order. */
+  readonly searchedPaths: string[];
+
+  constructor(searchedPaths: string[]) {
+    super(formatCodeownersMissingMessage(searchedPaths, 'strict'));
+    this.name = 'CodeownersMissingError';
+    this.searchedPaths = searchedPaths;
+  }
+}
+
+/** Human-readable, actionable message for a missing CODEOWNERS file. */
+export function formatCodeownersMissingMessage(
+  searchedPaths: readonly string[],
+  mode: CodeownersMissingMode,
+): string {
+  const searched = searchedPaths.join(', ');
+  return mode === 'strict'
+    ? `CODEOWNERS file not found (${CODEOWNERS_MISSING_REASON_CODE}); searched: ${searched}. ` +
+        'Strict mode requires one: add a CODEOWNERS file, point codeowners_path at it, ' +
+        "or use missing mode 'warn' to continue without CODEOWNERS maintainers."
+    : `CODEOWNERS file not found (${CODEOWNERS_MISSING_REASON_CODE}); searched: ${searched}. ` +
+        'Continuing without CODEOWNERS-derived maintainers; maintainers_allowlist still applies. ' +
+        "Add a CODEOWNERS file or set codeowners_path to silence this warning, or use missing mode 'strict' to fail instead.";
+}
+
+/**
+ * Apply the configured missing mode once every candidate path came up empty.
+ * `warn` emits one warning annotation; `strict` throws.
+ */
+function handleMissingCodeowners(searchedPaths: string[], options: LoadCodeownersOptions): void {
+  const mode = options.missingMode ?? 'warn';
+  if (mode === 'strict') {
+    throw new CodeownersMissingError(searchedPaths);
+  }
+  const message = formatCodeownersMissingMessage(searchedPaths, 'warn');
+  logger.warn(message, { component: 'codeowners', reason_code: CODEOWNERS_MISSING_REASON_CODE });
+  const warn = options.warn ?? ((msg: string, props?: core.AnnotationProperties) => core.warning(msg, props));
+  try {
+    warn(message, { title: CODEOWNERS_MISSING_ANNOTATION_TITLE });
+  } catch {
+    // core.warning may throw outside a GitHub Actions context; the log line
+    // above already recorded the condition.
+  }
 }
 
 /**
@@ -484,6 +581,10 @@ export interface LoadCodeownersOptions {
  * - On pull requests from forks (or untrusted PR heads), NEVER reads from the local PR workspace.
  * - Instead, fetches the trusted CODEOWNERS file from the base branch / default branch via GitHub API.
  * - When running in a trusted context (push, default branch, or workflow_dispatch), reads from local workspace.
+ *
+ * Issue #912: when no CODEOWNERS file exists at any searched path, the default
+ * `missingMode: 'warn'` emits a warning annotation and returns an empty set;
+ * `missingMode: 'strict'` throws {@link CodeownersMissingError} instead.
  */
 export async function loadCodeowners(options: LoadCodeownersOptions = {}): Promise<Set<string>> {
   const workspaceRoot = options.workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
@@ -549,6 +650,7 @@ export async function loadCodeowners(options: LoadCodeownersOptions = {}): Promi
 
   // Trusted local workspace read (push, default branch, workflow_dispatch)
   const candidatePaths = customPath ? [customPath] : CODEOWNERS_STANDARD_PATHS;
+  let foundUnreadable = false;
   for (const relativePath of candidatePaths) {
     const fullPath = path.isAbsolute(relativePath)
       ? relativePath
@@ -563,16 +665,20 @@ export async function loadCodeowners(options: LoadCodeownersOptions = {}): Promi
         logger.warn(`Failed to read CODEOWNERS from ${relativePath}: ${err instanceof Error ? err.message : String(err)}`, {
           component: 'codeowners',
         });
+        // An unreadable file exists, so it is not "missing" (Issue #912).
+        foundUnreadable = true;
       }
     }
   }
 
+  if (!foundUnreadable) handleMissingCodeowners(candidatePaths, options);
   return new Set();
 }
 
 /**
  * Load CODEOWNERS rules (pattern + owners) using the same branch-safety guarantees
- * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found.
+ * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found
+ * (after a warning annotation, or throws in `strict` missing mode — Issue #912).
  */
 export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): Promise<CodeownersRule[]> {
   const workspaceRoot = options.workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd();
@@ -600,6 +706,9 @@ export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): 
       const ref = options.baseRef || payload.pull_request?.base?.ref || payload.repository?.default_branch || 'main';
 
       const pathsToTry = customPath ? [customPath] : CODEOWNERS_STANDARD_PATHS;
+      // Issue #912: only an all-404 lookup means "missing". Permission or
+      // network errors keep the existing fail-safe (empty rules, no throw).
+      let allNotFound = true;
       for (const filePath of pathsToTry) {
         try {
           const response = await octokit.rest.repos.getContent({ owner, repo, path: filePath, ref });
@@ -607,16 +716,20 @@ export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): 
             const content = Buffer.from(response.data.content, 'base64').toString('utf8');
             return parseCodeownersRules(content);
           }
+          allNotFound = false;
         } catch (err: unknown) {
           const status = (err as { status?: number })?.status;
           if (status !== 404) {
+            allNotFound = false;
             logger.warn(`Failed to fetch CODEOWNERS rules from ${filePath}: ${err instanceof Error ? err.message : String(err)}`, {
               component: 'codeowners',
             });
           }
         }
       }
+      if (allNotFound) handleMissingCodeowners([...pathsToTry], options);
     } catch (apiError) {
+      if (apiError instanceof CodeownersMissingError) throw apiError;
       logger.warn(`API error while fetching trusted CODEOWNERS rules: ${apiError instanceof Error ? apiError.message : String(apiError)}`, {
         component: 'codeowners',
       });
@@ -626,6 +739,7 @@ export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): 
   }
 
   const candidatePaths = customPath ? [customPath] : CODEOWNERS_STANDARD_PATHS;
+  let foundUnreadable = false;
   for (const relativePath of candidatePaths) {
     const fullPath = path.isAbsolute(relativePath)
       ? relativePath
@@ -639,10 +753,12 @@ export async function loadCodeownersRules(options: LoadCodeownersOptions = {}): 
         logger.warn(`Failed to read CODEOWNERS rules from ${relativePath}: ${err instanceof Error ? err.message : String(err)}`, {
           component: 'codeowners',
         });
+        foundUnreadable = true;
       }
     }
   }
 
+  if (!foundUnreadable) handleMissingCodeowners(candidatePaths, options);
   return [];
 }
 

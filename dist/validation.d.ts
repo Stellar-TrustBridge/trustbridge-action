@@ -87,6 +87,26 @@ export declare function validateUrl(url: string, fieldName: string, options?: {
     allowPathTraversal?: boolean;
 }): ValidationResult;
 /**
+ * Longest raw value echoed back in an enum validation error. Longer values
+ * are truncated so an oversized (or pasted-secret) input never floods the
+ * log line. See docs/INPUT_VALIDATION.md#enum-inputs-network-and-enforcement-modes.
+ */
+export declare const ENUM_INPUT_MAX_ECHO_LENGTH = 32;
+/**
+ * Validates a string enum input (Issue #901).
+ *
+ * Case policy: the value is trimmed and lowercased before matching, so
+ * `Testnet` and ` STRICT ` are accepted. An empty value is valid — callers
+ * apply the documented default. Anything else is rejected with a stable,
+ * actionable message that lists every allowed value:
+ *
+ *   `<field> must be one of "a", "b". Received: "<value>"`
+ *
+ * The span records only the field name, the input length and the result —
+ * never the raw value.
+ */
+export declare function validateEnumInput(value: string | undefined, fieldName: string, allowed: readonly string[]): ValidationResult;
+/**
  * Combines multiple validation results into a single summary.
  */
 export declare function combineResults(...results: ValidationResult[]): ValidationResult;
