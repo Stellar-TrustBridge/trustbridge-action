@@ -18,6 +18,10 @@
  *     (Issue #758): loopback, link-local, private ranges, and cloud
  *     metadata endpoints are rejected, as are scheme-smuggling forms
  *     (non-http(s) schemes, embedded credentials, non-canonical hosts).
+
+suffix matches and IPs; ensure SSRF still applies to bypassed destinations as required by policy.
+
+ 
  */
 
 import { HttpsProxyAgent } from 'https-proxy-agent';
