@@ -17,6 +17,75 @@
  *  - Federation resolution is OFF by default (federation_resolution_enabled: false)
  *  - Full SEP-0002 client functionality is explicitly out of scope
  */
+import type { SSRFDnsLookup } from './ssrf';
+/**
+ * Default DNS/resolve timeout for each federation host lookup (5 seconds).
+ *
+ * Applied independently of {@link FEDERATION_HTTP_TIMEOUT_MS}: the DNS budget
+ * is spent resolving the `stellar.toml` / `FEDERATION_SERVER` hostname, and
+ * the HTTP budget only starts once the host has resolved. A slow resolver can
+ * therefore never eat into the HTTP budget, and a slow server can never be
+ * misreported as a DNS failure (Issue #906).
+ */
+export declare const FEDERATION_DNS_TIMEOUT_MS = 5000;
+/** Default HTTP request timeout for each federation fetch (10 seconds). */
+export declare const FEDERATION_HTTP_TIMEOUT_MS = 10000;
+/** Upper bound accepted for either federation timeout knob (60 seconds). */
+export declare const FEDERATION_MAX_TIMEOUT_MS = 60000;
+/**
+ * Per-call tuning knobs for {@link resolveFederationAddress} (Issue #906).
+ */
+export interface FederationResolveOptions {
+    /**
+     * DNS/resolve timeout in milliseconds for each host lookup.
+     * Default {@link FEDERATION_DNS_TIMEOUT_MS}. Must be a positive finite
+     * number no greater than {@link FEDERATION_MAX_TIMEOUT_MS}; anything else
+     * falls back to the default with a warning.
+     */
+    dnsTimeoutMs?: number;
+    /**
+     * HTTP request timeout in milliseconds for each federation fetch.
+     * Default {@link FEDERATION_HTTP_TIMEOUT_MS}. Same validation rules as
+     * `dnsTimeoutMs`.
+     */
+    httpTimeoutMs?: number;
+    /**
+     * Resolver used for the DNS step. Defaults to the OS resolver
+     * (`defaultSSRFDnsLookup`). Injectable so tests never touch real DNS.
+     */
+    dnsLookup?: SSRFDnsLookup;
+}
+/**
+ * Normalize one federation timeout knob. Non-numeric, non-finite,
+ * non-positive, or over-the-cap values fall back to `fallback` and log a
+ * warning so a malformed value never silently disables the timeout.
+ */
+export declare function normalizeFederationTimeout(value: unknown, fallback: number, name: 'dnsTimeoutMs' | 'httpTimeoutMs'): number;
+/**
+ * Resolve the effective, independent DNS and HTTP timeouts for a federation
+ * lookup (Issue #906).
+ */
+export declare function resolveFederationTimeouts(options?: FederationResolveOptions): {
+    dnsTimeoutMs: number;
+    httpTimeoutMs: number;
+};
+/** Result of {@link resolveHostWithTimeout}. */
+export type FederationDnsResult = {
+    ok: true;
+    addresses: string[];
+    durationMs: number;
+} | {
+    ok: false;
+    kind: 'timeout' | 'nxdomain';
+    error: string;
+    durationMs: number;
+};
+/**
+ * Resolve `hostname` with its own DNS timeout, independent of any HTTP
+ * timeout (Issue #906). Never throws: resolver errors and empty answers are
+ * reported as `nxdomain`, an expired budget as `timeout`.
+ */
+export declare function resolveHostWithTimeout(hostname: string, timeoutMs: number, lookup?: SSRFDnsLookup): Promise<FederationDnsResult>;
 /**
  * Stable error codes surfaced by federation resolution failures.
  *
@@ -31,17 +100,19 @@
  * | `TOML_FETCH_FAILED` | Fetching `stellar.toml` failed for an unclassified reason. |
  * | `TOML_NXDOMAIN` | `stellar.toml` host DNS lookup failed. |
  * | `TOML_TRUNCATED` | `stellar.toml` response body exceeded the size limit. |
- * | `TOML_TIMEOUT` | `stellar.toml` fetch timed out. |
+ * | `TOML_TIMEOUT` | `stellar.toml` HTTP fetch timed out (HTTP timeout). |
+ * | `TOML_DNS_TIMEOUT` | `stellar.toml` host DNS lookup timed out (DNS timeout, Issue #906). |
  * | `NO_FEDERATION_SERVER` | `stellar.toml` exists but has no `FEDERATION_SERVER`. |
  * | `FEDERATION_FETCH_FAILED` | Federation server request failed for an unclassified reason. |
  * | `FEDERATION_NXDOMAIN` | Federation server host DNS lookup failed. |
  * | `FEDERATION_TRUNCATED` | Federation server response body exceeded the size limit. |
- * | `FEDERATION_TIMEOUT` | Federation server request timed out. |
+ * | `FEDERATION_TIMEOUT` | Federation server HTTP request timed out (HTTP timeout). |
+ * | `FEDERATION_DNS_TIMEOUT` | Federation server host DNS lookup timed out (DNS timeout, Issue #906). |
  * | `INVALID_ACCOUNT_ID` | Federation response contained no valid Stellar G-address. |
  * | `MEMO_REQUIRED` | Federation response includes `memo_type` but omits the `memo` value. |
  * | `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized or the `memo` value is incompatible with the declared type (e.g. non-numeric `id`, non-hex `hash`). |
  */
-export type FederationErrorCode = 'INVALID_ADDRESS' | 'INVALID_USERNAME' | 'INVALID_DOMAIN' | 'TOML_FETCH_FAILED' | 'TOML_NXDOMAIN' | 'TOML_TRUNCATED' | 'TOML_TIMEOUT' | 'NO_FEDERATION_SERVER' | 'FEDERATION_FETCH_FAILED' | 'FEDERATION_NXDOMAIN' | 'FEDERATION_TRUNCATED' | 'FEDERATION_TIMEOUT' | 'INVALID_ACCOUNT_ID' | 'MEMO_REQUIRED' | 'MEMO_TYPE_MISMATCH';
+export type FederationErrorCode = 'INVALID_ADDRESS' | 'INVALID_USERNAME' | 'INVALID_DOMAIN' | 'TOML_FETCH_FAILED' | 'TOML_NXDOMAIN' | 'TOML_TRUNCATED' | 'TOML_TIMEOUT' | 'TOML_DNS_TIMEOUT' | 'NO_FEDERATION_SERVER' | 'FEDERATION_FETCH_FAILED' | 'FEDERATION_NXDOMAIN' | 'FEDERATION_TRUNCATED' | 'FEDERATION_TIMEOUT' | 'FEDERATION_DNS_TIMEOUT' | 'INVALID_ACCOUNT_ID' | 'MEMO_REQUIRED' | 'MEMO_TYPE_MISMATCH';
 /**
  * The three memo types defined by the Stellar protocol.
  *
@@ -146,10 +217,17 @@ export declare function validateFederationDomain(domain: string): {
  * NXDOMAIN, truncated responses, and timeouts are surfaced as stable error
  * codes (see {@link FederationErrorCode}) and never hang the job.
  *
+ * DNS resolution and the HTTP request use **separate** timeouts (Issue #906):
+ * each host is first resolved under `dnsTimeoutMs`, and only then is the
+ * request sent under `httpTimeoutMs`. A DNS timeout surfaces as
+ * `TOML_DNS_TIMEOUT` / `FEDERATION_DNS_TIMEOUT`; an HTTP timeout as
+ * `TOML_TIMEOUT` / `FEDERATION_TIMEOUT`.
+ *
  * @param input The federation address (e.g., "user*domain.com")
+ * @param options Optional DNS/HTTP timeout knobs and resolver override
  * @returns Resolution result or null on failure
  */
-export declare function resolveFederationAddress(input: string): Promise<FederationResolution | null>;
+export declare function resolveFederationAddress(input: string, options?: FederationResolveOptions): Promise<FederationResolution | null>;
 /**
  * Validates the `memo_type` and `memo` fields returned by a federation server.
  *

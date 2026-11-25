@@ -37,6 +37,40 @@ export const DEFAULT_REASON_CODE = 'unknown';
 
 export const DEFAULT_CHECK_LABEL = 'unknown';
 
+// ---------------------------------------------------------------------------
+// Correlation id propagation (Issue #904)
+// ---------------------------------------------------------------------------
+
+/** Structured log key carrying the per-run correlation id. */
+export const CORRELATION_ID_LOG_KEY = 'correlation_id';
+
+let logCorrelationId: string | undefined;
+
+/**
+ * Set (or clear with `undefined`) the per-run correlation id attached to
+ * every structured log line. Called by `initCorrelationId` in
+ * `src/diagnostics.ts`; the id is validated there, so it is never a secret.
+ */
+export function setLogCorrelationId(id: string | undefined): void {
+  logCorrelationId = id && id.trim() !== '' ? id.trim() : undefined;
+}
+
+/** Current correlation id attached to log lines, if any. */
+export function getLogCorrelationId(): string | undefined {
+  return logCorrelationId;
+}
+
+/**
+ * Return `context` with `correlation_id` added when one is set and the
+ * caller did not supply its own. No-op (same object) when none is set, so
+ * log output is byte-identical to earlier releases until a run opts in.
+ */
+function withCorrelationId(context: LogContext | undefined): LogContext | undefined {
+  if (!logCorrelationId) return context;
+  if (context && context[CORRELATION_ID_LOG_KEY] !== undefined) return context;
+  return { ...(context ?? {}), [CORRELATION_ID_LOG_KEY]: logCorrelationId };
+}
+
 /**
  * Normalize a structured field value to a non-empty string. Empty, nullish,
  * or whitespace-only values fall back to the provided default so the key is
@@ -60,7 +94,7 @@ function normalizeStructuredField(value: unknown, fallback: string): string {
  */
 export function withStructuredFields(context: LogContext = {}): LogContext {
   return {
-    ...context,
+    ...withCorrelationId(context),
     reason_code: normalizeStructuredField(context.reason_code, DEFAULT_REASON_CODE),
     check: normalizeStructuredField(context.check, DEFAULT_CHECK_LABEL),
   };
@@ -329,6 +363,7 @@ export const LOG_CONTEXT_KEY_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'status',
   'count',
   'durationMs',
+  CORRELATION_ID_LOG_KEY,
   ...ADDRESS_CONTEXT_KEYS,
 ]);
 
@@ -502,21 +537,21 @@ class StructuredLogger {
    * Log an informational message.
    */
   info(message: string, context?: LogContext): void {
-    core.info(this.formatMessage(redactString(message), redactContext(context)));
+    core.info(this.formatMessage(redactString(message), this.redact(context)));
   }
 
   /**
    * Log a warning message.
    */
   warn(message: string, context?: LogContext): void {
-    core.warning(this.formatMessage(redactString(message), redactContext(context)));
+    core.warning(this.formatMessage(redactString(message), this.redact(context)));
   }
 
   /**
    * Log an error message.
    */
   error(message: string, context?: LogContext, error?: Error): void {
-    let fullMessage = this.formatMessage(redactString(message), redactContext(context));
+    let fullMessage = this.formatMessage(redactString(message), this.redact(context));
     if (error) {
       fullMessage += `\n  Error: ${redactString(error.message)}`;
       if (error.stack) {
@@ -531,8 +566,18 @@ class StructuredLogger {
    */
   debug(message: string, context?: LogContext): void {
     if (this.debugMode) {
-      core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
+      core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, this.redact(context)));
     }
+  }
+
+  /**
+   * Redact a context, attaching the per-run correlation id when one is set
+   * (Issue #904). Returns `undefined` for an absent context with no id so
+   * the line layout is unchanged in that case.
+   */
+  private redact(context?: LogContext): LogContext | undefined {
+    const withId = withCorrelationId(context);
+    return withId === undefined ? undefined : redactContext(withId);
   }
 
   /**

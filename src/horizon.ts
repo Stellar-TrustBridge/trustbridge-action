@@ -6,6 +6,7 @@ import { inferStellarNetwork } from './links';
 import { globalMetrics, globalHorizonHistogram } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, CircuitOpenError, addJitter } from './resilience';
 import { validateHorizonUrl } from './validation';
+import { recordHorizonHttpError } from './tracing';
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: 'native';
@@ -652,6 +653,15 @@ async function fetchAccountOnce(
           attempt,
         }));
         globalHorizonHistogram.record(endpointKind, latencyMs);
+        // Issue #913: span error with status only — no body, no account id.
+        recordHorizonHttpError({
+          horizonUrl: normalizedHorizonUrl,
+          statusCode: 404,
+          retryable: false,
+          endpointKind,
+          attempt,
+          latencyMs,
+        });
         throw new HorizonError(
           `Account ${stellarAddress} was not found on Horizon (not funded or activated).`,
           404,
@@ -670,6 +680,16 @@ async function fetchAccountOnce(
             circuitBreaker.noteRetryAfter(breakerRetryAfterMs);
           }
         }
+        // Issue #913: record the span error before the body is read, so the
+        // Horizon problem document (detail/title/extras) can never reach it.
+        recordHorizonHttpError({
+          horizonUrl: normalizedHorizonUrl,
+          statusCode: response.status,
+          retryable,
+          endpointKind,
+          attempt,
+          latencyMs,
+        });
         let detail = response.statusText;
         try {
           const body = (await response.json()) as HorizonErrorResponse;

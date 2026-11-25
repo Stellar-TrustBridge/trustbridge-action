@@ -186,6 +186,16 @@ export declare class MetricsCollector {
     private timers;
     private jobOutcome;
     /**
+     * Per-run correlation id (Issue #904). Kept as a top-level field of the
+     * summary — never as a metric tag — so it cannot become an unbounded
+     * label series.
+     */
+    private correlationId;
+    /** Attach the per-run correlation id to the metrics summary (Issue #904). */
+    setCorrelationId(id: string | undefined): void;
+    /** The correlation id attached via {@link setCorrelationId}, if any. */
+    getCorrelationId(): string | undefined;
+    /**
      * Record a numeric metric. A `contractAddress` tag is rejected outright:
      * callers must go through `recordContractMetric()`, which validates the
      * address and replaces it with a bounded hash before it ever reaches a
@@ -232,6 +242,7 @@ export declare class MetricsCollector {
         metrics: MetricPoint[];
         counters: Record<string, number>;
         totalMetrics: number;
+        correlationId?: string;
     };
     /**
      * Export metrics in JSON format.

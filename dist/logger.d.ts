@@ -30,6 +30,16 @@ export declare const STRUCTURED_FIELD_KEYS: readonly ["reason_code", "check"];
  */
 export declare const DEFAULT_REASON_CODE = "unknown";
 export declare const DEFAULT_CHECK_LABEL = "unknown";
+/** Structured log key carrying the per-run correlation id. */
+export declare const CORRELATION_ID_LOG_KEY = "correlation_id";
+/**
+ * Set (or clear with `undefined`) the per-run correlation id attached to
+ * every structured log line. Called by `initCorrelationId` in
+ * `src/diagnostics.ts`; the id is validated there, so it is never a secret.
+ */
+export declare function setLogCorrelationId(id: string | undefined): void;
+/** Current correlation id attached to log lines, if any. */
+export declare function getLogCorrelationId(): string | undefined;
 /**
  * Ensure a log context always carries the structured `reason_code` and
  * `check` fields. Existing values are preserved (trimmed); missing or empty
@@ -164,6 +174,12 @@ declare class StructuredLogger {
      * Log a debug message (only shown in debug mode).
      */
     debug(message: string, context?: LogContext): void;
+    /**
+     * Redact a context, attaching the per-run correlation id when one is set
+     * (Issue #904). Returns `undefined` for an absent context with no id so
+     * the line layout is unchanged in that case.
+     */
+    private redact;
     /**
      * Log a structured Horizon retry event (Issue #697).
      *

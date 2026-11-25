@@ -415,7 +415,7 @@ export async function fetchSSRFSafe(
   urlStr: string,
   options: SSRFFetchOptions = {},
 ): Promise<
-  | { ok: true; status: number; text: () => Promise<string>; headers: Headers }
+  | { ok: true; status: number; text: () => Promise<string>; headers: Headers; url?: string }
   | { ok: false; error: string; status?: number }
 > {
   const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024; // 256 KB
@@ -565,6 +565,9 @@ export async function fetchSSRFSafe(
         status: response.status,
         headers: response.headers,
         text: async () => text,
+        // Final URL after any (same-origin) redirect hops, so callers such as
+        // the stellar.toml cache can key entries on the resolved host (#914).
+        url: currentUrl,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

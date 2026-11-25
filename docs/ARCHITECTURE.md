@@ -177,6 +177,27 @@ rejected, and that unknown check kinds become `other`.
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
 
+### Horizon error spans
+
+When tracing is enabled (`OTEL_TRACES_ENABLED=true`), every non-2xx Horizon response — including the `404` unfunded path and each retried `429`/`5xx` attempt — records one `ERROR` span named `horizon.http_error` via `recordHorizonHttpError` in `src/tracing.ts` (Issue #913). The span is recorded in `fetchOnce` **before** the response body is read.
+
+**Policy: response bodies are never attached to spans.** Horizon problem documents (`detail`, `title`, `type`, `extras`) can echo account data, so a `horizon.http_error` span carries exactly these attributes and nothing else (`HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES`):
+
+| Attribute | Example | Notes |
+|-----------|---------|-------|
+| `horizon.url` | `https://horizon.stellar.org` | Host only; paths and account segments stripped by `redactSpanAttributes` |
+| `http.response.status_code` | `503` | |
+| `horizon.status_class` | `5xx` | `4xx`, `5xx`, `transport`, or `other` |
+| `horizon.retryable` | `true` | `true` for `429` / `5xx` |
+| `horizon.endpoint_kind` | `primary` | `primary` or `fallback` |
+| `horizon.attempt` | `0` | Zero-based attempt index |
+| `horizon.latency_ms` | `412` | Attempt latency |
+| `error.type` | `HorizonError` | |
+
+The span `error` (and the OTLP status message) is always `Horizon request failed (<status>)`.
+
+The same rule applies to the generic wrappers: `withSpan`, `withSpanSync`, `withHorizonSpan` and `traceHorizonFetch` record `safeSpanErrorMessage(err)` instead of the raw message. For a `HorizonError` with status `>= 400` that is the status-only message above (the raw message embeds the Horizon `detail`, or the account id for a `404`). Any other error message goes through `redactString`, so addresses, JWTs and secret assignments are masked. `withHorizonSpan` also adds `error.type`, `http.response.status_code`, `horizon.status_class` and `horizon.retryable` on failure. `__tests__/tracing-horizon-errors.test.ts` locks the attribute set.
+
 ---
 
 ## Circuit breaker half-open probe budget (Issue #888)
