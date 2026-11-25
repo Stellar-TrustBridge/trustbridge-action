@@ -562,6 +562,45 @@ with:
 
 **Offline runs:** fixture / offline modes don't contact Horizon or Friendbot. Use the official preset URL for the network you are simulating (for example `https://horizon-testnet.stellar.org`) as a placeholder `horizon_url`, so network inference and comment links still match that network.
 
+### Explorer URL overrides
+
+Explorer account links (`<base>/account/<G-address>`) are built by `buildExplorerAccountLink` in `src/links.ts`. An explorer base URL override is validated **per network** by `validateExplorerBaseUrl` (Issue #910), because an unchecked override would turn every Wave comment into a phishing link.
+
+**Safe defaults** (used when no override is set, or when a rendered link's override is rejected):
+
+| Network | Default explorer base |
+| --- | --- |
+| `public` | `https://stellar.expert/explorer/public` |
+| `testnet` | `https://stellar.expert/explorer/testnet` |
+
+**Host allowlist** (exact, lowercased hostname match — subdomains are not implied):
+
+| Network | Allowed hosts |
+| --- | --- |
+| `public` | `stellar.expert`, `stellarchain.io`, `laboratory.stellar.org` |
+| `testnet` | `stellar.expert`, `testnet.stellarchain.io`, `laboratory.stellar.org` |
+
+**Rules and stable rejection codes:**
+
+| Code | Rejected when |
+| --- | --- |
+| `EXPLORER_URL_EMPTY` | the override is blank |
+| `EXPLORER_URL_TOO_LONG` | longer than 2048 characters |
+| `EXPLORER_URL_MALFORMED` | not an absolute URL |
+| `EXPLORER_URL_INSECURE_SCHEME` | not `https:` — `http:` is **always rejected on `public`** and tolerated on `testnet` only for an allowlisted host; `javascript:`, `data:` and other schemes are rejected everywhere |
+| `EXPLORER_URL_CREDENTIALS` | the URL embeds `user:pass@` |
+| `EXPLORER_URL_HOST_NOT_ALLOWED` | the host is not on the allowlist for that network (e.g. a testnet-only host on `public`, or `stellar.expert.attacker.example`) |
+| `EXPLORER_URL_UNSAFE` | the URL contains characters that would break a Markdown link (`(`, `)`, quotes, whitespace, …) |
+
+Query strings, fragments and trailing slashes are stripped from an accepted base. Rejection messages name the network and host only, never the full override.
+
+Two entry points, matching the existing link helpers:
+
+- `parseExplorerBaseUrlInput(value, network)` in `src/inputs.ts` **fails fast**: it throws `explorer_base_url rejected (<CODE>): <message>` so a bad override is caught before any comment is rendered.
+- `resolveExplorerBaseUrl(network, override)` / `buildExplorerAccountLink(...)` in `src/links.ts` **fall back** to the safe default for an invalid override, the same way `docs_base_url` falls back in `buildFaqLink`, so comment posting is never blocked.
+
+Explorer overrides are not yet exposed as an `action.yml` input; these helpers are the validated surface any future input must go through.
+
 ---
 
 ## Network passphrase mismatch detection (Issue #2)

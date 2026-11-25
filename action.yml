@@ -371,7 +371,10 @@ inputs:
       Stellar network shorthand: "testnet", "public", or "mainnet". When set
       (and "preset" is empty), the matching campaign preset overrides
       horizon_url, asset_code, and asset_issuer defaults. Explicit action
-      inputs always win over preset values. (Issue #207)
+      inputs always win over preset values. (Issue #207) Matching is
+      case-insensitive and surrounding whitespace is ignored; any other value
+      fails the step before any Horizon call with an error listing the
+      allowed values. (Issue #901)
     required: false
     default: ""
   preset:
@@ -490,7 +493,9 @@ inputs:
   home_domain_check_mode:
     description: >-
       How to treat home_domain mismatches: "warn" (default) or "strict"
-      (blocks valid).
+      (blocks valid). Case-insensitive; any other value fails the step
+      before any Horizon call instead of silently falling back to "warn".
+      (Issue #901)
     required: false
     default: "warn"
   stellar_toml_fetch_enabled:

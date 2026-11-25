@@ -43,6 +43,8 @@ import {
   parseNumberInput,
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
+  parseNetworkInput,
+  parseHomeDomainCheckModeInput,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
@@ -429,6 +431,14 @@ export async function run(): Promise<void> {
     return;
   }
 
+  // Issue #901: reject unknown enum values (network, enforcement modes)
+  // before any Horizon traffic so a workflow typo fails fast with the list
+  // of allowed values. See docs/INPUT_VALIDATION.md.
+  parseNetworkInput(core.getInput('network'));
+  const homeDomainCheckMode: HomeDomainCheckMode = parseHomeDomainCheckModeInput(
+    core.getInput('home_domain_check_mode'),
+  );
+
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
@@ -513,8 +523,6 @@ export async function run(): Promise<void> {
   // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
   const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
   const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
-  const homeDomainCheckMode: HomeDomainCheckMode =
-    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
   const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Comment threading + batch inputs.

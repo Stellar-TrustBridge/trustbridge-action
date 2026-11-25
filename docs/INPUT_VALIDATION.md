@@ -52,6 +52,30 @@ Notes:
     unauthorized_trustline_policy: fail   # or: warn (default)
 ```
 
+## Enum inputs: network and enforcement modes
+
+TrustBridge rejects unknown enum values **before any Horizon call** (Issue #901), so a typo in a Wave workflow fails the step immediately with the list of allowed values instead of failing late (wrong Horizon, wrong asset defaults) or silently downgrading enforcement.
+
+| Input | Allowed values | Empty value | Parser |
+| --- | --- | --- | --- |
+| `network` | `testnet`, `public`, `mainnet` (alias of `public`) | no network preset | `parseNetworkInput` |
+| `home_domain_check_mode` | `warn`, `strict` | `warn` | `parseHomeDomainCheckModeInput` |
+| `unauthorized_trustline_policy` | `warn`, `fail`, `ignore` | `warn` | `parseUnauthorizedTrustlinePolicy` (see below) |
+| `posting_mode` | `post`, `dry-run`, `off` | `post` (or legacy `comment_mode`) | `resolveCommentModes` |
+
+**Case-sensitivity policy.** Enum values are matched **case-insensitively** after trimming surrounding whitespace: `Testnet`, ` PUBLIC ` and `Strict` are accepted and normalized to lowercase. Internal whitespace or punctuation is not normalized (`test net`, `strict!` are rejected). The JSON schema (`schemas/action-inputs.schema.json`) lists the canonical lowercase spellings.
+
+**Error format.** `network` and `home_domain_check_mode` share one stable message, produced by `validateEnumInput` in `src/validation.ts`:
+
+```
+network must be one of "testnet", "public", "mainnet". Received: "testnett"
+home_domain_check_mode must be one of "warn", "strict". Received: "stirct"
+```
+
+Received values longer than 32 characters are truncated with `…` so an oversized or mistakenly pasted value never floods the log. The validation span records only the field name and input length, never the raw value.
+
+**Behavior change.** Before #901 an unknown `home_domain_check_mode` (for example `stirct`) silently fell back to `warn`, and an unknown `network` was ignored. Both now fail the step. Workflows that already use a documented value are unaffected.
+
 ## Timeout values
 
 `horizon_timeout_ms` must be a number between `1000` and `60000`. It controls the Horizon request timeout and helps avoid long-running workflows on slow or unreliable network responses.

@@ -28,6 +28,18 @@ The account exists but its native XLM balance is below `min_xlm_reserve`. Send a
 
 Retry later or switch `horizon_url` to a trusted endpoint for the target network.
 
+## Cron sweep fails across many issues during a Horizon incident
+
+If a scheduled re-validation sweep reports `HORIZON_TIMEOUT`, `HORIZON_ERROR`,
+`CIRCUIT_OPEN`, `RATE_BUDGET_EXHAUSTED` or `HORIZON_WAIT_BUDGET_EXHAUSTED` for
+a large share of issues, Horizon is degraded — the wallets are not the
+problem. Do not shorten the schedule or raise `max_retries`; that amplifies the
+outage. Instead pause the sweep once ≥ 20 % of results are degraded, back off
+the next sweep (15 min doubling up to 6 h, ± 20 % jitter), and lower
+`max_retries` / `retry_max_total_wait_ms` for the incident. The full policy,
+the resilience settings to tune, and a copy-paste workflow snippet are in
+[CRON_REVALIDATION.md → Backoff when Horizon is degraded](CRON_REVALIDATION.md#backoff-when-horizon-is-degraded).
+
 ## Horizon retry wait budget exhausted
 
 For `429`, `502`, `503`, and `504` responses, TrustBridge honors `Retry-After`
