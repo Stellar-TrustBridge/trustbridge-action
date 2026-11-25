@@ -15,3 +15,12 @@ Check both the asset code and issuer. A USDC trustline for a different issuer is
 ## Horizon availability failed
 
 Retry later or switch `horizon_url` to a trusted endpoint for the target network.
+
+## Proxy credentials appear in network errors
+
+TrustBridge redacts URL userinfo (the `username:password@` portion) from
+free-form log and error messages before writing them. The proxy scheme and host
+remain visible for diagnosis. Keep proxy credentials in runner environment
+secrets and avoid printing raw proxy environment variables in workflow steps;
+redaction is a last line of defense, not a substitute for secret-safe workflow
+logging.

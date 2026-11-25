@@ -1,3 +1,5 @@
+import { safeProxyErrorMessage } from './proxy';
+
 export function parseBooleanInput(value: string, defaultValue: boolean): boolean {
   if (value === undefined || value === '') {
     return defaultValue;
@@ -39,5 +41,5 @@ export function parseNumberInput(
 }
 
 export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return safeProxyErrorMessage(error);
 }

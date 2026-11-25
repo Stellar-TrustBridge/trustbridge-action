@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { redactProxyCredentials } from './proxy';
 
 /**
  * Enhanced logging with context and structured output.
@@ -68,6 +69,7 @@ export function redactStellarAddress(address: string): string {
  */
 export function redactString(value: string): string {
   if (!value) return value;
+  value = redactProxyCredentials(value);
   STELLAR_ADDRESS_REGEX.lastIndex = 0;
   return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
