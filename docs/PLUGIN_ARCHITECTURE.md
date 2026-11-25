@@ -1,8 +1,14 @@
+
+
+
+
 # Plugin Architecture
 
 This document describes how TrustBridge discovers, loads, and runs third-party
 plugins. It is intended for plugin authors and operators who rely on plugin
 behavior in CI.
+
+Clarified whether plugins may perform network I/O, which hosts are allowlisted, and how SSRF controls apply. Add a negative test if enforcement exists.
 
 ## Overview
 
