@@ -355,6 +355,9 @@ Full matrix: [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
 | [README.md](README.md) | Overview, quick start, inputs/outputs (this file) |
 | [docs/USAGE.md](docs/USAGE.md) | Workflow recipes and configuration examples |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flow, module responsibilities |
+| [docs/PLUGIN_ARCHITECTURE.md](docs/PLUGIN_ARCHITECTURE.md) | Plugin API semver and compatibility negotiation policy |
+| [docs/BREAKING_CHANGES.md](docs/BREAKING_CHANGES.md) | Action and plugin API breaking-change policy |
+| [docs/COMMENT_GUIDE.md](docs/COMMENT_GUIDE.md) | Comment formatting and result reason wrapping |
 | [docs/STRUCTURE.md](docs/STRUCTURE.md) | File and directory reference |
 | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error cases and retry behavior |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, PR checklist, release process |
