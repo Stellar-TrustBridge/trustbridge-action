@@ -177,6 +177,27 @@ rejected, and that unknown check kinds become `other`.
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
 
+### Horizon error spans
+
+When tracing is enabled (`OTEL_TRACES_ENABLED=true`), every non-2xx Horizon response — including the `404` unfunded path and each retried `429`/`5xx` attempt — records one `ERROR` span named `horizon.http_error` via `recordHorizonHttpError` in `src/tracing.ts` (Issue #913). The span is recorded in `fetchOnce` **before** the response body is read.
+
+**Policy: response bodies are never attached to spans.** Horizon problem documents (`detail`, `title`, `type`, `extras`) can echo account data, so a `horizon.http_error` span carries exactly these attributes and nothing else (`HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES`):
+
+| Attribute | Example | Notes |
+|-----------|---------|-------|
+| `horizon.url` | `https://horizon.stellar.org` | Host only; paths and account segments stripped by `redactSpanAttributes` |
+| `http.response.status_code` | `503` | |
+| `horizon.status_class` | `5xx` | `4xx`, `5xx`, `transport`, or `other` |
+| `horizon.retryable` | `true` | `true` for `429` / `5xx` |
+| `horizon.endpoint_kind` | `primary` | `primary` or `fallback` |
+| `horizon.attempt` | `0` | Zero-based attempt index |
+| `horizon.latency_ms` | `412` | Attempt latency |
+| `error.type` | `HorizonError` | |
+
+The span `error` (and the OTLP status message) is always `Horizon request failed (<status>)`.
+
+The same rule applies to the generic wrappers: `withSpan`, `withSpanSync`, `withHorizonSpan` and `traceHorizonFetch` record `safeSpanErrorMessage(err)` instead of the raw message. For a `HorizonError` with status `>= 400` that is the status-only message above (the raw message embeds the Horizon `detail`, or the account id for a `404`). Any other error message goes through `redactString`, so addresses, JWTs and secret assignments are masked. `withHorizonSpan` also adds `error.type`, `http.response.status_code`, `horizon.status_class` and `horizon.retryable` on failure. `__tests__/tracing-horizon-errors.test.ts` locks the attribute set.
+
 ---
 
 ## Circuit breaker half-open probe budget (Issue #888)
@@ -231,6 +252,69 @@ Set `halfOpenMaxProbes: Infinity` to restore the pre-#888 behavior with
 no limit.
 
 Enforced by `__tests__/resilience.test.ts` — `CircuitBreaker — half-open probe budget (Issue #888)` suite (16 tests).
+
+---
+
+## Circuit breaker wall-clock open-state expiry (Issue #920)
+
+The open → half-open transition in `CircuitBreaker` (`src/resilience.ts`)
+is driven **only by elapsed wall-clock time**, never by how many calls were
+fast-failed while open. Under Wave burst traffic hundreds of callers can hit
+an open circuit within a second; counting those attempts toward recovery
+would reopen the circuit (and stampede Horizon) far too early.
+
+### Clock
+
+```
+CircuitBreakerOptions.now  (default: () => Date.now())
+```
+
+Every expiry decision reads this clock. Tests inject a fake clock and step
+it explicitly, so no real time passes and no timer mocking is needed
+(`__tests__/circuit-wall-clock.test.ts`). If the clock moves backwards while
+the circuit is open (VM suspend, NTP correction), the cooldown restarts from
+the new reading instead of expiring early.
+
+`recoveryTimeoutMs` and `maxRetryAfterMs` must be finite numbers ≥ 0;
+anything else throws a `RangeError` at construction
+(`CircuitBreaker option recoveryTimeoutMs must be a finite number of
+milliseconds >= 0 (received …)`). A non-function `now` throws a `TypeError`.
+
+### Interaction with Retry-After
+
+When Horizon answers a retryable status (429/502/503/504) with a valid
+`Retry-After`, `fetchAccount` (`src/horizon.ts`) passes the parsed delay to
+`circuitBreaker.noteRetryAfter(ms)`. The breaker records a deadline of
+`now + min(ms, maxRetryAfterMs)`:
+
+| Breaker state | Effect of a pending Retry-After deadline |
+|---|---|
+| `closed` | None — calls still flow; the retry loop already sleeps for Retry-After (capped by `retry_max_delay_ms`). The deadline is remembered in case the circuit opens before it passes. |
+| `open` | The circuit stays open until **both** `recoveryTimeoutMs` has elapsed since it opened **and** the Retry-After deadline has passed. A shorter Retry-After never shortens the recovery timeout. |
+| `half-open` | Probes are fast-failed with `CircuitOpenError` until the deadline passes. A deferred probe does not count against `halfOpenMaxProbes`. |
+
+Rules:
+
+- `maxRetryAfterMs` (default `300000`, 5 minutes) caps the deadline so a
+  hostile or misconfigured Horizon cannot pin the circuit open.
+- Negative, `NaN`, infinite, or unparsable `Retry-After` values are ignored
+  (the same values `parseRetryAfterMs` already treats as absent).
+- A later, shorter Retry-After never shortens an existing deadline.
+- `reset()` clears the deadline together with the rest of the state.
+- A failed half-open probe re-opens the circuit and restarts the full
+  `recoveryTimeoutMs` from the failure time.
+
+### Observability
+
+`getRemainingCooldownMs()` returns how long until the next probe may run
+(0 when closed). `CircuitOpenError.remainingCooldownMs` and
+`HorizonCircuitOpenError.remainingCooldownMs` carry the same value at the
+moment a call was blocked, so callers can say "retry in ~Ns" without
+guessing the recovery timeout.
+
+```bash
+npx jest __tests__/circuit-wall-clock.test.ts __tests__/resilience.test.ts
+```
 
 ---
 
@@ -415,3 +499,12 @@ The runtime keeps validation separate from mutation. `posting_mode: dry-run` run
 Job Summary rendering is budget-aware. The compact overview is higher priority than the verbose metrics JSON artifact; the artifact is removed first, followed by safe line-boundary truncation with a visible marker if the compact report still exceeds the 1 MiB UTF-8 budget.
 
 Horizon retry scheduling accepts both Retry-After encodings, applies a bounded 10% jitter, and enforces both the per-sleep ceiling and cumulative wait budget. Retry-After waits are exported as privacy-safe numeric metrics without addresses, URLs, or response bodies.
+
+
+## Per-address check latency histogram
+
+Issue #956. `globalCheckLatencyHistogram` (`src/metrics.ts`) records the wall-clock duration of each per-address check in `src/batch.ts` into the fixed `LATENCY_BUCKETS_MS` buckets (`<=50ms` … `+Inf`). Labels are limited to the bounded outcome set `pass | fail | invalid | error`; addresses are never labels, and only aggregates (count, total, min, max, avg, bucket counts) are stored, so memory and cardinality stay constant. Negative, NaN and non-finite durations are rejected and counted in `rejected`.
+
+## Cache single-flight
+
+Issue #958. `SimpleCache.getOrFetch(key, fetcher, { waiterTimeoutMs })` de-duplicates concurrent fetches for one key. Waiters time out after `waiterTimeoutMs` (default 30000) with `SingleFlightTimeoutError` (`code: SINGLE_FLIGHT_WAIT_TIMEOUT`) instead of hanging on a stuck leader. Counters: `cache_single_flight_leaders`, `cache_single_flight_waiters`, `cache_single_flight_waiter_timeouts` (also via `getSingleFlightStats()`).

@@ -236,7 +236,35 @@ export function aggregateDigest(
  *   truncated.
  * - Includes a machine-readable gate summary (ready/blocked counts).
  */
-export function formatDigestComment(report: DigestReport): string {
+/**
+ * Emoji-free mode (Issue #961): enterprise log drains that strip or mangle
+ * non-ASCII symbols get stable ASCII tokens instead.
+ */
+const EMOJI_REPLACEMENTS: ReadonlyArray<[RegExp, string]> = [
+  [/✅/gu, '[PASS]'],
+  [/❌/gu, '[FAIL]'],
+  [/⚠️?/gu, '[WARN]'],
+  [/⏸️?/gu, '[PAUSED]'],
+  [/✓/gu, '[OK]'],
+  [/💤/gu, '[SNOOZED]'],
+];
+
+/** Replace known status emoji with ASCII tokens and drop any remaining pictographs. */
+export function stripEmoji(markdown: string): string {
+  if (typeof markdown !== 'string') throw new Error('summary: stripEmoji expects a string');
+  let out = markdown;
+  for (const [re, token] of EMOJI_REPLACEMENTS) out = out.replace(re, token);
+  return out
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
+export function formatDigestComment(report: DigestReport, options: { emojiFree?: boolean } = {}): string {
+  const body = formatDigestCommentRaw(report);
+  return options.emojiFree ? stripEmoji(body) : body;
+}
+
+function formatDigestCommentRaw(report: DigestReport): string {
   const clawbackStrictFailureCount = report.clawbackStrictFailureCount ?? 0;
   const lines: string[] = [
     '<!-- trustbridge-action:digest -->',
@@ -520,6 +548,14 @@ export interface JobSummaryReportLike {
  * removed before failure-code detail when the configured budget is tight.
  */
 export function formatJobSummaryMarkdown(
+  report: JobSummaryReportLike,
+  options: { maxBytes?: number; emojiFree?: boolean } = {},
+): JobSummaryGuardResult {
+  const result = formatJobSummaryMarkdownRaw(report, options);
+  return options.emojiFree ? { ...result, markdown: stripEmoji(result.markdown) } : result;
+}
+
+function formatJobSummaryMarkdownRaw(
   report: JobSummaryReportLike,
   options: { maxBytes?: number } = {},
 ): JobSummaryGuardResult {

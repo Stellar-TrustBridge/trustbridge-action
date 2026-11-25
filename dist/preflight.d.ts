@@ -159,3 +159,37 @@ export interface ProbeResult {
     status?: number;
 }
 export declare function probeHorizonUrl(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<ProbeResult>;
+/** Cataloged reason code emitted when a required label is absent. */
+export declare const REASON_CODE_REQUIRED_LABELS_MISSING = "REQUIRED_LABELS_MISSING";
+/** Max number of labels accepted by `required_labels`. */
+export declare const REQUIRED_LABELS_MAX_COUNT = 20;
+/** Max length of one label name (GitHub's own label-name limit). */
+export declare const REQUIRED_LABELS_MAX_LENGTH = 50;
+/** Stable code for a malformed `required_labels` input. */
+export declare const REQUIRED_LABELS_INVALID_CODE = "required_labels_invalid";
+export interface RequiredLabelsDecision {
+    /** `true` when at least one required label is missing and checks must skip. */
+    shouldSkip: boolean;
+    /** Required labels absent from the issue/PR (original casing). */
+    missing: string[];
+    /** `REQUIRED_LABELS_MISSING` when skipping, otherwise `undefined`. */
+    reasonCode?: typeof REASON_CODE_REQUIRED_LABELS_MISSING;
+    /** Log-ready message. */
+    message: string;
+}
+/**
+ * Parse the comma/newline-separated `required_labels` input.
+ *
+ * Empty input disables the gate (returns `[]`). Entries are trimmed and
+ * de-duplicated case-insensitively. More than {@link REQUIRED_LABELS_MAX_COUNT}
+ * entries, or an entry longer than {@link REQUIRED_LABELS_MAX_LENGTH}, throws a
+ * {@link PreflightError} with reason code `required_labels_invalid`.
+ */
+export declare function parseRequiredLabels(raw: string | undefined | null): string[];
+/**
+ * Evaluate the required-label gate against the event payload. Matching is
+ * case-insensitive (GitHub label names are case-insensitive). An event with no
+ * issue/PR (or no labels) is treated as having no labels, so every required
+ * label is missing and the run skips.
+ */
+export declare function evaluateRequiredLabels(required: readonly string[], payload: Record<string, unknown> | undefined): RequiredLabelsDecision;

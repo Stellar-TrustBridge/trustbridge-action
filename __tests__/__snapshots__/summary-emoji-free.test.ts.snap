@@ -1,0 +1,81 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`formatDigestComment emoji modes snapshots both modes: emoji 1`] = `
+"<!-- trustbridge-action:digest -->
+## TrustBridge — Weekly Wallet Digest
+
+_Generated: \`2026-01-01T00:00:00.000Z\`_
+_Privacy mode: off_
+
+### Summary
+
+| Metric | Value |
+| --- | --- |
+| Total issues checked | **0** |
+| ✅ Ready | **0** |
+| ❌ Blocked | **0** |
+| Ready rate | **0.0%** |
+
+---
+_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_"
+`;
+
+exports[`formatDigestComment emoji modes snapshots both modes: emoji-free 1`] = `
+"<!-- trustbridge-action:digest -->
+## TrustBridge — Weekly Wallet Digest
+
+_Generated: \`2026-01-01T00:00:00.000Z\`_
+_Privacy mode: off_
+
+### Summary
+
+| Metric | Value |
+| --- | --- |
+| Total issues checked | **0** |
+| [PASS] Ready | **0** |
+| [FAIL] Blocked | **0** |
+| Ready rate | **0.0%** |
+
+---
+_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action) — digest mode_"
+`;
+
+exports[`formatJobSummaryMarkdown emoji modes default mode is unchanged 1`] = `
+"## TrustBridge Metrics
+
+| Metric | Value |
+| --- | --- |
+| Total runs | 3 |
+| Total errors | 1 |
+| Average latency | 12.5 ms |
+| Failure codes | HTTP 500 |
+
+<details>
+<summary>Metrics JSON artifact</summary>
+
+\`\`\`json
+{}
+\`\`\`
+</details>
+"
+`;
+
+exports[`formatJobSummaryMarkdown emoji modes emoji-free mode output is pure ASCII 1`] = `
+"## TrustBridge Metrics
+
+| Metric | Value |
+| --- | --- |
+| Total runs | 3 |
+| Total errors | 1 |
+| Average latency | 12.5 ms |
+| Failure codes | HTTP 500 |
+
+<details>
+<summary>Metrics JSON artifact</summary>
+
+\`\`\`json
+{}
+\`\`\`
+</details>
+"
+`;

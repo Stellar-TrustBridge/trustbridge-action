@@ -112,6 +112,57 @@ export declare function calculateBackoffDelay(attempt: number, policy: RetryPoli
  */
 export declare function addJitter(delayMs: number, jitterPercent?: number, maxDelayMs?: number): number;
 /**
+ * `reason_code` values that mean "Horizon was degraded", not "the wallet is
+ * not ready". A scheduled sweep should count these — never wallet failures
+ * such as `TRUSTLINE_MISSING` — when deciding to pause. Documented in
+ * docs/CRON_REVALIDATION.md#backoff-when-horizon-is-degraded.
+ */
+export declare const HORIZON_DEGRADED_REASON_CODES: readonly ["HORIZON_TIMEOUT", "HORIZON_ERROR", "CIRCUIT_OPEN", "RATE_BUDGET_EXHAUSTED", "HORIZON_WAIT_BUDGET_EXHAUSTED"];
+export type HorizonDegradedReasonCode = (typeof HORIZON_DEGRADED_REASON_CODES)[number];
+/** True when `reasonCode` signals a Horizon-side degradation. */
+export declare function isHorizonDegradedReasonCode(reasonCode: string): reasonCode is HorizonDegradedReasonCode;
+/** Tuning for {@link shouldPauseCronSweep} / {@link computeCronBackoffDelayMs}. */
+export interface CronBackoffPolicy {
+    /** Fraction (0–1] of degraded results in one sweep that pauses the sweep. */
+    degradedRateThreshold: number;
+    /** Minimum number of results before the rate is trusted. */
+    minSampleSize: number;
+    /** Delay before the first retry sweep after a degraded sweep. */
+    baseDelayMs: number;
+    /** Upper bound for the (pre-jitter) delay. */
+    maxDelayMs: number;
+    /** Jitter applied to the delay, as a percentage (± jitterPercent %). */
+    jitterPercent: number;
+}
+/**
+ * Defaults documented in docs/CRON_REVALIDATION.md: pause when ≥ 20 % of at
+ * least 5 results are Horizon-degraded, then back off 15 min → 30 → 60 → …
+ * capped at 6 h, with ± 20 % jitter so many Wave orgs do not resume together.
+ */
+export declare const DEFAULT_CRON_BACKOFF_POLICY: CronBackoffPolicy;
+/**
+ * Decide whether a cron sweep should stop dispatching further checks because
+ * Horizon looks degraded (Issue #909).
+ *
+ * @param reasonCodes  `reason_code` outputs collected so far in this sweep.
+ * @returns `true` once at least `minSampleSize` results were seen and the
+ *          share of {@link HORIZON_DEGRADED_REASON_CODES} reaches
+ *          `degradedRateThreshold`. Wallet failures never count.
+ */
+export declare function shouldPauseCronSweep(reasonCodes: readonly string[], policy?: CronBackoffPolicy): boolean;
+/**
+ * Delay before the next cron sweep after `consecutiveDegradedSweeps`
+ * degraded sweeps in a row (Issue #909).
+ *
+ * `0` sweeps → `0` (run on the normal schedule). Otherwise
+ * `min(baseDelayMs * 2^(n-1), maxDelayMs)` with ± `jitterPercent` jitter,
+ * never above `maxDelayMs`. Negative or non-finite counts throw so a broken
+ * counter in a workflow script fails loudly instead of hammering Horizon.
+ *
+ * @param random  Injectable RNG in [0, 1) for deterministic tests.
+ */
+export declare function computeCronBackoffDelayMs(consecutiveDegradedSweeps: number, policy?: CronBackoffPolicy, random?: () => number): number;
+/**
  * Sleep for a given duration.
  */
 export declare function sleep(ms: number): Promise<void>;
@@ -202,7 +253,27 @@ export interface CircuitBreakerOptions {
      * Issue #888.
      */
     onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
+    /**
+     * Wall clock used for every open-state expiry decision. Returns epoch
+     * milliseconds. Default: `() => Date.now()` (read at call time, so Jest
+     * modern fake timers keep working).
+     *
+     * Open-state expiry is purely time-based: the circuit stays open until
+     * `recoveryTimeoutMs` of wall-clock time has elapsed since it opened,
+     * no matter how many calls are fast-failed in the meantime. Inject a fake
+     * clock in tests to drive the cooldown deterministically.
+     */
+    now?: () => number;
+    /**
+     * Upper bound, in milliseconds, for a server-requested cooldown recorded
+     * via `CircuitBreaker.noteRetryAfter()`. A hostile or misconfigured
+     * Horizon cannot pin the circuit open longer than this. Default: 300 000
+     * (5 minutes). Must be a finite number ≥ 0.
+     */
+    maxRetryAfterMs?: number;
 }
+/** Default cap for Retry-After driven cooldowns (5 minutes). */
+export declare const DEFAULT_MAX_RETRY_AFTER_MS = 300000;
 /**
  * Circuit-breaker implementation for the TrustBridge resilience layer.
  *
@@ -225,6 +296,15 @@ export interface CircuitBreakerOptions {
  *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
  *                    allowed; enough consecutive successes closes the circuit,
  *                    any failure re-opens it.
+ *
+ * Issue #920 — wall-clock open-state expiry: the open → half-open transition
+ * is driven only by elapsed time on the injected clock (`options.now`), never
+ * by how many calls were fast-failed. A server-requested `Retry-After`
+ * recorded through `noteRetryAfter()` extends the cooldown: the circuit does
+ * not go half-open, and half-open probes are not admitted, until both the
+ * recovery timeout and the Retry-After deadline have passed. If the clock
+ * moves backwards while open, the cooldown restarts from the new "now"
+ * instead of expiring early.
  */
 export declare class CircuitBreaker {
     private state;
@@ -232,6 +312,8 @@ export declare class CircuitBreaker {
     private consecutiveSuccesses;
     private openedAt;
     private lastErrorClass;
+    /** Issue #920: epoch ms before which no probe may run (Retry-After floor). */
+    private retryAfterUntil;
     /** Issue #888: in-flight probe count while in half-open state. */
     private halfOpenProbesInFlight;
     /** Issue #888: total rejections due to probe budget exhaustion. */
@@ -242,6 +324,8 @@ export declare class CircuitBreaker {
     private readonly recoveryTimeoutMs;
     private readonly successThreshold;
     private readonly halfOpenMaxProbes;
+    private readonly maxRetryAfterMs;
+    private readonly now;
     private readonly onStateChange;
     private readonly onProbeBudgetExhausted;
     constructor(options?: CircuitBreakerOptions);
@@ -272,6 +356,34 @@ export declare class CircuitBreaker {
      * operator intervention.
      */
     reset(): void;
+    /**
+     * Record a server-requested cooldown (Issue #920), typically the parsed
+     * `Retry-After` of a Horizon 429/503. The circuit will not move from open
+     * to half-open — and a half-open circuit will not admit probes — until
+     * `delayMs` has elapsed on the breaker's clock.
+     *
+     * - Values are clamped to `maxRetryAfterMs` so a hostile header cannot pin
+     *   the circuit open indefinitely.
+     * - Negative, NaN, or non-finite values are ignored (returns `false`), the
+     *   same way `parseRetryAfterMs` treats them as absent.
+     * - A shorter Retry-After never shortens an existing, longer deadline.
+     * - In the closed state the deadline is remembered but does not block
+     *   calls; the retry loop already sleeps for Retry-After. It only takes
+     *   effect if the circuit opens before the deadline passes.
+     *
+     * Returns `true` when the deadline was recorded or extended.
+     */
+    noteRetryAfter(delayMs: number): boolean;
+    /**
+     * Milliseconds until the next probe may reach the wrapped operation
+     * (Issue #920). Always ≥ 0.
+     *
+     * - **closed**: 0.
+     * - **open**: the larger of the remaining recovery timeout and the
+     *   remaining Retry-After deadline.
+     * - **half-open**: the remaining Retry-After deadline (0 when none).
+     */
+    getRemainingCooldownMs(): number;
     /**
      * Snapshot of the breaker's internal counters — useful for tests and
      * metrics emission without exposing mutable state.
@@ -330,7 +442,13 @@ export interface CircuitOpenMetrics {
  * request was fast-failed without reaching the underlying operation.
  */
 export declare class CircuitOpenError extends Error {
-    constructor(message: string);
+    /**
+     * Issue #920: milliseconds until the breaker will admit a probe, when
+     * known. Callers can surface this as a hint ("retry in ~Ns") without
+     * guessing the recovery timeout.
+     */
+    readonly remainingCooldownMs?: number;
+    constructor(message: string, remainingCooldownMs?: number);
 }
 /**
  * Emit a GitHub Check Run annotation for a resilience event (retry, rate

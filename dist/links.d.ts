@@ -145,6 +145,64 @@ export declare function oppositeNetwork(network: StellarNetwork): StellarNetwork
  * Useful when suggesting "switch to the correct Horizon" in error messages.
  */
 export declare function canonicalHorizonUrl(network: StellarNetwork): string;
+/**
+ * Safe default explorer base URL per network. Account links are built as
+ * `<base>/account/<G-address>`. Documented in
+ * docs/USAGE.md#explorer-url-overrides — keep both in sync.
+ */
+export declare const DEFAULT_EXPLORER_BASE_URLS: Record<StellarNetwork, string>;
+/**
+ * Hosts an explorer override may point at, per network. Matching is exact on
+ * the lowercased hostname — subdomains are **not** implied, so
+ * `stellar.expert.attacker.example` and `evil-stellar.expert` never match.
+ */
+export declare const EXPLORER_HOST_ALLOWLIST: Record<StellarNetwork, readonly string[]>;
+/** Longest accepted explorer override, in characters. */
+export declare const MAX_EXPLORER_URL_LENGTH = 2048;
+/** Stable reason codes for a rejected explorer override. */
+export type ExplorerUrlRejectionCode = 'EXPLORER_URL_EMPTY' | 'EXPLORER_URL_TOO_LONG' | 'EXPLORER_URL_MALFORMED' | 'EXPLORER_URL_INSECURE_SCHEME' | 'EXPLORER_URL_CREDENTIALS' | 'EXPLORER_URL_HOST_NOT_ALLOWED' | 'EXPLORER_URL_UNSAFE';
+export type ExplorerUrlValidation = {
+    ok: true;
+    baseUrl: string;
+} | {
+    ok: false;
+    code: ExplorerUrlRejectionCode;
+    message: string;
+};
+/**
+ * Validate an explorer base URL override for `network` (Issue #910).
+ *
+ * Rules, in order:
+ * 1. Must be non-empty and at most {@link MAX_EXPLORER_URL_LENGTH} chars.
+ * 2. Must parse as an absolute URL.
+ * 3. Scheme: `https:` everywhere. `http:` is rejected on `public` (pubnet)
+ *    and tolerated on `testnet` only for an allowlisted host; any other
+ *    scheme (`javascript:`, `data:`, …) is rejected on every network.
+ * 4. No embedded credentials.
+ * 5. Host must be on {@link EXPLORER_HOST_ALLOWLIST} for that network.
+ * 6. Must pass the same Markdown/SSRF link guard as every other rendered
+ *    link ({@link isSafeExternalLink}, with `http:` testnet exception).
+ *
+ * The rejection message names the network and the host only — never the
+ * full override — so a crafted value cannot smuggle text into logs.
+ * Query strings and fragments are stripped from the accepted base.
+ */
+export declare function validateExplorerBaseUrl(url: string, network: StellarNetwork): ExplorerUrlValidation;
+/**
+ * Resolve the explorer base URL for `network`: the validated override when
+ * one is supplied and accepted, otherwise {@link DEFAULT_EXPLORER_BASE_URLS}.
+ *
+ * Like {@link buildFaqLink}, an invalid override falls back to the safe
+ * default so comment rendering is never blocked; callers that want to fail
+ * fast should call {@link validateExplorerBaseUrl} (or the input parser in
+ * src/inputs.ts) at input time.
+ */
+export declare function resolveExplorerBaseUrl(network: StellarNetwork, override?: string): string;
+/**
+ * Build an explorer account link (`<base>/account/<address>`) for `network`,
+ * honoring a validated override.
+ */
+export declare function buildExplorerAccountLink(stellarAddress: string, network: StellarNetwork, explorerBaseUrl?: string): string;
 export declare function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork, dashboardUrl?: string): string;
 export declare function buildChangeTrustLink(network: StellarNetwork, dashboardUrl?: string): string;
 export declare function buildLobstrLink(): string;

@@ -14,6 +14,50 @@ export function inlineCode(value: string): string {
 }
 
 /**
+ * Placeholder rendered in a table cell whose source value is missing or empty
+ * (Issue #921). An empty cell or an empty code span (`` `` ``) reads as
+ * broken output in a Wave comment, so every blank value gets this marker.
+ */
+export const EMPTY_TABLE_CELL_PLACEHOLDER = '_unknown_';
+
+/**
+ * Make an arbitrary value safe to place inside a single GitHub Markdown table
+ * cell (Issue #921).
+ *
+ * - `undefined`, `null`, or a value that is blank after trimming returns the
+ *   placeholder, so a row never has an empty cell or an empty code span.
+ * - Line breaks are collapsed to spaces: a newline ends the table row.
+ * - Pipes are escaped as `\|`, which GitHub honours even inside code spans;
+ *   an unescaped pipe would add a column and break the table.
+ */
+export function tableCellText(value: unknown, placeholder: string = EMPTY_TABLE_CELL_PLACEHOLDER): string {
+  const text = singleLineText(value);
+  if (text === '') return placeholder;
+  return text.replace(/\|/g, '\\|');
+}
+
+/**
+ * Trim a value and collapse any line breaks to single spaces, returning `''`
+ * for `undefined`, `null`, or blank input (Issue #921). Does not escape
+ * anything: callers that already run {@link escapeMarkdownInline} must not
+ * escape pipes a second time.
+ */
+export function singleLineText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return String(value).replace(/\s*[\r\n]+\s*/g, ' ').trim();
+}
+
+/**
+ * Table-cell variant of {@link inlineCode}: a blank value renders the
+ * placeholder instead of an empty code span, and pipes/newlines are handled
+ * by {@link tableCellText} (Issue #921).
+ */
+export function inlineCodeCell(value: unknown, placeholder: string = EMPTY_TABLE_CELL_PLACEHOLDER): string {
+  const text = tableCellText(value, '');
+  return text === '' ? placeholder : inlineCode(text);
+}
+
+/**
  * A single per-asset row for {@link buildAssetTrustlineTable} (Issue #552).
  *
  * Mirrors the per-asset trustline status computed for the `assets_json`
@@ -80,7 +124,8 @@ export function buildAssetTrustlineTable(
   const formatBalance = (row: AssetTrustlineRow): string => {
     if (row.balance === 'unknown') return '_unknown_';
     if (!row.trustlineExists) return '`0` — no trustline';
-    return `\`${row.balance}\``;
+    // Issue #921: a blank balance must not render as an empty code span.
+    return inlineCodeCell(row.balance);
   };
 
   const lines: string[] = [
@@ -102,9 +147,13 @@ export function buildAssetTrustlineTable(
   const hiddenCount = rows.length - visibleRows.length;
 
   for (const row of visibleRows) {
-    const asset = escapeMarkdownInline(row.assetCode);
+    // Issue #921: every cell goes through a table-safe helper so an empty
+    // asset code/issuer or a value containing `|` or a newline cannot add,
+    // drop or split columns.
+    const assetText = singleLineText(row.assetCode);
+    const asset = assetText === '' ? EMPTY_TABLE_CELL_PLACEHOLDER : escapeMarkdownInline(assetText);
     const status = row.trustlineExists ? '✅ exists' : '❌ missing';
-    const issuer = inlineCode(shortenIssuer(row.assetIssuer));
+    const issuer = inlineCodeCell(shortenIssuer(singleLineText(row.assetIssuer)));
     lines.push(`| ${asset} | ${status} | ${formatBalance(row)} | ${issuer} |`);
   }
 

@@ -11,9 +11,78 @@ import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustline
 import { FetchAccountOptions } from './horizon';
 import { RateBudgetExhaustedError } from './resilience';
 import type { BatchReasonCode } from './reasonCodes';
-import { AdaptiveConcurrency } from './checks-run';
-import { globalMetrics } from './metrics';
+import { AdaptiveConcurrency, runWithAddressDeadline } from './checks-run';
+import { globalMetrics, globalCheckLatencyHistogram, type CheckLatencyOutcome } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
+import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
+
+export { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING };
+
+// ---------------------------------------------------------------------------
+// Issue #911 — max addresses per batch run
+// ---------------------------------------------------------------------------
+
+/** Stable reason code carried by {@link BatchAddressLimitError}. */
+export const BATCH_ADDRESS_LIMIT_REASON_CODE = 'BATCH_ADDRESS_LIMIT_EXCEEDED';
+
+/**
+ * Thrown when a batch run is asked to validate more unique addresses than
+ * `batch_max_addresses` allows. Always raised **before** any Horizon request
+ * so an oversized matrix never spends rate budget or runner memory.
+ */
+export class BatchAddressLimitError extends Error {
+  readonly reasonCode = BATCH_ADDRESS_LIMIT_REASON_CODE;
+  /** Number of unique addresses requested. */
+  readonly count: number;
+  /** Effective per-run limit. */
+  readonly limit: number;
+  /** Minimum number of matrix legs needed to stay within `limit`. */
+  readonly suggestedJobs: number;
+
+  constructor(count: number, limit: number) {
+    const suggestedJobs = Math.ceil(count / limit);
+    super(
+      `stellar_addresses contains ${count} unique addresses, which exceeds the ` +
+        `batch_max_addresses limit of ${limit} (${BATCH_ADDRESS_LIMIT_REASON_CODE}). ` +
+        'No Horizon requests were made. Split the addresses across a job matrix ' +
+        `with at most ${limit} addresses per leg (at least ${suggestedJobs} legs), ` +
+        `or raise batch_max_addresses (maximum ${BATCH_MAX_ADDRESSES_CEILING}). ` +
+        'See docs/USAGE.md#batch-address-limit.',
+    );
+    this.name = 'BatchAddressLimitError';
+    this.count = count;
+    this.limit = limit;
+    this.suggestedJobs = suggestedJobs;
+  }
+}
+
+/**
+ * Resolve the effective address limit: `undefined` → default, otherwise a
+ * whole number in `[1, BATCH_MAX_ADDRESSES_CEILING]`.
+ *
+ * @throws On a non-integer or out-of-range limit.
+ */
+function resolveBatchAddressLimit(maxAddresses: number | undefined): number {
+  if (maxAddresses === undefined) return DEFAULT_BATCH_MAX_ADDRESSES;
+  if (!Number.isInteger(maxAddresses) || maxAddresses < 1 || maxAddresses > BATCH_MAX_ADDRESSES_CEILING) {
+    throw new Error(
+      `batch_max_addresses must be a whole number between 1 and ${BATCH_MAX_ADDRESSES_CEILING}. Received: ${maxAddresses}`,
+    );
+  }
+  return maxAddresses;
+}
+
+/**
+ * Enforce the per-run address cap (Issue #911).
+ *
+ * @throws {BatchAddressLimitError} When `addresses` exceeds the limit.
+ */
+export function enforceBatchAddressLimit(addresses: readonly string[], maxAddresses?: number): void {
+  const limit = resolveBatchAddressLimit(maxAddresses);
+  if (addresses.length > limit) {
+    throw new BatchAddressLimitError(addresses.length, limit);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Issue #725 — `clawback_strict_mode` propagation into batch summaries.
@@ -53,6 +122,11 @@ export const BATCH_REASON_CODES = {
    * spent, the run was cancelled by the caller.
    */
   cancelled: 'CANCELLED',
+  /**
+   * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+   * fails; remaining addresses keep being validated.
+   */
+  addressTimeout: 'ADDRESS_TIMEOUT',
 } as const satisfies Record<string, BatchReasonCode>;
 
 /** A single asset that hit `clawback_strict_mode` for one address. */
@@ -177,6 +251,20 @@ export interface BatchRunOptions {
    * orphaned.
    */
   signal?: AbortSignal;
+  /**
+   * Hard cap on addresses per run (Issue #911, `batch_max_addresses`).
+   * Defaults to {@link DEFAULT_BATCH_MAX_ADDRESSES}. Exceeding it throws a
+   * {@link BatchAddressLimitError} before any Horizon request or metric.
+   */
+  maxAddresses?: number;
+  /**
+   * Per-address deadline in milliseconds (Issue #928), independent of the
+   * global `signal`. When one address takes longer, its in-flight requests
+   * are aborted and the row is reported as `ADDRESS_TIMEOUT`; the batch moves
+   * on. Global cancellation (`signal`) always takes precedence. Unset, `0`,
+   * or non-finite disables the deadline (previous behavior).
+   */
+  perAddressTimeoutMs?: number;
 }
 
 /** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
@@ -211,6 +299,22 @@ function cancelledBatchRow(address: string): BatchAddressResult {
   };
 }
 
+/** Row for an address that exceeded `perAddressTimeoutMs` (Issue #928). */
+function addressTimeoutRow(address: string, deadlineMs: number): BatchAddressResult {
+  return {
+    address,
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    failureReason: `Address validation exceeded the per-address deadline of ${deadlineMs} ms`,
+    reasonCode: BATCH_REASON_CODES.addressTimeout,
+    clawbackStrictFailure: false,
+    clawbackStrictAssets: [],
+  };
+}
+
 /** Outcome of validating a single address, used by both the serial and concurrent dispatch loops. */
 interface AddressOutcome {
   result: BatchAddressResult;
@@ -226,6 +330,39 @@ interface AddressOutcome {
  * exact same per-address logic and metrics instead of duplicating it.
  */
 async function validateOneAddress(
+  address: string,
+  config: CheckConfig,
+  horizonUrl: string,
+  fetchOptions: FetchAccountOptions,
+  extraAssets: AssetConfigInput[],
+  issuerAccount: HorizonAccount | null | undefined,
+): Promise<AddressOutcome> {
+  // Issue #956: time every per-address check into the bounded histogram.
+  // The address is never used as a label — only the fixed outcome is.
+  const startedAt = Date.now();
+  let outcome: CheckLatencyOutcome = 'error';
+  try {
+    const result = await validateOneAddressTimed(
+      address,
+      config,
+      horizonUrl,
+      fetchOptions,
+      extraAssets,
+      issuerAccount,
+    );
+    outcome =
+      result.result.reasonCode === BATCH_REASON_CODES.invalidAddress
+        ? 'invalid'
+        : result.result.valid
+          ? 'pass'
+          : 'fail';
+    return result;
+  } finally {
+    globalCheckLatencyHistogram.record(outcome, Date.now() - startedAt);
+  }
+}
+
+async function validateOneAddressTimed(
   address: string,
   config: CheckConfig,
   horizonUrl: string,
@@ -424,9 +561,11 @@ async function validateOneAddress(
  * - Newline-separated list: one address per line (blank lines ignored)
  * - JSON array: `["GABC...", "GDEF..."]`
  *
- * Throws if the resulting list is empty.
+ * Throws if the resulting list is empty, or (Issue #911) a
+ * {@link BatchAddressLimitError} when the deduplicated list exceeds
+ * `options.maxAddresses` (default {@link DEFAULT_BATCH_MAX_ADDRESSES}).
  */
-export function parseBatchAddresses(raw: string): string[] {
+export function parseBatchAddresses(raw: string, options: { maxAddresses?: number } = {}): string[] {
   const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error('stellar_addresses input is empty. Provide at least one Stellar address.');
@@ -475,6 +614,7 @@ export function parseBatchAddresses(raw: string): string[] {
     }
   }
 
+  enforceBatchAddressLimit(deduped, options.maxAddresses);
   return deduped;
 }
 
@@ -565,6 +705,9 @@ export async function runBatchValidation(
   horizonUrl: string,
   options: BatchRunOptions = {},
 ): Promise<BatchAddressResult[]> {
+  // Issue #911: fail before any Horizon call, metric, or worker is started.
+  enforceBatchAddressLimit(addresses, options.maxAddresses);
+
   const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
   const extraAssets = options.extraAssets ?? [];
   const maxConcurrency = clampConcurrency(options.maxConcurrency);
@@ -652,27 +795,61 @@ export async function runBatchValidation(
       }
       dispatchedBefore = true;
 
-      let outcome: AddressOutcome;
-      try {
-        outcome = await validateOneAddress(
-        addresses[i],
-        config,
-        horizonUrl,
-        {
-          ...fetchOptions,
-          onThrottle: () => {
-            throttled = true;
-            limiter.onThrottle(epoch);
-            fetchOptions.onThrottle?.();
-          },
+      // Issue #928 + #946: per-address deadline with AdaptiveConcurrency throttle feedback.
+      const throttledFetchOptions: FetchAccountOptions = {
+        ...fetchOptions,
+        onThrottle: () => {
+          throttled = true;
+          limiter.onThrottle(epoch);
+          fetchOptions.onThrottle?.();
         },
-        extraAssets,
-        issuerAccount,
-        );
+      };
+      let outcome: AddressOutcome | undefined;
+      try {
+        const deadlineOutcome =
+          !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+            ? {
+                status: 'completed' as const,
+                value: await validateOneAddress(
+                  addresses[i],
+                  config,
+                  horizonUrl,
+                  throttledFetchOptions,
+                  extraAssets,
+                  issuerAccount,
+                ),
+              }
+            : await runWithAddressDeadline(
+                (addressSignal) =>
+                  validateOneAddress(
+                    addresses[i],
+                    config,
+                    horizonUrl,
+                    { ...throttledFetchOptions, signal: addressSignal },
+                    extraAssets,
+                    issuerAccount,
+                  ),
+                options.perAddressTimeoutMs,
+                fetchOptions.signal,
+              );
+        if (deadlineOutcome.status === 'cancelled') {
+          stopDispatch = true;
+          return;
+        }
+        if (deadlineOutcome.status === 'timed_out') {
+          globalMetrics.incrementCounter('batch_fail_address_timeout');
+          globalMetrics.incrementCounter('batch_address_failed');
+          outcome = {
+            budgetExhausted: false,
+            result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+          };
+        } else {
+          outcome = deadlineOutcome.value;
+        }
       } finally {
-        // Only successful Horizon answers count towards recovery.
         limiter.release();
       }
+      if (!outcome) return;
       if (!throttled && outcome.result.accountFunded) limiter.onSuccess(epoch);
       results[i] = outcome.result;
 

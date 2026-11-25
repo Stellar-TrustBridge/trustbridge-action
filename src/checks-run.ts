@@ -348,3 +348,66 @@ export async function createCheckRun(
     };
   }
 }
+
+/**
+ * Per-address deadline (Issue #928).
+ *
+ * Runs `task` with its own AbortSignal that fires after `deadlineMs`, so one
+ * hung address cannot consume the whole job budget. The per-address signal
+ * also follows `parentSignal` (the global/batch cancellation), giving this
+ * precedence:
+ *
+ *   1. `parentSignal` aborted (global timeout / cancel) → `{ status: 'cancelled' }`
+ *      — global cancellation always wins, even if the deadline also expired.
+ *   2. `deadlineMs` elapsed first → `{ status: 'timed_out' }`; only this
+ *      address is affected and the caller continues with the next one.
+ *   3. Otherwise → `{ status: 'completed', value }`.
+ *
+ * `deadlineMs` that is undefined, non-finite or `<= 0` disables the deadline
+ * (task runs exactly as before, still honoring `parentSignal`). The timer is
+ * always cleared, so nothing keeps the event loop alive after settling.
+ */
+export type DeadlineOutcome<T> =
+  | { status: 'completed'; value: T }
+  | { status: 'timed_out'; deadlineMs: number }
+  | { status: 'cancelled' };
+
+export async function runWithAddressDeadline<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  deadlineMs: number | undefined,
+  parentSignal?: AbortSignal,
+): Promise<DeadlineOutcome<T>> {
+  const controller = new AbortController();
+  if (parentSignal?.aborted) return { status: 'cancelled' };
+  const onParentAbort = (): void => controller.abort();
+  parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+
+  const enabled = deadlineMs !== undefined && Number.isFinite(deadlineMs) && deadlineMs > 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<'deadline'>((resolve) => {
+    if (!enabled) return;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      resolve('deadline');
+    }, deadlineMs);
+  });
+
+  try {
+    const raced = await Promise.race([
+      task(controller.signal).then((value) => ({ value })),
+      deadline,
+    ]);
+    if (parentSignal?.aborted) return { status: 'cancelled' };
+    if (raced === 'deadline' || timedOut) return { status: 'timed_out', deadlineMs: deadlineMs as number };
+    return { status: 'completed', value: raced.value };
+  } catch (error) {
+    if (parentSignal?.aborted) return { status: 'cancelled' };
+    if (timedOut) return { status: 'timed_out', deadlineMs: deadlineMs as number };
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
+  }
+}

@@ -2,10 +2,11 @@ import * as github from "@actions/github";
 import { CheckConfig, ValidationResult } from "./checks";
 import { type AssetTrustlineRow } from './markdown';
 import { MetricsCollector } from './metrics';
-import { CommentReaction } from './snooze';
+import { CommentReaction, type SnoozeState } from './snooze';
 import { DiagnosticsConfig } from './diagnostics';
 import { Locale } from './i18n';
 import { ValidationDelta } from './delta';
+import type { LogContext } from './logger';
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
  * Bump when the comment body structure (sections, markers, remediation
@@ -110,7 +111,26 @@ export interface CommentConfig extends CheckConfig {
      * Matches the `privacy_mode` action input.
      */
     privacyMode?: boolean;
+    /**
+     * Per-run correlation id from `initCorrelationId` in `src/diagnostics.ts`
+     * (Issue #904). Only rendered when `correlationFooter` is true.
+     */
+    correlationId?: string;
+    /**
+     * When true and `correlationId` is valid, append a hidden
+     * `<!-- trustbridge-action:correlation-id:… -->` marker and a visible
+     * "Correlation ID" line under the footer so support can match the comment
+     * to the Actions log. The action enables it when `debug_mode: true`.
+     * Default false — the comment is byte-identical to earlier releases.
+     */
+    correlationFooter?: boolean;
 }
+/**
+ * Structured log context for a snooze-suppressed comment update (Issue #908).
+ * Mirrors `buildSnoozeAuditLogContext` in `src/snooze.ts` (same stable
+ * `reason_code` / `check` keys) with `event: snooze_comment_suppressed`.
+ */
+export declare function buildSnoozeSuppressionLogContext(state: SnoozeState, snoozeWindowMs: number, issueNumber?: number): LogContext;
 export declare const TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**
  * Legacy hidden marker (pre-schema-version). Kept for backward

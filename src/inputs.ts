@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { validateEnumInput } from './validation';
+import { StellarNetwork, validateExplorerBaseUrl } from './links';
 
 export function parseBooleanInput(value: string, defaultValue: boolean): boolean {
   if (value === undefined || value === '') {
@@ -136,6 +138,42 @@ export function parseNumberInput(
     throw new Error(`Value must be at most ${options.max}. Received: ${parsed}`);
   }
 
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #911 — `batch_max_addresses` hard cap
+// ---------------------------------------------------------------------------
+
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+export const DEFAULT_BATCH_MAX_ADDRESSES = 500;
+
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+export const BATCH_MAX_ADDRESSES_CEILING = 2000;
+
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+export function parseBatchMaxAddressesInput(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') {
+    return DEFAULT_BATCH_MAX_ADDRESSES;
+  }
+  const parsed = Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > BATCH_MAX_ADDRESSES_CEILING) {
+    throw new Error(
+      `batch_max_addresses must be a whole number between 1 and ${BATCH_MAX_ADDRESSES_CEILING}. Received: "${value}"`,
+    );
+  }
   return parsed;
 }
 
@@ -298,6 +336,83 @@ export function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTru
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #901 — enum validation for `network` and enforcement modes
+// ---------------------------------------------------------------------------
+
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+export const VALID_NETWORK_INPUTS = ['testnet', 'public', 'mainnet'] as const;
+export type NetworkInput = (typeof VALID_NETWORK_INPUTS)[number];
+
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+export const VALID_HOME_DOMAIN_CHECK_MODES = ['warn', 'strict'] as const;
+export type HomeDomainCheckModeInput = (typeof VALID_HOME_DOMAIN_CHECK_MODES)[number];
+
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+export function parseNetworkInput(value: string | undefined): NetworkInput | '' {
+  const result = validateEnumInput(value, 'network', VALID_NETWORK_INPUTS);
+  if (!result.valid) {
+    throw new Error(result.errors[0]);
+  }
+  return (value ?? '').trim().toLowerCase() as NetworkInput | '';
+}
+
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+export function parseHomeDomainCheckModeInput(
+  value: string | undefined,
+): HomeDomainCheckModeInput {
+  const result = validateEnumInput(value, 'home_domain_check_mode', VALID_HOME_DOMAIN_CHECK_MODES);
+  if (!result.valid) {
+    throw new Error(result.errors[0]);
+  }
+  const normalized = (value ?? '').trim().toLowerCase();
+  return (normalized || 'warn') as HomeDomainCheckModeInput;
+}
+
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+export function parseExplorerBaseUrlInput(
+  value: string | undefined,
+  network: StellarNetwork,
+  inputName = 'explorer_base_url',
+): string {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return '';
+  const result = validateExplorerBaseUrl(trimmed, network);
+  if (!result.ok) {
+    throw new Error(`${inputName} rejected (${result.code}): ${result.message}`);
+  }
+  return result.baseUrl;
+}
 
 // ---------------------------------------------------------------------------
 // #147 — TRUSTBRIDGE_* environment variable support
@@ -505,6 +620,7 @@ export interface Inputs {
   issue_number?: string;
   debug_mode?: string;
   horizon_timeout_ms?: string;
+  per_address_timeout_ms?: string;
   sticky_comment?: string;
   comment_mode?: string;
   wait_until_funded?: string;
@@ -521,8 +637,12 @@ export interface Inputs {
   allow_cross_network_fallback?: string;
   log_inputs?: string;
   trustbridge_config_path?: string;
+  trustbridge_config_strict?: string;
   milestone_allowlist?: string;
   milestone_fail_on_skip?: string;
+  /** Issue #955 — labels that must be present before checks run. */
+  required_labels?: string;
+  required_labels_fail_on_skip?: string;
   github_token: string;
   github_app_token?: string;
   assets_json?: string;
@@ -532,7 +652,9 @@ export interface Inputs {
   fail_label?: string;
   sep0007_origin_domain?: string;
   snooze_window_minutes?: string;
+  snooze_max_override?: string;
   force_comment?: string;
+  summary_emoji_free?: string;
   webhook_url?: string;
   webhook_secret?: string;
   webhook_secret_previous?: string;
@@ -561,6 +683,7 @@ export interface Inputs {
   stellar_toml_fetch_enabled?: string;
   stellar_toml_cache_ttl_ms?: string;
   stellar_toml_hash_pin?: string;
+  stellar_toml_allow_insecure_testnet?: string;
   write_validation_json?: string;
   validation_json_path?: string;
   trustbridge_plugins_path?: string;
@@ -568,6 +691,7 @@ export interface Inputs {
   use_plugin_runner?: string;
   locale?: string;
   stellar_addresses?: string;
+  batch_max_addresses?: string;
   unassign_on_not_ready?: string;
   project_id?: string;
   project_status_field?: string;
@@ -603,4 +727,129 @@ export interface Inputs {
   privacy_mode?: string;
   soroban_rpc_url?: string;
   contract_id?: string;
+}
+
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+export function parseStrictBooleanInput(name: string, raw: string | undefined, defaultValue = false): boolean {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '') return defaultValue;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  throw new Error(`Invalid ${name}: expected "true" or "false", got "${raw}"`);
+}
+
+// ---------------------------------------------------------------------------
+// Mutually exclusive input conflict matrix (Issue #951)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+export const INPUT_CONFLICT_REASON_CODE = 'INPUT_CONFLICT';
+
+/** One row of the mutually exclusive input matrix. */
+export interface InputConflictRule {
+  /** Stable identifier, e.g. `preflight_only+wait_until_funded`. */
+  id: string;
+  /** The two boolean inputs that cannot both be `true`. */
+  inputs: readonly [string, string];
+  /** Actionable explanation appended to the error message. */
+  reason: string;
+}
+
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+export const INPUT_CONFLICT_MATRIX: readonly InputConflictRule[] = [
+  {
+    id: 'preflight_only+wait_until_funded',
+    inputs: ['preflight_only', 'wait_until_funded'],
+    reason:
+      'preflight_only exits before any Horizon call, so wait_until_funded could never poll. Disable one of them.',
+  },
+  {
+    id: 'preflight_only+use_friendbot',
+    inputs: ['preflight_only', 'use_friendbot'],
+    reason:
+      'preflight_only exits before any Horizon call, so Friendbot could never be invoked. Disable one of them.',
+  },
+  {
+    id: 'fixture_mode+wait_until_funded',
+    inputs: ['fixture_mode', 'wait_until_funded'],
+    reason:
+      'fixture_mode reads a static local fixture, so polling until funded would never observe a change. Disable one of them.',
+  },
+  {
+    id: 'fixture_mode+use_friendbot',
+    inputs: ['fixture_mode', 'use_friendbot'],
+    reason:
+      'fixture_mode makes no network calls, so Friendbot funding would not be reflected in the result. Disable one of them.',
+  },
+];
+
+/** A detected conflict between two enabled inputs. */
+export interface InputConflict {
+  id: string;
+  inputs: readonly [string, string];
+  reasonCode: typeof INPUT_CONFLICT_REASON_CODE;
+  message: string;
+}
+
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+export function detectInputConflicts(
+  rawInputs: Record<string, string | undefined>,
+): InputConflict[] {
+  const enabled = (name: string): boolean => parseBooleanInput(rawInputs[name] ?? '', false);
+  return INPUT_CONFLICT_MATRIX.filter((rule) => enabled(rule.inputs[0]) && enabled(rule.inputs[1])).map(
+    (rule) => ({
+      id: rule.id,
+      inputs: rule.inputs,
+      reasonCode: INPUT_CONFLICT_REASON_CODE,
+      message: `${INPUT_CONFLICT_REASON_CODE}: ${rule.inputs[0]} and ${rule.inputs[1]} cannot both be true. ${rule.reason}`,
+    }),
+  );
+}
+
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+export function assertNoInputConflicts(rawInputs: Record<string, string | undefined>): void {
+  const conflicts = detectInputConflicts(rawInputs);
+  if (conflicts.length === 0) return;
+  throw new Error(
+    `Conflicting inputs detected (${conflicts.length}):\n` +
+      conflicts.map((c) => `- ${c.message}`).join('\n') +
+      '\nSee docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.',
+  );
+}
+
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export function buildSorobanContractConfig(
+  raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>,
+): import('./soroban').ContractConfig | null {
+  const sorobanRpcUrl = raw.soroban_rpc_url?.trim();
+  const contractId = raw.contract_id?.trim();
+  if (!sorobanRpcUrl || !contractId) return null;
+  const networkPassphrase = raw.network_passphrase?.trim();
+  return { sorobanRpcUrl, contractId, ...(networkPassphrase ? { networkPassphrase } : {}) };
 }
