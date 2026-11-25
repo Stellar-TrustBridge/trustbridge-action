@@ -175,6 +175,107 @@ export function addJitter(delayMs: number, jitterPercent: number = 10, maxDelayM
   return maxDelayMs !== undefined ? Math.min(jittered, maxDelayMs) : jittered;
 }
 
+// ---------------------------------------------------------------------------
+// Cron sweep backoff when Horizon is degraded (Issue #909)
+// ---------------------------------------------------------------------------
+
+/**
+ * `reason_code` values that mean "Horizon was degraded", not "the wallet is
+ * not ready". A scheduled sweep should count these — never wallet failures
+ * such as `TRUSTLINE_MISSING` — when deciding to pause. Documented in
+ * docs/CRON_REVALIDATION.md#backoff-when-horizon-is-degraded.
+ */
+export const HORIZON_DEGRADED_REASON_CODES = [
+  'HORIZON_TIMEOUT',
+  'HORIZON_ERROR',
+  'CIRCUIT_OPEN',
+  'RATE_BUDGET_EXHAUSTED',
+  'HORIZON_WAIT_BUDGET_EXHAUSTED',
+] as const;
+
+export type HorizonDegradedReasonCode = (typeof HORIZON_DEGRADED_REASON_CODES)[number];
+
+/** True when `reasonCode` signals a Horizon-side degradation. */
+export function isHorizonDegradedReasonCode(reasonCode: string): reasonCode is HorizonDegradedReasonCode {
+  return (HORIZON_DEGRADED_REASON_CODES as readonly string[]).includes((reasonCode ?? '').trim());
+}
+
+/** Tuning for {@link shouldPauseCronSweep} / {@link computeCronBackoffDelayMs}. */
+export interface CronBackoffPolicy {
+  /** Fraction (0–1] of degraded results in one sweep that pauses the sweep. */
+  degradedRateThreshold: number;
+  /** Minimum number of results before the rate is trusted. */
+  minSampleSize: number;
+  /** Delay before the first retry sweep after a degraded sweep. */
+  baseDelayMs: number;
+  /** Upper bound for the (pre-jitter) delay. */
+  maxDelayMs: number;
+  /** Jitter applied to the delay, as a percentage (± jitterPercent %). */
+  jitterPercent: number;
+}
+
+/**
+ * Defaults documented in docs/CRON_REVALIDATION.md: pause when ≥ 20 % of at
+ * least 5 results are Horizon-degraded, then back off 15 min → 30 → 60 → …
+ * capped at 6 h, with ± 20 % jitter so many Wave orgs do not resume together.
+ */
+export const DEFAULT_CRON_BACKOFF_POLICY: CronBackoffPolicy = {
+  degradedRateThreshold: 0.2,
+  minSampleSize: 5,
+  baseDelayMs: 15 * 60 * 1000,
+  maxDelayMs: 6 * 60 * 60 * 1000,
+  jitterPercent: 20,
+};
+
+/**
+ * Decide whether a cron sweep should stop dispatching further checks because
+ * Horizon looks degraded (Issue #909).
+ *
+ * @param reasonCodes  `reason_code` outputs collected so far in this sweep.
+ * @returns `true` once at least `minSampleSize` results were seen and the
+ *          share of {@link HORIZON_DEGRADED_REASON_CODES} reaches
+ *          `degradedRateThreshold`. Wallet failures never count.
+ */
+export function shouldPauseCronSweep(
+  reasonCodes: readonly string[],
+  policy: CronBackoffPolicy = DEFAULT_CRON_BACKOFF_POLICY,
+): boolean {
+  if (reasonCodes.length === 0 || reasonCodes.length < policy.minSampleSize) {
+    return false;
+  }
+  const degraded = reasonCodes.filter(isHorizonDegradedReasonCode).length;
+  return degraded / reasonCodes.length >= policy.degradedRateThreshold;
+}
+
+/**
+ * Delay before the next cron sweep after `consecutiveDegradedSweeps`
+ * degraded sweeps in a row (Issue #909).
+ *
+ * `0` sweeps → `0` (run on the normal schedule). Otherwise
+ * `min(baseDelayMs * 2^(n-1), maxDelayMs)` with ± `jitterPercent` jitter,
+ * never above `maxDelayMs`. Negative or non-finite counts throw so a broken
+ * counter in a workflow script fails loudly instead of hammering Horizon.
+ *
+ * @param random  Injectable RNG in [0, 1) for deterministic tests.
+ */
+export function computeCronBackoffDelayMs(
+  consecutiveDegradedSweeps: number,
+  policy: CronBackoffPolicy = DEFAULT_CRON_BACKOFF_POLICY,
+  random: () => number = Math.random,
+): number {
+  if (!Number.isFinite(consecutiveDegradedSweeps) || consecutiveDegradedSweeps < 0) {
+    throw new Error(
+      `consecutiveDegradedSweeps must be a non-negative finite number. Received: ${consecutiveDegradedSweeps}`,
+    );
+  }
+  const n = Math.floor(consecutiveDegradedSweeps);
+  if (n === 0) return 0;
+  const exponent = Math.min(n - 1, 30);
+  const delay = Math.min(policy.baseDelayMs * 2 ** exponent, policy.maxDelayMs);
+  const jitter = delay * (policy.jitterPercent / 100) * (random() * 2 - 1);
+  return Math.round(Math.min(Math.max(0, delay + jitter), policy.maxDelayMs));
+}
+
 /**
  * Sleep for a given duration.
  */

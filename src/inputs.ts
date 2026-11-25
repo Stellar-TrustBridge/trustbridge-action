@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { validateEnumInput } from './validation';
+import { StellarNetwork, validateExplorerBaseUrl } from './links';
 
 export function parseBooleanInput(value: string, defaultValue: boolean): boolean {
   if (value === undefined || value === '') {
@@ -336,6 +338,83 @@ export function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTru
 
 
 // ---------------------------------------------------------------------------
+// Issue #901 — enum validation for `network` and enforcement modes
+// ---------------------------------------------------------------------------
+
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+export const VALID_NETWORK_INPUTS = ['testnet', 'public', 'mainnet'] as const;
+export type NetworkInput = (typeof VALID_NETWORK_INPUTS)[number];
+
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+export const VALID_HOME_DOMAIN_CHECK_MODES = ['warn', 'strict'] as const;
+export type HomeDomainCheckModeInput = (typeof VALID_HOME_DOMAIN_CHECK_MODES)[number];
+
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+export function parseNetworkInput(value: string | undefined): NetworkInput | '' {
+  const result = validateEnumInput(value, 'network', VALID_NETWORK_INPUTS);
+  if (!result.valid) {
+    throw new Error(result.errors[0]);
+  }
+  return (value ?? '').trim().toLowerCase() as NetworkInput | '';
+}
+
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+export function parseHomeDomainCheckModeInput(
+  value: string | undefined,
+): HomeDomainCheckModeInput {
+  const result = validateEnumInput(value, 'home_domain_check_mode', VALID_HOME_DOMAIN_CHECK_MODES);
+  if (!result.valid) {
+    throw new Error(result.errors[0]);
+  }
+  const normalized = (value ?? '').trim().toLowerCase();
+  return (normalized || 'warn') as HomeDomainCheckModeInput;
+}
+
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+export function parseExplorerBaseUrlInput(
+  value: string | undefined,
+  network: StellarNetwork,
+  inputName = 'explorer_base_url',
+): string {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return '';
+  const result = validateExplorerBaseUrl(trimmed, network);
+  if (!result.ok) {
+    throw new Error(`${inputName} rejected (${result.code}): ${result.message}`);
+  }
+  return result.baseUrl;
+}
+
+// ---------------------------------------------------------------------------
 // #147 — TRUSTBRIDGE_* environment variable support
 // ---------------------------------------------------------------------------
 
@@ -541,6 +620,7 @@ export interface Inputs {
   issue_number?: string;
   debug_mode?: string;
   horizon_timeout_ms?: string;
+  per_address_timeout_ms?: string;
   sticky_comment?: string;
   comment_mode?: string;
   wait_until_funded?: string;
@@ -557,6 +637,7 @@ export interface Inputs {
   allow_cross_network_fallback?: string;
   log_inputs?: string;
   trustbridge_config_path?: string;
+  trustbridge_config_strict?: string;
   milestone_allowlist?: string;
   milestone_fail_on_skip?: string;
   github_token: string;
@@ -640,4 +721,20 @@ export interface Inputs {
   privacy_mode?: string;
   soroban_rpc_url?: string;
   contract_id?: string;
+}
+
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export function buildSorobanContractConfig(
+  raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>,
+): import('./soroban').ContractConfig | null {
+  const sorobanRpcUrl = raw.soroban_rpc_url?.trim();
+  const contractId = raw.contract_id?.trim();
+  if (!sorobanRpcUrl || !contractId) return null;
+  const networkPassphrase = raw.network_passphrase?.trim();
+  return { sorobanRpcUrl, contractId, ...(networkPassphrase ? { networkPassphrase } : {}) };
 }

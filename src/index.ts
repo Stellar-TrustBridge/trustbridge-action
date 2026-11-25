@@ -44,10 +44,13 @@ import {
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
   parseBatchMaxAddressesInput,
+  parseNetworkInput,
+  parseHomeDomainCheckModeInput,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
-import { logger, emitInputsLogRecord } from './logger';
+import { logger, emitInputsLogRecord, logInfo, logWarning } from './logger';
+import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
@@ -374,6 +377,21 @@ export async function run(): Promise<void> {
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
+  // Issue #904: one correlation id per run, attached to every structured log
+  // line (and the comment footer when debug_mode is on).
+  const correlation = initCorrelationId();
+  globalMetrics.setCorrelationId(correlation.correlationId);
+  if (correlation.rejectedReason) {
+    logWarning(
+      `Ignoring ${CORRELATION_ID_ENV}: ${correlation.rejectedReason}. Generated a new correlation id instead.`,
+      { component: 'diagnostics', reason_code: CORRELATION_ID_INVALID_REASON_CODE, check: 'correlation_id' },
+    );
+  }
+  logInfo(`TrustBridge correlation id: ${correlation.correlationId} (source=${correlation.source})`, {
+    component: 'diagnostics',
+    reason_code: 'CORRELATION_ID',
+    check: 'correlation_id',
+  });
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
@@ -413,6 +431,14 @@ export async function run(): Promise<void> {
 
     return;
   }
+
+  // Issue #901: reject unknown enum values (network, enforcement modes)
+  // before any Horizon traffic so a workflow typo fails fast with the list
+  // of allowed values. See docs/INPUT_VALIDATION.md.
+  parseNetworkInput(core.getInput('network'));
+  const homeDomainCheckMode: HomeDomainCheckMode = parseHomeDomainCheckModeInput(
+    core.getInput('home_domain_check_mode'),
+  );
 
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
@@ -498,8 +524,6 @@ export async function run(): Promise<void> {
   // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
   const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
   const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
-  const homeDomainCheckMode: HomeDomainCheckMode =
-    (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
   const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
 
   // Comment threading + batch inputs.
@@ -565,7 +589,9 @@ export async function run(): Promise<void> {
   // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
   // validation errors surface via result.validation.errors so we fail fast
   // with a clear message rather than silently ignoring bad configuration.
-  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath);
+  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath, undefined, {
+    strict: core.getInput('trustbridge_config_strict').trim().toLowerCase() === 'true',
+  });
   if (consumerConfig.found && !consumerConfig.validation.valid) {
     core.setFailed(
       `trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`,
@@ -873,6 +899,8 @@ export async function run(): Promise<void> {
           retryMaxDelayMs,
         },
         maxAddresses: batchMaxAddresses,
+        // Issue #928: optional per-address deadline (0/empty disables it).
+        perAddressTimeoutMs: Number(core.getInput('per_address_timeout_ms') || '0') || undefined,
       },
     );
 
@@ -934,6 +962,8 @@ export async function run(): Promise<void> {
     sep0007DeepLinks,
     sep0007OriginDomain,
     assets: assetsTrustlineStatusExtras,
+    correlationId: correlation.correlationId,
+    correlationFooter: debugMode,
   });
 
   // Issue #696 — comment_id is only published from a successful

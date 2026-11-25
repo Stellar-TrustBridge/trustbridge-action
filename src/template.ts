@@ -23,6 +23,13 @@
  *    for KEY, making it safe to reference translated copy without bypassing i18n.
  * 6. Unknown placeholders are replaced with an empty string (never silently
  *    passed through) so unexpected `{{foo}}` tokens cannot leak raw data.
+ * 7. Rendered output cap (Issue #905) — the *interpolated* partial must not
+ *    exceed MAX_TEMPLATE_RENDERED_BYTES (16 KB) and the raw template may hold
+ *    at most MAX_TEMPLATE_PLACEHOLDERS (200) placeholders. A small file that
+ *    repeats a long `{{locale:KEY}}` or `{{horizon}}` thousands of times (an
+ *    "expansion bomb") fails fast with a stable `TEMPLATE_OUTPUT_TOO_LARGE`
+ *    / `TEMPLATE_TOO_MANY_PLACEHOLDERS` error instead of producing a body
+ *    that exceeds GitHub's comment limit.
  */
 
 import * as fs from 'fs';
@@ -33,6 +40,53 @@ import type { Locale } from './i18n';
 
 /** Maximum allowed template file size in bytes. */
 export const MAX_TEMPLATE_BYTES = 8 * 1024; // 8 KB
+
+/**
+ * Maximum allowed size of the rendered (interpolated) partial in UTF-8 bytes
+ * (Issue #905). Leaves ample headroom under GitHub's 65,536-character comment
+ * limit for the core TrustBridge sections.
+ */
+export const MAX_TEMPLATE_RENDERED_BYTES = 16 * 1024; // 16 KB
+
+/** Maximum number of `{{…}}` placeholders allowed in one template (Issue #905). */
+export const MAX_TEMPLATE_PLACEHOLDERS = 200;
+
+/**
+ * Stable error codes raised by template rendering limits (Issue #905).
+ *
+ * | Code | Meaning |
+ * |---|---|
+ * | `TEMPLATE_OUTPUT_TOO_LARGE` | Rendered partial exceeds `MAX_TEMPLATE_RENDERED_BYTES`. |
+ * | `TEMPLATE_TOO_MANY_PLACEHOLDERS` | Template holds more than `MAX_TEMPLATE_PLACEHOLDERS` placeholders. |
+ */
+export type TemplateErrorCode = 'TEMPLATE_OUTPUT_TOO_LARGE' | 'TEMPLATE_TOO_MANY_PLACEHOLDERS';
+
+/** Error thrown when a template breaches a rendering limit (Issue #905). */
+export class TemplateRenderError extends Error {
+  readonly code: TemplateErrorCode;
+
+  constructor(code: TemplateErrorCode, message: string) {
+    super(`[${code}] ${message}`);
+    this.name = 'TemplateRenderError';
+    this.code = code;
+  }
+}
+
+/** Options for {@link interpolateTemplate}. */
+export interface InterpolateOptions {
+  /**
+   * Maximum rendered size in UTF-8 bytes. Defaults to
+   * {@link MAX_TEMPLATE_RENDERED_BYTES}; non-finite or non-positive values
+   * fall back to the default.
+   */
+  maxOutputBytes?: number;
+}
+
+function resolveMaxOutputBytes(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : MAX_TEMPLATE_RENDERED_BYTES;
+}
 
 /**
  * Dangerous prototype-pollution / prototype-chain placeholder names.
@@ -160,6 +214,43 @@ const SUPPORTED_VARIABLES = new Set([
 ]);
 
 /**
+ * Resolve a single placeholder key to its (escaped) substitution value.
+ */
+function resolvePlaceholder(
+  rawKey: string,
+  ctx: TemplateContext,
+  strings: ReturnType<typeof getStrings>,
+): string {
+  const key = rawKey.trim();
+
+  // Handle {{locale:KEY}} for i18n string lookups.
+  if (key.toLowerCase().startsWith('locale:')) {
+    const i18nKey = key.slice('locale:'.length).trim();
+    const value = (strings as unknown as Record<string, unknown>)[i18nKey];
+    // Only allow string-typed fields (not function-typed check helpers).
+    if (typeof value === 'string') {
+      return escapeMarkdownInline(value);
+    }
+    return '';
+  }
+
+  const lowerKey = key.toLowerCase();
+
+  // Unknown or unsupported variable → empty string (safe default).
+  if (!SUPPORTED_VARIABLES.has(lowerKey)) {
+    return '';
+  }
+
+  // status is safe symbolic text, no escaping needed.
+  if (lowerKey === 'status') {
+    return ctx.status;
+  }
+
+  const raw = (ctx as unknown as Record<string, string>)[lowerKey] ?? '';
+  return escapeMarkdownInline(raw);
+}
+
+/**
  * Interpolate `{{variable}}` and `{{locale:KEY}}` placeholders in a template
  * string.
  *
@@ -169,43 +260,61 @@ const SUPPORTED_VARIABLES = new Set([
  *   Only string-typed fields of `CommentStrings` are supported; function
  *   fields are excluded and resolve to an empty string.
  * - Unknown placeholders are replaced with an empty string (never echoed back).
+ * - More than {@link MAX_TEMPLATE_PLACEHOLDERS} placeholders throws
+ *   `TemplateRenderError` (`TEMPLATE_TOO_MANY_PLACEHOLDERS`) before any
+ *   substitution (Issue #905).
+ * - Rendering stops as soon as the output would exceed `maxOutputBytes`
+ *   and throws `TemplateRenderError` (`TEMPLATE_OUTPUT_TOO_LARGE`), so an
+ *   expansion bomb never materialises a huge string (Issue #905).
  *
  * @param template  Raw template content (already validated).
  * @param ctx       Interpolation context.
+ * @param options   Rendering limits.
  * @returns         Interpolated template string.
  */
-export function interpolateTemplate(template: string, ctx: TemplateContext): string {
+export function interpolateTemplate(
+  template: string,
+  ctx: TemplateContext,
+  options: InterpolateOptions = {},
+): string {
+  const maxOutputBytes = resolveMaxOutputBytes(options.maxOutputBytes);
   const strings = getStrings(ctx.locale);
+  const placeholderPattern = /\{\{([^{}]+?)\}\}/g;
 
-  return template.replace(/\{\{([^{}]+?)\}\}/g, (_match, rawKey: string) => {
-    const key = rawKey.trim();
+  const placeholderCount = (template.match(placeholderPattern) ?? []).length;
+  if (placeholderCount > MAX_TEMPLATE_PLACEHOLDERS) {
+    throw new TemplateRenderError(
+      'TEMPLATE_TOO_MANY_PLACEHOLDERS',
+      `custom comment template contains ${placeholderCount} placeholders; ` +
+        `the maximum is ${MAX_TEMPLATE_PLACEHOLDERS}.`,
+    );
+  }
 
-    // Handle {{locale:KEY}} for i18n string lookups.
-    if (key.toLowerCase().startsWith('locale:')) {
-      const i18nKey = key.slice('locale:'.length).trim();
-      const value = (strings as unknown as Record<string, unknown>)[i18nKey];
-      // Only allow string-typed fields (not function-typed check helpers).
-      if (typeof value === 'string') {
-        return escapeMarkdownInline(value);
-      }
-      return '';
+  const parts: string[] = [];
+  let renderedBytes = 0;
+  const append = (segment: string): void => {
+    if (segment === '') return;
+    renderedBytes += Buffer.byteLength(segment, 'utf8');
+    if (renderedBytes > maxOutputBytes) {
+      throw new TemplateRenderError(
+        'TEMPLATE_OUTPUT_TOO_LARGE',
+        `custom comment template renders to more than ${maxOutputBytes} bytes. ` +
+          'Reduce repeated placeholders or the amount of static text in the partial.',
+      );
     }
+    parts.push(segment);
+  };
 
-    const lowerKey = key.toLowerCase();
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = placeholderPattern.exec(template)) !== null) {
+    append(template.slice(lastIndex, match.index));
+    append(resolvePlaceholder(match[1]!, ctx, strings));
+    lastIndex = match.index + match[0].length;
+  }
+  append(template.slice(lastIndex));
 
-    // Unknown or unsupported variable → empty string (safe default).
-    if (!SUPPORTED_VARIABLES.has(lowerKey)) {
-      return '';
-    }
-
-    // status is safe symbolic text, no escaping needed.
-    if (lowerKey === 'status') {
-      return ctx.status;
-    }
-
-    const raw = (ctx as unknown as Record<string, string>)[lowerKey] ?? '';
-    return escapeMarkdownInline(raw);
-  });
+  return parts.join('');
 }
 
 /**
@@ -216,7 +325,9 @@ export function interpolateTemplate(template: string, ctx: TemplateContext): str
  * - The file does not exist at the resolved path (non-fatal, emits a warning).
  *
  * Throws `Error` for all hard validation failures (path traversal, size
- * exceeded, forbidden content) so the action can surface them clearly.
+ * exceeded, forbidden content) so the action can surface them clearly, and
+ * `TemplateRenderError` when the rendered output breaches a limit
+ * (Issue #905: `TEMPLATE_OUTPUT_TOO_LARGE`, `TEMPLATE_TOO_MANY_PLACEHOLDERS`).
  *
  * @param templatePath  Workspace-relative or absolute path to the `.md` file.
  * @param ctx           Interpolation context for variable substitution.
@@ -227,6 +338,7 @@ export function loadCommentTemplate(
   templatePath: string | undefined | null,
   ctx: TemplateContext,
   workspaceRoot?: string,
+  options: InterpolateOptions = {},
 ): string | undefined {
   if (!templatePath || templatePath.trim() === '') {
     return undefined;
@@ -258,8 +370,8 @@ export function loadCommentTemplate(
   // 4. Content security validation.
   validateTemplateContent(raw);
 
-  // 5. Interpolate placeholders.
-  return interpolateTemplate(raw, ctx);
+  // 5. Interpolate placeholders under the rendered-output cap (Issue #905).
+  return interpolateTemplate(raw, ctx, options);
 }
 
 /**
