@@ -4447,6 +4447,23 @@ Roster allowlist and denylist entries may be exact addresses or bounded `*` / `?
 
 Freshness checks tolerate a ledger close timestamp up to 30 seconds in the future, which covers normal runner/NTP skew. A future timestamp beyond that tolerance is reported as `status: unknown` and remains fail-open; it is never treated as proof that Horizon is fresh. Library callers can override this with `clockSkewToleranceSeconds`. Keep runner clocks synchronized and investigate repeated `freshness_clock_skew_unknown` metrics.
 
+## Snooze timezone and DST boundary enforcement (#873)
+
+Snooze windows that cross Daylight Saving Time (DST) boundaries or are stored without timezone context can reopen early or late. Wave freeze snoozes that reopen prematurely re-fail assignees before their grace or freeze period has elapsed.
+
+TrustBridge enforces UTC physical millisecond invariance for all snooze evaluations:
+
+1. **UTC Normalization**: Every snooze timestamp — whether stored in comment body markers (`<!-- trustbridge-action:snooze:... -->`), GitHub reaction timestamps (`created_at`), or operator configurations — is normalized to UTC epoch milliseconds via `normalizeToUtc` in `src/snooze.ts`.
+2. **Naive Timestamp Handling**: Any date/time string stored without explicit timezone context (e.g. `2026-11-01T01:30:00` or `2026-11-01 01:30:00`) is parsed strictly as UTC (never runner-local time), preventing 1-hour shifts when runners reside in non-UTC or DST-observing zones.
+3. **DST Boundary Invariance**: Elapsed duration (`elapsedMs = nowUtcMs - startUtcMs`) measures physical time. Across Autumn fall-back (e.g. EDT to EST) and Spring forward (e.g. EST to EDT) transitions, a 120-minute snooze window remains active for exactly 120 physical minutes (7,200,000 ms) and never reopens 1 hour early or late.
+4. **Documented Operator Format**:
+   - **Canonical format:** ISO 8601 UTC string (`YYYY-MM-DDTHH:mm:ssZ`), e.g. `2026-11-01T02:00:00Z`.
+   - **Offset format:** ISO 8601 with explicit timezone offset (`YYYY-MM-DDTHH:mm:ss±HH:mm`), e.g. `2026-11-01T03:00:00+01:00`.
+   - **Unix epoch ms:** Integer milliseconds since Unix epoch, e.g. `1761962400000`.
+   - **Marker format:** `<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=<unix-ms|iso-utc>(?:,timezone=<tz>)? -->`.
+   - **Duration format:** `snooze_window_minutes: <number>` in workflow inputs (0 to 43200 minutes).
+5. **Fail-Closed Validation**: Empty, non-finite, negative, or malformed timestamps fail closed with stable errors (`validateSnoozeTimestamp`) rather than causing premature un-snoozing or workflow aborts.
+
 ## Combined authorization and clawback states (Issue #865)
 
 Horizon can report several issuer/trustline flags at once. TrustBridge keeps

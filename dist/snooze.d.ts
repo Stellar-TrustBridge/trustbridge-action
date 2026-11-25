@@ -29,12 +29,19 @@
  */
 /**
  * Hidden marker format in comment body:
- * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
+ * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms|iso-utc}(?:,timezone={tz})? -->
  */
 export declare const SNOOZE_MARKER_PATTERN: RegExp;
 export interface SnoozeMarker {
     status: 'pass' | 'fail';
     timestamp: number;
+    timezone?: string;
+}
+export interface SnoozeTimestampValidation {
+    valid: boolean;
+    timestamp?: number;
+    utcIso?: string;
+    error?: string;
 }
 export interface SnoozeState {
     /** Whether current run is snoozed (comment should not be posted). */
@@ -64,14 +71,52 @@ export interface SnoozeState {
  */
 export declare const SNOOZE_REASON_CODE: "snoozed";
 /**
+ * Normalizes any timestamp representation (unix-ms number, Date instance,
+ * ISO 8601 UTC string with Z, ISO 8601 with explicit timezone offset, or
+ * date/time string stored without timezone context) to UTC epoch milliseconds.
+ *
+ * ### Timezone & DST Boundary Enforcement (Issue #873)
+ *
+ * Snooze windows that cross DST boundaries or are stored without timezone context
+ * can reopen early or late when parsed by naive local-time parsers (such as `new Date(str)`).
+ * This function normalizes all inputs to UTC epoch milliseconds:
+ * - If an ISO string lacks timezone context (e.g. "2026-11-01T01:30:00"), it is treated
+ *   strictly as UTC rather than runner-local time.
+ * - If an explicit timezone name or offset is provided, it is resolved to the exact UTC epoch instant.
+ * - Negative, non-finite, oversized, or malformed inputs return undefined (fail closed).
+ */
+export declare function normalizeToUtc(raw: number | string | Date | undefined | null, timezone?: string): number | undefined;
+/**
+ * Calculates the UTC offset in milliseconds for a given UTC timestamp and IANA timeZone.
+ */
+export declare function getTimezoneOffsetMs(utcTimestamp: number, timeZone: string): number;
+/**
+ * Alias for {@link normalizeToUtc} specific to snooze timestamps.
+ */
+export declare const normalizeSnoozeTimestamp: typeof normalizeToUtc;
+/**
+ * Validates a snooze timestamp and returns structured validation status.
+ * Fails closed on empty, oversized, negative, or malformed inputs.
+ */
+export declare function validateSnoozeTimestamp(raw: unknown): SnoozeTimestampValidation;
+/**
+ * Formats a timestamp into canonical operator ISO 8601 UTC format (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ */
+export declare function formatSnoozeTimestampUtc(timestamp: number | string | Date): string;
+/**
+ * Evaluates whether a physical duration has elapsed between startTimestamp and now,
+ * evaluated strictly in UTC milliseconds to ensure invariance across DST boundaries.
+ */
+export declare function isWithinSnoozeWindow(startTimestamp: number | string | Date, snoozeWindowMs: number, now?: number | string | Date): boolean;
+/**
  * Extract snooze marker from a comment body. Returns undefined if marker
- * not found (backward compatible with older comments).
+ * not found or if the timestamp is malformed/invalid (backward compatible with older comments).
  */
 export declare function parseSnoozeMarker(commentBody: string | undefined): SnoozeMarker | undefined;
 /**
  * Generate a snooze marker string to embed in comment body.
  */
-export declare function formatSnoozeMarker(status: 'pass' | 'fail', timestamp?: number): string;
+export declare function formatSnoozeMarker(status: 'pass' | 'fail', timestamp?: number | string | Date): string;
 /**
  * Determine snooze state based on current result, last marker, and snooze duration.
  *
@@ -84,8 +129,11 @@ export declare function formatSnoozeMarker(status: 'pass' | 'fail', timestamp?: 
  *   - **Snoozed** (suppress comment, but still update outputs).
  * - If current result **fails** AND prior status **failed** AND elapsed >= snoozeMs:
  *   - **Post** (reminder after timeout; reset timer).
+ *
+ * Both `now` and `lastMarker.timestamp` are evaluated in normalized UTC epoch milliseconds,
+ * guaranteeing physical duration invariance across DST boundaries.
  */
-export declare function evaluateSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, snoozeWindowMs: number): SnoozeState;
+export declare function evaluateSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, snoozeWindowMs: number, now?: number | string | Date): SnoozeState;
 /**
  * Supported reaction emojis/identifiers that trigger a snooze:
  * - 'zzz' / ':zzz:' / '💤' — maintainer sleep/snooze reaction
@@ -109,16 +157,19 @@ export interface CommentReaction {
 export declare function isSnoozeReaction(content: string | undefined | null): boolean;
 /**
  * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ * Reaction timestamps are normalized to UTC to prevent DST early/late reopen.
  */
-export declare function evaluateReactionSnooze(currentPassed: boolean, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number): SnoozeState;
+export declare function evaluateReactionSnooze(currentPassed: boolean, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number | string | Date): SnoozeState;
 /**
  * Evaluates snooze state combining both hidden body marker and UI reactions.
  *
  * An issue comment is snoozed if:
  * 1. Current check fails (not passed), AND
  * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ *
+ * Evaluated in UTC physical milliseconds to prevent DST transition discrepancies.
  */
-export declare function evaluateCombinedSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number): SnoozeState;
+export declare function evaluateCombinedSnoozeState(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, now?: number | string | Date): SnoozeState;
 /**
  * Result of enforcing a snooze window at the validation call site (Issue #754).
  *
@@ -141,16 +192,19 @@ export interface SnoozeEnforcement {
  */
 export declare function formatSnoozeDuration(ms: number | undefined): string;
 /**
- * Enforce a snooze window at the validation call site (Issue #754).
+ * Enforce a snooze window at the validation call site (Issue #754, Issue #873).
  *
  * Wraps {@link evaluateCombinedSnoozeState} and, when the issue is within an
  * active snooze window, returns a stable `reason_code` (`snoozed`) plus a
  * user-visible comment notice. Callers should skip validation and post the
  * notice instead of failing the assignee.
  *
+ * Normalizes all timestamps and `options.now` to UTC physical milliseconds,
+ * guaranteeing snooze duration integrity across DST boundaries.
+ *
  * `forceComment` bypasses enforcement so maintainers can force a run.
  */
 export declare function enforceSnoozeWindow(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, options?: {
     forceComment?: boolean;
-    now?: number;
+    now?: number | string | Date;
 }): SnoozeEnforcement;

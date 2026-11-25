@@ -199,3 +199,14 @@ export declare function extractChecklistState(body: string, options?: ExtractChe
  * Checkboxes are comment-only (no GitHub Projects task-list API sync).
  */
 export declare function buildOnboardingChecklist(result: ValidationResult, options: OnboardingChecklistOptions): string;
+/**
+ * Lines of `body` that GitHub renders as normal Markdown, trimmed: lines in
+ * fenced code blocks (```` ``` ```` / `~~~`), indented code blocks (4 spaces
+ * or a tab) and blockquotes (`>`) are dropped.
+ *
+ * TrustBridge uses this to find its hidden HTML markers. Another bot that
+ * quotes or code-formats a TrustBridge marker (for example in a "previous
+ * comment" excerpt) shows it as text, so that comment must not be taken as
+ * TrustBridge's own. A non-string `body` returns an empty array.
+ */
+export declare function markdownLinesOutsideCode(body: unknown): string[];

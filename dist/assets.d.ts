@@ -142,3 +142,85 @@ export interface AssetClawbackStatus {
  * Absent / undefined is treated as clawback disabled.
  */
 export declare function getAssetClawbackStatus(balance: HorizonBalanceCredit | undefined): AssetClawbackStatus;
+/**
+ * Reason codes the authorization/clawback layer can produce. Every value is
+ * part of the public catalog in `schemas/reason-codes.json`.
+ */
+export type IssuerAuthFlagReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'TRUSTLINE_UNAUTHORIZED' | 'CLAWBACK_BLOCKED';
+/**
+ * Non-blocking signals surfaced alongside the verdict. They never change the
+ * reason code on their own; they explain why the comment carries a warning.
+ */
+export type IssuerAuthFlagNote = 'unauthorized_warn' | 'clawback_warn' | 'auth_required' | 'auth_revocable' | 'auth_immutable';
+/** Policy for `unauthorized_trustline_policy` (mirrors `src/inputs.ts`). */
+export type IssuerAuthUnauthorizedPolicy = 'fail' | 'warn' | 'ignore';
+/** Flag state observed for one asset on one account. */
+export interface IssuerAuthFlagState {
+    /** A matching trustline is present in the account's `balances`. */
+    trustlineExists: boolean;
+    /**
+     * Horizon `is_authorized`. `undefined` (older Horizon, or no trustline)
+     * is treated as authorized, matching `isTrustlineAuthorized`.
+     */
+    trustlineAuthorized?: boolean;
+    /** Trustline-level `is_clawback_enabled`. */
+    clawbackEnabled?: boolean;
+    /** Issuer `auth_required` flag (informational). */
+    authRequired?: boolean;
+    /** Issuer `auth_revocable` flag (informational). */
+    authRevocable?: boolean;
+    /** Issuer `auth_immutable` flag (informational). */
+    authImmutable?: boolean;
+    /** `unauthorized_trustline_policy` input. Default: `warn`. */
+    unauthorizedTrustlinePolicy?: IssuerAuthUnauthorizedPolicy;
+    /** `clawback_strict_mode` input. Default: `false`. */
+    clawbackStrictMode?: boolean;
+}
+/** Result of applying the decision table to an {@link IssuerAuthFlagState}. */
+export interface IssuerAuthFlagVerdict {
+    reasonCode: IssuerAuthFlagReasonCode;
+    /** `unauthorized_trustline_policy: fail` blocked an unauthorized trustline. */
+    authorizationBlocks: boolean;
+    /** `clawback_strict_mode: true` blocked a clawback-enabled trustline. */
+    clawbackBlocks: boolean;
+    /** Informational notes, in stable order. */
+    notes: IssuerAuthFlagNote[];
+}
+/**
+ * Ordered precedence of the blocking rules. The first rule that matches
+ * decides the reason code; later rules are not consulted.
+ *
+ * 1. `TRUSTLINE_MISSING` — no trustline, so no trustline flag can apply.
+ * 2. `TRUSTLINE_UNAUTHORIZED` — `is_authorized: false` under policy `fail`.
+ *    The actionable fix is issuer approval (SetTrustLineFlags), so it
+ *    outranks clawback even when both flags are set.
+ * 3. `CLAWBACK_BLOCKED` — `is_clawback_enabled: true` under strict mode.
+ * 4. `SUCCESS`.
+ *
+ * `auth_required`, `auth_revocable` and `auth_immutable` are issuer
+ * capabilities. They never change the reason code; only the trustline's
+ * present `is_authorized` / `is_clawback_enabled` state does.
+ */
+export declare const ISSUER_AUTH_FLAG_PRECEDENCE: readonly IssuerAuthFlagReasonCode[];
+/**
+ * Apply the issuer authorization flag decision table.
+ *
+ * Inputs are compared with `=== true` / `=== false`, so a malformed or
+ * missing Horizon field falls back to the permissive default (authorized,
+ * clawback disabled, flag unset) instead of throwing. An unknown policy
+ * string is treated as the default `warn`.
+ */
+export declare function resolveIssuerAuthFlagVerdict(state: IssuerAuthFlagState): IssuerAuthFlagVerdict;
+/** One row of the published decision table (see `docs/USAGE.md`). */
+export interface IssuerAuthFlagDecisionRow {
+    id: string;
+    state: IssuerAuthFlagState;
+    reasonCode: IssuerAuthFlagReasonCode;
+}
+/**
+ * The published decision table. `docs/USAGE.md` renders the same rows and
+ * `__tests__/issuer-auth-flag-precedence.test.ts` asserts that each row
+ * matches {@link resolveIssuerAuthFlagVerdict} and the full `runAccountChecks`
+ * pipeline.
+ */
+export declare const ISSUER_AUTH_FLAG_DECISION_TABLE: readonly IssuerAuthFlagDecisionRow[];
