@@ -94,6 +94,37 @@ The flag is `"true"` only for the specific run that resumes posting *because* a 
 
 **Known gap:** the single-address comment path in `src/index.ts` does not currently pass `snoozeWindowMs` to `upsertIssueComment`, so `snooze_expired` is always `"false"` there today even though `snooze_window_minutes` defaults to `30`. The batch validation path already wires it through. Fixing the single-address gap is a separate, larger behavioral change (it would newly start suppressing repeated-failure comments by default) and is tracked outside this issue rather than bundled into it.
 
+## Custom comment template limits (Issue #905)
+
+A `custom_comment_template_path` partial (`src/template.ts`) is bounded at
+three points so it can never push the comment past GitHub's limit or hang a
+Wave job:
+
+| Limit | Constant | Value | Error |
+|---|---|---|---|
+| Raw file size | `MAX_TEMPLATE_BYTES` | 8 KB (8,192 bytes) | `custom_comment_template_path "…" exceeds the maximum allowed size …` |
+| Placeholders per template | `MAX_TEMPLATE_PLACEHOLDERS` | 200 `{{…}}` tokens | `[TEMPLATE_TOO_MANY_PLACEHOLDERS] custom comment template contains N placeholders; the maximum is 200.` |
+| Rendered (interpolated) size | `MAX_TEMPLATE_RENDERED_BYTES` | 16 KB (16,384 UTF-8 bytes) | `[TEMPLATE_OUTPUT_TOO_LARGE] custom comment template renders to more than 16384 bytes. …` |
+
+The rendered cap closes the **expansion bomb** gap: a 2 KB file that repeats
+`{{horizon}}` or a long `{{locale:KEY}}` hundreds of times passes the file
+size check but would otherwise expand to tens of kilobytes. Rendering stops
+as soon as the running output crosses the cap, so the oversized string is
+never built.
+
+Both new failures throw `TemplateRenderError` with a stable `code`
+(`TEMPLATE_OUTPUT_TOO_LARGE` / `TEMPLATE_TOO_MANY_PLACEHOLDERS`), and the
+message starts with `[CODE]`. As with every other template failure,
+`formatCommentBody` does **not** fail the run: it logs a
+`Failed to load custom comment template (…): [CODE] …` warning and posts
+the comment **without** the partial. Callers using `interpolateTemplate`
+directly can pass `{ maxOutputBytes }` to tighten the cap; non-finite or
+non-positive values fall back to the 16 KB default.
+
+To fix: remove repeated placeholders, move long static prose to a linked
+doc, or split the partial. Test coverage:
+`__tests__/template-output-limit.test.ts`.
+
 ---
 ## FAQ deep links
 

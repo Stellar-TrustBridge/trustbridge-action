@@ -924,6 +924,43 @@ The `__tests__/federation-memo-resolution.test.ts` test file contains ready-made
 { "account_id": "G...", "memo_type": "return", "memo": "some-value" }
 ```
 
+### DNS and HTTP timeouts (Issue #906)
+
+Each federation lookup resolves two hosts (the `stellar.toml` domain and the
+`FEDERATION_SERVER` host). Each host is first resolved under its own **DNS
+timeout**, and only then is the HTTPS request sent under a separate **HTTP
+timeout** — so a slow resolver can never consume the HTTP budget, and a slow
+server is never reported as a DNS failure.
+
+| Knob (`resolveFederationAddress(addr, options)`) | Default | Applies to |
+|---|---|---|
+| `dnsTimeoutMs` | `5000` (`FEDERATION_DNS_TIMEOUT_MS`) | Each host lookup (`stellar.toml` domain, federation server) |
+| `httpTimeoutMs` | `10000` (`FEDERATION_HTTP_TIMEOUT_MS`) | Each HTTPS fetch, measured after DNS has resolved |
+| `dnsLookup` | OS resolver (`defaultSSRFDnsLookup`) | Injectable resolver (tests, custom DNS) |
+
+Values must be positive numbers no greater than `60000`
+(`FEDERATION_MAX_TIMEOUT_MS`); anything else falls back to the default and
+logs a warning with code `INVALID_TIMEOUT`. The resolved DNS answer is
+pinned into `fetchSSRFSafe`'s rebinding guard, so the SSRF check reuses it
+instead of resolving again inside the HTTP budget. Horizon requests
+(`horizon_timeout_ms`, `src/horizon.ts`) keep their own independent timeout
+and are unaffected.
+
+| Code | Timeout that fired |
+|---|---|
+| `TOML_DNS_TIMEOUT` / `FEDERATION_DNS_TIMEOUT` | DNS timeout (`dnsTimeoutMs`) |
+| `TOML_TIMEOUT` / `FEDERATION_TIMEOUT` | HTTP timeout (`httpTimeoutMs`) |
+| `TOML_NXDOMAIN` / `FEDERATION_NXDOMAIN` | Resolver error or empty answer (no timeout) |
+
+```ts
+const resolution = await resolveFederationAddress('alice*example.com', {
+  dnsTimeoutMs: 2000,
+  httpTimeoutMs: 8000,
+});
+```
+
+Test coverage: `__tests__/federation-dns-timeout.test.ts`.
+
 ---
 
 ## Debug mode and timeout
@@ -4245,6 +4282,48 @@ No live collector is required at any point.
 ## Wave freeze operations
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
+
+### Snooze audit log (Issue #908)
+
+A snooze never skips validation silently. Whenever `enforceSnoozeWindow`
+(`src/snooze.ts`) skips validation because an issue is inside an active
+snooze window, it:
+
+1. **Emits one structured log line** (`core.info`, always visible — not
+   gated on `debug_mode`):
+
+   ```text
+   Validation skipped: issue is within an active snooze window (source=marker, expires 2026-01-01T13:00:00.000Z). {"component":"snooze","event":"snooze_skip","reason_code":"snoozed","check":"snooze","source":"marker","snoozeWindowMs":3600000,"elapsedMs":900000,"remainingMs":2700000,"expiresAt":"2026-01-01T13:00:00.000Z","issueNumber":7}
+   ```
+
+   | Field | Meaning |
+   |---|---|
+   | `event` | Always `snooze_skip` (`SNOOZE_AUDIT_EVENT`). |
+   | `reason_code` / `check` | Always `snoozed` / `snooze` — grep either to find every skipped run. |
+   | `source` | `marker` (repeated failure inside the window) or `reaction` (maintainer :zzz:/:eyes: reaction). Reaction user logins are never logged. |
+   | `snoozeWindowMs`, `elapsedMs`, `remainingMs` | Window size and how far into it this run is. |
+   | `expiresAt` | ISO-8601 UTC time the window lapses, or `unknown`. |
+   | `issueNumber` | Present when the caller passes `issueNumber`. |
+
+   Pass `audit: false` only if the caller emits the line itself via
+   `emitSnoozeAuditLog` / `buildSnoozeAuditLogContext`.
+
+2. **Returns a concise comment notice with the expiry**, e.g.
+   ``⏸️ **Validation snoozed** — … Validation will resume automatically in ~45m (snooze expires `2026-01-01T13:00:00.000Z`). …``
+
+3. **Records skipped metrics** when a `MetricsCollector` is passed via
+   `metrics`: the `snooze_skipped` counter and a `snooze_skipped` metric
+   tagged with `source` (bounded: `marker` | `reaction`) are incremented, and
+   the job outcome is recorded as `skipped` (`trustbridge_job_outcome_total{outcome="skipped"}`).
+
+When a sticky-comment **update** is suppressed by the snooze window
+(`upsertIssueComment` / discussion comments in `src/comment.ts`), the
+existing "Snooze window active … Suppressing comment update" line is now a
+structured line with the same fields and `event: snooze_comment_suppressed`.
+
+Runs that are **not** snoozed — a passing check, a first failure, an expired
+window, or `force_comment: true` — emit no audit line and record no skipped
+metric. Test coverage: `__tests__/snooze-audit-log.test.ts`.
 
 ## Wave runtime safeguards (Issues #861–#864)
 

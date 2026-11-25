@@ -46,7 +46,8 @@ import {
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
-import { logger, emitInputsLogRecord } from './logger';
+import { logger, emitInputsLogRecord, logInfo, logWarning } from './logger';
+import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
@@ -373,6 +374,21 @@ export async function run(): Promise<void> {
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
+  // Issue #904: one correlation id per run, attached to every structured log
+  // line (and the comment footer when debug_mode is on).
+  const correlation = initCorrelationId();
+  globalMetrics.setCorrelationId(correlation.correlationId);
+  if (correlation.rejectedReason) {
+    logWarning(
+      `Ignoring ${CORRELATION_ID_ENV}: ${correlation.rejectedReason}. Generated a new correlation id instead.`,
+      { component: 'diagnostics', reason_code: CORRELATION_ID_INVALID_REASON_CODE, check: 'correlation_id' },
+    );
+  }
+  logInfo(`TrustBridge correlation id: ${correlation.correlationId} (source=${correlation.source})`, {
+    component: 'diagnostics',
+    reason_code: 'CORRELATION_ID',
+    check: 'correlation_id',
+  });
   try {
     process.on('SIGINT', () => jobController.abort());
     process.on('SIGTERM', () => jobController.abort());
@@ -926,6 +942,8 @@ export async function run(): Promise<void> {
     sep0007DeepLinks,
     sep0007OriginDomain,
     assets: assetsTrustlineStatusExtras,
+    correlationId: correlation.correlationId,
+    correlationFooter: debugMode,
   });
 
   // Issue #696 — comment_id is only published from a successful
