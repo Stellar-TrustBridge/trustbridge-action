@@ -81,6 +81,43 @@ export interface SnoozeState {
 }
 
 /**
+ * Maximum snooze window (Issue #962): 7 days. Unbounded snoozes would let a
+ * failing Wave gate stay skipped indefinitely, so any longer configured
+ * window is clamped unless a maintainer explicitly opts out.
+ */
+export const MAX_SNOOZE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Hard ceiling even with the maintainer override: 30 days. */
+export const MAX_SNOOZE_WINDOW_OVERRIDE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Stable reason code logged when a snooze window is clamped. */
+export const SNOOZE_CAPPED_REASON_CODE = 'snooze_window_capped' as const;
+
+export interface SnoozeCapResult {
+  windowMs: number;
+  capped: boolean;
+  reasonCode?: typeof SNOOZE_CAPPED_REASON_CODE;
+}
+
+/**
+ * Clamp a snooze window to the configured cap (Issue #962).
+ *
+ * - Non-finite or negative windows become 0 (snooze disabled).
+ * - Windows above {@link MAX_SNOOZE_WINDOW_MS} are clamped, unless
+ *   `maintainerOverride` is set, in which case the ceiling is
+ *   {@link MAX_SNOOZE_WINDOW_OVERRIDE_MS}. The override never removes the cap.
+ */
+export function capSnoozeWindow(
+  windowMs: number,
+  options: { maintainerOverride?: boolean } = {},
+): SnoozeCapResult {
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return { windowMs: 0, capped: false };
+  const cap = options.maintainerOverride ? MAX_SNOOZE_WINDOW_OVERRIDE_MS : MAX_SNOOZE_WINDOW_MS;
+  if (windowMs > cap) return { windowMs: cap, capped: true, reasonCode: SNOOZE_CAPPED_REASON_CODE };
+  return { windowMs: Math.floor(windowMs), capped: false };
+}
+
+/**
  * Stable reason_code emitted when validation is skipped because the issue is
  * within an active snooze window (Issue #754).
  */
@@ -651,8 +688,10 @@ export function enforceSnoozeWindow(
     audit?: boolean;
     metrics?: MetricsCollector;
     issueNumber?: number;
+    maintainerOverride?: boolean;
   } = {},
 ): SnoozeEnforcement {
+  snoozeWindowMs = capSnoozeWindow(snoozeWindowMs, { maintainerOverride: options.maintainerOverride }).windowMs;
   const nowMs =
     options.now !== undefined ? (normalizeToUtc(options.now) ?? Date.now()) : Date.now();
   const state = evaluateCombinedSnoozeState(

@@ -350,6 +350,24 @@
       "pattern": "^[0-9]+$",
       "default": "30"
     },
+    "snooze_max_override": {
+      "type": "string",
+      "description": "Maintainer override raising the snooze cap from 7 to 30 days (Issue #962).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
+    "summary_emoji_free": {
+      "type": "string",
+      "description": "Replace emoji with ASCII tokens in summaries for enterprise log drains (Issue #961).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
+    },
     "force_comment": {
       "type": "string",
       "description": "Bypass snooze logic and force an immediate comment post.",
@@ -512,6 +530,15 @@
       "type": "string",
       "description": "Optional integrity hash for stellar.toml content validation.",
       "default": ""
+    },
+    "stellar_toml_allow_insecure_testnet": {
+      "type": "string",
+      "description": "Testnet only: tolerate and upgrade an http:// home_domain to HTTPS (Issue #960).",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "default": "false"
     },
     "expected_home_domain": {
       "type": "string",

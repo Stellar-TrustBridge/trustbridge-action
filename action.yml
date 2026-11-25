@@ -335,6 +335,23 @@ inputs:
       snoozing (always post). Default 30 minutes. (Issue #155)
     required: false
     default: "30"
+  snooze_max_override:
+    description: >-
+      Maintainer override for the snooze duration cap (Issue #962). By default
+      snooze_window_minutes is clamped to 7 days (10080 minutes) so a failing
+      gate cannot stay skipped indefinitely; when "true" the cap is raised to
+      30 days. The cap is never removed. A clamp logs reason_code
+      snooze_window_capped.
+    required: false
+    default: "false"
+  summary_emoji_free:
+    description: >-
+      When "true", Job Summary and digest output replace emoji with stable
+      ASCII tokens ([PASS], [FAIL], [WARN], [PAUSED], [OK], [SNOOZED]) and drop
+      other pictographs, for enterprise log drains that strip unicode.
+      (Issue #961)
+    required: false
+    default: "false"
   force_comment:
     description: >-
       Bypass snooze logic and force an immediate comment post, even if within
@@ -555,6 +572,14 @@ inputs:
       is true.
     required: false
     default: ""
+  stellar_toml_allow_insecure_testnet:
+    description: >-
+      Testnet/futurenet only (Issue #960). When "true", an http:// home_domain
+      is tolerated (logged as a warning) and upgraded to HTTPS; the fetch itself
+      is always HTTPS. Ignored on pubnet, where any non-HTTPS scheme fails with
+      reason_code toml_https_required.
+    required: false
+    default: "false"
   write_validation_json:
     description: >-
       When true, write the validation result to validation_json_path as a

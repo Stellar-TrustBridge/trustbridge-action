@@ -54,6 +54,8 @@ import {
   parseNetworkInput,
   parseHomeDomainCheckModeInput,
 } from './inputs';
+import { capSnoozeWindow } from './snooze';
+import { inferStellarNetworkPreset } from './links';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
 import { logger, emitInputsLogRecord, flushHorizonRetrySamples, logInfo, logWarning } from './logger';
@@ -590,8 +592,16 @@ export async function run(): Promise<void> {
     min: 0,
     max: 60 * 24 * 30,
   });
-  // Snooze window duration in milliseconds (Issue #873: UTC physical duration invariant across DST boundaries).
-  const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
+  // Issue #962 — cap the snooze window; maintainers may raise the cap (never remove it).
+  // Duration is still UTC physical ms (Issue #873 DST invariant) after the cap.
+  const snoozeMaxOverride = parseBooleanInput(core.getInput('snooze_max_override'), false);
+  const snoozeCap = capSnoozeWindow(snoozeWindowMinutes * 60 * 1000, { maintainerOverride: snoozeMaxOverride });
+  if (snoozeCap.capped) {
+    core.warning(
+      `snooze_window_minutes exceeds the maximum snooze window; clamped to ${snoozeCap.windowMs / 60000} minutes (reason_code: ${snoozeCap.reasonCode}).`,
+    );
+  }
+  const snoozeWindowMs = snoozeCap.windowMs;
   const issueNumberInputRaw = core.getInput('issue_number') || '';
   const issueNumberInput = issueNumberInputRaw.trim()
     ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
@@ -803,6 +813,9 @@ export async function run(): Promise<void> {
         enabled: stellarTomlFetchEnabled,
         cacheTtlMs: stellarTomlCacheTtlMs,
         hashPin: stellarTomlHashPin || undefined,
+        // Issue #960 — pubnet is HTTPS-only; testnet may tolerate http:// (upgraded).
+        network: inferStellarNetworkPreset(horizonUrl),
+        allowInsecureTestnet: parseBooleanInput(core.getInput('stellar_toml_allow_insecure_testnet'), false),
       });
       if (tomlOutcome.status !== 'skipped') {
         // A pinned hash always fails closed; otherwise fetch errors only block
