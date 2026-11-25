@@ -169,7 +169,7 @@ On a blocked run the first bullet becomes `Blocked by: <failed check labels>` an
 
 The fallback is the same contract the `reason_code` action output uses, so the comment and the output never disagree. `Reason code` is rendered inside a code span, so snake_case values stay literal and copy-pasteable; only backticks are neutralized.
 
-Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code.
+Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code. The full code list is in [SCHEMA.md](SCHEMA.md#webhook-and-reason-code-versioning-policy).
 
 All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`. An unrecognized `locale` input (unsupported code, stray whitespace, wrong case, etc.) falls back to the complete English pack rather than throwing or rendering a partial comment — see `getStrings()` in [`src/i18n.ts`](../src/i18n.ts) and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
 

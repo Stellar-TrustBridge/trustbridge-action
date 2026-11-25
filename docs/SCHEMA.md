@@ -169,6 +169,19 @@ changes lives in [`docs/BREAKING_CHANGES.md`](BREAKING_CHANGES.md).
 
 The JSON catalog has a compile-time mirror at [`src/reasonCodes.ts`](../src/reasonCodes.ts): the `ReasonCode` union type and `REASON_CODES` tuple. `ValidationResult.reasonCode` (`src/checks.ts`) is typed `ReasonCode`, so a check branch that returns a code outside this union fails `tsc` before it can reach CI or a Wave dashboard. `__tests__/reason-codes-exhaustiveness.test.ts` asserts the union and the JSON catalog list the exact same codes.
 
+`src/reasonCodes.ts` declares every emitted code. Codes outside the run-level catalog:
+
+| Surface | Codes |
+|---|---|
+| Batch rows only | `INVALID_ADDRESS`, `FATAL_AUTH`, `FATAL_CONFIG`, `FATAL_CANCELLED`, `CLAWBACK_STRICT_MODE`, `CANCELLED` |
+| Webhook delivery result | `WEBHOOK_PAYLOAD_TRUNCATED`, `WEBHOOK_SIZE_LIMIT_EXCEEDED` |
+
+Run-level codes: `SUCCESS`, `TRUSTLINE_MISSING`, `RESERVE_TOO_LOW`, `TRUSTLINE_LIMIT_TOO_LOW`, `ACCOUNT_NOT_FUNDED`, `HORIZON_TIMEOUT`, `HORIZON_ERROR`, `TLS_ERROR`, `FAILED`, `TRUSTLINE_UNAUTHORIZED`, `CLAWBACK_BLOCKED`, `CIRCUIT_OPEN`, `RATE_BUDGET_EXHAUSTED`, `HOME_DOMAIN_MISMATCH`, `HOME_DOMAIN_MISSING`, `MILESTONE_GATE_SKIPPED`, `MAINTAINER_SKIPPED`, `SAC_ISSUER_NOT_VERIFIABLE`, `HORIZON_WAIT_BUDGET_EXHAUSTED`, `EXTRA_TRUSTLINE_MISSING`.
+
+During a rename window, webhook assets may include the optional
+`deprecated_reason_codes` array; see the
+[rename calendar](BREAKING_CHANGES.md#reason-code-rename-calendar-issue-945).
+
 ### Compatibility rules
 
 - **Additive (any minor/patch release, no version bump):** new optional

@@ -124,6 +124,8 @@ export type FederationErrorCode = 'INVALID_ADDRESS' | 'INVALID_USERNAME' | 'INVA
  * the `memo_type` field of a federation response.
  */
 export type MemoType = 'text' | 'id' | 'hash';
+/** Issue #957 — exact hex length of a `hash` memo (32 bytes). */
+export declare const MEMO_HASH_HEX_LENGTH = 64;
 /** Maximum length (bytes) of a `text` memo per the Stellar protocol. */
 export declare const MEMO_TEXT_MAX_BYTES = 28;
 /**

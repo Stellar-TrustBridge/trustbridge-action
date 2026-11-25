@@ -146,6 +146,8 @@ export interface FetchAccountOptions {
     negativeCacheTtlMs?: number;
     cache?: SimpleCache;
     fetchFn?: FetchLike;
+    /** Called on every Horizon 429, or any error response with Retry-After (Issue #946). */
+    onThrottle?: () => void;
     /**
      * Optional AbortSignal from a parent controller (e.g. job cancellation).
      * When the signal fires, in-flight and pending requests are aborted

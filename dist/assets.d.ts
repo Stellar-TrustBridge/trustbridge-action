@@ -1,3 +1,4 @@
+import type { AssetReasonCode, ReasonCode } from './reasonCodes';
 import { HorizonAccount, HorizonBalanceCredit } from './horizon';
 export declare const MAINNET_USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 export declare const TESTNET_USDC_ISSUER = "GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2";
@@ -107,7 +108,7 @@ export declare function meetsMinimumBalance(balance: string, minimum: string): b
  * `schemas/reason-codes.json` so webhook receivers can switch on the same
  * strings as the top-level `reason_code` output.
  */
-export type AssetReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'CLAWBACK_BLOCKED';
+export type { AssetReasonCode };
 /** Evaluated trustline/clawback state for one asset (primary or `assets_json`). */
 export interface AssetReasonEvaluation {
     assetCode: string;
@@ -146,7 +147,7 @@ export declare function getAssetClawbackStatus(balance: HorizonBalanceCredit | u
  * Reason codes the authorization/clawback layer can produce. Every value is
  * part of the public catalog in `schemas/reason-codes.json`.
  */
-export type IssuerAuthFlagReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'TRUSTLINE_UNAUTHORIZED' | 'CLAWBACK_BLOCKED';
+export type IssuerAuthFlagReasonCode = Extract<ReasonCode, 'SUCCESS' | 'TRUSTLINE_MISSING' | 'TRUSTLINE_UNAUTHORIZED' | 'CLAWBACK_BLOCKED'>;
 /**
  * Non-blocking signals surfaced alongside the verdict. They never change the
  * reason code on their own; they explain why the comment carries a warning.

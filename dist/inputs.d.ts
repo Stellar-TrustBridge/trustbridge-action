@@ -268,6 +268,9 @@ export interface Inputs {
     trustbridge_config_strict?: string;
     milestone_allowlist?: string;
     milestone_fail_on_skip?: string;
+    /** Issue #955 — labels that must be present before checks run. */
+    required_labels?: string;
+    required_labels_fail_on_skip?: string;
     github_token: string;
     github_app_token?: string;
     assets_json?: string;
@@ -277,7 +280,9 @@ export interface Inputs {
     fail_label?: string;
     sep0007_origin_domain?: string;
     snooze_window_minutes?: string;
+    snooze_max_override?: string;
     force_comment?: string;
+    summary_emoji_free?: string;
     webhook_url?: string;
     webhook_secret?: string;
     webhook_secret_previous?: string;
@@ -306,6 +311,7 @@ export interface Inputs {
     stellar_toml_fetch_enabled?: string;
     stellar_toml_cache_ttl_ms?: string;
     stellar_toml_hash_pin?: string;
+    stellar_toml_allow_insecure_testnet?: string;
     write_validation_json?: string;
     validation_json_path?: string;
     trustbridge_plugins_path?: string;
@@ -350,6 +356,53 @@ export interface Inputs {
     soroban_rpc_url?: string;
     contract_id?: string;
 }
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+export declare function parseStrictBooleanInput(name: string, raw: string | undefined, defaultValue?: boolean): boolean;
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+export declare const INPUT_CONFLICT_REASON_CODE = "INPUT_CONFLICT";
+/** One row of the mutually exclusive input matrix. */
+export interface InputConflictRule {
+    /** Stable identifier, e.g. `preflight_only+wait_until_funded`. */
+    id: string;
+    /** The two boolean inputs that cannot both be `true`. */
+    inputs: readonly [string, string];
+    /** Actionable explanation appended to the error message. */
+    reason: string;
+}
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+export declare const INPUT_CONFLICT_MATRIX: readonly InputConflictRule[];
+/** A detected conflict between two enabled inputs. */
+export interface InputConflict {
+    id: string;
+    inputs: readonly [string, string];
+    reasonCode: typeof INPUT_CONFLICT_REASON_CODE;
+    message: string;
+}
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+export declare function detectInputConflicts(rawInputs: Record<string, string | undefined>): InputConflict[];
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+export declare function assertNoInputConflicts(rawInputs: Record<string, string | undefined>): void;
 /**
  * Build the Soroban registry client config from raw action inputs. Returns
  * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`

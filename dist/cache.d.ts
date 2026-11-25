@@ -97,11 +97,49 @@ export declare class GitHubActionsCacheBackend implements PersistentCacheBackend
     restoreCache(key: string): Promise<boolean>;
     dispose(): Promise<void>;
 }
+/**
+ * Issue #958 — default maximum time (ms) a single-flight waiter blocks on a
+ * leader's in-flight fetch before failing with {@link SingleFlightTimeoutError}.
+ */
+export declare const DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS = 30000;
+/** Issue #958 — stable error code for a waiter that gave up on a hung leader. */
+export declare const SINGLE_FLIGHT_WAIT_TIMEOUT_CODE = "SINGLE_FLIGHT_WAIT_TIMEOUT";
+/**
+ * Issue #958 — thrown to a single-flight *waiter* (never the leader) when the
+ * leader's fetch does not settle within `waiterTimeoutMs`. The message carries
+ * no cache key, because keys embed Stellar addresses.
+ */
+export declare class SingleFlightTimeoutError extends Error {
+    readonly code = "SINGLE_FLIGHT_WAIT_TIMEOUT";
+    readonly timeoutMs: number;
+    constructor(timeoutMs: number);
+}
+/** Issue #958 — counters exposed by {@link SimpleCache.getSingleFlightStats}. */
+export interface SingleFlightStats {
+    /** Calls that started a fetch (cache miss, no fetch in flight). */
+    leaders: number;
+    /** Calls that joined an existing in-flight fetch. */
+    waiters: number;
+    /** Waiters that received the leader's result (success or error). */
+    waiterResolved: number;
+    /** Waiters that gave up with {@link SingleFlightTimeoutError}. */
+    waiterTimeouts: number;
+    /** Fetches currently in flight. */
+    inFlight: number;
+}
+export interface GetOrFetchOptions {
+    /** TTL for the stored value. Defaults to 60 seconds. */
+    ttlMs?: number;
+    /** Max wait for waiters. Defaults to {@link DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS}. */
+    waiterTimeoutMs?: number;
+}
 export declare class SimpleCache {
     private store;
     private negativeStore;
     private backend?;
     private useBackend;
+    private inFlight;
+    private sfStats;
     constructor(options?: CacheBackendOptions);
     /**
      * Get a cached value if it exists and hasn't expired.
@@ -175,6 +213,20 @@ export declare class SimpleCache {
      * @returns    `true` when an entry was removed.
      */
     delete(key: string): boolean;
+    /**
+     * Issue #958 — single-flight read-through.
+     *
+     * Returns a cached value when present. Otherwise the first caller for `key`
+     * becomes the *leader* and runs `fetcher`; concurrent callers become
+     * *waiters* and share the leader's promise. Waiters block at most
+     * `waiterTimeoutMs`, then reject with {@link SingleFlightTimeoutError} so a
+     * hung leader cannot stall a whole batch. The leader itself is not
+     * time-limited here (it owns its own request timeout) and a timed-out
+     * waiter never writes to the cache, so no partial state is left behind.
+     */
+    getOrFetch<T>(key: string, fetcher: () => Promise<T>, options?: GetOrFetchOptions): Promise<T>;
+    /** Issue #958 — snapshot of single-flight counters (no keys, no addresses). */
+    getSingleFlightStats(): SingleFlightStats;
     /**
      * Remove all cached entries from the in-memory store and, if a persistent
      * backend is configured, call its `dispose` lifecycle hook.

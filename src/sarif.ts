@@ -28,6 +28,7 @@
  * SARIF reference: https://sarifweb.azurewebsites.net/
  */
 
+import { effectiveReasonCode, type ReasonCode } from './reasonCodes';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -125,8 +126,8 @@ export function computeSarifFingerprint(inputs: SarifFingerprintInputs): string 
  * does: an explicit code wins, otherwise `SUCCESS` for a passing run and
  * `FAILED` for a failing one.
  */
-export function sarifRunReasonCode(result: Pick<ValidationResult, 'reasonCode' | 'valid'>): string {
-  return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+export function sarifRunReasonCode(result: Pick<ValidationResult, 'reasonCode' | 'valid'>): ReasonCode {
+  return effectiveReasonCode(result);
 }
 
 /** Build the `partialFingerprints` property bag for one result. */
@@ -331,7 +332,7 @@ function buildHomeDomainRule(): SarifRule {
  * are the `reason_code` values the full validation path records for the same
  * outcome, so a code rename moves this fingerprint too (Issue #893).
  */
-const HOME_DOMAIN_OUTCOME_REASON_CODE: Record<HomeDomainOutcome, string> = {
+const HOME_DOMAIN_OUTCOME_REASON_CODE: Record<HomeDomainOutcome, ReasonCode> = {
   valid: 'SUCCESS',
   mismatch: 'HOME_DOMAIN_MISMATCH',
   missing: 'HOME_DOMAIN_MISSING',

@@ -747,7 +747,7 @@ export async function writeJobSummary(
       : report;
     const rendered = formatJobSummaryMarkdown(labelledReport, {
       // Issue #961 — emoji-free summaries for enterprise log drains.
-      emojiFree: parseBooleanInput(process.env.INPUT_SUMMARY_EMOJI_FREE, false),
+      emojiFree: parseBooleanInput(process.env.INPUT_SUMMARY_EMOJI_FREE ?? '', false),
     });
     if (!process.env.GITHUB_STEP_SUMMARY) return;
     core.summary.addRaw(rendered.markdown);

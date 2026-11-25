@@ -248,6 +248,20 @@ security review.
 
 ---
 
+## Reason-code rename calendar (Issue #945)
+
+Add renames to `REASON_CODE_ALIASES` (`src/reasonCodes.ts`) and to this table.
+From `Deprecated on` through `Remove after` (UTC, inclusive), webhook
+`assets[]` entries carry the old name in `deprecated_reason_codes`, next to the
+canonical `reason_code`. After that date CI fails until the alias is removed.
+Scalar `reason_code` outputs carry only the canonical code.
+
+| Deprecated code | Canonical code | Deprecated on | Remove after |
+|---|---|---|---|
+| _none_ | | | |
+
+---
+
 ## Change history
 
 > Record breaking changes here when a new major version is released. Minor/patch changes are covered by GitHub Release notes.

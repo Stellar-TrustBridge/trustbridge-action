@@ -70,6 +70,13 @@ export interface RosterCsvImportResult {
     summaryMarkdown: string;
 }
 /**
+ * True when a cell starts with a spreadsheet formula trigger (`=`, `+`, `-`,
+ * `@`, tab or CR). Such cells are rejected rather than imported so an
+ * Excel-exported roster can never smuggle a formula (CSV injection) into
+ * downstream reports (Issue #953).
+ */
+export declare function isCsvFormulaCell(cell: string): boolean;
+/**
  * Parse a CSV roster of Stellar addresses (optionally paired with GitHub
  * logins) into a validated, de-duplicated roster plus a rejection summary
  * (Issue #798).

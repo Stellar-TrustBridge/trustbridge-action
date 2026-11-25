@@ -187,3 +187,15 @@ export declare function buildSponsorshipDiagnostics(sponsorshipInfo?: {
     met: boolean;
     subentryCount: number;
 }): string;
+/**
+ * Render captured plugin stderr (Issue #954) as a Markdown diagnostics
+ * section. Captures arrive already capped and redacted by
+ * `captureStderr` in `src/pluginRunner.ts`; this only formats them, and
+ * returns an empty string when no plugin wrote to stderr.
+ */
+export declare function buildPluginStderrDiagnostics(captures: ReadonlyArray<{
+    pluginId: string;
+    text: string;
+    totalBytes: number;
+    truncated: boolean;
+}>): string;

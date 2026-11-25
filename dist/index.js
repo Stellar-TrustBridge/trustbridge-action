@@ -49479,12 +49479,12 @@ exports.formatBatchSummaryMarkdown = formatBatchSummaryMarkdown;
 const checks_1 = __nccwpck_require__(42122);
 const horizon_1 = __nccwpck_require__(9164);
 const resilience_1 = __nccwpck_require__(12334);
+const checks_run_1 = __nccwpck_require__(1346);
 const metrics_1 = __nccwpck_require__(35670);
 const assets_1 = __nccwpck_require__(25462);
 const inputs_1 = __nccwpck_require__(38422);
 Object.defineProperty(exports, "DEFAULT_BATCH_MAX_ADDRESSES", ({ enumerable: true, get: function () { return inputs_1.DEFAULT_BATCH_MAX_ADDRESSES; } }));
 Object.defineProperty(exports, "BATCH_MAX_ADDRESSES_CEILING", ({ enumerable: true, get: function () { return inputs_1.BATCH_MAX_ADDRESSES_CEILING; } }));
-const checks_run_1 = __nccwpck_require__(1346);
 // ---------------------------------------------------------------------------
 // Issue #911 — max addresses per batch run
 // ---------------------------------------------------------------------------
@@ -49630,6 +49630,25 @@ function addressTimeoutRow(address, deadlineMs) {
  * exact same per-address logic and metrics instead of duplicating it.
  */
 async function validateOneAddress(address, config, horizonUrl, fetchOptions, extraAssets, issuerAccount) {
+    // Issue #956: time every per-address check into the bounded histogram.
+    // The address is never used as a label — only the fixed outcome is.
+    const startedAt = Date.now();
+    let outcome = 'error';
+    try {
+        const result = await validateOneAddressTimed(address, config, horizonUrl, fetchOptions, extraAssets, issuerAccount);
+        outcome =
+            result.result.reasonCode === exports.BATCH_REASON_CODES.invalidAddress
+                ? 'invalid'
+                : result.result.valid
+                    ? 'pass'
+                    : 'fail';
+        return result;
+    }
+    finally {
+        metrics_1.globalCheckLatencyHistogram.record(outcome, Date.now() - startedAt);
+    }
+}
+async function validateOneAddressTimed(address, config, horizonUrl, fetchOptions, extraAssets, issuerAccount) {
     if (!(0, checks_1.isValidStellarAddress)(address)) {
         metrics_1.globalMetrics.incrementCounter('batch_address_invalid');
         // Issue #777: every row counts toward exactly one of passed/failed so
@@ -49987,6 +50006,8 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
     const workerCount = Math.min(maxConcurrency, addresses.length);
     let nextIndex = 0;
     let stopDispatch = false;
+    // Issue #946: throttle signals lower the number of usable worker slots.
+    const limiter = new checks_run_1.AdaptiveConcurrency(workerCount);
     async function worker() {
         let dispatchedBefore = false;
         while (true) {
@@ -49994,9 +50015,15 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
                 stopDispatch = true;
                 return;
             }
-            const i = nextIndex;
-            if (i >= addresses.length)
+            if (nextIndex >= addresses.length)
                 return;
+            if (!limiter.tryAcquire()) {
+                await limiter.waitForRelease();
+                continue;
+            }
+            const i = nextIndex;
+            const epoch = limiter.epoch;
+            let throttled = false;
             nextIndex = i + 1;
             // Issue #852: every address beyond the first wave had to wait for a
             // worker slot to free up — that wait is exactly what "the queue is
@@ -50009,32 +50036,46 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
                 await sleep(requestDelayMs);
             }
             dispatchedBefore = true;
-            // Issue #928: each address gets its own deadline; the per-address
-            // signal also follows the batch-level signal so cancellation wins.
-            // Without a deadline the original call path is used unchanged.
-            const deadlineOutcome = !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
-                ? {
-                    status: 'completed',
-                    value: await validateOneAddress(addresses[i], config, horizonUrl, fetchOptions, extraAssets, issuerAccount),
-                }
-                : await (0, checks_run_1.runWithAddressDeadline)((addressSignal) => validateOneAddress(addresses[i], config, horizonUrl, { ...fetchOptions, signal: addressSignal }, extraAssets, issuerAccount), options.perAddressTimeoutMs, fetchOptions.signal);
-            if (deadlineOutcome.status === 'cancelled') {
-                // Leave the row unset: the fill loop below marks it CANCELLED.
-                stopDispatch = true;
-                return;
-            }
+            // Issue #928 + #946: per-address deadline with AdaptiveConcurrency throttle feedback.
+            const throttledFetchOptions = {
+                ...fetchOptions,
+                onThrottle: () => {
+                    throttled = true;
+                    limiter.onThrottle(epoch);
+                    fetchOptions.onThrottle?.();
+                },
+            };
             let outcome;
-            if (deadlineOutcome.status === 'timed_out') {
-                metrics_1.globalMetrics.incrementCounter('batch_fail_address_timeout');
-                metrics_1.globalMetrics.incrementCounter('batch_address_failed');
-                outcome = {
-                    budgetExhausted: false,
-                    result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
-                };
+            try {
+                const deadlineOutcome = !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+                    ? {
+                        status: 'completed',
+                        value: await validateOneAddress(addresses[i], config, horizonUrl, throttledFetchOptions, extraAssets, issuerAccount),
+                    }
+                    : await (0, checks_run_1.runWithAddressDeadline)((addressSignal) => validateOneAddress(addresses[i], config, horizonUrl, { ...throttledFetchOptions, signal: addressSignal }, extraAssets, issuerAccount), options.perAddressTimeoutMs, fetchOptions.signal);
+                if (deadlineOutcome.status === 'cancelled') {
+                    stopDispatch = true;
+                    return;
+                }
+                if (deadlineOutcome.status === 'timed_out') {
+                    metrics_1.globalMetrics.incrementCounter('batch_fail_address_timeout');
+                    metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+                    outcome = {
+                        budgetExhausted: false,
+                        result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+                    };
+                }
+                else {
+                    outcome = deadlineOutcome.value;
+                }
             }
-            else {
-                outcome = deadlineOutcome.value;
+            finally {
+                limiter.release();
             }
+            if (!outcome)
+                return;
+            if (!throttled && outcome.result.accountFunded)
+                limiter.onSuccess(epoch);
             results[i] = outcome.result;
             if (outcome.budgetExhausted || signal?.aborted) {
                 stopDispatch = true;
@@ -50280,7 +50321,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.defaultCache = exports.SimpleCache = exports.GitHubActionsCacheBackend = void 0;
+exports.defaultCache = exports.SimpleCache = exports.SingleFlightTimeoutError = exports.SINGLE_FLIGHT_WAIT_TIMEOUT_CODE = exports.DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS = exports.GitHubActionsCacheBackend = void 0;
 const core = __importStar(__nccwpck_require__(37484));
 const actionsCache = __importStar(__nccwpck_require__(5116));
 const crypto = __importStar(__nccwpck_require__(76982));
@@ -50288,6 +50329,7 @@ const fs = __importStar(__nccwpck_require__(79896));
 const os = __importStar(__nccwpck_require__(70857));
 const path = __importStar(__nccwpck_require__(16928));
 const logger_1 = __nccwpck_require__(86999);
+const metrics_1 = __nccwpck_require__(35670);
 /** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
 const SUPPORTED_NAMED_BACKENDS = new Set(['memory', 'github-actions']);
 /**
@@ -50420,11 +50462,35 @@ class GitHubActionsCacheBackend {
     }
 }
 exports.GitHubActionsCacheBackend = GitHubActionsCacheBackend;
+/**
+ * Issue #958 — default maximum time (ms) a single-flight waiter blocks on a
+ * leader's in-flight fetch before failing with {@link SingleFlightTimeoutError}.
+ */
+exports.DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS = 30000;
+/** Issue #958 — stable error code for a waiter that gave up on a hung leader. */
+exports.SINGLE_FLIGHT_WAIT_TIMEOUT_CODE = 'SINGLE_FLIGHT_WAIT_TIMEOUT';
+/**
+ * Issue #958 — thrown to a single-flight *waiter* (never the leader) when the
+ * leader's fetch does not settle within `waiterTimeoutMs`. The message carries
+ * no cache key, because keys embed Stellar addresses.
+ */
+class SingleFlightTimeoutError extends Error {
+    constructor(timeoutMs) {
+        super(`[TrustBridge] cache: timed out after ${timeoutMs}ms waiting for an in-flight fetch of the same key ` +
+            `(${exports.SINGLE_FLIGHT_WAIT_TIMEOUT_CODE}). The leader request may be hung; retry or raise the waiter timeout.`);
+        this.code = exports.SINGLE_FLIGHT_WAIT_TIMEOUT_CODE;
+        this.name = 'SingleFlightTimeoutError';
+        this.timeoutMs = timeoutMs;
+    }
+}
+exports.SingleFlightTimeoutError = SingleFlightTimeoutError;
 class SimpleCache {
     constructor(options = {}) {
         this.store = new Map();
         this.negativeStore = new Map();
         this.useBackend = false;
+        this.inFlight = new Map();
+        this.sfStats = { leaders: 0, waiters: 0, waiterResolved: 0, waiterTimeouts: 0 };
         // Warn when an unsupported named backend is requested so operators learn
         // immediately instead of silently getting in-memory-only behaviour.
         // Issue #462: unsupported backend values must not fail the workflow, but
@@ -50605,6 +50671,69 @@ class SimpleCache {
         return this.store.delete(key);
     }
     /**
+     * Issue #958 — single-flight read-through.
+     *
+     * Returns a cached value when present. Otherwise the first caller for `key`
+     * becomes the *leader* and runs `fetcher`; concurrent callers become
+     * *waiters* and share the leader's promise. Waiters block at most
+     * `waiterTimeoutMs`, then reject with {@link SingleFlightTimeoutError} so a
+     * hung leader cannot stall a whole batch. The leader itself is not
+     * time-limited here (it owns its own request timeout) and a timed-out
+     * waiter never writes to the cache, so no partial state is left behind.
+     */
+    async getOrFetch(key, fetcher, options = {}) {
+        const cached = this.get(key);
+        if (cached !== null)
+            return cached;
+        const waiterTimeoutMs = options.waiterTimeoutMs ?? exports.DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS;
+        if (!Number.isFinite(waiterTimeoutMs) || waiterTimeoutMs <= 0) {
+            throw new RangeError(`[TrustBridge] cache: waiterTimeoutMs must be a positive finite number, got ${String(waiterTimeoutMs)}.`);
+        }
+        const existing = this.inFlight.get(key);
+        if (existing) {
+            this.sfStats.waiters += 1;
+            metrics_1.globalMetrics.incrementCounter('cache_single_flight_waiters');
+            let timer;
+            const timeout = new Promise((_, reject) => {
+                timer = setTimeout(() => {
+                    this.sfStats.waiterTimeouts += 1;
+                    metrics_1.globalMetrics.incrementCounter('cache_single_flight_waiter_timeouts');
+                    reject(new SingleFlightTimeoutError(waiterTimeoutMs));
+                }, waiterTimeoutMs);
+            });
+            const shared = existing.finally(() => {
+                this.sfStats.waiterResolved += 1;
+            });
+            // Avoid unhandled rejections when the timeout wins the race.
+            shared.catch(() => undefined);
+            try {
+                return await Promise.race([shared, timeout]);
+            }
+            finally {
+                if (timer !== undefined)
+                    clearTimeout(timer);
+            }
+        }
+        this.sfStats.leaders += 1;
+        metrics_1.globalMetrics.incrementCounter('cache_single_flight_leaders');
+        const leader = (async () => {
+            try {
+                const value = await fetcher();
+                this.set(key, value, options.ttlMs);
+                return value;
+            }
+            finally {
+                this.inFlight.delete(key);
+            }
+        })();
+        this.inFlight.set(key, leader);
+        return leader;
+    }
+    /** Issue #958 — snapshot of single-flight counters (no keys, no addresses). */
+    getSingleFlightStats() {
+        return { ...this.sfStats, inFlight: this.inFlight.size };
+    }
+    /**
      * Remove all cached entries from the in-memory store and, if a persistent
      * backend is configured, call its `dispose` lifecycle hook.
      *
@@ -50614,6 +50743,8 @@ class SimpleCache {
     async clear() {
         this.store.clear();
         this.negativeStore.clear();
+        this.inFlight.clear();
+        this.sfStats = { leaders: 0, waiters: 0, waiterResolved: 0, waiterTimeouts: 0 };
         if (this.backend?.dispose) {
             await this.backend.dispose();
         }
@@ -50700,7 +50831,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST = exports.HOME_DOMAIN_CHECK_LABEL = void 0;
+exports.AdaptiveConcurrency = exports.ADAPTIVE_RECOVERY_SUCCESSES = exports.ADAPTIVE_THROTTLE_RATE = exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST = exports.HOME_DOMAIN_CHECK_LABEL = void 0;
 exports.determineCheckConclusion = determineCheckConclusion;
 exports.buildCheckAnnotations = buildCheckAnnotations;
 exports.buildCheckRunSummary = buildCheckRunSummary;
@@ -50708,6 +50839,7 @@ exports.createCheckRun = createCheckRun;
 exports.runWithAddressDeadline = runWithAddressDeadline;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
+const metrics_1 = __nccwpck_require__(35670);
 const logger_1 = __nccwpck_require__(86999);
 const proxy_1 = __nccwpck_require__(28903);
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
@@ -50717,6 +50849,96 @@ exports.HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
  * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
  */
 exports.CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+/** Share of requests since the last change that must be throttled to back off. */
+exports.ADAPTIVE_THROTTLE_RATE = 0.2;
+/** Consecutive unthrottled successes needed to regain one slot. */
+exports.ADAPTIVE_RECOVERY_SUCCESSES = 10;
+/**
+ * Concurrency limit for batch Horizon work (Issue #946): halves when the
+ * throttle rate reaches {@link ADAPTIVE_THROTTLE_RATE}, regains one slot per
+ * {@link ADAPTIVE_RECOVERY_SUCCESSES} successes. Always within `[1, max]`.
+ * Requests started before the last decrease are ignored, so one burst of
+ * 429s causes one decrease.
+ */
+class AdaptiveConcurrency {
+    constructor(max) {
+        this.max = max;
+        this.active = 0;
+        this.epochValue = 0;
+        this.successes = 0;
+        this.streak = 0;
+        this.throttles = 0;
+        this.waiters = [];
+        this.max = Number.isFinite(max) ? Math.max(1, Math.floor(max)) : 1;
+        this.limitValue = this.max;
+        this.record();
+    }
+    get limit() {
+        return this.limitValue;
+    }
+    get epoch() {
+        return this.epochValue;
+    }
+    tryAcquire() {
+        if (this.active >= this.limitValue)
+            return false;
+        this.active++;
+        return true;
+    }
+    waitForRelease() {
+        return new Promise((resolve) => this.waiters.push(resolve));
+    }
+    release() {
+        this.active--;
+        this.wake();
+    }
+    onThrottle(epoch) {
+        metrics_1.globalMetrics.incrementCounter('batch_horizon_throttled');
+        if (epoch !== this.epochValue)
+            return;
+        this.throttles++;
+        this.streak = 0;
+        if (this.throttles / (this.throttles + this.successes) < exports.ADAPTIVE_THROTTLE_RATE)
+            return;
+        this.epochValue++;
+        this.resetWindow();
+        if (this.limitValue === 1)
+            return;
+        this.limitValue = Math.max(1, Math.floor(this.limitValue / 2));
+        metrics_1.globalMetrics.incrementCounter('batch_concurrency_decreased');
+        this.record();
+    }
+    onSuccess(epoch) {
+        if (epoch !== this.epochValue)
+            return;
+        // Cap the history so a long healthy run cannot hide a new throttle burst.
+        this.successes = Math.min(this.successes + 1, exports.ADAPTIVE_RECOVERY_SUCCESSES);
+        if (++this.streak < exports.ADAPTIVE_RECOVERY_SUCCESSES)
+            return;
+        this.resetWindow();
+        if (this.limitValue >= this.max)
+            return;
+        this.limitValue++;
+        metrics_1.globalMetrics.incrementCounter('batch_concurrency_increased');
+        this.record();
+        this.wake();
+    }
+    resetWindow() {
+        this.successes = 0;
+        this.streak = 0;
+        this.throttles = 0;
+    }
+    record() {
+        metrics_1.globalMetrics.recordMetric('batch_concurrency_limit', this.limitValue, 'count');
+    }
+    wake() {
+        const waiters = this.waiters;
+        this.waiters = [];
+        for (const resolve of waiters)
+            resolve();
+    }
+}
+exports.AdaptiveConcurrency = AdaptiveConcurrency;
 function cancelledResult() {
     const message = 'Check Run creation cancelled before completion; no Check Run was written.';
     logger_1.logger.warn(message, { component: 'checks-run' });
@@ -52487,6 +52709,7 @@ exports.resolveDiscussionNodeId = resolveDiscussionNodeId;
 exports.resolveDiscussionCommentTarget = resolveDiscussionCommentTarget;
 exports.findStickyDiscussionComment = findStickyDiscussionComment;
 exports.postDiscussionComment = postDiscussionComment;
+const reasonCodes_1 = __nccwpck_require__(86233);
 const core = __importStar(__nccwpck_require__(37484));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
@@ -52662,10 +52885,12 @@ function formatCommentBody(result, config) {
         // `ready` / `reason_code` action outputs expose. Surfacing it here means a
         // dashboard triager can read the reason code straight from the comment
         // instead of digging through the Actions log.
-        // Issue #921: an empty or whitespace-only reason code falls back to the
-        // verdict default instead of rendering an empty code span (`??` alone
-        // would keep the empty string).
-        const reasonCode = result.reasonCode?.trim() || (result.valid ? 'SUCCESS' : 'FAILED');
+        // Issue #921: empty/whitespace reason codes fall back via effectiveReasonCode.
+        const trimmedReason = result.reasonCode?.trim();
+        const reasonCode = (0, reasonCodes_1.effectiveReasonCode)({
+            valid: result.valid,
+            reasonCode: trimmedReason ? trimmedReason : undefined,
+        });
         lines.push("", `### ${strings.validationGateHeading}`, "", gate.ready
             ? `- ${strings.readyToProceed}`
             : `- ${strings.blockedBy} ${gate.failedLabels.join(", ")}`, `- ${strings.passedChecks} ${gate.passedChecks}/${gate.totalChecks}`, `- ${strings.failedChecks} ${gate.failedChecks}`, `- ${strings.readyFlag} \`${String(gate.ready)}\``, `- ${strings.reasonCode} ${(0, markdown_1.inlineCode)(reasonCode)}`, "", `### ${strings.balancesHeading}`, "", `- **Native XLM balance:** ${result.xlmBalance === "unknown" ? "_unknown_" : `\`${result.xlmBalance} XLM\``}`, result.reserveRequirement
@@ -54892,6 +55117,7 @@ exports.formatCorrelationFooter = formatCorrelationFooter;
 exports.buildSafeInputsSnapshot = buildSafeInputsSnapshot;
 exports.buildDiagnosticsBlock = buildDiagnosticsBlock;
 exports.buildSponsorshipDiagnostics = buildSponsorshipDiagnostics;
+exports.buildPluginStderrDiagnostics = buildPluginStderrDiagnostics;
 const crypto = __importStar(__nccwpck_require__(76982));
 const logger_1 = __nccwpck_require__(86999);
 const markdown_1 = __nccwpck_require__(83758);
@@ -55231,6 +55457,22 @@ function buildSponsorshipDiagnostics(sponsorshipInfo, reserveRequirement) {
     // Guidance for overfunding scenario
     if (numSponsored > 0 && numSponsoring === 0 && reserveRequirement.actual > reserveRequirement.required + 1.0) {
         lines.push('> ℹ️ **Overfunding detected:** This sponsored account has significantly more XLM than', `> required (${(reserveRequirement.actual - reserveRequirement.required).toFixed(1)} XLM surplus). Since sponsorship covers reserve`, '> costs, this balance may be unnecessary. Consider keeping only operational funds', '> (for transaction fees) on sponsored accounts.', '');
+    }
+    return lines.join('\n');
+}
+/**
+ * Render captured plugin stderr (Issue #954) as a Markdown diagnostics
+ * section. Captures arrive already capped and redacted by
+ * `captureStderr` in `src/pluginRunner.ts`; this only formats them, and
+ * returns an empty string when no plugin wrote to stderr.
+ */
+function buildPluginStderrDiagnostics(captures) {
+    const nonEmpty = captures.filter((c) => c.totalBytes > 0);
+    if (nonEmpty.length === 0)
+        return '';
+    const lines = ['### Plugin stderr'];
+    for (const c of nonEmpty) {
+        lines.push('', `**\`${c.pluginId}\`** — ${c.totalBytes} byte(s)${c.truncated ? ', truncated' : ''}`, '```text', c.text.replace(/```/g, '`​``'), '```');
     }
     return lines.join('\n');
 }
@@ -55647,7 +55889,7 @@ function safeAccountSummary(account) {
         subentryCount: account.subentry_count,
     };
 }
-async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind, retryMaxDelayMs = exports.DEFAULT_RETRY_MAX_DELAY_MS, retryMaxTotalWaitMs = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS, parentSignal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS) {
+async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind, retryMaxDelayMs = exports.DEFAULT_RETRY_MAX_DELAY_MS, retryMaxTotalWaitMs = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS, parentSignal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS, onThrottle) {
     const externalSignal = parentSignal;
     const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
     const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
@@ -55722,6 +55964,9 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
             }
             if (!response.ok) {
                 const retryable = isRetryableStatus(response.status);
+                if (response.status === 429 || (retryable && parseRetryAfterMs(response) !== null)) {
+                    onThrottle?.();
+                }
                 // Issue #920: feed a server-requested Retry-After into the circuit
                 // breaker so, if the circuit opens, it cannot go half-open (and
                 // half-open probes are not admitted) before Horizon's deadline.
@@ -56127,7 +56372,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
     let primaryError;
     const circuitBreaker = options.circuitBreaker;
     try {
-        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs, options.onThrottle);
         result.account._servedByUrl = normalizedHorizonUrl;
         if (cachingEnabled) {
             cache.set(cacheKey, result.account, cacheTtlMs);
@@ -56207,7 +56452,7 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
         primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
     }));
     try {
-        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs);
+        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback', retryMaxDelayMs, retryMaxTotalWaitMs, signal, rateBudgetTracker, circuitBreaker, retryBaseDelayMs, options.onThrottle);
         fallbackResult.account._servedByUrl = normalizedFallbackUrl;
         if (cachingEnabled) {
             cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
@@ -57593,6 +57838,7 @@ exports.evaluateMilestoneGate = evaluateMilestoneGate;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
+const preflight_1 = __nccwpck_require__(4504);
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const checks_1 = __nccwpck_require__(42122);
@@ -57604,6 +57850,8 @@ const checks_run_1 = __nccwpck_require__(1346);
 const proxy_1 = __nccwpck_require__(28903);
 const projects_1 = __nccwpck_require__(77233);
 const inputs_1 = __nccwpck_require__(38422);
+const snooze_1 = __nccwpck_require__(80905);
+const links_1 = __nccwpck_require__(73346);
 const summary_1 = __nccwpck_require__(28855);
 const outputs_1 = __nccwpck_require__(7729);
 const logger_1 = __nccwpck_require__(86999);
@@ -57821,6 +58069,16 @@ async function run() {
     emitDeprecatedInputWarnings();
     // Issue #899: each run records exactly one job outcome.
     metrics_1.globalMetrics.resetJobOutcome();
+    // Issue #951: fail early on mutually exclusive inputs, before any network work.
+    const conflictInputNames = [...new Set(inputs_1.INPUT_CONFLICT_MATRIX.flatMap((rule) => [...rule.inputs]))];
+    const inputConflicts = (0, inputs_1.detectInputConflicts)(Object.fromEntries(conflictInputNames.map((name) => [name, core.getInput(name)])));
+    if (inputConflicts.length > 0) {
+        for (const conflict of inputConflicts)
+            core.error(conflict.message);
+        core.setFailed(`Conflicting inputs detected (${inputConflicts.length}). ` +
+            'See docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.');
+        return;
+    }
     // Issue #904: one correlation id per run, attached to every structured log
     // line (and the comment footer when debug_mode is on).
     const correlation = (0, diagnostics_1.initCorrelationId)();
@@ -57857,6 +58115,33 @@ async function run() {
         core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
         core.setOutput('checks_json', '[]');
         // Issue #899: a gate skip is its own outcome, never pass or fail.
+        metrics_1.globalMetrics.recordJobOutcome('skipped');
+        await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary(metrics_1.globalHorizonHistogram));
+        return;
+    }
+    // Issue #955: required-label gate. Runs after the milestone gate and before
+    // any Horizon traffic, so a skip leaves no partial state.
+    const requiredLabelsFailOnSkip = (0, inputs_1.parseBooleanInput)(core.getInput('required_labels_fail_on_skip'), false);
+    let requiredLabels;
+    try {
+        requiredLabels = (0, preflight_1.parseRequiredLabels)(core.getInput('required_labels'));
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        core.setFailed(msg);
+        return;
+    }
+    const labelDecision = (0, preflight_1.evaluateRequiredLabels)(requiredLabels, github.context.payload);
+    if (labelDecision.shouldSkip) {
+        if (requiredLabelsFailOnSkip) {
+            core.setFailed(labelDecision.message);
+        }
+        else {
+            core.info(labelDecision.message);
+        }
+        core.setOutput('ready', 'false');
+        core.setOutput('reason_code', preflight_1.REASON_CODE_REQUIRED_LABELS_MISSING);
+        core.setOutput('checks_json', '[]');
         metrics_1.globalMetrics.recordJobOutcome('skipped');
         await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary(metrics_1.globalHorizonHistogram));
         return;
@@ -57941,8 +58226,14 @@ async function run() {
         min: 0,
         max: 60 * 24 * 30,
     });
-    // Snooze window duration in milliseconds (Issue #873: UTC physical duration invariant across DST boundaries).
-    const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
+    // Issue #962 — cap the snooze window; maintainers may raise the cap (never remove it).
+    // Duration is still UTC physical ms (Issue #873 DST invariant) after the cap.
+    const snoozeMaxOverride = (0, inputs_1.parseBooleanInput)(core.getInput('snooze_max_override'), false);
+    const snoozeCap = (0, snooze_1.capSnoozeWindow)(snoozeWindowMinutes * 60 * 1000, { maintainerOverride: snoozeMaxOverride });
+    if (snoozeCap.capped) {
+        core.warning(`snooze_window_minutes exceeds the maximum snooze window; clamped to ${snoozeCap.windowMs / 60000} minutes (reason_code: ${snoozeCap.reasonCode}).`);
+    }
+    const snoozeWindowMs = snoozeCap.windowMs;
     const issueNumberInputRaw = core.getInput('issue_number') || '';
     const issueNumberInput = issueNumberInputRaw.trim()
         ? (0, inputs_1.parseNumberInput)(issueNumberInputRaw, 0, { min: 1 })
@@ -58121,6 +58412,9 @@ async function run() {
                 enabled: stellarTomlFetchEnabled,
                 cacheTtlMs: stellarTomlCacheTtlMs,
                 hashPin: stellarTomlHashPin || undefined,
+                // Issue #960 — pubnet is HTTPS-only; testnet may tolerate http:// (upgraded).
+                network: (0, links_1.inferStellarNetworkPreset)(horizonUrl),
+                allowInsecureTestnet: (0, inputs_1.parseBooleanInput)(core.getInput('stellar_toml_allow_insecure_testnet'), false),
             });
             if (tomlOutcome.status !== 'skipped') {
                 // A pinned hash always fails closed; otherwise fetch errors only block
@@ -58647,7 +58941,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRUSTBRIDGE_ENV_MAP = exports.VALID_HOME_DOMAIN_CHECK_MODES = exports.VALID_NETWORK_INPUTS = exports.BATCH_MAX_ADDRESSES_CEILING = exports.DEFAULT_BATCH_MAX_ADDRESSES = exports.DECLARED_INPUTS = void 0;
+exports.INPUT_CONFLICT_MATRIX = exports.INPUT_CONFLICT_REASON_CODE = exports.TRUSTBRIDGE_ENV_MAP = exports.VALID_HOME_DOMAIN_CHECK_MODES = exports.VALID_NETWORK_INPUTS = exports.BATCH_MAX_ADDRESSES_CEILING = exports.DEFAULT_BATCH_MAX_ADDRESSES = exports.DECLARED_INPUTS = void 0;
 exports.parseBooleanInput = parseBooleanInput;
 exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
@@ -58664,6 +58958,9 @@ exports.parsePresetInput = parsePresetInput;
 exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
 exports.resolveReadyLabelInputs = resolveReadyLabelInputs;
 exports.listDeprecatedInputAliases = listDeprecatedInputAliases;
+exports.parseStrictBooleanInput = parseStrictBooleanInput;
+exports.detectInputConflicts = detectInputConflicts;
+exports.assertNoInputConflicts = assertNoInputConflicts;
 exports.buildSorobanContractConfig = buildSorobanContractConfig;
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
@@ -59099,6 +59396,85 @@ function listDeprecatedInputAliases(options) {
         ['ready_label_fail', options.readyLabelFailAlias],
     ];
     return aliases.filter(([, value]) => Boolean(value?.trim())).map(([name]) => name);
+}
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+function parseStrictBooleanInput(name, raw, defaultValue = false) {
+    const v = (raw ?? '').trim().toLowerCase();
+    if (v === '')
+        return defaultValue;
+    if (v === 'true')
+        return true;
+    if (v === 'false')
+        return false;
+    throw new Error(`Invalid ${name}: expected "true" or "false", got "${raw}"`);
+}
+// ---------------------------------------------------------------------------
+// Mutually exclusive input conflict matrix (Issue #951)
+// ---------------------------------------------------------------------------
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+exports.INPUT_CONFLICT_REASON_CODE = 'INPUT_CONFLICT';
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+exports.INPUT_CONFLICT_MATRIX = [
+    {
+        id: 'preflight_only+wait_until_funded',
+        inputs: ['preflight_only', 'wait_until_funded'],
+        reason: 'preflight_only exits before any Horizon call, so wait_until_funded could never poll. Disable one of them.',
+    },
+    {
+        id: 'preflight_only+use_friendbot',
+        inputs: ['preflight_only', 'use_friendbot'],
+        reason: 'preflight_only exits before any Horizon call, so Friendbot could never be invoked. Disable one of them.',
+    },
+    {
+        id: 'fixture_mode+wait_until_funded',
+        inputs: ['fixture_mode', 'wait_until_funded'],
+        reason: 'fixture_mode reads a static local fixture, so polling until funded would never observe a change. Disable one of them.',
+    },
+    {
+        id: 'fixture_mode+use_friendbot',
+        inputs: ['fixture_mode', 'use_friendbot'],
+        reason: 'fixture_mode makes no network calls, so Friendbot funding would not be reflected in the result. Disable one of them.',
+    },
+];
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+function detectInputConflicts(rawInputs) {
+    const enabled = (name) => parseBooleanInput(rawInputs[name] ?? '', false);
+    return exports.INPUT_CONFLICT_MATRIX.filter((rule) => enabled(rule.inputs[0]) && enabled(rule.inputs[1])).map((rule) => ({
+        id: rule.id,
+        inputs: rule.inputs,
+        reasonCode: exports.INPUT_CONFLICT_REASON_CODE,
+        message: `${exports.INPUT_CONFLICT_REASON_CODE}: ${rule.inputs[0]} and ${rule.inputs[1]} cannot both be true. ${rule.reason}`,
+    }));
+}
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+function assertNoInputConflicts(rawInputs) {
+    const conflicts = detectInputConflicts(rawInputs);
+    if (conflicts.length === 0)
+        return;
+    throw new Error(`Conflicting inputs detected (${conflicts.length}):\n` +
+        conflicts.map((c) => `- ${c.message}`).join('\n') +
+        '\nSee docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.');
 }
 /**
  * Build the Soroban registry client config from raw action inputs. Returns
@@ -61233,7 +61609,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.globalOctokitMetrics = exports.globalHorizonHistogram = exports.globalMetrics = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.JOB_OUTCOME_PROMETHEUS_METRICS = exports.CHECK_KINDS = exports.JOB_OUTCOMES = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
+exports.globalOctokitMetrics = exports.globalCheckLatencyHistogram = exports.globalHorizonHistogram = exports.globalMetrics = exports.CheckLatencyHistogram = exports.CHECK_LATENCY_OUTCOMES = exports.HorizonLatencyHistogram = exports.LATENCY_BUCKETS_MS = exports.MetricsCollector = exports.JOB_OUTCOME_PROMETHEUS_METRICS = exports.CHECK_KINDS = exports.JOB_OUTCOMES = exports.OctokitMetrics = exports.CONTRACT_ADDRESS_TAG_KEY = void 0;
 exports.hashAddressForMetrics = hashAddressForMetrics;
 exports.classifyOctokitStatus = classifyOctokitStatus;
 exports.jobOutcomeCounterName = jobOutcomeCounterName;
@@ -61244,6 +61620,7 @@ const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const validation_1 = __nccwpck_require__(24344);
 const summary_1 = __nccwpck_require__(28855);
+const inputs_1 = __nccwpck_require__(38422);
 /**
  * Tag key that flags a metric as carrying a Soroban contract ("C-address").
  * Metrics tagged this way are validated against the contract address
@@ -61767,7 +62144,10 @@ async function writeJobSummary(report, runLabel) {
         const labelledReport = runLabel
             ? { ...report, jsonArtifact: `Run label: ${runLabel}\n${report.jsonArtifact}` }
             : report;
-        const rendered = (0, summary_1.formatJobSummaryMarkdown)(labelledReport);
+        const rendered = (0, summary_1.formatJobSummaryMarkdown)(labelledReport, {
+            // Issue #961 — emoji-free summaries for enterprise log drains.
+            emojiFree: (0, inputs_1.parseBooleanInput)(process.env.INPUT_SUMMARY_EMOJI_FREE ?? '', false),
+        });
         if (!process.env.GITHUB_STEP_SUMMARY)
             return;
         core.summary.addRaw(rendered.markdown);
@@ -61875,9 +62255,93 @@ class HorizonLatencyHistogram {
     }
 }
 exports.HorizonLatencyHistogram = HorizonLatencyHistogram;
+/**
+ * Issue #956 — bounded outcome labels for the per-address check latency
+ * histogram. The address itself is NEVER a label: every observation is
+ * aggregated under one of these fixed outcomes so cardinality is constant
+ * regardless of batch size.
+ */
+exports.CHECK_LATENCY_OUTCOMES = ['pass', 'fail', 'invalid', 'error'];
+/**
+ * Issue #956 — per-address check latency histogram.
+ *
+ * Records the wall-clock duration of each per-address check (fetch + rule
+ * evaluation) into the fixed {@link LATENCY_BUCKETS_MS} buckets. Storage is
+ * bounded: only counts, totals, min and max are kept per outcome — no raw
+ * samples and no addresses — so memory and label cardinality are O(1).
+ *
+ * Invalid observations (negative, NaN, non-finite) are rejected and counted
+ * under `rejected` instead of skewing the buckets.
+ */
+class CheckLatencyHistogram {
+    constructor() {
+        this.stats = new Map();
+        this.rejectedCount = 0;
+        this.reset();
+    }
+    static emptyStats() {
+        const buckets = {};
+        for (const bound of exports.LATENCY_BUCKETS_MS) {
+            buckets[bound === Infinity ? '+Inf' : `<=${bound}ms`] = 0;
+        }
+        return { count: 0, totalMs: 0, minMs: 0, maxMs: 0, avgMs: 0, buckets };
+    }
+    /**
+     * Record one per-address check duration.
+     * @returns `true` when recorded, `false` when the input was rejected.
+     */
+    record(outcome, latencyMs) {
+        const stats = this.stats.get(outcome);
+        if (stats === undefined || typeof latencyMs !== 'number' || !Number.isFinite(latencyMs) || latencyMs < 0) {
+            this.rejectedCount += 1;
+            return false;
+        }
+        stats.minMs = stats.count === 0 ? latencyMs : Math.min(stats.minMs, latencyMs);
+        stats.maxMs = stats.count === 0 ? latencyMs : Math.max(stats.maxMs, latencyMs);
+        stats.count += 1;
+        stats.totalMs += latencyMs;
+        stats.avgMs = Math.round(stats.totalMs / stats.count);
+        for (const bound of exports.LATENCY_BUCKETS_MS) {
+            if (latencyMs <= bound) {
+                stats.buckets[bound === Infinity ? '+Inf' : `<=${bound}ms`] += 1;
+                break;
+            }
+        }
+        return true;
+    }
+    /** Number of observations rejected as malformed. */
+    get rejected() {
+        return this.rejectedCount;
+    }
+    /** Total accepted observations across all outcomes. */
+    get totalSamples() {
+        let n = 0;
+        for (const s of this.stats.values())
+            n += s.count;
+        return n;
+    }
+    /** Deep-copied, address-free snapshot for the metrics JSON artifact. */
+    toSnapshot() {
+        const out = {};
+        for (const outcome of exports.CHECK_LATENCY_OUTCOMES) {
+            const s = this.stats.get(outcome) ?? CheckLatencyHistogram.emptyStats();
+            out[outcome] = { ...s, buckets: { ...s.buckets } };
+        }
+        return out;
+    }
+    reset() {
+        this.rejectedCount = 0;
+        for (const outcome of exports.CHECK_LATENCY_OUTCOMES) {
+            this.stats.set(outcome, CheckLatencyHistogram.emptyStats());
+        }
+    }
+}
+exports.CheckLatencyHistogram = CheckLatencyHistogram;
 exports.globalMetrics = new MetricsCollector();
 /** Global Horizon fetch latency histogram — wired into `fetchAccountOnce` in `horizon.ts`. */
 exports.globalHorizonHistogram = new HorizonLatencyHistogram();
+/** Issue #956 — global per-address check latency histogram, wired into `batch.ts`. */
+exports.globalCheckLatencyHistogram = new CheckLatencyHistogram();
 /** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
 exports.globalOctokitMetrics = new OctokitMetrics();
 /**
@@ -62427,6 +62891,432 @@ function sanitizeUsernameForMatrix(username) {
         sanitized = '_' + sanitized;
     }
     return sanitized || 'unknown';
+}
+
+
+/***/ }),
+
+/***/ 4504:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * src/preflight.ts
+ *
+ * #145 — issues:write preflight check
+ * #220 — extended to `pull_request` / `pull_request_target` events
+ * #443 — optional Horizon fallback health probe
+ * #732 — cataloged reason_code for missing issues:write
+ *
+ * Verifies that the supplied GitHub token has sufficient permission to post
+ * issue/PR comments **before** any expensive Horizon calls are made.  Failing
+ * fast here gives workflow authors a clear, actionable error instead of a
+ * generic GitHub 403 that appears only after Horizon work has completed.
+ *
+ * ## Preflight sequence
+ *
+ * 1. **Issue/PR context check** — verify an issue or PR number can be
+ *    resolved from the event payload (`payload.issue.number` for `issues`
+ *    events, `payload.pull_request.number` for `pull_request`/
+ *    `pull_request_target`). Comment posting is only possible in one of
+ *    these contexts; `workflow_dispatch` and other events skip comment
+ *    posting and therefore skip the preflight.
+ * 2. **Permission probe** — call `GET /repos/{owner}/{repo}/issues/{number}/comments`
+ *    with `per_page=1`.  A 403/401 response means the token lacks `issues: read`
+ *    and certainly cannot write.  This is less aggressive than a dry-run
+ *    `createComment` because it is read-only and will not clutter the issue.
+ *    A 404 on the issue/PR itself is surfaced separately (closed/deleted).
+ *    Note: this probe only proves *read* access — a `pull_request` (not
+ *    `pull_request_target`) run on a **fork** PR gets a read-only
+ *    `GITHUB_TOKEN` by default, so the probe can pass here and the later
+ *    `createComment`/`updateComment` call can still 403. That failure is
+ *    caught separately and logged as a non-fatal warning by the caller.
+ * 3. **Optional Horizon health probe** (#443) — when enabled, HEAD (falling
+ *    back to GET) the Horizon root on both the primary and fallback URLs so
+ *    operators discover a bad secondary before a run fails mid-flight.
+ *    Soft-warns by default; `horizon_probe_hard_fail: true` turns a failed
+ *    probe into a hard failure.
+ *
+ * ## Failure modes
+ *
+ * | Situation | Code | `PreflightResult.skip` | Horizon called? |
+ * |-----------|------|----------------------|-----------------|
+ * | No issue/PR context | — | `true` | Yes (outputs still set) |
+ * | Token lacks issues:read/write | 403/401 | `false` | No (run fails) |
+ * | Issue/PR not found (404) | 404 | `false` | No (run fails) |
+ * | Transient error (5xx) | 5xx | `false` | No (run fails fast) |
+ * | Permission check passes | 200 | `false` | Yes |
+ *
+ * ## Design notes
+ *
+ * - When there is no issue/PR context the preflight returns `{ skip: true }`
+ *   so the caller can proceed without posting a comment (same behaviour as
+ *   today for `workflow_dispatch`).
+ * - `preflight_only` input: when `true`, the action runs the preflight and
+ *   exits immediately without calling Horizon.  Useful for diagnosing
+ *   permission issues in new repositories without spending API quota.
+ * - The Horizon health probe is opt-in (`horizon_probe: true`) and bounded by
+ *   `horizon_probe_timeout_ms` (default 5000ms) per URL.  Worst case it adds
+ *   `2 × timeout` to the preflight; keep the budget small on latency-sensitive
+ *   workflows.
+ * - #732 — a 403 on the permission probe is tagged with the cataloged
+ *   `reason_code` `issues_write_missing` so `index.ts` can emit it as an
+ *   output before `core.setFailed`.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.REQUIRED_LABELS_INVALID_CODE = exports.REQUIRED_LABELS_MAX_LENGTH = exports.REQUIRED_LABELS_MAX_COUNT = exports.REASON_CODE_REQUIRED_LABELS_MISSING = exports.PreflightError = exports.REASON_CODE_ISSUES_WRITE_MISSING = void 0;
+exports.runIssuesPreflight = runIssuesPreflight;
+exports.formatMissingPermissionsDryRun = formatMissingPermissionsDryRun;
+exports.runHorizonHealthProbe = runHorizonHealthProbe;
+exports.probeHorizonUrl = probeHorizonUrl;
+exports.parseRequiredLabels = parseRequiredLabels;
+exports.evaluateRequiredLabels = evaluateRequiredLabels;
+const github = __importStar(__nccwpck_require__(93228));
+const comment_1 = __nccwpck_require__(62246);
+/**
+ * #732 — cataloged reason code emitted when the token lacks `issues: write`.
+ * Must match the entry in `schemas/reason-codes.json`.
+ */
+exports.REASON_CODE_ISSUES_WRITE_MISSING = 'issues_write_missing';
+/**
+ * #732 — error thrown by the preflight when the token demonstrably lacks the
+ * required permission.  Carries a cataloged `reasonCode` so callers can emit
+ * it as an output before failing the job.
+ */
+class PreflightError extends Error {
+    constructor(message, status, reasonCode) {
+        super(message);
+        this.name = 'PreflightError';
+        this.status = status;
+        this.statusCode = status;
+        this.reasonCode = reasonCode;
+    }
+}
+exports.PreflightError = PreflightError;
+/**
+ * Run the issues:write preflight sequence.
+ *
+ * @param token   The `github_token` input value (used to build Octokit).
+ * @param options Optional flags controlling preflight behaviour.
+ * @returns       A `PreflightResult` — inspect `.skip` to decide whether to
+ *                skip comment posting, or throw on hard failures.
+ *
+ * @throws When the token demonstrably lacks the required permission (401/403)
+ *         or the issue is not found (404).  Callers should let these propagate
+ *         to `core.setFailed`.
+ */
+async function runIssuesPreflight(token, options = {}) {
+    const requireIssueContext = options.requireIssueContext === true;
+    const context = github.context;
+    const issueNumber = (0, comment_1.resolveIssueOrPullRequestNumber)(context.payload);
+    // ── 1. Issue/PR context check ─────────────────────────────────────────────
+    if (!issueNumber) {
+        if (requireIssueContext) {
+            throw new Error('issues:write preflight requires an issue or pull-request context ' +
+                '(issues, pull_request, or pull_request_target event) but none was found.');
+        }
+        return {
+            skip: true,
+            message: 'No issue or pull request context found — comment posting will be skipped. ' +
+                'This is normal for workflow_dispatch and push events. ' +
+                'TrustBridge checks will still run and outputs will be set.',
+        };
+    }
+    // ── 2. Permission probe ───────────────────────────────────────────────────
+    const octokit = github.getOctokit(token);
+    const { owner, repo } = context.repo;
+    try {
+        await octokit.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            per_page: 1,
+        });
+    }
+    catch (error) {
+        const status = extractHttpStatus(error);
+        if (status === 401) {
+            throw new PreflightError('GitHub token is not authorized (401). ' +
+                'Ensure the token is valid and has not expired. ' +
+                'For GITHUB_TOKEN, verify the workflow has `permissions: issues: write`.', 401);
+        }
+        if (status === 403) {
+            const isForkPullRequest = context.eventName === 'pull_request' &&
+                Boolean(context.payload
+                    .pull_request?.head?.repo?.fork);
+            const forkHint = isForkPullRequest
+                ? '\n\nThis looks like a `pull_request` run on a fork PR: `GITHUB_TOKEN` is read-only ' +
+                    'by default in that case, which explains a passing read probe but a failing write. ' +
+                    'Switch the workflow trigger to `pull_request_target` (with care — see the GitHub docs ' +
+                    'on the security implications) if you need to comment on fork PRs.'
+                : '';
+            throw new PreflightError('GitHub token lacks `issues: write` permission (403). ' +
+                'Add `permissions: issues: write` to your workflow job, for example:\n\n' +
+                '```yaml\npermissions:\n  issues: write\n  contents: read\n```' +
+                forkHint, 403, exports.REASON_CODE_ISSUES_WRITE_MISSING);
+        }
+        if (status === 404) {
+            throw new PreflightError(`Issue or pull request #${issueNumber} was not found (404). ` +
+                'It may have been deleted, or the token may lack access to this repository.', 404);
+        }
+        // Transient / unexpected errors fail fast so we do not spend Horizon quota.
+        throw new PreflightError(error instanceof Error ? error.message : String(error), status ?? 0);
+    }
+    return {
+        skip: false,
+        message: `Preflight passed: token can read comments on #${issueNumber}.`,
+        issueNumber,
+    };
+}
+const PERMISSION_REASONS = {
+    'issues: write': 'required to post or update the TrustBridge issue comment',
+    'id-token: write': 'required when `webhook_auth_mode: oidc` signs webhook deliveries',
+};
+/**
+ * Build the exact log/comment text a dry-run preflight emits when the job is
+ * missing `issues: write` and/or `id-token: write`. Output is deterministic
+ * (permissions are de-duplicated and sorted) so it can be snapshot-tested and
+ * copy-pasted into a workflow. Returns an empty string when nothing is missing.
+ *
+ * @throws When an unknown permission name is supplied.
+ */
+function formatMissingPermissionsDryRun(missing) {
+    const unique = [...new Set(missing)].sort();
+    for (const permission of unique) {
+        if (!(permission in PERMISSION_REASONS)) {
+            throw new Error(`preflight: unknown permission "${permission}"`);
+        }
+    }
+    if (unique.length === 0) {
+        return '';
+    }
+    const lines = [
+        '[trustbridge] preflight (dry-run): missing workflow permissions',
+        ...unique.map((p) => `- \`${p}\` — ${PERMISSION_REASONS[p]}`),
+        '',
+        'Add to the workflow job:',
+        '',
+        '```yaml',
+        'permissions:',
+        '  contents: read',
+        ...unique.map((p) => `  ${p}`),
+        '```',
+    ];
+    return lines.join('\n');
+}
+// ---------------------------------------------------------------------------
+// Horizon health probe (#443)
+// ---------------------------------------------------------------------------
+/**
+ * Probe the Horizon root on the primary and (when set) fallback URLs.
+ *
+ * Uses `HEAD` first and falls back to `GET` when the server rejects HEAD
+ * (some Horizon deployments return 405).  A probe is considered healthy when
+ * the response status is `< 400`.
+ *
+ * By default a failed probe only emits a warning; set
+ * `options.horizonProbeHardFail` to throw a `PreflightError` instead.
+ */
+async function runHorizonHealthProbe(options) {
+    const fetchImpl = options.fetchImpl ?? fetch;
+    const warn = options.warn ?? ((message) => console.warn(message));
+    const timeoutMs = options.horizonProbeTimeoutMs ?? 5000;
+    const targets = [];
+    if (options.horizonUrl) {
+        targets.push({ label: 'primary', url: options.horizonUrl });
+    }
+    if (options.horizonUrlFallback) {
+        targets.push({ label: 'fallback', url: options.horizonUrlFallback });
+    }
+    for (const target of targets) {
+        const result = await probeHorizonUrl(target.url, fetchImpl, timeoutMs);
+        if (result.ok) {
+            continue;
+        }
+        const message = `Horizon ${target.label} URL health probe failed for ${target.url}: ${result.reason}. ` +
+            'The run will continue, but fetch failures may fall back to this URL mid-run.';
+        if (options.horizonProbeHardFail === true) {
+            throw new PreflightError(message, result.status ?? 0);
+        }
+        warn(message);
+    }
+}
+async function probeHorizonUrl(url, fetchImpl, timeoutMs) {
+    const head = await fetchWithTimeout(fetchImpl, url, 'HEAD', timeoutMs);
+    if (head.ok) {
+        return { ok: true, reason: 'ok', status: head.status };
+    }
+    // Some servers reject HEAD (405/501) — retry with GET before giving up.
+    if (head.status === 405 || head.status === 501) {
+        const get = await fetchWithTimeout(fetchImpl, url, 'GET', timeoutMs);
+        return get.ok
+            ? { ok: true, reason: 'ok', status: get.status }
+            : { ok: false, reason: get.reason, status: get.status };
+    }
+    return { ok: false, reason: head.reason, status: head.status };
+}
+async function fetchWithTimeout(fetchImpl, url, method, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetchImpl(url, {
+            method,
+            signal: controller.signal,
+            redirect: 'follow',
+        });
+        if (response.status < 400) {
+            return { ok: true, reason: 'ok', status: response.status };
+        }
+        return {
+            ok: false,
+            reason: `HTTP ${response.status}`,
+            status: response.status,
+        };
+    }
+    catch (error) {
+        const reason = error instanceof Error && error.name === 'AbortError'
+            ? `timed out after ${timeoutMs}ms`
+            : error instanceof Error
+                ? error.message
+                : String(error);
+        return { ok: false, reason };
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+/**
+ * Best-effort extraction of an HTTP status code from an Octokit error.
+ * Returns `undefined` when the error does not carry a numeric `status`.
+ */
+function extractHttpStatus(error) {
+    if (error && typeof error === 'object' && 'status' in error) {
+        const status = error.status;
+        if (typeof status === 'number') {
+            return status;
+        }
+    }
+    return undefined;
+}
+// ---------------------------------------------------------------------------
+// Issue #955 — required-label presence gate
+// ---------------------------------------------------------------------------
+/** Cataloged reason code emitted when a required label is absent. */
+exports.REASON_CODE_REQUIRED_LABELS_MISSING = 'REQUIRED_LABELS_MISSING';
+/** Max number of labels accepted by `required_labels`. */
+exports.REQUIRED_LABELS_MAX_COUNT = 20;
+/** Max length of one label name (GitHub's own label-name limit). */
+exports.REQUIRED_LABELS_MAX_LENGTH = 50;
+/** Stable code for a malformed `required_labels` input. */
+exports.REQUIRED_LABELS_INVALID_CODE = 'required_labels_invalid';
+/**
+ * Parse the comma/newline-separated `required_labels` input.
+ *
+ * Empty input disables the gate (returns `[]`). Entries are trimmed and
+ * de-duplicated case-insensitively. More than {@link REQUIRED_LABELS_MAX_COUNT}
+ * entries, or an entry longer than {@link REQUIRED_LABELS_MAX_LENGTH}, throws a
+ * {@link PreflightError} with reason code `required_labels_invalid`.
+ */
+function parseRequiredLabels(raw) {
+    if (raw === undefined || raw === null)
+        return [];
+    const seen = new Set();
+    const labels = [];
+    for (const part of String(raw).split(/[,\n]/)) {
+        const label = part.trim();
+        if (label === '')
+            continue;
+        if (label.length > exports.REQUIRED_LABELS_MAX_LENGTH) {
+            throw new PreflightError(`required_labels: label "${label.slice(0, 20)}…" exceeds ${exports.REQUIRED_LABELS_MAX_LENGTH} characters.`, 400, exports.REQUIRED_LABELS_INVALID_CODE);
+        }
+        const key = label.toLowerCase();
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        labels.push(label);
+    }
+    if (labels.length > exports.REQUIRED_LABELS_MAX_COUNT) {
+        throw new PreflightError(`required_labels: ${labels.length} labels given; at most ${exports.REQUIRED_LABELS_MAX_COUNT} are allowed.`, 400, exports.REQUIRED_LABELS_INVALID_CODE);
+    }
+    return labels;
+}
+function extractEventLabels(payload) {
+    if (!payload)
+        return [];
+    const subject = payload.pull_request ??
+        payload.issue;
+    const raw = subject?.labels;
+    if (!Array.isArray(raw))
+        return [];
+    const names = [];
+    for (const entry of raw) {
+        if (typeof entry === 'string')
+            names.push(entry);
+        else if (entry && typeof entry === 'object' && typeof entry.name === 'string') {
+            names.push(entry.name);
+        }
+    }
+    return names;
+}
+/**
+ * Evaluate the required-label gate against the event payload. Matching is
+ * case-insensitive (GitHub label names are case-insensitive). An event with no
+ * issue/PR (or no labels) is treated as having no labels, so every required
+ * label is missing and the run skips.
+ */
+function evaluateRequiredLabels(required, payload) {
+    if (required.length === 0) {
+        return { shouldSkip: false, missing: [], message: 'required_labels gate disabled.' };
+    }
+    const present = new Set(extractEventLabels(payload).map((l) => l.toLowerCase()));
+    const missing = required.filter((l) => !present.has(l.toLowerCase()));
+    if (missing.length === 0) {
+        return { shouldSkip: false, missing: [], message: 'All required_labels are present.' };
+    }
+    return {
+        shouldSkip: true,
+        missing,
+        reasonCode: exports.REASON_CODE_REQUIRED_LABELS_MISSING,
+        message: `[TrustBridge] Skipping Horizon checks: required label(s) missing: ${missing.join(', ')} ` +
+            `(reason_code: ${exports.REASON_CODE_REQUIRED_LABELS_MISSING}).`,
+    };
 }
 
 
@@ -63510,6 +64400,135 @@ function emitTraceSummary() {
     catch {
         // Never throw from observability.
     }
+}
+
+
+/***/ }),
+
+/***/ 86233:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.REASON_CODE_ALIASES = exports.WEBHOOK_DELIVERY_REASON_CODES = exports.ASSET_REASON_CODES = exports.BATCH_ONLY_REASON_CODES = exports.REASON_CODES = void 0;
+exports.effectiveReasonCode = effectiveReasonCode;
+exports.deprecatedReasonCodesFor = deprecatedReasonCodesFor;
+exports.validateReasonCodeAliases = validateReasonCodeAliases;
+exports.isReasonCode = isReasonCode;
+exports.assertExhaustiveReasonCode = assertExhaustiveReasonCode;
+/**
+ * Frozen catalog of every `reason_code` the Action's per-account validation
+ * path (src/checks.ts) can emit on `ValidationResult.reasonCode`.
+ *
+ * This is the TypeScript mirror of the public API surface documented at
+ * schemas/reason-codes.json (the JSON catalog consumed by dashboards and
+ * CI drift checks — see docs/USAGE.md#reason-code-reference). Keeping a
+ * compile-time union here means a new check branch that returns a string
+ * not in this list fails `tsc` immediately, instead of silently reaching
+ * downstream consumers as an undocumented code.
+ *
+ * `__tests__/reason-codes.test.ts` asserts `REASON_CODES` and the JSON
+ * catalog list the exact same codes, so the two sources of truth cannot
+ * drift apart.
+ */
+exports.REASON_CODES = [
+    'SUCCESS',
+    'TRUSTLINE_MISSING',
+    'RESERVE_TOO_LOW',
+    'TRUSTLINE_LIMIT_TOO_LOW',
+    'ACCOUNT_NOT_FUNDED',
+    'HORIZON_TIMEOUT',
+    'HORIZON_ERROR',
+    'TLS_ERROR',
+    'FAILED',
+    'TRUSTLINE_UNAUTHORIZED',
+    'CLAWBACK_BLOCKED',
+    'CIRCUIT_OPEN',
+    'RATE_BUDGET_EXHAUSTED',
+    'HOME_DOMAIN_MISMATCH',
+    'HOME_DOMAIN_MISSING',
+    'MILESTONE_GATE_SKIPPED',
+    'REQUIRED_LABELS_MISSING',
+    'MAINTAINER_SKIPPED',
+    'SAC_ISSUER_NOT_VERIFIABLE',
+    'HORIZON_WAIT_BUDGET_EXHAUSTED',
+    'EXTRA_TRUSTLINE_MISSING',
+];
+const REASON_CODE_SET = new Set(exports.REASON_CODES);
+/** Codes that only appear on batch rows (`batch_summary_json`), never on the run-level `reason_code`. */
+exports.BATCH_ONLY_REASON_CODES = [
+    'INVALID_ADDRESS',
+    'FATAL_AUTH',
+    'FATAL_CONFIG',
+    'FATAL_CANCELLED',
+    'CLAWBACK_STRICT_MODE',
+    'CANCELLED',
+    'ADDRESS_TIMEOUT',
+];
+/** Subset of the catalog emitted per asset in webhook payloads. */
+exports.ASSET_REASON_CODES = ['SUCCESS', 'TRUSTLINE_MISSING', 'CLAWBACK_BLOCKED'];
+/** Codes reported on `WebhookDeliveryResult.reason`. */
+exports.WEBHOOK_DELIVERY_REASON_CODES = [
+    'WEBHOOK_PAYLOAD_TRUNCATED',
+    'WEBHOOK_SIZE_LIMIT_EXCEEDED',
+];
+/** Run-level code when a check did not set one explicitly. */
+function effectiveReasonCode(result) {
+    return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+}
+/** Active renames. Keep in sync with the calendar in docs/BREAKING_CHANGES.md. */
+exports.REASON_CODE_ALIASES = [];
+const utcDay = (now) => now.toISOString().slice(0, 10);
+/** Deprecated names to emit next to `code` today. Empty outside the window. */
+function deprecatedReasonCodesFor(code, now = new Date(), aliases = exports.REASON_CODE_ALIASES) {
+    const day = utcDay(now);
+    return aliases
+        .filter((a) => a.canonical === code && a.deprecatedOn <= day && day <= a.removeAfter)
+        .map((a) => a.deprecated);
+}
+function isCalendarDay(value) {
+    const date = new Date(`${value}T00:00:00Z`);
+    return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(date.getTime()) && utcDay(date) === value;
+}
+/** Problems with the alias registry, including expired windows. CI requires none. */
+function validateReasonCodeAliases(aliases = exports.REASON_CODE_ALIASES, now = new Date()) {
+    const errors = [];
+    const seen = new Set();
+    for (const a of aliases) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(a.deprecated))
+            errors.push(`${a.deprecated}: malformed deprecated code`);
+        if (seen.has(a.deprecated))
+            errors.push(`${a.deprecated}: duplicate alias`);
+        seen.add(a.deprecated);
+        if (isReasonCode(a.deprecated))
+            errors.push(`${a.deprecated}: still in REASON_CODES`);
+        if (!isReasonCode(a.canonical))
+            errors.push(`${a.deprecated}: unknown canonical code ${String(a.canonical)}`);
+        if (!isCalendarDay(a.deprecatedOn) || !isCalendarDay(a.removeAfter) || a.removeAfter < a.deprecatedOn) {
+            errors.push(`${a.deprecated}: invalid window ${a.deprecatedOn}..${a.removeAfter}`);
+        }
+        else if (utcDay(now) > a.removeAfter) {
+            errors.push(`${a.deprecated}: window expired on ${a.removeAfter}; remove the alias`);
+        }
+    }
+    return errors;
+}
+/** Type guard: narrows an arbitrary string to `ReasonCode` when it is cataloged. */
+function isReasonCode(value) {
+    return REASON_CODE_SET.has(value);
+}
+/**
+ * Exhaustiveness guard for `switch`/`if`-chains over `ReasonCode`.
+ *
+ * Call this in the `default`/final branch of a chain that is meant to
+ * handle every cataloged code. If `REASON_CODES` gains a new entry and the
+ * chain is not updated, the argument type at that call site stops being
+ * `never` and `tsc` fails the build — see
+ * `__tests__/reason-codes.test.ts` for the compiled proof.
+ */
+function assertExhaustiveReasonCode(code) {
+    throw new Error(`Unhandled reason_code: ${String(code)}`);
 }
 
 
@@ -64671,6 +65690,7 @@ exports.serializeSarif = serializeSarif;
 exports.getSarifSchemaErrors = getSarifSchemaErrors;
 exports.validateSarifSchema = validateSarifSchema;
 exports.writeSarifFile = writeSarifFile;
+const reasonCodes_1 = __nccwpck_require__(86233);
 const crypto = __importStar(__nccwpck_require__(76982));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
@@ -64709,7 +65729,7 @@ function computeSarifFingerprint(inputs) {
  * `FAILED` for a failing one.
  */
 function sarifRunReasonCode(result) {
-    return result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+    return (0, reasonCodes_1.effectiveReasonCode)(result);
 }
 /** Build the `partialFingerprints` property bag for one result. */
 function sarifPartialFingerprints(inputs) {
@@ -65750,7 +66770,8 @@ function validateAgainstJsonSchema(value, schema) {
  * comment notice names the expiry — so a snooze is never silent.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SNOOZE_SKIPPED_COUNTER = exports.SNOOZE_AUDIT_CHECK = exports.SNOOZE_AUDIT_EVENT = exports.SNOOZE_REACTIONS = exports.normalizeSnoozeTimestamp = exports.SNOOZE_REASON_CODE = exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.SNOOZE_SKIPPED_COUNTER = exports.SNOOZE_AUDIT_CHECK = exports.SNOOZE_AUDIT_EVENT = exports.SNOOZE_REACTIONS = exports.normalizeSnoozeTimestamp = exports.SNOOZE_REASON_CODE = exports.SNOOZE_CAPPED_REASON_CODE = exports.MAX_SNOOZE_WINDOW_OVERRIDE_MS = exports.MAX_SNOOZE_WINDOW_MS = exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.capSnoozeWindow = capSnoozeWindow;
 exports.normalizeToUtc = normalizeToUtc;
 exports.getTimezoneOffsetMs = getTimezoneOffsetMs;
 exports.validateSnoozeTimestamp = validateSnoozeTimestamp;
@@ -65773,6 +66794,32 @@ const logger_1 = __nccwpck_require__(86999);
  * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms|iso-utc}(?:,timezone={tz})? -->
  */
 exports.SNOOZE_MARKER_PATTERN = /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=([^\s,>]+)(?:,timezone=([^\s>]+))? -->/;
+/**
+ * Maximum snooze window (Issue #962): 7 days. Unbounded snoozes would let a
+ * failing Wave gate stay skipped indefinitely, so any longer configured
+ * window is clamped unless a maintainer explicitly opts out.
+ */
+exports.MAX_SNOOZE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Hard ceiling even with the maintainer override: 30 days. */
+exports.MAX_SNOOZE_WINDOW_OVERRIDE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Stable reason code logged when a snooze window is clamped. */
+exports.SNOOZE_CAPPED_REASON_CODE = 'snooze_window_capped';
+/**
+ * Clamp a snooze window to the configured cap (Issue #962).
+ *
+ * - Non-finite or negative windows become 0 (snooze disabled).
+ * - Windows above {@link MAX_SNOOZE_WINDOW_MS} are clamped, unless
+ *   `maintainerOverride` is set, in which case the ceiling is
+ *   {@link MAX_SNOOZE_WINDOW_OVERRIDE_MS}. The override never removes the cap.
+ */
+function capSnoozeWindow(windowMs, options = {}) {
+    if (!Number.isFinite(windowMs) || windowMs <= 0)
+        return { windowMs: 0, capped: false };
+    const cap = options.maintainerOverride ? exports.MAX_SNOOZE_WINDOW_OVERRIDE_MS : exports.MAX_SNOOZE_WINDOW_MS;
+    if (windowMs > cap)
+        return { windowMs: cap, capped: true, reasonCode: exports.SNOOZE_CAPPED_REASON_CODE };
+    return { windowMs: Math.floor(windowMs), capped: false };
+}
 /**
  * Stable reason_code emitted when validation is skipped because the issue is
  * within an active snooze window (Issue #754).
@@ -66222,6 +67269,7 @@ function formatSnoozeDuration(ms) {
  *   outcome is recorded as `skipped`.
  */
 function enforceSnoozeWindow(currentPassed, lastMarker, reactions, snoozeWindowMs, options = {}) {
+    snoozeWindowMs = capSnoozeWindow(snoozeWindowMs, { maintainerOverride: options.maintainerOverride }).windowMs;
     const nowMs = options.now !== undefined ? (normalizeToUtc(options.now) ?? Date.now()) : Date.now();
     const state = evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, nowMs);
     if (options.forceComment || !state.isSnoozed) {
@@ -66795,6 +67843,7 @@ exports.formatCircuitOpenSummary = formatCircuitOpenSummary;
 exports.isClawbackStrictFailure = isClawbackStrictFailure;
 exports.countClawbackStrictFailures = countClawbackStrictFailures;
 exports.aggregateDigest = aggregateDigest;
+exports.stripEmoji = stripEmoji;
 exports.formatDigestComment = formatDigestComment;
 exports.computeDelta = computeDelta;
 exports.formatDeltaSection = formatDeltaSection;
@@ -66956,7 +68005,34 @@ function aggregateDigest(entries, options = {}) {
  *   truncated.
  * - Includes a machine-readable gate summary (ready/blocked counts).
  */
-function formatDigestComment(report) {
+/**
+ * Emoji-free mode (Issue #961): enterprise log drains that strip or mangle
+ * non-ASCII symbols get stable ASCII tokens instead.
+ */
+const EMOJI_REPLACEMENTS = [
+    [/✅/gu, '[PASS]'],
+    [/❌/gu, '[FAIL]'],
+    [/⚠️?/gu, '[WARN]'],
+    [/⏸️?/gu, '[PAUSED]'],
+    [/✓/gu, '[OK]'],
+    [/💤/gu, '[SNOOZED]'],
+];
+/** Replace known status emoji with ASCII tokens and drop any remaining pictographs. */
+function stripEmoji(markdown) {
+    if (typeof markdown !== 'string')
+        throw new Error('summary: stripEmoji expects a string');
+    let out = markdown;
+    for (const [re, token] of EMOJI_REPLACEMENTS)
+        out = out.replace(re, token);
+    return out
+        .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '')
+        .replace(/[ \t]{2,}/g, ' ');
+}
+function formatDigestComment(report, options = {}) {
+    const body = formatDigestCommentRaw(report);
+    return options.emojiFree ? stripEmoji(body) : body;
+}
+function formatDigestCommentRaw(report) {
     const clawbackStrictFailureCount = report.clawbackStrictFailureCount ?? 0;
     const lines = [
         '<!-- trustbridge-action:digest -->',
@@ -67166,6 +68242,10 @@ function guardJobSummaryMarkdown(markdown, options = {}) {
  * removed before failure-code detail when the configured budget is tight.
  */
 function formatJobSummaryMarkdown(report, options = {}) {
+    const result = formatJobSummaryMarkdownRaw(report, options);
+    return options.emojiFree ? { ...result, markdown: stripEmoji(result.markdown) } : result;
+}
+function formatJobSummaryMarkdownRaw(report, options = {}) {
     if (!report || typeof report !== 'object') {
         throw new Error('summary: Job Summary report must be an object');
     }
@@ -67586,7 +68666,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.STELLAR_TOML_MAX_REDIRECTS = exports.STELLAR_TOML_ALLOWED_CONTENT_TYPES = exports.MAX_STELLAR_TOML_BYTES = exports.MAX_STELLAR_TOML_CACHE_TTL_MS = exports.DEFAULT_STELLAR_TOML_CACHE_TTL_MS = void 0;
+exports.TOML_HTTPS_REQUIRED_REASON = exports.STELLAR_TOML_MAX_REDIRECTS = exports.STELLAR_TOML_ALLOWED_CONTENT_TYPES = exports.MAX_STELLAR_TOML_BYTES = exports.MAX_STELLAR_TOML_CACHE_TTL_MS = exports.DEFAULT_STELLAR_TOML_CACHE_TTL_MS = void 0;
 exports.parseHashPin = parseHashPin;
 exports.computeHash = computeHash;
 exports.validateTomlHash = validateTomlHash;
@@ -67595,6 +68675,7 @@ exports.normalizeTomlRequestUrl = normalizeTomlRequestUrl;
 exports.buildTomlCacheKey = buildTomlCacheKey;
 exports.buildTomlFinalHostAliasKey = buildTomlFinalHostAliasKey;
 exports.isAllowedTomlContentType = isAllowedTomlContentType;
+exports.enforceTomlTransport = enforceTomlTransport;
 exports.fetchTomlWithCache = fetchTomlWithCache;
 exports.runStellarTomlCheck = runStellarTomlCheck;
 const crypto = __importStar(__nccwpck_require__(76982));
@@ -67735,6 +68816,42 @@ function clampTomlMaxBytes(bytes) {
         return exports.MAX_STELLAR_TOML_BYTES;
     return Math.min(Math.floor(bytes), exports.MAX_STELLAR_TOML_BYTES);
 }
+/** Stable reason code when a plain-HTTP home_domain is rejected (Issue #960). */
+exports.TOML_HTTPS_REQUIRED_REASON = 'toml_https_required';
+function isPubnet(network) {
+    const n = (network ?? 'public').trim().toLowerCase();
+    return n === '' || n === 'public' || n === 'pubnet' || n === 'mainnet';
+}
+/**
+ * Enforce HTTPS-only stellar.toml transport (Issue #960).
+ *
+ * - A bare domain or `https://` prefix is always accepted.
+ * - A `http://` prefix (or any non-HTTPS scheme) is rejected on pubnet with
+ *   reason code `toml_https_required`, regardless of overrides.
+ * - On testnet/futurenet, `allowInsecureTestnet: true` tolerates a `http://`
+ *   prefix: the domain is upgraded and still fetched over HTTPS through the
+ *   SSRF gate (which never performs plain-HTTP requests).
+ */
+function enforceTomlTransport(rawDomain, options = {}) {
+    const trimmed = rawDomain.trim();
+    const schemeMatch = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+    if (!schemeMatch)
+        return { ok: true, domain: trimmed, upgraded: false };
+    const scheme = schemeMatch[1].toLowerCase();
+    const rest = trimmed.slice(schemeMatch[0].length).replace(/\/.*$/, '');
+    if (scheme === 'https')
+        return { ok: true, domain: rest, upgraded: false };
+    if (scheme === 'http' && !isPubnet(options.network) && options.allowInsecureTestnet) {
+        return { ok: true, domain: rest, upgraded: true };
+    }
+    const where = isPubnet(options.network) ? 'pubnet' : 'this network';
+    return {
+        ok: false,
+        reasonCode: exports.TOML_HTTPS_REQUIRED_REASON,
+        error: `stellar.toml must be served over HTTPS on ${where} (reason_code: ${exports.TOML_HTTPS_REQUIRED_REASON}); ` +
+            `got scheme "${scheme}". See docs/SEP0001_HOME_DOMAIN.md.`,
+    };
+}
 function clampTomlTtl(ttl) {
     if (ttl === undefined || !Number.isFinite(ttl))
         return exports.DEFAULT_STELLAR_TOML_CACHE_TTL_MS;
@@ -67763,7 +68880,17 @@ function clampTomlTtl(ttl) {
 async function fetchTomlWithCache(domain, options = {}) {
     const startTime = Date.now();
     const cacheTtlMs = clampTomlTtl(options.cacheTtlMs);
-    const domainNorm = domain.trim().toLowerCase();
+    const transport = enforceTomlTransport(domain, options);
+    if (!transport.ok) {
+        logger_1.logger.warn(transport.error, { component: 'toml' });
+        return { ok: false, error: transport.error, cachedAt: startTime };
+    }
+    if (transport.upgraded) {
+        logger_1.logger.warn(`Insecure http:// home_domain upgraded to HTTPS on ${options.network} (stellar_toml_allow_insecure_testnet)`, {
+            component: 'toml',
+        });
+    }
+    const domainNorm = transport.domain.trim().toLowerCase();
     if (!domainNorm)
         return { ok: false, error: 'Domain is empty', cachedAt: startTime };
     if (options.hashPin && !parseHashPin(options.hashPin)) {

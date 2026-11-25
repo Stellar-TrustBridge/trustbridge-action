@@ -73,6 +73,32 @@ export interface SnoozeState {
     snoozeExpired: boolean;
 }
 /**
+ * Maximum snooze window (Issue #962): 7 days. Unbounded snoozes would let a
+ * failing Wave gate stay skipped indefinitely, so any longer configured
+ * window is clamped unless a maintainer explicitly opts out.
+ */
+export declare const MAX_SNOOZE_WINDOW_MS: number;
+/** Hard ceiling even with the maintainer override: 30 days. */
+export declare const MAX_SNOOZE_WINDOW_OVERRIDE_MS: number;
+/** Stable reason code logged when a snooze window is clamped. */
+export declare const SNOOZE_CAPPED_REASON_CODE: "snooze_window_capped";
+export interface SnoozeCapResult {
+    windowMs: number;
+    capped: boolean;
+    reasonCode?: typeof SNOOZE_CAPPED_REASON_CODE;
+}
+/**
+ * Clamp a snooze window to the configured cap (Issue #962).
+ *
+ * - Non-finite or negative windows become 0 (snooze disabled).
+ * - Windows above {@link MAX_SNOOZE_WINDOW_MS} are clamped, unless
+ *   `maintainerOverride` is set, in which case the ceiling is
+ *   {@link MAX_SNOOZE_WINDOW_OVERRIDE_MS}. The override never removes the cap.
+ */
+export declare function capSnoozeWindow(windowMs: number, options?: {
+    maintainerOverride?: boolean;
+}): SnoozeCapResult;
+/**
  * Stable reason_code emitted when validation is skipped because the issue is
  * within an active snooze window (Issue #754).
  */
@@ -261,4 +287,5 @@ export declare function enforceSnoozeWindow(currentPassed: boolean, lastMarker: 
     audit?: boolean;
     metrics?: MetricsCollector;
     issueNumber?: number;
+    maintainerOverride?: boolean;
 }): SnoozeEnforcement;

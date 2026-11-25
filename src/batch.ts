@@ -10,10 +10,11 @@ import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureRes
 import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
 import { RateBudgetExhaustedError } from './resilience';
+import type { BatchReasonCode } from './reasonCodes';
+import { AdaptiveConcurrency, runWithAddressDeadline } from './checks-run';
 import { globalMetrics, globalCheckLatencyHistogram, type CheckLatencyOutcome } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
-import { runWithAddressDeadline } from './checks-run';
 
 export { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING };
 
@@ -126,7 +127,7 @@ export const BATCH_REASON_CODES = {
    * fails; remaining addresses keep being validated.
    */
   addressTimeout: 'ADDRESS_TIMEOUT',
-} as const;
+} as const satisfies Record<string, BatchReasonCode>;
 
 /** A single asset that hit `clawback_strict_mode` for one address. */
 export interface BatchAssetFailure {
@@ -639,9 +640,9 @@ function deriveBatchReasonCode(
     trustlineExists?: boolean;
     xlmReserveMet?: boolean;
     /** HOME_DOMAIN_* code from a strict-mode home domain failure (Issue #708). */
-    homeDomainReasonCode?: string;
+    homeDomainReasonCode?: BatchReasonCode;
   },
-): string {
+): BatchReasonCode {
   if (valid) return BATCH_REASON_CODES.success;
   if (options.invalidAddress) return BATCH_REASON_CODES.invalidAddress;
   if (options.accountNotFunded) return BATCH_REASON_CODES.accountNotFunded;
@@ -761,6 +762,8 @@ export async function runBatchValidation(
   const workerCount = Math.min(maxConcurrency, addresses.length);
   let nextIndex = 0;
   let stopDispatch = false;
+  // Issue #946: throttle signals lower the number of usable worker slots.
+  const limiter = new AdaptiveConcurrency(workerCount);
 
   async function worker(): Promise<void> {
     let dispatchedBefore = false;
@@ -769,8 +772,14 @@ export async function runBatchValidation(
         stopDispatch = true;
         return;
       }
+      if (nextIndex >= addresses.length) return;
+      if (!limiter.tryAcquire()) {
+        await limiter.waitForRelease();
+        continue;
+      }
       const i = nextIndex;
-      if (i >= addresses.length) return;
+      const epoch = limiter.epoch;
+      let throttled = false;
       nextIndex = i + 1;
 
       // Issue #852: every address beyond the first wave had to wait for a
@@ -786,50 +795,62 @@ export async function runBatchValidation(
       }
       dispatchedBefore = true;
 
-      // Issue #928: each address gets its own deadline; the per-address
-      // signal also follows the batch-level signal so cancellation wins.
-      // Without a deadline the original call path is used unchanged.
-      const deadlineOutcome = !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
-        ? {
-            status: 'completed' as const,
-            value: await validateOneAddress(
-              addresses[i],
-              config,
-              horizonUrl,
-              fetchOptions,
-              extraAssets,
-              issuerAccount,
-            ),
-          }
-        : await runWithAddressDeadline(
-        (addressSignal) =>
-          validateOneAddress(
-            addresses[i],
-            config,
-            horizonUrl,
-            { ...fetchOptions, signal: addressSignal },
-            extraAssets,
-            issuerAccount,
-          ),
-        options.perAddressTimeoutMs,
-        fetchOptions.signal,
-      );
-      if (deadlineOutcome.status === 'cancelled') {
-        // Leave the row unset: the fill loop below marks it CANCELLED.
-        stopDispatch = true;
-        return;
+      // Issue #928 + #946: per-address deadline with AdaptiveConcurrency throttle feedback.
+      const throttledFetchOptions: FetchAccountOptions = {
+        ...fetchOptions,
+        onThrottle: () => {
+          throttled = true;
+          limiter.onThrottle(epoch);
+          fetchOptions.onThrottle?.();
+        },
+      };
+      let outcome: AddressOutcome | undefined;
+      try {
+        const deadlineOutcome =
+          !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+            ? {
+                status: 'completed' as const,
+                value: await validateOneAddress(
+                  addresses[i],
+                  config,
+                  horizonUrl,
+                  throttledFetchOptions,
+                  extraAssets,
+                  issuerAccount,
+                ),
+              }
+            : await runWithAddressDeadline(
+                (addressSignal) =>
+                  validateOneAddress(
+                    addresses[i],
+                    config,
+                    horizonUrl,
+                    { ...throttledFetchOptions, signal: addressSignal },
+                    extraAssets,
+                    issuerAccount,
+                  ),
+                options.perAddressTimeoutMs,
+                fetchOptions.signal,
+              );
+        if (deadlineOutcome.status === 'cancelled') {
+          stopDispatch = true;
+          return;
+        }
+        if (deadlineOutcome.status === 'timed_out') {
+          globalMetrics.incrementCounter('batch_fail_address_timeout');
+          globalMetrics.incrementCounter('batch_address_failed');
+          outcome = {
+            budgetExhausted: false,
+            result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+          };
+        } else {
+          outcome = deadlineOutcome.value;
+        }
+      } finally {
+        limiter.release();
       }
-      let outcome: AddressOutcome;
-      if (deadlineOutcome.status === 'timed_out') {
-        globalMetrics.incrementCounter('batch_fail_address_timeout');
-        globalMetrics.incrementCounter('batch_address_failed');
-        outcome = {
-          budgetExhausted: false,
-          result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
-        };
-      } else {
-        outcome = deadlineOutcome.value;
-      }
+      if (!outcome) return;
+      if (!throttled && outcome.result.accountFunded) limiter.onSuccess(epoch);
       results[i] = outcome.result;
 
       if (outcome.budgetExhausted || signal?.aborted) {

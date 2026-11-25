@@ -327,6 +327,8 @@ export interface FetchAccountOptions {
   negativeCacheTtlMs?: number;
   cache?: SimpleCache;
   fetchFn?: FetchLike;
+  /** Called on every Horizon 429, or any error response with Retry-After (Issue #946). */
+  onThrottle?: () => void;
   /**
    * Optional AbortSignal from a parent controller (e.g. job cancellation).
    * When the signal fires, in-flight and pending requests are aborted
@@ -577,6 +579,7 @@ async function fetchAccountOnce(
   rateBudgetTracker?: RateBudgetTracker,
   circuitBreaker?: CircuitBreaker,
   retryBaseDelayMs: number = DEFAULT_RETRY_BASE_DELAY_MS,
+  onThrottle?: () => void,
 ): Promise<FetchOnceResult> {
   const externalSignal = parentSignal;
   const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
@@ -671,6 +674,9 @@ async function fetchAccountOnce(
 
       if (!response.ok) {
         const retryable = isRetryableStatus(response.status);
+        if (response.status === 429 || (retryable && parseRetryAfterMs(response) !== null)) {
+          onThrottle?.();
+        }
         // Issue #920: feed a server-requested Retry-After into the circuit
         // breaker so, if the circuit opens, it cannot go half-open (and
         // half-open probes are not admitted) before Horizon's deadline.
@@ -1151,6 +1157,7 @@ export async function fetchAccount(
       rateBudgetTracker,
       circuitBreaker,
       retryBaseDelayMs,
+      options.onThrottle,
     );
 
     result.account._servedByUrl = normalizedHorizonUrl;
@@ -1254,6 +1261,7 @@ export async function fetchAccount(
       rateBudgetTracker,
       circuitBreaker,
       retryBaseDelayMs,
+      options.onThrottle,
     );
 
     fallbackResult.account._servedByUrl = normalizedFallbackUrl;

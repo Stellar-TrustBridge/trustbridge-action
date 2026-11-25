@@ -64,7 +64,8 @@ import * as crypto from 'crypto';
 import * as core from '@actions/core';
 import { logger, redactStellarAddress, redactHorizonUrl, redactString } from './logger';
 import type { ValidationResult } from './checks';
-import type { AssetReasonCode, AssetReasonEvaluation } from './assets';
+import type { AssetReasonEvaluation } from './assets';
+import { ASSET_REASON_CODES, WEBHOOK_DELIVERY_REASON_CODES, deprecatedReasonCodesFor, type AssetReasonCode } from './reasonCodes';
 import { traceWebhookDeliver } from './tracing';
 import { truncateJsonArray } from './outputs';
 
@@ -201,6 +202,8 @@ export interface WebhookAssetEntry {
   trustline_exists: boolean;
   clawback_enabled: boolean;
   reason_code: AssetReasonCode;
+  /** Old names of `reason_code`, present only during a rename window (Issue #945). */
+  deprecated_reason_codes?: string[];
 }
 
 export interface WebhookPayload {
@@ -427,14 +430,18 @@ export function buildWebhookPayload(
   };
 
   if (assets && assets.length > 0) {
-    payload.assets = assets.slice(0, WEBHOOK_MAX_ASSETS).map((a) => ({
+    payload.assets = assets.slice(0, WEBHOOK_MAX_ASSETS).map((a) => {
+      const deprecated = deprecatedReasonCodesFor(a.reasonCode);
+      return {
       asset_code: a.assetCode,
       asset_issuer: redactStellarAddress(a.assetIssuer),
       primary: a.primary,
       trustline_exists: a.trustlineExists,
       clawback_enabled: a.clawbackEnabled,
       reason_code: a.reasonCode,
-    }));
+      ...(deprecated.length > 0 ? { deprecated_reason_codes: deprecated } : {}),
+      };
+    });
   }
 
   if (snoozeExpired) {
@@ -478,10 +485,7 @@ export const WEBHOOK_PAYLOAD_TRUNCATED = 'WEBHOOK_PAYLOAD_TRUNCATED' as const;
 /** Reason code: the body could not be reduced below the cap and was not sent (Issue #894). */
 export const WEBHOOK_SIZE_LIMIT_EXCEEDED = 'WEBHOOK_SIZE_LIMIT_EXCEEDED' as const;
 /** All webhook size-cap reason codes (Issue #894). */
-export const WEBHOOK_SIZE_REASON_CODES = [
-  WEBHOOK_PAYLOAD_TRUNCATED,
-  WEBHOOK_SIZE_LIMIT_EXCEEDED,
-] as const;
+export const WEBHOOK_SIZE_REASON_CODES = WEBHOOK_DELIVERY_REASON_CODES;
 export type WebhookSizeReasonCode = (typeof WEBHOOK_SIZE_REASON_CODES)[number];
 
 export interface WebhookSizeGuardResult {
@@ -634,7 +638,8 @@ export const WEBHOOK_ASSET_REQUIRED_FIELDS = [
   'clawback_enabled',
   'reason_code',
 ] as const;
-export const WEBHOOK_ASSET_REASON_CODES = ['SUCCESS', 'TRUSTLINE_MISSING', 'CLAWBACK_BLOCKED'] as const;
+export const WEBHOOK_ASSET_OPTIONAL_FIELDS = ['deprecated_reason_codes'] as const;
+export const WEBHOOK_ASSET_REASON_CODES = ASSET_REASON_CODES;
 export const WEBHOOK_REPOSITORY_PATTERN = '^[^/]+/[^/]+$';
 export const WEBHOOK_STELLAR_ADDRESS_PATTERN = '^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$';
 
@@ -759,7 +764,15 @@ function validateAssetEntries(assets: unknown, errors: string[]): void {
       errors.push(`${at}: must be an object`);
       return;
     }
-    checkObjectKeys(asset, WEBHOOK_ASSET_REQUIRED_FIELDS, at, errors);
+    checkObjectKeys(asset, WEBHOOK_ASSET_REQUIRED_FIELDS, at, errors, WEBHOOK_ASSET_OPTIONAL_FIELDS);
+    if (
+      'deprecated_reason_codes' in asset &&
+      !(Array.isArray(asset.deprecated_reason_codes) &&
+        asset.deprecated_reason_codes.length > 0 &&
+        asset.deprecated_reason_codes.every((c) => typeof c === 'string' && /^[A-Z][A-Z0-9_]*$/.test(c)))
+    ) {
+      errors.push(`${at}.deprecated_reason_codes: must be a non-empty array of codes`);
+    }
     if ('asset_code' in asset && typeof asset.asset_code !== 'string') errors.push(`${at}.asset_code: must be a string`);
     if ('asset_issuer' in asset && (typeof asset.asset_issuer !== 'string' || !addressPattern.test(asset.asset_issuer))) {
       errors.push(`${at}.asset_issuer: must be a redacted address (first-4...last-4)`);

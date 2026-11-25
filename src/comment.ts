@@ -1,3 +1,4 @@
+import { effectiveReasonCode } from './reasonCodes';
 import * as core from "@actions/core";
 import * as fs from "fs";
 import * as path from "path";
@@ -399,10 +400,12 @@ export function formatCommentBody(
     // `ready` / `reason_code` action outputs expose. Surfacing it here means a
     // dashboard triager can read the reason code straight from the comment
     // instead of digging through the Actions log.
-    // Issue #921: an empty or whitespace-only reason code falls back to the
-    // verdict default instead of rendering an empty code span (`??` alone
-    // would keep the empty string).
-    const reasonCode = result.reasonCode?.trim() || (result.valid ? 'SUCCESS' : 'FAILED');
+    // Issue #921: empty/whitespace reason codes fall back via effectiveReasonCode.
+    const trimmedReason = result.reasonCode?.trim();
+    const reasonCode = effectiveReasonCode({
+      valid: result.valid,
+      reasonCode: trimmedReason ? (trimmedReason as typeof result.reasonCode) : undefined,
+    });
     lines.push(
       "",
       `### ${strings.validationGateHeading}`,
