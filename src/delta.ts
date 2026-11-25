@@ -28,6 +28,78 @@ import { redactStellarAddress, redactString } from './logger';
 export interface CheckSnapshot {
   label: string;
   passed: boolean;
+  /**
+   * Any other per-check fields (e.g. `detail`, `checkedAt`). Compared for
+   * {@link ValidationDelta.changed} unless listed in the ignore-list.
+   */
+  [field: string]: unknown;
+}
+
+/**
+ * Volatile per-check fields that change on every run without meaning
+ * anything changed. Ignored by default when computing the delta.
+ */
+export const DEFAULT_DELTA_IGNORED_FIELDS: readonly string[] = [
+  'timestamp',
+  'checkedAt',
+  'fetchedAt',
+  'durationMs',
+  'latencyMs',
+  'elapsedMs',
+  'requestId',
+  'traceId',
+];
+
+/** ISO-8601 timestamps embedded in free-text fields such as `detail`. */
+const ISO_TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
+export interface ComputeValidationDeltaOptions {
+  /**
+   * Extra per-check field names to ignore, merged with
+   * {@link DEFAULT_DELTA_IGNORED_FIELDS}. `label` and `passed` can never be
+   * ignored: status transitions are always reported.
+   */
+  ignoreFields?: readonly string[];
+}
+
+/**
+ * Parse a comma/newline separated ignore-list (e.g. from an action input).
+ * Blank entries are dropped; names must be identifiers, otherwise they are
+ * returned in `invalid` so the caller can fail with a stable message.
+ */
+export function parseDeltaIgnoreFields(raw: string | undefined): { fields: string[]; invalid: string[] } {
+  const fields: string[] = [];
+  const invalid: string[] = [];
+  for (const entry of (raw ?? '').split(/[,\n]/)) {
+    const name = entry.trim();
+    if (!name) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
+      if (!fields.includes(name)) fields.push(name);
+    } else {
+      invalid.push(name);
+    }
+  }
+  return { fields, invalid };
+}
+
+/**
+ * True when a non-volatile field present on *both* snapshots differs. Fields
+ * missing on either side are skipped: older artifacts persist only
+ * `label`/`passed`, and that absence is not a meaningful change.
+ */
+function fieldsChanged(
+  previous: CheckSnapshot,
+  current: CheckSnapshot,
+  ignored: ReadonlySet<string>,
+): boolean {
+  const normalize = (value: unknown): string =>
+    JSON.stringify(typeof value === 'string' ? value.replace(ISO_TIMESTAMP_RE, '<timestamp>') : value);
+  for (const key of Object.keys(current)) {
+    if (key === 'label' || key === 'passed' || ignored.has(key)) continue;
+    if (!(key in previous) || previous[key] === undefined || current[key] === undefined) continue;
+    if (normalize(previous[key]) !== normalize(current[key])) return true;
+  }
+  return false;
 }
 
 /**
@@ -60,6 +132,12 @@ export interface ValidationDelta {
   newlyPassed: string[];
   newlyFailed: string[];
   unchanged: string[];
+  /**
+   * Checks whose status did not change but whose non-volatile fields did
+   * (e.g. a different `detail`). Volatile fields from the ignore-list and
+   * embedded ISO timestamps never land here. Omitted when empty.
+   */
+  changed?: string[];
   improved: boolean;
   regressed: boolean;
 }
@@ -130,21 +208,26 @@ export function stripSensitiveFields<T>(value: T): T {
 export function computeValidationDelta(
   previous: { checks: CheckSnapshot[]; timestamp?: string } | null | undefined,
   current: { checks: CheckSnapshot[] },
+  options: ComputeValidationDeltaOptions = {},
 ): ValidationDelta | null {
   if (!previous || !Array.isArray(previous.checks) || previous.checks.length === 0) {
     return null;
   }
 
+  const ignored = new Set([...DEFAULT_DELTA_IGNORED_FIELDS, ...(options.ignoreFields ?? [])]);
   const previousByLabel = new Map<string, boolean>();
+  const previousChecks = new Map<string, CheckSnapshot>();
   for (const check of previous.checks) {
     if (check && typeof check.label === 'string') {
       previousByLabel.set(check.label, Boolean(check.passed));
+      previousChecks.set(check.label, check);
     }
   }
 
   const newlyPassed: string[] = [];
   const newlyFailed: string[] = [];
   const unchanged: string[] = [];
+  const changed: string[] = [];
 
   for (const check of current.checks) {
     const prior = previousByLabel.get(check.label);
@@ -156,6 +239,10 @@ export function computeValidationDelta(
     }
     if (prior === check.passed) {
       unchanged.push(check.label);
+      const prev = previousChecks.get(check.label);
+      if (prev && fieldsChanged(prev, check, ignored)) {
+        changed.push(check.label);
+      }
     } else if (check.passed && !prior) {
       newlyPassed.push(check.label);
     } else if (!check.passed && prior) {
@@ -168,6 +255,9 @@ export function computeValidationDelta(
     newlyPassed,
     newlyFailed,
     unchanged,
+    // Only present when something changed, keeping the shape stable for
+    // existing consumers of `validation.json`.
+    ...(changed.length > 0 ? { changed } : {}),
     improved: newlyPassed.length > 0,
     regressed: newlyFailed.length > 0,
   };
@@ -319,6 +409,10 @@ export function formatDeltaMarkdown(delta: ValidationDelta | null | undefined): 
     if (delta.newlyFailed.length > 0) {
       lines.push(`- ❌ **Newly failed:** ${delta.newlyFailed.join(', ')}`);
     }
+  }
+
+  if (delta.changed && delta.changed.length > 0) {
+    lines.push(`- ✏️ **Details changed:** ${delta.changed.join(', ')}`);
   }
 
   if (delta.unchanged.length > 0) {

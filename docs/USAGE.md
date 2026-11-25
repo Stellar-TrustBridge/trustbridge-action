@@ -4466,3 +4466,37 @@ labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
 applies only after the gate is open. Label-check failures should fail open and
 run validation, while an optional skip comment is best effort and must not
 block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).
+
+## Delta ignore-list for volatile fields (Issue #926)
+
+The delta section (`previous_validation_path`) compares each check's status, and also its other per-check fields, against the previous `validation.json`. Fields that change on every run are ignored so the comment only highlights meaningful changes:
+
+- **Default ignore-list** (`DEFAULT_DELTA_IGNORED_FIELDS` in `src/delta.ts`): `timestamp`, `checkedAt`, `fetchedAt`, `durationMs`, `latencyMs`, `elapsedMs`, `requestId`, `traceId`.
+- **Embedded ISO-8601 timestamps** in free-text fields such as `detail` are normalized before comparison, so `ok at 2026-01-01T00:00:00Z` and `ok at 2026-11-24T10:11:12Z` count as equal.
+- **Extra fields** can be passed via `computeValidationDelta(prev, curr, { ignoreFields })`. `parseDeltaIgnoreFields()` parses a comma- or newline-separated list and returns invalid (non-identifier) names separately, so a caller can fail with a stable message.
+- `label` and `passed` can never be ignored. Status transitions (newly passed / newly failed) are always reported.
+
+Checks whose status is unchanged but whose non-volatile fields differ are listed under **Details changed** in the comment (`ValidationDelta.changed`).
+
+## Per-address deadline (Issue #928)
+
+In batch mode (`stellar_addresses`), `per_address_timeout_ms` caps the time spent validating any single address, including all of its Horizon requests and retries. When an address exceeds it:
+
+- its in-flight requests are aborted;
+- its row is reported with `reason_code: ADDRESS_TIMEOUT`;
+- the batch moves on to the next address, so one hung address cannot use up the whole job budget.
+
+Precedence:
+
+1. **Global cancellation / job timeout wins.** If the batch-level signal fires, affected rows are `CANCELLED`, even if the per-address deadline also expired.
+2. **Per-address deadline.** It applies to each address independently and never stops the rest of the batch.
+3. **`horizon_timeout_ms`** still bounds each individual Horizon request inside that deadline.
+
+`0` (the default), empty, or non-finite values disable the deadline and keep the previous behavior exactly. The shared helper is `runWithAddressDeadline` in `src/checks-run.ts`.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_addresses: ${{ env.WAVE_ADDRESSES }}
+    per_address_timeout_ms: '20000'
+```

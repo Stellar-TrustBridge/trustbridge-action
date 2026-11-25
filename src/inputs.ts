@@ -584,6 +584,7 @@ export interface Inputs {
   issue_number?: string;
   debug_mode?: string;
   horizon_timeout_ms?: string;
+  per_address_timeout_ms?: string;
   sticky_comment?: string;
   comment_mode?: string;
   wait_until_funded?: string;
@@ -600,6 +601,7 @@ export interface Inputs {
   allow_cross_network_fallback?: string;
   log_inputs?: string;
   trustbridge_config_path?: string;
+  trustbridge_config_strict?: string;
   milestone_allowlist?: string;
   milestone_fail_on_skip?: string;
   github_token: string;
@@ -682,4 +684,20 @@ export interface Inputs {
   privacy_mode?: string;
   soroban_rpc_url?: string;
   contract_id?: string;
+}
+
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export function buildSorobanContractConfig(
+  raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>,
+): import('./soroban').ContractConfig | null {
+  const sorobanRpcUrl = raw.soroban_rpc_url?.trim();
+  const contractId = raw.contract_id?.trim();
+  if (!sorobanRpcUrl || !contractId) return null;
+  const networkPassphrase = raw.network_passphrase?.trim();
+  return { sorobanRpcUrl, contractId, ...(networkPassphrase ? { networkPassphrase } : {}) };
 }

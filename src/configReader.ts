@@ -13,7 +13,8 @@
  *   3. Secret redaction — known secret field names (token, api_key, …) are
  *      never logged; they are replaced with "***" in any diagnostic output.
  *
- * The reader is intentionally conservative: unknown keys are ignored, and
+ * The reader is intentionally conservative: unknown keys are ignored (or, in
+ * strict mode, rejected with a "did you mean" hint — Issue #927), and
  * only the fields declared in `TrustbridgeConsumerConfig` are surfaced to
  * the caller.  This keeps the attack surface small and prevents a malicious
  * config from injecting unexpected values into the action runtime.
@@ -97,6 +98,78 @@ function parseYamlValue(raw: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// Known keys / strict mode (Issue #927)
+// ---------------------------------------------------------------------------
+
+/** Every key `.trustbridge.yml` understands (mirrors `TrustbridgeConsumerConfig`). */
+export const KNOWN_CONFIG_KEYS: readonly string[] = [
+  'horizon_url',
+  'horizon_url_fallback',
+  'rpc_fallback_url',
+  'asset_code',
+  'asset_issuer',
+  'min_xlm_reserve',
+  'min_asset_balance',
+  'fail_on_missing',
+];
+
+export interface ReadConfigOptions {
+  /**
+   * When true, unknown top-level keys are validation errors (the config is
+   * rejected). When false (default, lenient mode) they are ignored exactly as
+   * before, so existing configs keep working.
+   */
+  strict?: boolean;
+}
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
+}
+
+/** Closest known key within edit distance 3, for "did you mean" hints. */
+export function suggestConfigKey(unknown: string): string | null {
+  let best: string | null = null;
+  let bestDistance = 4;
+  const normalized = unknown.toLowerCase().replace(/-/g, '_');
+  for (const known of KNOWN_CONFIG_KEYS) {
+    const d = editDistance(normalized, known);
+    if (d < bestDistance) {
+      best = known;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * Lists unknown top-level keys with stable messages. Key names are passed
+ * through `redactString` so a pasted secret used as a key is never echoed.
+ */
+export function findUnknownConfigKeys(raw: Record<string, unknown>): string[] {
+  const messages: string[] = [];
+  for (const key of Object.keys(raw)) {
+    if (KNOWN_CONFIG_KEYS.includes(key)) continue;
+    const suggestion = suggestConfigKey(key);
+    messages.push(
+      `Unknown trustbridge config key "${redactString(key)}"` +
+        (suggestion ? ` (did you mean "${suggestion}"?)` : '') +
+        `. Known keys: ${KNOWN_CONFIG_KEYS.join(', ')}.`,
+    );
+  }
+  return messages;
+}
+
+// ---------------------------------------------------------------------------
 // Config file reader
 // ---------------------------------------------------------------------------
 
@@ -121,14 +194,15 @@ export interface ReadConfigResult {
 export function readTrustbridgeConfigs(
   repoConfigPath?: string,
   workspaceRoot?: string,
+  options: ReadConfigOptions = {},
 ): ReadConfigResult {
   const root = workspaceRoot ?? process.cwd();
 
-  const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
+  const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root, options);
 
   // Use the explicit repo path, or fallback to default repo path
   const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
-  const repoResult = readTrustbridgeConfig(targetRepoPath, root);
+  const repoResult = readTrustbridgeConfig(targetRepoPath, root, options);
 
   const valid = orgResult.validation.valid && repoResult.validation.valid;
   const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
@@ -169,10 +243,12 @@ export function readTrustbridgeConfigs(
  *                    workspace root when omitted or empty.
  * @param workspaceRoot  Absolute path to the repository root.  Defaults to
  *                       `process.cwd()` when omitted.
+ * @param options  `strict: true` rejects unknown keys (Issue #927).
  */
 export function readTrustbridgeConfig(
   configPath?: string,
   workspaceRoot?: string,
+  options: ReadConfigOptions = {},
 ): ReadConfigResult {
   const root = workspaceRoot ?? process.cwd();
   const targetPath = configPath && configPath.trim()
@@ -236,6 +312,16 @@ export function readTrustbridgeConfig(
 
   // Validate security policy
   const validation = validateTrustbridgeConfig(raw);
+
+  // Issue #927: strict mode turns unknown keys (usually typos that would
+  // silently fall back to defaults) into errors; lenient mode ignores them.
+  if (options.strict) {
+    const unknownKeys = findUnknownConfigKeys(raw);
+    if (unknownKeys.length > 0) {
+      validation.errors.push(...unknownKeys);
+      validation.valid = false;
+    }
+  }
 
   // Redacted snapshot for safe diagnostic logging (never log raw)
   const redactedSnapshot = redactSecretFields(raw);

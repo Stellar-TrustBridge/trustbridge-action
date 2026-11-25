@@ -139,6 +139,18 @@
       "pattern": "^[0-9]+$",
       "default": "15000"
     },
+    "per_address_timeout_ms": {
+      "type": "string",
+      "description": "Batch mode: per-address deadline in milliseconds; exceeding it yields ADDRESS_TIMEOUT for that address only. \"0\" disables it (Issue #928).",
+      "pattern": "^[0-9]+$",
+      "default": "0"
+    },
+    "trustbridge_config_strict": {
+      "type": "string",
+      "description": "When \"true\", unknown keys in the trustbridge config fail validation with a did-you-mean hint; \"false\" ignores them (Issue #927).",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
     "sticky_comment": {
       "type": "string",
       "description": "Update TrustBridge's previous issue comment instead of posting a new one each run.",

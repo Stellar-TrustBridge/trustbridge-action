@@ -209,3 +209,22 @@ The precedence is deliberate: a trustline that exists but is unauthorized must
 never be reported as missing. Stable remediation is to ask the issuer to
 submit `SetTrustLineFlags` (or legacy `AllowTrust`); adding another Change
 Trust operation is not the fix.
+
+## Strict config mode: unknown keys (Issue #927)
+
+`trustbridge_config_strict` (default `"false"`) controls how unknown top-level keys in `.github/trustbridge.yml` and `.trustbridge.yml` are handled.
+
+| Mode | Unknown key behavior |
+| --- | --- |
+| Lenient (`false`, default) | Ignored, exactly as before. Existing configs keep working. |
+| Strict (`true`) | Validation error. The run fails with `trustbridge_config_path validation failed`. |
+
+Known keys: `horizon_url`, `horizon_url_fallback`, `rpc_fallback_url`, `asset_code`, `asset_issuer`, `min_xlm_reserve`, `min_asset_balance`, `fail_on_missing` (`KNOWN_CONFIG_KEYS` in `src/configReader.ts`).
+
+Each unknown key produces one stable error that includes a "did you mean" hint when a known key is within edit distance 3. Hyphens are treated as underscores when matching:
+
+```
+Unknown trustbridge config key "min_xlm_reserv" (did you mean "min_xlm_reserve"?). Known keys: horizon_url, ...
+```
+
+Key names are passed through `redactString` before being echoed, so a secret pasted as a key is not logged.
