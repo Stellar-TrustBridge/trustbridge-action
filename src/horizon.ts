@@ -1432,15 +1432,28 @@ export function getNativeBalance(account: HorizonAccount): string {
   return native?.balance ?? '0';
 }
 
+/**
+ * Canonical form used for every asset-code comparison (Issue #968).
+ *
+ * Kept in `horizon.ts` because this is where Horizon balances are compared;
+ * `src/assets.ts` re-exports it as `normalizeAssetCode` and owns validation of
+ * the Stellar asset-code grammar. Trimming and uppercasing make mixed-case
+ * custom codes (e.g. `yXLM`, `usd1`) match the canonical code Horizon reports.
+ */
+export function normalizeAssetCodeForComparison(assetCode: string): string {
+  return (assetCode ?? '').trim().toUpperCase();
+}
+
 export function hasTrustline(
   account: HorizonAccount,
   assetCode: string,
   assetIssuer: string,
 ): boolean {
+  const expectedCode = normalizeAssetCodeForComparison(assetCode);
   return account.balances.some(
     (balance) =>
       isCreditBalance(balance) &&
-      balance.asset_code === assetCode &&
+      normalizeAssetCodeForComparison(balance.asset_code) === expectedCode &&
       balance.asset_issuer === assetIssuer,
   );
 }
@@ -1455,10 +1468,11 @@ export function findTrustlineBalance(
   assetCode: string,
   assetIssuer: string,
 ): HorizonBalanceCredit | undefined {
+  const expectedCode = normalizeAssetCodeForComparison(assetCode);
   return account.balances.find(
     (balance): balance is HorizonBalanceCredit =>
       isCreditBalance(balance) &&
-      balance.asset_code === assetCode &&
+      normalizeAssetCodeForComparison(balance.asset_code) === expectedCode &&
       balance.asset_issuer === assetIssuer,
   );
 }

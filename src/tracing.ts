@@ -2201,13 +2201,55 @@ export interface HorizonSpanOptions {
 // ---------------------------------------------------------------------------
 
 /**
+ * In-process sampling state (Issue #967).
+ *
+ * The default ratio is `1` so pre-existing callers that explicitly enable
+ * tracing keep recording every span. `configureTraceSampling()` is called at
+ * the start of the Action run with the resolved `trace_sampling_ratio` input;
+ * PR runs default to `0` unless the operator opts in explicitly.
+ */
+let traceSamplingRatio = 1;
+let traceSampleSelected = true;
+
+/** Return the resolved sampling ratio for the current run. */
+export function getTraceSamplingRatio(): number {
+  return traceSamplingRatio;
+}
+
+/**
+ * Configure sampling for the current run.
+ *
+ * @param ratio  Value from `resolveTraceSamplingRatio()`; clamped to `[0, 1]`.
+ * @param random Injectable random source for deterministic tests. Defaults to
+ *               `Math.random`, so `ratio` is a probability of sampling each
+ *               Action run (not each span).
+ */
+export function configureTraceSampling(
+  ratio: number,
+  random: () => number = Math.random,
+): void {
+  const safeRatio = Number.isFinite(ratio) && ratio > 0 && ratio <= 1 ? ratio : 0;
+  traceSamplingRatio = safeRatio;
+  traceSampleSelected = safeRatio >= 1 || (safeRatio > 0 && random() < safeRatio);
+}
+
+/** Restore the pre-configuration default (used by tests and repeat runs). */
+export function resetTraceSampling(): void {
+  traceSamplingRatio = 1;
+  traceSampleSelected = true;
+}
+
+/**
  * Whether tracing is enabled.
- * Reads `OTEL_TRACES_ENABLED` environment variable.
- * Default: false.
+ *
+ * Both `OTEL_TRACES_ENABLED` and the sampling decision must be true. The
+ * latter is true by default, before the Action wires the input, keeping the
+ * historical opt-in behavior intact for direct library callers.
  */
 export function isTracingEnabled(): boolean {
   const val = process.env['OTEL_TRACES_ENABLED'] ?? '';
-  return val.toLowerCase() === 'true' || val === '1';
+  const enabledByEnv = val.toLowerCase() === 'true' || val === '1';
+  return enabledByEnv && traceSampleSelected;
 }
 
 /**

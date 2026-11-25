@@ -517,10 +517,25 @@ export interface HorizonSpanOptions {
     /** Parent span name for nesting context. */
     parentName?: string;
 }
+/** Return the resolved sampling ratio for the current run. */
+export declare function getTraceSamplingRatio(): number;
+/**
+ * Configure sampling for the current run.
+ *
+ * @param ratio  Value from `resolveTraceSamplingRatio()`; clamped to `[0, 1]`.
+ * @param random Injectable random source for deterministic tests. Defaults to
+ *               `Math.random`, so `ratio` is a probability of sampling each
+ *               Action run (not each span).
+ */
+export declare function configureTraceSampling(ratio: number, random?: () => number): void;
+/** Restore the pre-configuration default (used by tests and repeat runs). */
+export declare function resetTraceSampling(): void;
 /**
  * Whether tracing is enabled.
- * Reads `OTEL_TRACES_ENABLED` environment variable.
- * Default: false.
+ *
+ * Both `OTEL_TRACES_ENABLED` and the sampling decision must be true. The
+ * latter is true by default, before the Action wires the input, keeping the
+ * historical opt-in behavior intact for direct library callers.
  */
 export declare function isTracingEnabled(): boolean;
 /**

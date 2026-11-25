@@ -3,6 +3,47 @@ import * as path from 'path';
 import { validateEnumInput } from './validation';
 import { StellarNetwork, validateExplorerBaseUrl } from './links';
 
+/**
+ * Return the Actions runner language value used for locale negotiation
+ * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
+ * (a preference list), then `LC_ALL`, then `LANG`. Values are returned
+ * verbatim — `negotiateLocale()` handles parsing and fallback.
+ */
+export function getRunnerLanguage(env: NodeJS.ProcessEnv = process.env): string {
+  return env['LANGUAGE'] || env['LC_ALL'] || env['LANG'] || '';
+}
+
+/**
+ * Resolve the OpenTelemetry trace sampling ratio (Issue #967).
+ *
+ * Tracing remains opt-in via `OTEL_TRACES_ENABLED`; this ratio decides what
+ * fraction of enabled runs actually record/export spans. Values outside the
+ * inclusive `[0, 1]` range, non-decimal strings, and non-finite numbers are
+ * treated as `0` (fail closed). When the input is empty, `pull_request` runs
+ * default to `0` so untrusted fork events cannot inflate CI cost or export
+ * telemetry; other events retain the prior "sample everything" behavior.
+ */
+export function resolveTraceSamplingRatio(
+  value: string | undefined,
+  eventName: string | undefined,
+): number {
+  const raw = (value ?? '').trim();
+  if (raw === '') {
+    return eventName === 'pull_request' ? 0 : 1;
+  }
+
+  // Decimal ratios only: reject hex, exponent notation, NaN and Infinity.
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) {
+    return 0;
+  }
+
+  const ratio = Number(raw);
+  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+    return 0;
+  }
+  return ratio;
+}
+
 export function parseBooleanInput(value: string, defaultValue: boolean): boolean {
   if (value === undefined || value === '') {
     return defaultValue;
@@ -690,6 +731,7 @@ export interface Inputs {
   sarif_output_path?: string;
   use_plugin_runner?: string;
   locale?: string;
+  trace_sampling_ratio?: string;
   stellar_addresses?: string;
   batch_max_addresses?: string;
   unassign_on_not_ready?: string;

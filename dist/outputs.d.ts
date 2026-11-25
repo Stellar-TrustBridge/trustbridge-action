@@ -1,3 +1,4 @@
+import { ErrorObject } from 'ajv';
 import { ValidationResult } from './checks';
 import { ValidationDelta, ValidationArtifact } from './delta';
 export interface ActionTimings {
@@ -305,6 +306,35 @@ export interface ActionOutputs {
     outputs_truncated: string;
 }
 export declare function toActionOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): ActionOutputs;
+/** One path-aware schema violation found in a structured action output. */
+export interface ActionOutputViolation {
+    output: string;
+    path: string;
+    message: string;
+}
+/** Thrown before any `core.setOutput` call when a structured output is invalid. */
+export declare class ActionOutputSchemaError extends Error {
+    readonly violations: ActionOutputViolation[];
+    constructor(violations: ActionOutputViolation[]);
+}
+type OutputSchema = Record<string, unknown>;
+/**
+ * Schemas for every JSON-encoded output published by this action. Scalar
+ * outputs are already strings by construction and are covered by the
+ * `action.yml` output contract; these schemas protect the structured values
+ * downstream Wave workflows parse with `fromJSON()`.
+ */
+export declare const STRUCTURED_OUTPUT_SCHEMAS: Record<string, OutputSchema>;
+/** Render an AJV error as a readable `$.output[0].field` path. */
+export declare function formatOutputErrorPath(output: string, error: ErrorObject): string;
+/** Validate one structured output value before it is published. */
+export declare function validateActionOutput(name: string, value: string): void;
+/**
+ * Validate every structured output in an `ActionOutputs` object. Validation is
+ * all-or-nothing: callers must finish this successfully before publishing any
+ * output so a failure cannot leave a partially populated step output set.
+ */
+export declare function validateActionOutputs(outputs: ActionOutputs): void;
 export declare function setValidationOutputs(result: ValidationResult, commentUrl?: string, fullReportPath?: string, extras?: ActionOutputExtras): void;
 export interface WriteValidationJsonOptions {
     result: ValidationResult;
@@ -385,3 +415,4 @@ export declare function buildMatrixOutputs(results: Array<{
  * @returns Sanitized key safe for GitHub Actions output names
  */
 export declare function sanitizeUsernameForMatrix(username: string): string;
+export {};

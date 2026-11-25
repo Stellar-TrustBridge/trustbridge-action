@@ -557,13 +557,23 @@
     },
     "locale": {
       "type": "string",
-      "description": "Language for issue comments. Supported: en, es, pt. Invalid falls back to en.",
+      "description": "Language for issue comments. Supported: en, es, pt, ja, fr, de. Empty negotiates from the Actions runner language; invalid falls back to en (Issue #974).",
       "enum": [
+        "",
         "en",
         "es",
-        "pt"
+        "pt",
+        "ja",
+        "fr",
+        "de"
       ],
-      "default": "en"
+      "default": ""
+    },
+    "trace_sampling_ratio": {
+      "type": "string",
+      "description": "Fraction of tracing-enabled runs that record/export spans, from 0 to 1 inclusive. Empty uses the event default: 0 on pull_request, 1 otherwise. Invalid/out-of-range values fail closed to 0 (Issue #967).",
+      "pattern": "^(|0(\\.[0-9]+)?|1(\\.0+)?|\\.[0-9]+)$",
+      "default": ""
     },
     "stellar_addresses": {
       "type": "string",

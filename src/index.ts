@@ -44,9 +44,11 @@ import { getOctokitProxyOptions } from './proxy';
 import { updateProjectV2Status } from './projects';
 import {
   getErrorMessage,
+  getRunnerLanguage,
   parseBooleanInput,
   parseNumberInput,
   resolveReadyLabelInputs,
+  resolveTraceSamplingRatio,
   listDeprecatedInputAliases,
   detectInputConflicts,
   INPUT_CONFLICT_MATRIX,
@@ -54,10 +56,19 @@ import {
   parseNetworkInput,
   parseHomeDomainCheckModeInput,
 } from './inputs';
+import { negotiateLocale } from './i18n';
+import { configureTraceSampling } from './tracing';
 import { capSnoozeWindow } from './snooze';
 import { inferStellarNetworkPreset } from './links';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
+import {
+  setValidationOutputs,
+  validateActionOutput,
+  AssetTrustlineStatus,
+  truncateJsonArray,
+  resolveOutputTransport,
+  toBooleanOutput,
+} from './outputs';
 import { logger, emitInputsLogRecord, flushHorizonRetrySamples, logInfo, logWarning } from './logger';
 import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
@@ -383,6 +394,15 @@ export function evaluateMilestoneGate(
 
 export async function run(): Promise<void> {
   const jobController = new AbortController();
+  // Issue #967 — configure sampling before any instrumented work. Empty input
+  // means full sampling outside PRs and no sampling on pull_request runs;
+  // explicit ratios must be in [0, 1] or the run fails closed.
+  configureTraceSampling(
+    resolveTraceSamplingRatio(
+      core.getInput('trace_sampling_ratio'),
+      github.context.eventName,
+    ),
+  );
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
@@ -447,6 +467,8 @@ export async function run(): Promise<void> {
 
     core.setOutput('ready', 'false');
     core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+    // Issue #969 — even early-return paths publish schema-valid JSON.
+    validateActionOutput('checks_json', '[]');
     core.setOutput('checks_json', '[]');
 
     // Issue #899: a gate skip is its own outcome, never pass or fail.
@@ -497,6 +519,13 @@ export async function run(): Promise<void> {
   );
 
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+  // Issue #974 — optional explicit locale wins, then the Actions runner
+  // language, then English. An empty default lets the runner language be
+  // used when a workflow does not set `locale` explicitly.
+  const locale = negotiateLocale({
+    explicitLocale: core.getInput('locale'),
+    runnerLanguage: getRunnerLanguage(),
+  });
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
     core.getInput('asset_issuer') ||
@@ -1020,6 +1049,7 @@ export async function run(): Promise<void> {
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
+    locale,
     stellarAddress,
     horizonUrl,
     failOnMissing,
@@ -1145,6 +1175,9 @@ export async function run(): Promise<void> {
       batchSummary.failures,
       (failuresSubset) => JSON.stringify({ ...batchSummary, failures: failuresSubset }),
     );
+    // Issue #969 — batch mode publishes its own JSON output outside
+    // setValidationOutputs, so validate it on that path too.
+    validateActionOutput('batch_summary_json', batchSummaryJson);
     core.setOutput('batch_summary_json', batchSummaryJson);
     core.setOutput('batch_passed_count', String(batchSummary.passed));
     core.setOutput('batch_failed_count', String(batchSummary.failed));

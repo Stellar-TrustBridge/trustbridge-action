@@ -244,6 +244,33 @@ The comment now renders both balances:
 
 ---
 
+## Asset-code normalization (Issue #968)
+
+Exact balance arithmetic is only useful when the asset being compared is the
+one the operator meant. All trustline lookups therefore compare asset codes in
+a canonical form:
+
+1. Trim surrounding whitespace.
+2. Uppercase the code (`yXLM` → `YXLM`, `usd1` → `USD1`).
+3. Require 1–12 ASCII alphanumeric characters via `assertValidAssetCode()`.
+4. Compare the issuer with the original strict StrKey rules — normalization
+   never relaxes the issuer match.
+
+`normalizeAssetCode()` and `assetCodesEqual()` are exported from
+`src/assets.ts`; `hasTrustline()` and `findTrustlineBalance()` in
+`src/horizon.ts` apply the same canonical form to both the configured code and
+the Horizon `asset_code`. Multi-asset helpers in `src/checks.ts` preserve the
+caller's original code in labels/results — including exotic codes such as
+`yXLM` — while using the canonical form only for the trustline comparison.
+
+Fixtures in `__tests__/asset-code-normalization.test.ts` pin exotic-but-valid
+codes (`yXLM`, `USD1`, `A1B2C3`, `ABC123`, `123456789012`) and the failure
+paths: non-alphanumeric characters, empty codes, codes longer than 12
+characters, and an issuer mismatch. No new action input, output, reason code,
+or environment variable is introduced by this normalization.
+
+---
+
 ## Fixture tests
 
 `__tests__/decimal-precision.test.ts` pins the rules above with fixtures for

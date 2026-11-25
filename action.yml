@@ -622,11 +622,23 @@ inputs:
 
   locale:
     description: >-
-      Language for issue comments. Supported values: en (English, default),
-      es (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
-      Invalid or unsupported locales fall back to English. (Issue #202, #313)
+      Language for issue comments. Supported values: en (English), es
+      (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
+      When unset, the Actions runner language (LANGUAGE, LC_ALL, then LANG) is
+      negotiated to one of these locales; unsupported values fall back to
+      English. (Issue #202, #313, #974)
     required: false
-    default: "en"
+    default: ""
+
+  trace_sampling_ratio:
+    description: >-
+      Fraction of tracing-enabled runs that record/export spans (0 to 1,
+      inclusive). Requires OTEL_TRACES_ENABLED=true to have any effect.
+      Leave empty for the event default: 0 on pull_request (conservative for
+      fork CI cost/PII), 1 otherwise. Invalid or out-of-range values fail
+      closed to 0. (Issue #967)
+    required: false
+    default: ""
 
   stellar_addresses:
     description: >-
@@ -936,6 +948,11 @@ inputs:
     default: ''
 
 outputs:
+  # Structured JSON outputs (checks_json, timings_json, assignee_results_json,
+  # matrix_ready_map, conflict_report, assets_trustline_status,
+  # batch_summary_json) are validated against schemas in src/outputs.ts before
+  # core.setOutput publishes them. Invalid values fail with path-aware errors
+  # instead of breaking downstream fromJSON() callers. (Issue #969)
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
     description: "Whether the account has a trustline for the configured asset. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"

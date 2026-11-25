@@ -990,15 +990,64 @@ export function isValidLocale(locale: string | null | undefined): boolean {
 }
 
 /**
+ * Resolve a locale string to a supported locale without applying a fallback.
+ *
+ * Accepts canonical codes (`es`), upper-case codes (`ES`) and the language
+ * values found on Actions runners / POSIX systems (`es_ES.UTF-8`, `pt-BR`,
+ * `ja_JP@calendar=japanese`). Only the base language is used: TrustBridge
+ * ships whole-language packs, not regional variants.
+ */
+function toSupportedLocale(input: string | null | undefined): Locale | undefined {
+  if (!input) return undefined;
+  const trimmed = input.trim();
+  if (!trimmed || /\s/.test(trimmed)) return undefined;
+  // Two- or three-letter language subtag, optionally followed by a region,
+  // charset or modifier. Anything else (symbols, free text, long codes) is
+  // not a locale value TrustBridge can negotiate.
+  const match = /^([A-Za-z]{2,3})(?:[-_@.].*)?$/.exec(trimmed);
+  const base = match?.[1]?.toLowerCase();
+  return base && isValidLocale(base) ? (base as Locale) : undefined;
+}
+
+/**
  * Parse and validate a locale input from action configuration.
  * Falls back to 'en' if the input is invalid or unset.
  */
 export function parseLocaleInput(input: string | undefined): Locale {
-  if (!input) return 'en';
-  const normalized = input.trim().toLowerCase();
-  if (isValidLocale(normalized)) {
-    return normalized as Locale;
+  return toSupportedLocale(input) ?? 'en';
+}
+
+/**
+ * Inputs to locale negotiation (Issue #974).
+ *
+ * `explicitLocale` is the optional `locale` action input. `runnerLanguage`
+ * is the Actions runner language value (usually `LANG`, `LC_ALL` or
+ * `LANGUAGE`) and may be a colon-separated preference list.
+ */
+export interface LocaleNegotiationOptions {
+  explicitLocale?: string | null;
+  runnerLanguage?: string | null;
+}
+
+/**
+ * Negotiate the comment locale with a deterministic fallback chain:
+ *
+ * 1. explicit `locale` action input, when valid;
+ * 2. first supported language from the runner language value;
+ * 3. English.
+ *
+ * Unknown values are skipped rather than throwing, so a runner with an
+ * unusual locale can never break comment rendering.
+ */
+export function negotiateLocale(options: LocaleNegotiationOptions = {}): Locale {
+  const explicit = toSupportedLocale(options.explicitLocale);
+  if (explicit) return explicit;
+
+  for (const candidate of (options.runnerLanguage ?? '').split(/[:;,]/)) {
+    const locale = toSupportedLocale(candidate);
+    if (locale) return locale;
   }
+
   return 'en';
 }
 

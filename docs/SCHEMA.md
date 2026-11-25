@@ -155,6 +155,43 @@ There is no suppression mechanism for sync failures — they must be fixed befor
 
 ---
 
+## Output schema validation (Issue #969)
+
+`src/outputs.ts` validates every JSON-encoded output before any
+`core.setOutput` call. The schemas are declared in
+`STRUCTURED_OUTPUT_SCHEMAS` and compiled with Ajv (`allErrors: true`); scalar
+outputs remain plain strings and are covered by the `action.yml` output
+contract.
+
+| Output | Expected JSON shape |
+|--------|---------------------|
+| `checks_json` | Array of `{ label: string, passed: boolean, detail: string }` |
+| `timings_json` | Object with the five numeric phase timings (`input_parse_ms`, `horizon_fetch_ms`, `checks_ms`, `comment_post_ms`, `total_ms`) |
+| `assignee_results_json` | Map of GitHub login → `{ ready, stellar_address, xlm_balance, account_funded, trustline_exists, reason_code, validated_at }` |
+| `matrix_ready_map` | Map of GitHub login → boolean |
+| `conflict_report` | `""` when absent, otherwise `{ hasConflicts, conflicts[], generatedAt }` |
+| `assets_trustline_status` | Array of `{ asset_code, asset_issuer, trustline_exists, balance }` |
+| `batch_summary_json` | `""` in single-address mode, otherwise the `BatchSummary` object (`total`, `passed`, `failed`, `failures[]`, `failureTaxonomy`, `clawbackStrictFailures`, `clawbackStrictMode`, optional `fatal`/`fatalReasonCodes`) |
+
+Validation is all-or-nothing: `setValidationOutputs()` builds the complete
+output set, calls `validateActionOutputs()`, and only then publishes it. A
+failure throws `ActionOutputSchemaError` with one message per violation, for
+example:
+
+```text
+Invalid action output — $.checks_json[0].passed: must be boolean
+```
+
+Path segments use `$.outputName[arrayIndex].property` syntax, and missing
+required properties point at the missing field. Batch mode and the milestone
+skip path validate their JSON outputs explicitly before publishing them, so no
+`fromJSON()` consumer sees a half-written output set. No new output name or
+reason code is introduced by this guard; `__tests__/output-schema-validation.test.ts`
+covers the happy path plus malformed JSON, wrong-typed nested values, missing
+required fields, and empty-string sentinels.
+
+---
+
 ## Webhook and reason-code versioning policy
 
 Two machine-readable contracts besides the input schema are consumed by Wave
