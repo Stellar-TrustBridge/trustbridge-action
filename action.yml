@@ -559,11 +559,13 @@ inputs:
 
   locale:
     description: >-
-      Language for issue comments. Supported values: en (English, default),
-      es (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
-      Invalid or unsupported locales fall back to English. (Issue #202, #313)
+      Language for issue comments. Supported values: en (English), es
+      (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
+      When unset, the Actions runner language (LANGUAGE, LC_ALL, then LANG) is
+      negotiated to one of these locales; unsupported values fall back to
+      English. (Issue #202, #313, #974)
     required: false
-    default: "en"
+    default: ""
 
   stellar_addresses:
     description: >-

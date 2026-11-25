@@ -126,3 +126,25 @@ export declare function isValidLocale(locale: string | null | undefined): boolea
  * Falls back to 'en' if the input is invalid or unset.
  */
 export declare function parseLocaleInput(input: string | undefined): Locale;
+/**
+ * Inputs to locale negotiation (Issue #974).
+ *
+ * `explicitLocale` is the optional `locale` action input. `runnerLanguage`
+ * is the Actions runner language value (usually `LANG`, `LC_ALL` or
+ * `LANGUAGE`) and may be a colon-separated preference list.
+ */
+export interface LocaleNegotiationOptions {
+    explicitLocale?: string | null;
+    runnerLanguage?: string | null;
+}
+/**
+ * Negotiate the comment locale with a deterministic fallback chain:
+ *
+ * 1. explicit `locale` action input, when valid;
+ * 2. first supported language from the runner language value;
+ * 3. English.
+ *
+ * Unknown values are skipped rather than throwing, so a runner with an
+ * unusual locale can never break comment rendering.
+ */
+export declare function negotiateLocale(options?: LocaleNegotiationOptions): Locale;

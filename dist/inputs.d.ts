@@ -1,3 +1,10 @@
+/**
+ * Return the Actions runner language value used for locale negotiation
+ * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
+ * (a preference list), then `LC_ALL`, then `LANG`. Values are returned
+ * verbatim — `negotiateLocale()` handles parsing and fallback.
+ */
+export declare function getRunnerLanguage(env?: NodeJS.ProcessEnv): string;
 export declare function parseBooleanInput(value: string, defaultValue: boolean): boolean;
 /**
  * Canonical list of input names declared in `action.yml`.

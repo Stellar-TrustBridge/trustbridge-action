@@ -56323,6 +56323,7 @@ exports.SUPPORTED_LOCALES = void 0;
 exports.getStrings = getStrings;
 exports.isValidLocale = isValidLocale;
 exports.parseLocaleInput = parseLocaleInput;
+exports.negotiateLocale = negotiateLocale;
 /**
  * Every supported locale, in canonical order.
  *
@@ -56931,15 +56932,51 @@ function isValidLocale(locale) {
     return Object.keys(LOCALES).includes(locale.toLowerCase());
 }
 /**
+ * Resolve a locale string to a supported locale without applying a fallback.
+ *
+ * Accepts canonical codes (`es`), upper-case codes (`ES`) and the language
+ * values found on Actions runners / POSIX systems (`es_ES.UTF-8`, `pt-BR`,
+ * `ja_JP@calendar=japanese`). Only the base language is used: TrustBridge
+ * ships whole-language packs, not regional variants.
+ */
+function toSupportedLocale(input) {
+    if (!input)
+        return undefined;
+    const trimmed = input.trim();
+    if (!trimmed || /\s/.test(trimmed))
+        return undefined;
+    // Two- or three-letter language subtag, optionally followed by a region,
+    // charset or modifier. Anything else (symbols, free text, long codes) is
+    // not a locale value TrustBridge can negotiate.
+    const match = /^([A-Za-z]{2,3})(?:[-_@.].*)?$/.exec(trimmed);
+    const base = match?.[1]?.toLowerCase();
+    return base && isValidLocale(base) ? base : undefined;
+}
+/**
  * Parse and validate a locale input from action configuration.
  * Falls back to 'en' if the input is invalid or unset.
  */
 function parseLocaleInput(input) {
-    if (!input)
-        return 'en';
-    const normalized = input.trim().toLowerCase();
-    if (isValidLocale(normalized)) {
-        return normalized;
+    return toSupportedLocale(input) ?? 'en';
+}
+/**
+ * Negotiate the comment locale with a deterministic fallback chain:
+ *
+ * 1. explicit `locale` action input, when valid;
+ * 2. first supported language from the runner language value;
+ * 3. English.
+ *
+ * Unknown values are skipped rather than throwing, so a runner with an
+ * unusual locale can never break comment rendering.
+ */
+function negotiateLocale(options = {}) {
+    const explicit = toSupportedLocale(options.explicitLocale);
+    if (explicit)
+        return explicit;
+    for (const candidate of (options.runnerLanguage ?? '').split(/[:;,]/)) {
+        const locale = toSupportedLocale(candidate);
+        if (locale)
+            return locale;
     }
     return 'en';
 }
@@ -57005,6 +57042,7 @@ const checks_run_1 = __nccwpck_require__(1346);
 const proxy_1 = __nccwpck_require__(28903);
 const projects_1 = __nccwpck_require__(77233);
 const inputs_1 = __nccwpck_require__(38422);
+const i18n_1 = __nccwpck_require__(84859);
 const summary_1 = __nccwpck_require__(28855);
 const outputs_1 = __nccwpck_require__(7729);
 const logger_1 = __nccwpck_require__(86999);
@@ -57250,6 +57288,13 @@ async function run() {
         return;
     }
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+    // Issue #974 — optional explicit locale wins, then the Actions runner
+    // language, then English. An empty default lets the runner language be
+    // used when a workflow does not set `locale` explicitly.
+    const locale = (0, i18n_1.negotiateLocale)({
+        explicitLocale: core.getInput('locale'),
+        runnerLanguage: (0, inputs_1.getRunnerLanguage)(),
+    });
     const assetCode = core.getInput('asset_code') || 'USDC';
     const assetIssuer = core.getInput('asset_issuer') ||
         'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
@@ -57676,6 +57721,7 @@ async function run() {
     }
     const commentBody = (0, comment_1.formatCommentBody)(result, {
         ...checkConfig,
+        locale,
         stellarAddress,
         horizonUrl,
         failOnMissing,
@@ -58014,6 +58060,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TRUSTBRIDGE_ENV_MAP = exports.DECLARED_INPUTS = void 0;
+exports.getRunnerLanguage = getRunnerLanguage;
 exports.parseBooleanInput = parseBooleanInput;
 exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
@@ -58028,6 +58075,15 @@ exports.resolveReadyLabelInputs = resolveReadyLabelInputs;
 exports.listDeprecatedInputAliases = listDeprecatedInputAliases;
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
+/**
+ * Return the Actions runner language value used for locale negotiation
+ * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
+ * (a preference list), then `LC_ALL`, then `LANG`. Values are returned
+ * verbatim — `negotiateLocale()` handles parsing and fallback.
+ */
+function getRunnerLanguage(env = process.env) {
+    return env['LANGUAGE'] || env['LC_ALL'] || env['LANG'] || '';
+}
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
         return defaultValue;

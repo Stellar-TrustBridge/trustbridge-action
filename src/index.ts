@@ -39,11 +39,13 @@ import { getOctokitProxyOptions } from './proxy';
 import { updateProjectV2Status } from './projects';
 import {
   getErrorMessage,
+  getRunnerLanguage,
   parseBooleanInput,
   parseNumberInput,
   resolveReadyLabelInputs,
   listDeprecatedInputAliases,
 } from './inputs';
+import { negotiateLocale } from './i18n';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -414,6 +416,13 @@ export async function run(): Promise<void> {
   }
 
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+  // Issue #974 — optional explicit locale wins, then the Actions runner
+  // language, then English. An empty default lets the runner language be
+  // used when a workflow does not set `locale` explicitly.
+  const locale = negotiateLocale({
+    explicitLocale: core.getInput('locale'),
+    runnerLanguage: getRunnerLanguage(),
+  });
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
     core.getInput('asset_issuer') ||
@@ -916,6 +925,7 @@ export async function run(): Promise<void> {
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
+    locale,
     stellarAddress,
     horizonUrl,
     failOnMissing,

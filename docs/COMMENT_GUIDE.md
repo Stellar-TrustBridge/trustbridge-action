@@ -140,7 +140,21 @@ The fallback is the same contract the `reason_code` action output uses, so the c
 
 Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code.
 
-All labels in this section are localized (Issue #450): `en`, `es`, `pt`, `ja`, `fr`, `de`. An unrecognized `locale` input (unsupported code, stray whitespace, wrong case, etc.) falls back to the complete English pack rather than throwing or rendering a partial comment — see `getStrings()` in [`src/i18n.ts`](../src/i18n.ts) and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
+All labels in this section are localized (Issue #450). The supported set is exactly `en` (English), `es` (Spanish), `pt` (Portuguese), `ja` (Japanese), `fr` (French), `de` (German), exported as `SUPPORTED_LOCALES` from [`src/i18n.ts`](../src/i18n.ts).
+
+### Locale negotiation (Issue #974)
+
+The `locale` action input is optional. When it is set to a supported value, that locale is used. When it is unset (the default is an empty string), TrustBridge negotiates from the Actions runner language, checking `LANGUAGE`, then `LC_ALL`, then `LANG`. POSIX and BCP-47 values are reduced to their base language (`es_ES.UTF-8` → `es`, `pt-BR` → `pt`); `LANGUAGE` may be a colon-separated preference list and the first supported language wins. If neither source is supported, or a value is malformed/unknown/oversized, the complete English pack is used. Negotiation never throws and never produces a partially rendered comment — see `negotiateLocale()` in [`src/i18n.ts`](../src/i18n.ts), `getRunnerLanguage()` in [`src/inputs.ts`](../src/inputs.ts), and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
+
+Example:
+
+```yaml
+# Explicit locale wins over the runner language.
+with:
+  locale: fr
+```
+
+Operators who want runner-driven comments should leave `locale` unset (or pass an empty string); GitHub-hosted runners commonly default to `C.UTF-8`, which negotiates to English. No token, address, or other sensitive input is involved in locale negotiation.
 
 ---
 

@@ -1,6 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Return the Actions runner language value used for locale negotiation
+ * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
+ * (a preference list), then `LC_ALL`, then `LANG`. Values are returned
+ * verbatim — `negotiateLocale()` handles parsing and fallback.
+ */
+export function getRunnerLanguage(env: NodeJS.ProcessEnv = process.env): string {
+  return env['LANGUAGE'] || env['LC_ALL'] || env['LANG'] || '';
+}
+
 export function parseBooleanInput(value: string, defaultValue: boolean): boolean {
   if (value === undefined || value === '') {
     return defaultValue;
