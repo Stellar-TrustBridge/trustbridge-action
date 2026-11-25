@@ -1,0 +1,73 @@
+# Example: TrustBridge with label gate and verbose skip comment
+#
+# This workflow demonstrates a label gate that posts a notice comment when
+# the gate is skipped. Use this when you want to give contributors explicit
+# feedback that wallet validation was not run.
+#
+# Key differences from trustbridge-label-gate.yml:
+# - post_skip_comment: true (post a notice when gate is closed)
+# - permissions: issues:write (needed to post comments)
+# - fail_on_missing: false (warn-only mode for informational checks)
+#
+# Copy this into `.github/workflows/trustbridge-label-gate-verbose.yml` and
+# customize gate_labels and address extraction.
+#
+# Permissions: issues:read (label checks), issues:write (post comments), contents:read (optional)
+
+name: Verify Stellar wallet (label gate with skip notice)
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge-gated:
+    runs-on: ubuntu-latest
+    permissions:
+      # `issues: write` implies read access, so a single entry covers both
+      # "read labels for gate" and "post skip comment and validation
+      # results". The original had `issues:` listed twice with different
+      # values, which is a duplicate YAML mapping key — some parsers
+      # (including actionlint's) will flag or error on this outright, and
+      # where it's silently accepted, behavior depends on which duplicate
+      # a given parser keeps, which is exactly the kind of ambiguity you
+      # don't want in a permissions block.
+      issues: write
+      contents: read # optional; only if using trustbridge_config_path
+    steps:
+      - name: Resolve Stellar address
+        id: addr
+        run: |
+          # Example: extract address from issue body via a labeled line.
+          # Replace with your own extraction logic or use assignee_address_map.
+          # See docs/USAGE.md for full address extraction patterns.
+          ADDRESS="GYOURCONTRIBUTORADDRESSHERE"
+          echo "value=$ADDRESS" >> "$GITHUB_OUTPUT"
+
+      - name: TrustBridge with label gate
+        id: gate
+        # See the pinning note in trustbridge-label-gate.yml — replace
+        # 07b97d28d482a18d277285f980dd5d7206673eb5 with the commit SHA of the release tag to track.
+        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: ${{ steps.addr.outputs.value }}
+          gate_labels: 'bounty,needs-wallet,grant'  # customize for your program
+          post_skip_comment: 'true'   # post a notice when gate is closed
+          fail_on_missing: 'false'    # warn-only mode; don't hard-fail
+          min_xlm_reserve: '1.5'      # customize as needed
+          sticky_comment: 'true'      # update previous comment instead of posting new ones
+
+      - name: Report status
+        run: |
+          if [ "${{ steps.gate.outputs.gate_skipped }}" = "true" ]; then
+            echo "✓ Label gate closed; wallet check skipped (info comment posted)."
+          else
+            if [ "${{ steps.gate.outputs.account_funded }}" = "true" ]; then
+              echo "✓ Gate open and account funded — ready for processing."
+              echo "  Trustline exists: ${{ steps.gate.outputs.trustline_exists }}"
+              echo "  XLM balance: ${{ steps.gate.outputs.xlm_balance }}"
+            else
+              echo "⚠ Gate open but account not ready. See issue comment for details."
+            fi
+          fi

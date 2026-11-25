@@ -1,0 +1,18 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb505",
+  "name": "Failover Scenario (Secondary Success Part 2)",
+  "scenarioName": "Failover",
+  "requiredScenarioState": "Secondary Success",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { 
+      "account_id": "GHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH", 
+      "balances": [] 
+    }
+  }
+}

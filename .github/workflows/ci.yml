@@ -11,14 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '20'
           cache: npm
@@ -28,6 +28,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Test
         run: npm test
@@ -39,7 +42,9 @@ jobs:
         run: npm run build
 
       - name: Verify action bundle exists
-        run: test -f dist/index.js
+        run: |
+          test -f dist/index.js
+          test -f action.yml
 
       - name: Verify dist/ matches src/
         run: |
@@ -48,3 +53,38 @@ jobs:
             git diff --stat -- dist
             exit 1
           fi
+
+  license-check:
+    name: License policy check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci
+
+      - name: Check dependency licenses
+        run: npm run license:check
+
+      - name: Check docs/LICENSE_REPORT.md is up to date with package-lock.json
+        run: npm run license:report:check
+
+      - name: Check reason-codes docs table is up to date with schemas/reason-codes.json
+        run: npm run reason-codes:check
+
+  check-unpinned-actions:
+    name: Check unpinned actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Scan for unpinned action references
+        run: bash scripts/check-unpinned-actions.sh .github/workflows

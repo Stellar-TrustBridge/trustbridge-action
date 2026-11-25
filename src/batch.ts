@@ -1,0 +1,1167 @@
+/**
+ * Batch multi-address validation (Issue #105).
+ *
+ * Validates a list of Stellar addresses sequentially, collecting per-address
+ * results and aggregate metrics. Sequential execution keeps request pressure
+ * on Horizon predictable and avoids triggering rate limits.
+ */
+
+import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult, HomeDomainOutcome } from './checks';
+import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
+import { FetchAccountOptions } from './horizon';
+import { RateBudgetExhaustedError } from './resilience';
+import type { BatchReasonCode } from './reasonCodes';
+import { AdaptiveConcurrency, runWithAddressDeadline } from './checks-run';
+import { globalMetrics, globalCheckLatencyHistogram, type CheckLatencyOutcome } from './metrics';
+import { getAssetClawbackStatus, AssetConfigInput } from './assets';
+import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
+
+export { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING };
+
+// ---------------------------------------------------------------------------
+// Issue #911 — max addresses per batch run
+// ---------------------------------------------------------------------------
+
+/** Stable reason code carried by {@link BatchAddressLimitError}. */
+export const BATCH_ADDRESS_LIMIT_REASON_CODE = 'BATCH_ADDRESS_LIMIT_EXCEEDED';
+
+/**
+ * Thrown when a batch run is asked to validate more unique addresses than
+ * `batch_max_addresses` allows. Always raised **before** any Horizon request
+ * so an oversized matrix never spends rate budget or runner memory.
+ */
+export class BatchAddressLimitError extends Error {
+  readonly reasonCode = BATCH_ADDRESS_LIMIT_REASON_CODE;
+  /** Number of unique addresses requested. */
+  readonly count: number;
+  /** Effective per-run limit. */
+  readonly limit: number;
+  /** Minimum number of matrix legs needed to stay within `limit`. */
+  readonly suggestedJobs: number;
+
+  constructor(count: number, limit: number) {
+    const suggestedJobs = Math.ceil(count / limit);
+    super(
+      `stellar_addresses contains ${count} unique addresses, which exceeds the ` +
+        `batch_max_addresses limit of ${limit} (${BATCH_ADDRESS_LIMIT_REASON_CODE}). ` +
+        'No Horizon requests were made. Split the addresses across a job matrix ' +
+        `with at most ${limit} addresses per leg (at least ${suggestedJobs} legs), ` +
+        `or raise batch_max_addresses (maximum ${BATCH_MAX_ADDRESSES_CEILING}). ` +
+        'See docs/USAGE.md#batch-address-limit.',
+    );
+    this.name = 'BatchAddressLimitError';
+    this.count = count;
+    this.limit = limit;
+    this.suggestedJobs = suggestedJobs;
+  }
+}
+
+/**
+ * Resolve the effective address limit: `undefined` → default, otherwise a
+ * whole number in `[1, BATCH_MAX_ADDRESSES_CEILING]`.
+ *
+ * @throws On a non-integer or out-of-range limit.
+ */
+function resolveBatchAddressLimit(maxAddresses: number | undefined): number {
+  if (maxAddresses === undefined) return DEFAULT_BATCH_MAX_ADDRESSES;
+  if (!Number.isInteger(maxAddresses) || maxAddresses < 1 || maxAddresses > BATCH_MAX_ADDRESSES_CEILING) {
+    throw new Error(
+      `batch_max_addresses must be a whole number between 1 and ${BATCH_MAX_ADDRESSES_CEILING}. Received: ${maxAddresses}`,
+    );
+  }
+  return maxAddresses;
+}
+
+/**
+ * Enforce the per-run address cap (Issue #911).
+ *
+ * @throws {BatchAddressLimitError} When `addresses` exceeds the limit.
+ */
+export function enforceBatchAddressLimit(addresses: readonly string[], maxAddresses?: number): void {
+  const limit = resolveBatchAddressLimit(maxAddresses);
+  if (addresses.length > limit) {
+    throw new BatchAddressLimitError(addresses.length, limit);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #725 — `clawback_strict_mode` propagation into batch summaries.
+//
+// A clawback-enabled trustline only fails in single-address flows because
+// `checks.ts` pushes a dedicated "clawback safety" check. Batch rows used to
+// derive their failure reason purely from `trustlineExists` / `xlmReserveMet`,
+// so a clawback-strict failure surfaced as an empty reason string. These
+// exports carry the per-asset attribution all the way into
+// `batch_summary_json` and the batch comment table.
+// ---------------------------------------------------------------------------
+
+/**
+ * `reason_code` emitted for a batch row (or asset) blocked by
+ * `clawback_strict_mode: true`. Mirrors the SARIF rule `TB005` used by the
+ * single-address path.
+ */
+export const CLAWBACK_STRICT_REASON_CODE = 'CLAWBACK_STRICT_MODE';
+
+/** Machine-readable `reason_code` carried by every `batch_summary_json` row. */
+export const BATCH_REASON_CODES = {
+  success: 'SUCCESS',
+  trustlineMissing: 'TRUSTLINE_MISSING',
+  reserveTooLow: 'RESERVE_TOO_LOW',
+  accountNotFunded: 'ACCOUNT_NOT_FUNDED',
+  horizonError: 'HORIZON_ERROR',
+  invalidAddress: 'INVALID_ADDRESS',
+  rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
+  fatalAuth: 'FATAL_AUTH',
+  fatalConfig: 'FATAL_CONFIG',
+  fatalCancellation: 'FATAL_CANCELLED',
+  clawbackStrict: CLAWBACK_STRICT_REASON_CODE,
+  /**
+   * Row never dispatched to Horizon because `options.signal` was aborted
+   * before this address's turn came up in the concurrency-limited queue
+   * (Issue #852). Distinct from `RATE_BUDGET_EXHAUSTED`: no budget was
+   * spent, the run was cancelled by the caller.
+   */
+  cancelled: 'CANCELLED',
+  /**
+   * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+   * fails; remaining addresses keep being validated.
+   */
+  addressTimeout: 'ADDRESS_TIMEOUT',
+} as const satisfies Record<string, BatchReasonCode>;
+
+/** A single asset that hit `clawback_strict_mode` for one address. */
+export interface BatchAssetFailure {
+  /** Asset code, e.g. `USDC`. */
+  assetCode: string;
+  /** Issuer account (G… public key or C… contract ID). */
+  assetIssuer: string;
+  /** Always {@link CLAWBACK_STRICT_REASON_CODE} today; kept explicit for JSON consumers. */
+  reasonCode: string;
+  /** Human-readable per-asset detail rendered in the batch comment. */
+  detail: string;
+}
+
+/** Result for a single address in a batch run. */
+export interface BatchAddressResult {
+  address: string;
+  valid: boolean;
+  accountFunded: boolean;
+  trustlineExists: boolean;
+  xlmBalance: string;
+  xlmReserveMet: boolean;
+  /** Human-readable failure reason, or null when all checks pass. */
+  failureReason: string | null;
+  /**
+   * Machine-readable failure classification (Issue #725). Always populated by
+   * `runBatchValidation`; optional on hand-constructed fixtures so existing
+   * callers keep compiling.
+   */
+  reasonCode?: string;
+  /**
+   * True when at least one asset (primary or `assets_json`) is blocked by
+   * `clawback_strict_mode` for this address (Issue #725).
+   */
+  clawbackStrictFailure?: boolean;
+  /**
+   * Per-asset clawback strict attribution for this address (Issue #725).
+   * Same asset code with different issuers is evaluated independently.
+   */
+  clawbackStrictAssets?: BatchAssetFailure[];
+  /**
+   * SEP-0001 home domain outcome for this row's asset issuer (Issue #708).
+   * Only set when `home_domain_check_enabled` is true.
+   */
+  homeDomainOutcome?: HomeDomainOutcome;
+}
+
+/** Aggregate summary across all addresses in a batch run. */
+export interface BatchSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  /** Addresses that failed, with their reasons and machine-readable codes. */
+  failures: Array<{
+    address: string;
+    reason: string;
+    reasonCode: string;
+    /** True when this row failed because of `clawback_strict_mode` (Issue #725). */
+    clawbackStrict: boolean;
+  }>;
+  /** Taxonomy of failure reasons across the batch. */
+  failureTaxonomy: {
+    accountNotFunded: number;
+    trustlineMissing: number;
+    reserveInsufficient: number;
+    horizonError: number;
+    invalidAddress: number;
+    /** Rows blocked by `clawback_strict_mode` (Issue #725). */
+    clawbackStrict: number;
+  };
+  /**
+   * Number of addresses blocked by `clawback_strict_mode`, counted separately
+   * from the warn-mode clawback path (Issue #725).
+   */
+  clawbackStrictFailures: number;
+  /**
+   * Whether the run evaluated assets with `clawback_strict_mode` enabled.
+   * `false` means a clawback-enabled trustline can only ever warn, so a
+   * clawback row is impossible for this run.
+   */
+  clawbackStrictMode: boolean;
+  /** True when at least one fatal config/auth/cancellation failure occurred. */
+  fatal?: boolean;
+  /** Stable fatal reason codes for job-level gating. */
+  fatalReasonCodes?: string[];
+}
+
+export interface BatchRunOptions {
+  /** Delay in milliseconds between individual address requests (default: 200 ms). */
+  requestDelayMs?: number;
+  /** Horizon fetch options forwarded to each fetchAccount call. */
+  fetchOptions?: FetchAccountOptions;
+  /**
+   * Additional assets (typically from the `assets_json` input) whose clawback
+   * flag is evaluated per address under `clawback_strict_mode` (Issue #725).
+   * Same asset code with a different issuer is evaluated independently.
+   */
+  extraAssets?: AssetConfigInput[];
+  /**
+   * Asset issuer account for the SEP-0001 home domain check (Issue #708).
+   * When omitted and `config.homeDomainCheckEnabled` is true, the issuer is
+   * fetched once per batch. `null` means the issuer is unavailable.
+   */
+  issuerAccount?: HorizonAccount | null;
+  /**
+   * Maximum number of addresses validated concurrently against Horizon
+   * (Issue #852). Clamped to `[MIN_BATCH_CONCURRENCY, MAX_BATCH_CONCURRENCY]`.
+   * Defaults to `1`, i.e. the original fully-sequential behavior — every
+   * existing caller that does not set this option is unaffected. Each
+   * concurrent worker still honors `requestDelayMs` between its own
+   * successive requests, so `maxConcurrency` bounds *parallel* Horizon
+   * pressure without defeating the per-worker pacing.
+   */
+  maxConcurrency?: number;
+  /**
+   * Optional cancellation signal (Issue #852). When aborted, no new
+   * addresses are dispatched to Horizon — any not yet started are returned
+   * as `CANCELLED` rows instead of being fetched — and (unless the caller's
+   * own `fetchOptions.signal` is already set) the same signal is threaded
+   * into `fetchAccount` so in-flight requests are aborted too. The function
+   * always resolves with one row per input address; nothing is left
+   * orphaned.
+   */
+  signal?: AbortSignal;
+  /**
+   * Hard cap on addresses per run (Issue #911, `batch_max_addresses`).
+   * Defaults to {@link DEFAULT_BATCH_MAX_ADDRESSES}. Exceeding it throws a
+   * {@link BatchAddressLimitError} before any Horizon request or metric.
+   */
+  maxAddresses?: number;
+  /**
+   * Per-address deadline in milliseconds (Issue #928), independent of the
+   * global `signal`. When one address takes longer, its in-flight requests
+   * are aborted and the row is reported as `ADDRESS_TIMEOUT`; the batch moves
+   * on. Global cancellation (`signal`) always takes precedence. Unset, `0`,
+   * or non-finite disables the deadline (previous behavior).
+   */
+  perAddressTimeoutMs?: number;
+}
+
+/** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
+export const MIN_BATCH_CONCURRENCY = 1;
+/** Upper bound for {@link BatchRunOptions.maxConcurrency}. */
+export const MAX_BATCH_CONCURRENCY = 20;
+
+function clampConcurrency(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return MIN_BATCH_CONCURRENCY;
+  return Math.min(MAX_BATCH_CONCURRENCY, Math.max(MIN_BATCH_CONCURRENCY, Math.floor(value)));
+}
+
+const DEFAULT_REQUEST_DELAY_MS = 200;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Synthetic row for an address never dispatched because `signal` fired first (Issue #852). */
+function cancelledBatchRow(address: string): BatchAddressResult {
+  return {
+    address,
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    failureReason: 'Batch run cancelled before checking this address',
+    reasonCode: BATCH_REASON_CODES.cancelled,
+    clawbackStrictFailure: false,
+    clawbackStrictAssets: [],
+  };
+}
+
+/** Row for an address that exceeded `perAddressTimeoutMs` (Issue #928). */
+function addressTimeoutRow(address: string, deadlineMs: number): BatchAddressResult {
+  return {
+    address,
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    failureReason: `Address validation exceeded the per-address deadline of ${deadlineMs} ms`,
+    reasonCode: BATCH_REASON_CODES.addressTimeout,
+    clawbackStrictFailure: false,
+    clawbackStrictAssets: [],
+  };
+}
+
+/** Outcome of validating a single address, used by both the serial and concurrent dispatch loops. */
+interface AddressOutcome {
+  result: BatchAddressResult;
+  /** True when this address's own attempt hit the shared rate budget. */
+  budgetExhausted: boolean;
+}
+
+/**
+ * Validate exactly one address against Horizon and classify the outcome.
+ *
+ * Extracted from `runBatchValidation` (Issue #852) so both the default
+ * single-worker dispatch and the bounded-concurrency dispatch share the
+ * exact same per-address logic and metrics instead of duplicating it.
+ */
+async function validateOneAddress(
+  address: string,
+  config: CheckConfig,
+  horizonUrl: string,
+  fetchOptions: FetchAccountOptions,
+  extraAssets: AssetConfigInput[],
+  issuerAccount: HorizonAccount | null | undefined,
+): Promise<AddressOutcome> {
+  // Issue #956: time every per-address check into the bounded histogram.
+  // The address is never used as a label — only the fixed outcome is.
+  const startedAt = Date.now();
+  let outcome: CheckLatencyOutcome = 'error';
+  try {
+    const result = await validateOneAddressTimed(
+      address,
+      config,
+      horizonUrl,
+      fetchOptions,
+      extraAssets,
+      issuerAccount,
+    );
+    outcome =
+      result.result.reasonCode === BATCH_REASON_CODES.invalidAddress
+        ? 'invalid'
+        : result.result.valid
+          ? 'pass'
+          : 'fail';
+    return result;
+  } finally {
+    globalCheckLatencyHistogram.record(outcome, Date.now() - startedAt);
+  }
+}
+
+async function validateOneAddressTimed(
+  address: string,
+  config: CheckConfig,
+  horizonUrl: string,
+  fetchOptions: FetchAccountOptions,
+  extraAssets: AssetConfigInput[],
+  issuerAccount: HorizonAccount | null | undefined,
+): Promise<AddressOutcome> {
+  if (!isValidStellarAddress(address)) {
+    globalMetrics.incrementCounter('batch_address_invalid');
+    // Issue #777: every row counts toward exactly one of passed/failed so
+    // `batch_address_passed + batch_address_failed === batch_size`.
+    globalMetrics.incrementCounter('batch_address_failed');
+    return {
+      budgetExhausted: false,
+      result: {
+        address,
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        failureReason: `Invalid Stellar address format: "${address}"`,
+        reasonCode: BATCH_REASON_CODES.invalidAddress,
+        clawbackStrictFailure: false,
+        clawbackStrictAssets: [],
+      },
+    };
+  }
+
+  try {
+    // Stop early when the shared rate budget is already spent: marking the
+    // row exhausted without attempting a fetch that must fail closed.
+    const tracker = fetchOptions?.rateBudgetTracker;
+    if (tracker && !tracker.hasRemainingBudget()) {
+      throw new RateBudgetExhaustedError(
+        'Rate budget exhausted before checking this address',
+      );
+    }
+    const account = await fetchAccount(horizonUrl, address, fetchOptions);
+    const result = await runAccountChecks(account, config, issuerAccount);
+    const homeDomainStrictFailure =
+      result.reasonCode === 'HOME_DOMAIN_MISMATCH' || result.reasonCode === 'HOME_DOMAIN_MISSING';
+
+    // Issue #725: a clawback-strict failure is a per-asset outcome, so the
+    // row fails whenever *any* evaluated asset trips `clawback_strict_mode` —
+    // including additional `assets_json` entries that the single-asset
+    // `ValidationResult` does not cover.
+    const clawbackStrictAssets = collectClawbackStrictAssets(account, config, extraAssets);
+    const clawbackStrictFailure = clawbackStrictAssets.length > 0;
+    const valid = result.valid && !clawbackStrictFailure;
+
+    let failureReason: string | null = null;
+    if (!valid) {
+      const reasons: string[] = [];
+      if (!result.trustlineExists) reasons.push('trustline missing');
+      if (!result.xlmReserveMet) reasons.push('XLM reserve insufficient');
+      if (clawbackStrictFailure) {
+        reasons.push(
+          `clawback strict mode: ${clawbackStrictAssets.map((a) => a.assetCode).join(', ')}`,
+        );
+      }
+      if (homeDomainStrictFailure) {
+        reasons.push(`home domain ${result.homeDomainCheck?.outcome ?? 'missing'}`);
+      }
+      failureReason = reasons.join('; ') || 'unknown';
+    }
+
+    if (valid) {
+      globalMetrics.incrementCounter('batch_address_passed');
+    } else {
+      globalMetrics.incrementCounter('batch_address_failed');
+      if (!result.trustlineExists) globalMetrics.incrementCounter('batch_fail_trustline_missing');
+      if (!result.xlmReserveMet) globalMetrics.incrementCounter('batch_fail_reserve_insufficient');
+      if (clawbackStrictFailure) {
+        globalMetrics.incrementCounter('batch_fail_clawback_strict');
+        globalMetrics.recordMetric('batch_clawback_strict_assets', clawbackStrictAssets.length, 'count');
+      }
+    }
+
+    return {
+      budgetExhausted: false,
+      result: {
+        address,
+        valid,
+        accountFunded: result.accountFunded,
+        trustlineExists: result.trustlineExists,
+        xlmBalance: result.xlmBalance,
+        xlmReserveMet: result.xlmReserveMet,
+        failureReason,
+        reasonCode: deriveBatchReasonCode(valid, {
+          clawbackStrictFailure,
+          trustlineExists: result.trustlineExists,
+          xlmReserveMet: result.xlmReserveMet,
+          homeDomainReasonCode: homeDomainStrictFailure ? result.reasonCode : undefined,
+        }),
+        clawbackStrictFailure,
+        clawbackStrictAssets,
+        ...(result.homeDomainCheck ? { homeDomainOutcome: result.homeDomainCheck.outcome } : {}),
+      },
+    };
+  } catch (error) {
+    let failureReason: string;
+    let isFunded = false;
+    const isBudgetExhausted = error instanceof RateBudgetExhaustedError;
+    const statusCode = error instanceof HorizonError ? error.statusCode : 0;
+    const isCancelled =
+      error instanceof Error &&
+      (error.name === 'AbortError' || /cancel|abort/i.test(error.message));
+    const isFatalAuth =
+      error instanceof HorizonError && (statusCode === 401 || statusCode === 403);
+    const isFatalConfig =
+      error instanceof HorizonError &&
+      statusCode >= 400 &&
+      statusCode < 500 &&
+      statusCode !== 404 &&
+      !isFatalAuth;
+
+    if (isBudgetExhausted) {
+      failureReason = `Rate budget exhausted: ${error instanceof Error ? error.message : 'unknown error'}`;
+      globalMetrics.incrementCounter('rate_budget_exhausted');
+      globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
+      failureReason = 'account not funded';
+      globalMetrics.incrementCounter('batch_fail_account_not_funded');
+    } else if (isCancelled) {
+      failureReason = `Batch cancelled: ${error instanceof Error ? error.message : 'cancelled'}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_cancelled');
+    } else if (isFatalAuth) {
+      failureReason = `Fatal Horizon authentication/permission error (${statusCode}): ${error.message}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_auth');
+    } else if (isFatalConfig) {
+      failureReason = `Fatal Horizon configuration error (${statusCode}): ${error.message}`;
+      globalMetrics.incrementCounter('batch_fail_fatal_config');
+    } else if (error instanceof HorizonError) {
+      failureReason = `Horizon error (${error.statusCode}): ${error.message}`;
+      globalMetrics.incrementCounter('batch_fail_horizon_error');
+      isFunded = false;
+    } else {
+      const msg = error instanceof Error ? error.message : 'unknown error';
+      failureReason = `error: ${msg}`;
+      globalMetrics.incrementCounter('batch_fail_horizon_error');
+    }
+    globalMetrics.incrementCounter('batch_address_failed');
+
+    let syntheticResult;
+    if (isBudgetExhausted) {
+      syntheticResult = rateBudgetExhaustedResult(
+        error instanceof Error ? error.message : 'unknown error',
+        config,
+      );
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
+      syntheticResult = unfundedAccountResult(address, config);
+    } else {
+      syntheticResult = horizonFailureResult(
+        error instanceof Error ? error.message : 'unknown error',
+        config,
+      );
+    }
+
+    return {
+      budgetExhausted: isBudgetExhausted,
+      result: {
+        address,
+        valid: false,
+        accountFunded: isFunded || syntheticResult.accountFunded,
+        trustlineExists: false,
+        xlmBalance: syntheticResult.xlmBalance,
+        xlmReserveMet: false,
+        failureReason,
+        reasonCode: isBudgetExhausted
+          ? BATCH_REASON_CODES.rateBudgetExhausted
+          : isCancelled
+            ? BATCH_REASON_CODES.fatalCancellation
+            : isFatalAuth
+              ? BATCH_REASON_CODES.fatalAuth
+              : isFatalConfig
+                ? BATCH_REASON_CODES.fatalConfig
+                : deriveBatchReasonCode(false, {
+                    clawbackStrictFailure: false,
+                    invalidAddress: false,
+                    accountNotFunded:
+                      error instanceof HorizonError && error.statusCode === 404,
+                    horizonError: true,
+                  }),
+        clawbackStrictFailure: false,
+        clawbackStrictAssets: [],
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic ordering guarantee (Issue #964)
+//
+// Wave matrix jobs fan out over batch outputs, so the same input must always
+// produce the same row order or downstream jobs flake. The contract:
+//
+//   1. Input order: `parseBatchAddresses` keeps the first occurrence of each
+//      address in the order given (JSON array and newline lists alike).
+//   2. Result order: `runBatchValidation` returns exactly one row per input
+//      address, in input order, regardless of concurrency or the order in
+//      which Horizon responses arrive. `results[i]` is always for
+//      `addresses[i]`.
+//   3. Summary order: `buildBatchSummary().failures` keeps result (input)
+//      order; `fatalReasonCodes` is sorted; `failureTaxonomy` keys are fixed.
+//   4. Matrix outputs (`assignee_results_json`, `matrix_ready_map`) list
+//      assignees in input order (see `buildMatrixOutputs` in outputs.ts).
+//
+// `verifyBatchOrdering` enforces (2) at runtime, so a regression fails loudly
+// instead of silently reordering payouts. See docs/USAGE.md#deterministic-ordering.
+// ---------------------------------------------------------------------------
+
+/** Most addresses accepted in one batch run. Larger inputs fail with `BATCH_INPUT_TOO_LARGE`. */
+export const MAX_BATCH_ADDRESSES = 1000;
+
+export type BatchInputErrorCode =
+  | 'BATCH_INPUT_EMPTY'
+  | 'BATCH_INPUT_INVALID_JSON'
+  | 'BATCH_INPUT_NOT_ARRAY'
+  | 'BATCH_INPUT_ITEM_NOT_STRING'
+  | 'BATCH_INPUT_NO_ENTRIES'
+  | 'BATCH_INPUT_TOO_LARGE';
+
+/** Malformed or oversized `stellar_addresses`; `code` is stable and documented. */
+export class BatchInputError extends Error {
+  constructor(
+    public readonly code: BatchInputErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'BatchInputError';
+  }
+}
+
+export type BatchOrderingErrorCode =
+  | 'BATCH_ORDER_COUNT_MISMATCH'
+  | 'BATCH_ORDER_ROW_MISSING'
+  | 'BATCH_ORDER_ADDRESS_MISMATCH';
+
+/** A batch result list that does not line up with its input addresses. */
+export class BatchOrderingError extends Error {
+  constructor(
+    public readonly code: BatchOrderingErrorCode,
+    message: string,
+    public readonly index?: number,
+  ) {
+    super(message);
+    this.name = 'BatchOrderingError';
+  }
+}
+
+/**
+ * Assert `results[i]` belongs to `addresses[i]` for every index.
+ *
+ * @throws {BatchOrderingError} `BATCH_ORDER_COUNT_MISMATCH`,
+ *   `BATCH_ORDER_ROW_MISSING` or `BATCH_ORDER_ADDRESS_MISMATCH` (with the
+ *   offending `index`).
+ */
+export function verifyBatchOrdering(
+  addresses: readonly string[],
+  results: ReadonlyArray<BatchAddressResult | undefined>,
+): void {
+  if (results.length !== addresses.length) {
+    throw new BatchOrderingError(
+      'BATCH_ORDER_COUNT_MISMATCH',
+      `Batch produced ${results.length} result row(s) for ${addresses.length} input address(es).`,
+    );
+  }
+  for (let i = 0; i < addresses.length; i++) {
+    const row = results[i];
+    if (row === undefined) {
+      throw new BatchOrderingError('BATCH_ORDER_ROW_MISSING', `Batch result row ${i} is missing.`, i);
+    }
+    if (row.address !== addresses[i]) {
+      throw new BatchOrderingError(
+        'BATCH_ORDER_ADDRESS_MISMATCH',
+        `Batch result row ${i} is for a different address than input position ${i}; output order must match input order.`,
+        i,
+      );
+    }
+  }
+}
+
+/**
+ * Parse the `stellar_addresses` input into a deduplicated list of addresses.
+ *
+ * Accepts:
+ * - Newline-separated list: one address per line (blank lines ignored)
+ * - JSON array: `["GABC...", "GDEF..."]`
+ *
+ * Throws if the resulting list is empty, or (Issue #911) a
+ * {@link BatchAddressLimitError} when the deduplicated list exceeds
+ * `options.maxAddresses` (default {@link DEFAULT_BATCH_MAX_ADDRESSES}).
+ */
+export function parseBatchAddresses(raw: string, options: { maxAddresses?: number } = {}): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new BatchInputError('BATCH_INPUT_EMPTY', 'stellar_addresses input is empty. Provide at least one Stellar address.');
+  }
+
+  let addresses: string[];
+
+  if (trimmed.startsWith('[')) {
+    // JSON array
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new BatchInputError('BATCH_INPUT_INVALID_JSON', 'stellar_addresses looks like a JSON array but could not be parsed. Check the JSON syntax.');
+    }
+    if (!Array.isArray(parsed)) {
+      throw new BatchInputError('BATCH_INPUT_NOT_ARRAY', 'stellar_addresses JSON must be an array of strings.');
+    }
+    addresses = (parsed as unknown[])
+      .map((item, i) => {
+        if (typeof item !== 'string') {
+          throw new BatchInputError('BATCH_INPUT_ITEM_NOT_STRING', `stellar_addresses JSON array item at index ${i} is not a string.`);
+        }
+        return item.trim();
+      })
+      .filter((item) => item.length > 0);
+  } else {
+    // Newline-separated
+    addresses = trimmed
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  if (addresses.length === 0) {
+    throw new BatchInputError('BATCH_INPUT_NO_ENTRIES', 'stellar_addresses input contains no non-empty entries.');
+  }
+
+  // Deduplicate, preserving order
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const addr of addresses) {
+    if (!seen.has(addr)) {
+      seen.add(addr);
+      deduped.push(addr);
+    }
+  }
+
+  if (deduped.length > MAX_BATCH_ADDRESSES) {
+    throw new BatchInputError(
+      'BATCH_INPUT_TOO_LARGE',
+      `stellar_addresses contains ${deduped.length} unique addresses; at most ${MAX_BATCH_ADDRESSES} are supported per run. Split the batch.`,
+    );
+  }
+
+  enforceBatchAddressLimit(deduped, options.maxAddresses);
+  return deduped;
+}
+
+/**
+ * Run validation checks against each address in `addresses` sequentially.
+ * A configurable delay between requests keeps Horizon pressure low.
+ */
+/**
+ * Build the machine-readable `reason_code` for a batch row.
+ *
+ * Precedence is deliberate (Issue #725): a clawback strict failure outranks
+ * the generic trustline/reserve codes so batch consumers can attribute the row
+ * to the `clawback_strict_mode` policy rather than to a missing trustline the
+ * account does in fact have.
+ */
+function deriveBatchReasonCode(
+  valid: boolean,
+  options: {
+    clawbackStrictFailure: boolean;
+    invalidAddress?: boolean;
+    accountNotFunded?: boolean;
+    horizonError?: boolean;
+    trustlineExists?: boolean;
+    xlmReserveMet?: boolean;
+    /** HOME_DOMAIN_* code from a strict-mode home domain failure (Issue #708). */
+    homeDomainReasonCode?: BatchReasonCode;
+  },
+): BatchReasonCode {
+  if (valid) return BATCH_REASON_CODES.success;
+  if (options.invalidAddress) return BATCH_REASON_CODES.invalidAddress;
+  if (options.accountNotFunded) return BATCH_REASON_CODES.accountNotFunded;
+  if (options.horizonError) return BATCH_REASON_CODES.horizonError;
+  if (options.clawbackStrictFailure) return CLAWBACK_STRICT_REASON_CODE;
+  if (options.trustlineExists === false) return BATCH_REASON_CODES.trustlineMissing;
+  if (options.xlmReserveMet === false) return BATCH_REASON_CODES.reserveTooLow;
+  if (options.homeDomainReasonCode) return options.homeDomainReasonCode;
+  return 'FAILED';
+}
+
+/**
+ * Collect every asset whose trustline has clawback enabled while
+ * `clawback_strict_mode` is on (Issue #725).
+ *
+ * The primary asset comes from the `ValidationResult` (already evaluated by
+ * `checks.ts`); the `assets_json` entries are evaluated against the raw
+ * Horizon account so batch mode can attribute a clawback block to a specific
+ * `code:issuer` pair instead of only reporting "the row failed".
+ */
+function collectClawbackStrictAssets(
+  account: HorizonAccount,
+  config: CheckConfig,
+  extraAssets: AssetConfigInput[],
+): BatchAssetFailure[] {
+  if (config.clawbackStrictMode !== true) return [];
+
+  const failures: BatchAssetFailure[] = [];
+  const seen = new Set<string>();
+  const record = (assetCode: string, assetIssuer: string, clawbackEnabled: boolean): void => {
+    if (!clawbackEnabled) return;
+    const key = `${assetCode}:${assetIssuer}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    failures.push({
+      assetCode,
+      assetIssuer,
+      reasonCode: CLAWBACK_STRICT_REASON_CODE,
+      detail: `**${assetCode}** has clawback enabled (${assetIssuer}) — blocked by \`clawback_strict_mode: true\`.`,
+    });
+  };
+
+  const primaryBalance = findTrustlineBalance(account, config.assetCode, config.assetIssuer);
+  if (primaryBalance) {
+    record(config.assetCode, config.assetIssuer, getAssetClawbackStatus(primaryBalance).clawbackEnabled);
+  }
+
+  for (const asset of extraAssets) {
+    const balance = findTrustlineBalance(account, asset.assetCode, asset.assetIssuer);
+    if (!balance) continue;
+    record(asset.assetCode, asset.assetIssuer, getAssetClawbackStatus(balance).clawbackEnabled);
+  }
+
+  return failures;
+}
+
+export async function runBatchValidation(
+  addresses: string[],
+  config: CheckConfig,
+  horizonUrl: string,
+  options: BatchRunOptions = {},
+): Promise<BatchAddressResult[]> {
+  // Issue #911: fail before any Horizon call, metric, or worker is started.
+  enforceBatchAddressLimit(addresses, options.maxAddresses);
+
+  const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
+  const extraAssets = options.extraAssets ?? [];
+  const maxConcurrency = clampConcurrency(options.maxConcurrency);
+  const signal = options.signal;
+  // Issue #852: threading the batch-level signal into fetchOptions aborts
+  // in-flight Horizon requests too (fetchAccount already honors `signal`),
+  // unless the caller already wired its own signal through fetchOptions.
+  const fetchOptions: FetchAccountOptions = {
+    ...(options.fetchOptions ?? {}),
+    signal: options.fetchOptions?.signal ?? signal,
+  };
+
+  globalMetrics.incrementCounter('batch_run_start');
+  globalMetrics.recordMetric('batch_size', addresses.length, 'count');
+  globalMetrics.recordMetric('batch_max_concurrency', maxConcurrency, 'count');
+
+  const results: Array<BatchAddressResult | undefined> = new Array(addresses.length).fill(undefined);
+
+  if (signal?.aborted || addresses.length === 0) {
+    // Nothing dispatched: either there is no work, or the caller cancelled
+    // before this run ever touched Horizon. Every row is CANCELLED, not a
+    // silent empty result, so callers can tell "cancelled" from "no input".
+    if (signal?.aborted) {
+      for (let i = 0; i < addresses.length; i++) {
+        results[i] = cancelledBatchRow(addresses[i]);
+        globalMetrics.incrementCounter('batch_address_cancelled');
+        globalMetrics.incrementCounter('batch_address_failed');
+      }
+    }
+    globalMetrics.recordMetric('batch_passed', 0, 'count');
+    globalMetrics.recordMetric('batch_failed', results.filter(Boolean).length, 'count');
+    globalMetrics.incrementCounter('batch_run_complete');
+    verifyBatchOrdering(addresses, results);
+    return results as BatchAddressResult[];
+  }
+
+  // Issue #708: every row shares the same configured issuer, so fetch it once
+  // and evaluate the home domain against it for each address.
+  const issuerAccount: HorizonAccount | null | undefined = !config.homeDomainCheckEnabled
+    ? undefined
+    : options.issuerAccount !== undefined
+      ? options.issuerAccount
+      : await fetchHomeDomainIssuerAccount(horizonUrl, config.assetIssuer, fetchOptions);
+
+  // Issue #852: a bounded pool of `workerCount` workers pulls addresses off
+  // a shared cursor (`nextIndex`) in input order. `workerCount` is exactly
+  // `maxConcurrency` (clamped to the number of addresses), so the default
+  // `maxConcurrency: 1` runs a single worker that processes every address
+  // strictly in order — byte-for-byte the original sequential behavior.
+  // Each worker still waits `requestDelayMs` before its own 2nd+ request, so
+  // raising `maxConcurrency` bounds *parallel* Horizon pressure without
+  // defeating per-worker pacing.
+  const workerCount = Math.min(maxConcurrency, addresses.length);
+  let nextIndex = 0;
+  let stopDispatch = false;
+  // Issue #946: throttle signals lower the number of usable worker slots.
+  const limiter = new AdaptiveConcurrency(workerCount);
+
+  async function worker(): Promise<void> {
+    let dispatchedBefore = false;
+    while (true) {
+      if (stopDispatch || signal?.aborted) {
+        stopDispatch = true;
+        return;
+      }
+      if (nextIndex >= addresses.length) return;
+      if (!limiter.tryAcquire()) {
+        await limiter.waitForRelease();
+        continue;
+      }
+      const i = nextIndex;
+      const epoch = limiter.epoch;
+      let throttled = false;
+      nextIndex = i + 1;
+
+      // Issue #852: every address beyond the first wave had to wait for a
+      // worker slot to free up — that wait is exactly what "the queue is
+      // saturated" means here. Deterministic: exactly
+      // `max(0, addresses.length - workerCount)` increments per run.
+      if (i >= workerCount) {
+        globalMetrics.incrementCounter('batch_queue_saturated');
+      }
+
+      if (dispatchedBefore && requestDelayMs > 0) {
+        await sleep(requestDelayMs);
+      }
+      dispatchedBefore = true;
+
+      // Issue #928 + #946: per-address deadline with AdaptiveConcurrency throttle feedback.
+      const throttledFetchOptions: FetchAccountOptions = {
+        ...fetchOptions,
+        onThrottle: () => {
+          throttled = true;
+          limiter.onThrottle(epoch);
+          fetchOptions.onThrottle?.();
+        },
+      };
+      let outcome: AddressOutcome | undefined;
+      try {
+        const deadlineOutcome =
+          !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+            ? {
+                status: 'completed' as const,
+                value: await validateOneAddress(
+                  addresses[i],
+                  config,
+                  horizonUrl,
+                  throttledFetchOptions,
+                  extraAssets,
+                  issuerAccount,
+                ),
+              }
+            : await runWithAddressDeadline(
+                (addressSignal) =>
+                  validateOneAddress(
+                    addresses[i],
+                    config,
+                    horizonUrl,
+                    { ...throttledFetchOptions, signal: addressSignal },
+                    extraAssets,
+                    issuerAccount,
+                  ),
+                options.perAddressTimeoutMs,
+                fetchOptions.signal,
+              );
+        if (deadlineOutcome.status === 'cancelled') {
+          stopDispatch = true;
+          return;
+        }
+        if (deadlineOutcome.status === 'timed_out') {
+          globalMetrics.incrementCounter('batch_fail_address_timeout');
+          globalMetrics.incrementCounter('batch_address_failed');
+          outcome = {
+            budgetExhausted: false,
+            result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+          };
+        } else {
+          outcome = deadlineOutcome.value;
+        }
+      } finally {
+        limiter.release();
+      }
+      if (!outcome) return;
+      if (!throttled && outcome.result.accountFunded) limiter.onSuccess(epoch);
+      results[i] = outcome.result;
+
+      if (outcome.budgetExhausted || signal?.aborted) {
+        stopDispatch = true;
+        return;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  // Any address left `undefined` was never dispatched — either the rate
+  // budget was exhausted by another worker, or `signal` fired mid-run.
+  // Fill every such row (preserving input order) so the function always
+  // resolves with exactly `addresses.length` rows and nothing is orphaned.
+  for (let i = 0; i < addresses.length; i++) {
+    if (results[i] !== undefined) continue;
+    if (signal?.aborted) {
+      results[i] = cancelledBatchRow(addresses[i]);
+      globalMetrics.incrementCounter('batch_address_cancelled');
+      globalMetrics.incrementCounter('batch_address_failed');
+    } else {
+      const exhaustedResult = rateBudgetExhaustedResult(
+        'Rate budget exhausted before checking this address',
+        config,
+      );
+      results[i] = {
+        address: addresses[i],
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: exhaustedResult.xlmBalance,
+        xlmReserveMet: false,
+        failureReason: 'Rate budget exhausted before checking this address',
+        reasonCode: BATCH_REASON_CODES.rateBudgetExhausted,
+        clawbackStrictFailure: false,
+        clawbackStrictAssets: [],
+      };
+      globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+      globalMetrics.incrementCounter('batch_address_failed');
+    }
+  }
+
+  // Issue #964: results[i] must be for addresses[i]. Fail loudly rather than
+  // hand a Wave matrix a silently reordered payout list.
+  verifyBatchOrdering(addresses, results);
+  const finalResults = results as BatchAddressResult[];
+
+  globalMetrics.recordMetric('batch_passed', finalResults.filter((r) => r.valid).length, 'count');
+  globalMetrics.recordMetric('batch_failed', finalResults.filter((r) => !r.valid).length, 'count');
+  globalMetrics.incrementCounter('batch_run_complete');
+
+  return finalResults;
+}
+
+/**
+ * Compute aggregate summary metrics from batch results.
+ *
+ * @param results Per-address results from {@link runBatchValidation}.
+ * @param options `clawbackStrictMode` records the *policy* that was evaluated
+ *                (Issue #725). When omitted it is inferred from the results,
+ *                which is correct for every path that already observed a
+ *                clawback strict failure.
+ */
+export function buildBatchSummary(
+  results: BatchAddressResult[],
+  options: { clawbackStrictMode?: boolean } = {},
+): BatchSummary {
+  const passed = results.filter((r) => r.valid).length;
+  const failed = results.length - passed;
+  // Sorted so the list never depends on which row happened to fail first (Issue #964).
+  const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code): code is string => Boolean(code && (code.startsWith('FATAL_') || code === BATCH_REASON_CODES.rateBudgetExhausted))))).sort();
+
+  const failures = results
+    .filter((r) => !r.valid)
+    .map((r) => ({
+      address: r.address,
+      reason: r.failureReason ?? 'unknown',
+      reasonCode: r.reasonCode ?? BATCH_REASON_CODES.success,
+      clawbackStrict: r.clawbackStrictFailure === true,
+    }));
+
+  const taxonomy = {
+    accountNotFunded: 0,
+    trustlineMissing: 0,
+    reserveInsufficient: 0,
+    horizonError: 0,
+    invalidAddress: 0,
+    clawbackStrict: 0,
+  };
+
+  for (const r of results) {
+    if (r.valid) continue;
+    // Issue #725: clawback strict failures are counted in their own bucket so
+    // a warn-mode clawback warning can never be confused with a strict block,
+    // and the clawback clause never leaks into the trustline taxonomy.
+    if (r.clawbackStrictFailure === true) {
+      taxonomy.clawbackStrict++;
+    }
+    const reason = r.failureReason ?? '';
+    if (reason.includes('not funded')) taxonomy.accountNotFunded++;
+    else if (reason.includes('Invalid Stellar address')) taxonomy.invalidAddress++;
+    else if (reason.startsWith('Horizon error') || reason.startsWith('error:')) taxonomy.horizonError++;
+    else if (r.clawbackStrictFailure !== true) {
+      if (reason.includes('trustline')) taxonomy.trustlineMissing++;
+      if (reason.includes('reserve')) taxonomy.reserveInsufficient++;
+    }
+  }
+
+  return {
+    total: results.length,
+    passed,
+    failed,
+    failures,
+    failureTaxonomy: taxonomy,
+    clawbackStrictFailures: taxonomy.clawbackStrict,
+    clawbackStrictMode:
+      options.clawbackStrictMode ?? results.some((r) => r.clawbackStrictFailure === true),
+    fatal: fatalReasonCodes.length > 0,
+    fatalReasonCodes,
+  };
+}
+
+/**
+ * Render a compact Markdown summary table for the batch results.
+ * Suitable for posting as a single issue comment in batch mode.
+ *
+ * When at least one row failed because of `clawback_strict_mode` (Issue #725)
+ * the table grows a `Clawback` column so the blocking policy is visible at a
+ * glance, the clawback taxonomy line is emitted separately from the other
+ * buckets, and every clawback row carries its machine-readable
+ * `CLAWBACK_STRICT_MODE` reason code. Without a clawback strict failure the
+ * rendered markdown is byte-identical to previous versions.
+ */
+export function formatBatchSummaryMarkdown(
+  summary: BatchSummary,
+  assetCode: string,
+): string {
+  const statusLine = summary.failed === 0
+    ? '✅ All addresses passed validation.'
+    : `⚠️ ${summary.failed} of ${summary.total} addresses failed validation.`;
+
+  const clawbackStrictFailures =
+    summary.clawbackStrictFailures ?? summary.failureTaxonomy.clawbackStrict ?? 0;
+  const showClawbackColumn = clawbackStrictFailures > 0;
+
+  const rows = showClawbackColumn
+    ? [
+        '| Address | Funded | Trustline | Reserve | Clawback | Status |',
+        '| ------- | ------ | --------- | ------- | -------- | ------ |',
+      ]
+    : [
+        '| Address | Funded | Trustline | Reserve | Status |',
+        '| ------- | ------ | --------- | ------- | ------ |',
+      ];
+
+  // We don't have per-row detail here without the full results — callers
+  // should use the JSON artifact for per-address detail and pass results
+  // directly. This summary markdown uses the failures list.
+
+  // Build rows from failures only (passed rows omitted for brevity)
+  for (const failure of summary.failures) {
+    const short = failure.address.length > 12
+      ? `${failure.address.slice(0, 6)}…${failure.address.slice(-4)}`
+      : failure.address;
+    const reason = showClawbackColumn && failure.clawbackStrict
+      ? `${failure.reason} (\`${failure.reasonCode}\`)`
+      : failure.reason;
+    rows.push(
+      showClawbackColumn
+        ? `| \`${short}\` | ❌ | — | — | 🚫 | ${reason} |`
+        : `| \`${short}\` | ❌ | — | — | ${reason} |`,
+    );
+  }
+
+  const taxonomy = summary.failureTaxonomy;
+  const taxLines = [
+    taxonomy.accountNotFunded > 0 ? `- Account not funded: **${taxonomy.accountNotFunded}**` : '',
+    taxonomy.trustlineMissing > 0 ? `- ${assetCode} trustline missing: **${taxonomy.trustlineMissing}**` : '',
+    taxonomy.reserveInsufficient > 0 ? `- XLM reserve insufficient: **${taxonomy.reserveInsufficient}**` : '',
+    taxonomy.horizonError > 0 ? `- Horizon errors: **${taxonomy.horizonError}**` : '',
+    taxonomy.invalidAddress > 0 ? `- Invalid address format: **${taxonomy.invalidAddress}**` : '',
+    clawbackStrictFailures > 0
+      ? `- Clawback strict mode (${assetCode}): **${clawbackStrictFailures}**`
+      : '',
+  ].filter(Boolean);
+
+  const parts: string[] = [
+    '## TrustBridge — Batch Validation Summary',
+    '',
+    statusLine,
+    '',
+    `**Total:** ${summary.total} · **Passed:** ${summary.passed} · **Failed:** ${summary.failed}`,
+    '',
+  ];
+
+  if (clawbackStrictFailures > 0) {
+    parts.push(
+      `**Clawback strict failures:** ${clawbackStrictFailures} · \`clawback_strict_mode: true\``,
+      '',
+    );
+  }
+
+  if (summary.failed > 0) {
+    parts.push('### Failed addresses', '', ...rows, '');
+    if (taxLines.length > 0) {
+      parts.push('### Failure taxonomy', '', ...taxLines, '');
+    }
+  }
+
+  parts.push('_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
+
+  return parts.join('\n');
+}

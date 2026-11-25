@@ -1,0 +1,281 @@
+# Asset decimal precision and balance parsing
+
+How **trustbridge-action** handles Stellar balance strings, XLM stroops,
+and safe numeric comparisons for release scripts and downstream CI.
+
+Related docs: [Usage](USAGE.md) · [Error handling](ERROR_HANDLING.md) · [README](../README.md)
+
+---
+
+## Why balances are strings
+
+Horizon returns every balance — native XLM and all credit assets — as a
+**decimal string**, for example:
+
+```json
+{
+  "asset_type": "native",
+  "balance": "14.9999700"
+}
+```
+
+The string representation always has exactly **7 decimal places** for XLM
+(one stroop = 0.0000001 XLM). Credit-asset balances follow the same format.
+Horizon never emits raw stroop integers or JavaScript `Number` values in the
+account endpoint.
+
+**Why strings?** Stellar amounts can be as large as 2^63−1 stroops
+(≈ 922 trillion XLM). That exceeds IEEE 754 double-precision safe-integer
+range (~9 × 10^15), so using JavaScript `number` for the raw stroop integer
+would silently lose precision. By returning a decimal string, Horizon lets
+consumers choose the right numeric type for their context.
+
+---
+
+## XLM precision: stroops vs decimal XLM
+
+| Unit | Scale | Example |
+|------|-------|---------|
+| 1 XLM | 10,000,000 stroops | `"1.0000000"` |
+| 1 stroop | 0.0000001 XLM | `"0.0000001"` |
+| Typical reserve | 1–2 XLM | `"1.5000000"` |
+
+The action always works in **decimal XLM** (7 d.p. string ↔ JavaScript
+`number`). It never exposes raw stroop integers externally. The `xlm_balance`
+output value is the raw string from Horizon (e.g. `"14.9999700"`), not a
+stroop integer.
+
+---
+
+## How the action parses balances internally
+
+`parseHorizonBalance` in `src/horizon.ts` converts the Horizon balance string
+to a JavaScript `number`:
+
+```ts
+export function parseHorizonBalance(balance: string): number {
+  const parsed = Number(balance);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+```
+
+This is safe for the XLM reserve comparison because the values involved
+(typically 1–20 XLM) are far below the 53-bit safe-integer boundary
+(~9 × 10^15). Credit-asset balances can be much larger, so the
+`min_asset_balance` comparison does **not** use `parseHorizonBalance`; it
+compares integer stroops instead (see below).
+
+---
+
+## `min_asset_balance` comparison (stroop precision)
+
+Credit-asset balances can reach 922,337,203,685.4775807 units, where a
+JavaScript `number` can no longer tell two amounts one stroop apart. The
+`min_asset_balance` check therefore compares **`BigInt` stroops**, never
+floats:
+
+1. The Horizon balance string is converted with `toStroops(balance)`
+   (`src/checks.ts`). Horizon always returns 7 decimals, so this is exact.
+2. `min_asset_balance` is converted with `toStroops(value, 'ceil')`. Digits
+   beyond the 7th decimal round **up** to the next stroop — a balance, being
+   whole stroops, meets `1.00000001` exactly when it meets `1.0000001`.
+3. The check passes when `balance >= threshold` (`buildAssetBalanceRequirement`).
+   A balance equal to the threshold passes; one stroop below fails.
+4. The reported deficit is `threshold − balance` formatted from stroops with
+   `formatStroops`, e.g. `0.0000001`.
+
+| `min_asset_balance` | Balance | Result |
+|---------------------|---------|--------|
+| `100` | `100.0000000` | pass |
+| `100` | `99.9999999` | fail, deficit `0.0000001` |
+| `100` | `100.0000001` | pass |
+| `1.00000001` | `1.0000000` | fail |
+| `1.00000001` | `1.0000001` | pass |
+
+### Asset exponents and Wave payout assets
+
+Every Stellar asset — native XLM, USDC, and other Wave payout assets — is
+represented on-ledger in **stroops (7 decimal places)**, regardless of the
+asset's display precision. The action therefore applies the *same* stroop
+comparison to all assets; there is no per-asset exponent table to keep in
+sync. This is what prevents false passes/fails when comparing a USDC balance
+against a `min_asset_balance` written with fewer decimals (e.g. `100` vs
+`100.0000000`).
+
+| Asset | `min_asset_balance` | Balance | Result |
+|-------|---------------------|---------|--------|
+| USDC | `100` | `100.0000000` | pass |
+| USDC | `100` | `99.9999999` | fail, deficit `0.0000001` |
+| USDC | `100.5` | `100.4999999` | fail, deficit `0.0000001` |
+| USDC | `100.5` | `100.5000000` | pass |
+
+---
+
+## `min_xlm_reserve` parsing rules
+
+The `min_xlm_reserve` input is validated by `parseMinXlmReserve` in
+`src/checks.ts`:
+
+1. The raw string is trimmed of leading/trailing whitespace.
+2. It is converted with `Number()`.
+3. The result must be a **finite, non-negative** number; otherwise the run
+   fails immediately with a clear error message.
+4. Acceptable forms: `"1.5"`, `"1.50"`, `"2"`, `"0"`, `"1.0000001"`.
+5. Rejected: `""`, `"abc"`, `"-1"`, `"Infinity"`, `"NaN"`, `"1e308"`.
+
+The comparison `actualXlm >= minXlmReserve` uses JavaScript `>=` on two
+`number` values. For reserve amounts in the normal range (0–600 XLM) this is
+exact to 7 decimal places and introduces no rounding error.
+
+---
+
+## The `xlm_balance` output
+
+The `xlm_balance` action output is the **raw Horizon string** for the native
+balance, e.g. `"14.9999700"`. When the account is not funded the value is
+`"0"`; when Horizon is unreachable it is `"unknown"`.
+
+```yaml
+- id: bridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.addr.outputs.value }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Use balance in downstream step
+  run: echo "Balance is ${{ steps.bridge.outputs.xlm_balance }}"
+```
+
+---
+
+## Safe parsing in consumer CI / release scripts
+
+### ✅ Safe — use `parseFloat` for display or threshold checks up to ~10 trillion XLM
+
+For typical amounts (< 10 million XLM) `parseFloat` is exact to 7 d.p. and
+is the simplest correct choice:
+
+```js
+const balance = parseFloat(steps.bridge.outputs.xlm_balance);
+if (balance >= 1.5) { /* safe */ }
+```
+
+### ✅ Safe — integer stroop arithmetic for payment amounts
+
+Convert to stroops (integer) to avoid any floating-point concern:
+
+```js
+// 1 XLM = 10_000_000 stroops
+function toStroops(xlmString) {
+  // round is defensive; Horizon always gives exactly 7 d.p.
+  return Math.round(parseFloat(xlmString) * 10_000_000);
+}
+
+const balance = toStroops("14.9999700"); // 149999700 — safe integer arithmetic
+const threshold = toStroops("1.5");      // 15000000
+if (balance >= threshold) { /* pass */ }
+```
+
+### ✅ Safe — BigInt stroop arithmetic for maximum precision
+
+For auditable release automation where any rounding must be impossible:
+
+```js
+function toStropsBigInt(xlmString) {
+  const [whole, frac = ''] = xlmString.split('.');
+  const fracPadded = frac.padEnd(7, '0').slice(0, 7);
+  return BigInt(whole) * 10_000_000n + BigInt(fracPadded);
+}
+
+const balance   = toStropsBigInt("14.9999700"); // 149999700n
+const threshold = toStropsBigInt("1.5000000");  // 15000000n
+if (balance >= threshold) { /* pass */ }
+```
+
+### ❌ Unsafe — naive multiplication before rounding
+
+```js
+// DO NOT DO THIS — floating-point drift for large amounts
+const stroops = parseFloat(balance) * 10_000_000; // may not be an integer
+if (stroops > 15_000_000) { ... }                  // risky for exact equality checks
+```
+
+### ❌ Unsafe — treating `xlm_balance` as an integer
+
+The `xlm_balance` output is never a stroop integer. Do not multiply by 10,000,000
+and expect the result to be correct without first removing the decimal point.
+
+---
+
+## Credit-asset balance format
+
+Credit-asset balances (e.g. USDC) follow the same 7-decimal-place string
+format as native XLM. Since Issue #246 the action **exposes** the configured asset’s balance as `asset_balance` (and in the comment’s `### Balances` section alongside `xlm_balance`/`native_balance`) so you can distinguish “has USDC but no XLM” from the inverse:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.addr.outputs.value }}
+    asset_code: USDC
+    asset_issuer: GA5Z...
+- run: |
+    echo "Native: ${{ steps.bridge.outputs.native_balance }} XLM"
+    echo "USDC: ${{ steps.bridge.outputs.asset_balance }} USDC"
+    echo "Trustline: ${{ steps.bridge.outputs.trustline_exists }}"
+```
+
+- **Missing trustline** → `asset_balance` is `"0"` and the comment shows `— no trustline configured`.
+- **Trustline with 0 balance** → `asset_balance` is `"0.0000000"` and the comment shows `` `0.0000000 USDC` `` (distinct from missing).
+- **Horizon error** → `asset_balance` is `"unknown"` (same as `xlm_balance`).
+
+The same safe-parsing rules (parseFloat for thresholds <10M, stroops/BigInt for payment math) apply to `asset_balance`. If your release script needs to inspect a credit-asset balance, use `asset_balance` directly — you no longer need to fetch from Horizon separately.
+
+### Split display (Issue #246)
+
+The comment now renders both balances:
+
+```md
+### Balances
+- **Native XLM balance:** `10.0000000 XLM`
+- **Minimum required XLM reserve:** `1.5000000 XLM`
+- **USDC balance:** `100.0000000 USDC`
+- **Minimum required USDC balance:** `100.0000000 USDC`
+```
+
+---
+
+## Asset-code normalization (Issue #968)
+
+Exact balance arithmetic is only useful when the asset being compared is the
+one the operator meant. All trustline lookups therefore compare asset codes in
+a canonical form:
+
+1. Trim surrounding whitespace.
+2. Uppercase the code (`yXLM` → `YXLM`, `usd1` → `USD1`).
+3. Require 1–12 ASCII alphanumeric characters via `assertValidAssetCode()`.
+4. Compare the issuer with the original strict StrKey rules — normalization
+   never relaxes the issuer match.
+
+`normalizeAssetCode()` and `assetCodesEqual()` are exported from
+`src/assets.ts`; `hasTrustline()` and `findTrustlineBalance()` in
+`src/horizon.ts` apply the same canonical form to both the configured code and
+the Horizon `asset_code`. Multi-asset helpers in `src/checks.ts` preserve the
+caller's original code in labels/results — including exotic codes such as
+`yXLM` — while using the canonical form only for the trustline comparison.
+
+Fixtures in `__tests__/asset-code-normalization.test.ts` pin exotic-but-valid
+codes (`yXLM`, `USD1`, `A1B2C3`, `ABC123`, `123456789012`) and the failure
+paths: non-alphanumeric characters, empty codes, codes longer than 12
+characters, and an issuer mismatch. No new action input, output, reason code,
+or environment variable is introduced by this normalization.
+
+---
+
+## Fixture tests
+
+`__tests__/decimal-precision.test.ts` pins the rules above with fixtures for
+native XLM and USDC amounts, covering both the happy path (balance meets or
+exceeds the threshold) and the failure path (balance one stroop short). The
+fixtures exercise `toStroops`, `formatStroops`, and
+`buildAssetBalanceRequirement` from `src/checks.ts` so any drift between this
+document and the implementation fails CI.

@@ -1,0 +1,141 @@
+# Example: TrustBridge with label-specific validation rules
+#
+# This workflow demonstrates per-label branching. Different issue labels
+# trigger different validation rules (e.g., different min_xlm_reserve or assets),
+# without using the composite action. This pattern is useful when:
+# - Different workflows need different validation thresholds.
+# - You want explicit control over which job runs based on labels.
+# - Composite action abstraction is too constraining.
+#
+# This example gates "bounty" issues at 10 XLM reserve and "grant" issues at
+# 2 XLM reserve.
+#
+# Copy this into `.github/workflows/trustbridge-label-gate-branching.yml` and
+# customize labels, addresses, and reserve amounts.
+#
+# Permissions: issues:read (label checks), issues:write (post comments), contents:read (optional)
+
+name: Verify Stellar wallet (label-specific rules)
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  check-gate-labels:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    outputs:
+      bounty_present: ${{ steps.labels.outputs.bounty }}
+      grant_present: ${{ steps.labels.outputs.grant }}
+      address: ${{ steps.resolve.outputs.address }}
+    steps:
+      - name: Check labels
+        id: labels
+        # Label names require triage/write access to set, so this is lower
+        # risk than a workflow_dispatch input or issue body — but routing
+        # through env: costs nothing and keeps every example in this repo
+        # consistent about never interpolating a context value directly
+        # into a shell string.
+        env:
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: |
+          # Extract label names from the issue event context (comma-separated string).
+          LABELS="${ISSUE_LABELS}"
+
+          # Check if specific labels are present.
+          if [[ "$LABELS" == *"bounty"* ]]; then
+            echo "bounty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bounty=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$LABELS" == *"grant"* ]]; then
+            echo "grant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "grant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve address
+        id: resolve
+        run: |
+          # Example: hardcoded or extracted from issue body.
+          # See docs/USAGE.md#extracting-stellar-addresses-from-issues for patterns.
+          ADDRESS="GYOURCONTRIBUTORADDRESSHERE"
+          echo "address=$ADDRESS" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 1: Bounty validation (high reserve requirement)
+  # ─────────────────────────────────────────────────────────────────────
+
+  validate-bounty:
+    needs: check-gate-labels
+    if: needs.check-gate-labels.outputs.bounty_present == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: TrustBridge — bounty (high reserve)
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: ${{ needs.check-gate-labels.outputs.address }}
+          min_xlm_reserve: '10'  # higher threshold for bounty payouts
+          fail_on_missing: 'true'
+          sticky_comment: 'true'
+          debug_mode: 'false'
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 2: Grant validation (standard reserve requirement)
+  # ─────────────────────────────────────────────────────────────────────
+
+  validate-grant:
+    needs: check-gate-labels
+    if: needs.check-gate-labels.outputs.grant_present == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: TrustBridge — grant (standard reserve)
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: ${{ needs.check-gate-labels.outputs.address }}
+          min_xlm_reserve: '2'  # standard reserve requirement
+          fail_on_missing: 'false'  # warn-only for grants
+          sticky_comment: 'true'
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 3: Downstream job example (branch on results)
+  # ─────────────────────────────────────────────────────────────────────
+
+  process-bounty:
+    needs: [check-gate-labels, validate-bounty]
+    if: |
+      needs.check-gate-labels.outputs.bounty_present == 'true' &&
+      needs.validate-bounty.outputs.account_funded == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process bounty
+        run: |
+          echo "✓ Bounty account is funded and ready for payout"
+          echo "  Address: ${{ needs.check-gate-labels.outputs.address }}"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Fallback: No gate labels found
+  # ─────────────────────────────────────────────────────────────────────
+
+  no-gate:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issues' &&
+      !contains(github.event.issue.labels.*.name, 'bounty') &&
+      !contains(github.event.issue.labels.*.name, 'grant')
+    steps:
+      - name: Notify gate closed
+        run: |
+          echo "ℹ️  No validation gate labels found (bounty, grant)."
+          echo "   Add a gate label to this issue to run wallet validation."

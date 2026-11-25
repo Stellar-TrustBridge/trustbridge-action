@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-08-31T07:05:25.189Z",
+  "repository": "my-org/my-repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5000000",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true },
+      { "label": "XLM reserve", "passed": true }
+    ]
+  }
+}

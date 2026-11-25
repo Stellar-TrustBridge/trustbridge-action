@@ -1,0 +1,60 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Issue #436 — localized onboarding checklist renders a non-English snapshot for a failing account 1`] = `
+"### Lista de incorporación
+
+_Completa estos pasos en orden. Las casillas se actualizan automáticamente con las comprobaciones de Horizon._
+
+- [ ] **Financiar la cuenta** — Activa la cuenta con XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Añadir línea de confianza USDC** — Configura la línea de confianza del activo. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verificar saldo XLM** — Alcanza la reserva de **1.5 XLM**. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
+`;
+
+exports[`buildAssetChecklist (Issue #717) matches the golden snapshot for a mixed-outcome checklist with a malicious deepLink 1`] = `
+"### Asset checklist
+
+- [x] ✅ \`EURC\` — issuer \`GA5Z…KZVN\` — trustline exists
+- [ ] ❌ \`FOO\` — issuer \`GA5Z…KZVN\` — trustline missing
+- [ ] ❌ \`BAR\` — issuer \`GA5Z…KZVN\` — trustline missing — [remediation](https://stellar.expert/explorer/public/asset/BAR)"
+`;
+
+exports[`buildAssetTrustlineTable truncation (Issue #860) matches the golden snapshot for a truncated table 1`] = `
+"### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| A0 | ✅ exists | \`0.0000000\` | \`GA5Z…KZVN\` |
+| A1 | ❌ missing | \`0\` — no trustline | \`GA5Z…KZVN\` |
+
+_…and **2** more assets not shown (showing 2 of 4). See the \`assets_trustline_status\` / \`trustlines_summary\` action outputs for the full list._"
+`;
+
+exports[`buildOnboardingChecklist renders a partial checklist when only funding and reserve pass 1`] = `
+"### Onboarding checklist
+
+_Complete these steps in order. Boxes update automatically from live Horizon checks._
+
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
+`;
+
+exports[`buildOnboardingChecklist renders all checked boxes when validation fully passes 1`] = `
+"### Onboarding checklist
+
+_Complete these steps in order. Boxes update automatically from live Horizon checks._
+
+- [x] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [x] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [x] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
+`;
+
+exports[`buildOnboardingChecklist renders all unchecked boxes when every check fails 1`] = `
+"### Onboarding checklist
+
+_Complete these steps in order. Boxes update automatically from live Horizon checks._
+
+- [ ] **Fund account** — Activate the account with XLM. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#account-not-funded))
+- [ ] **Add USDC trustline** — Configure the asset trustline. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#trustline-missing))
+- [ ] **Verify XLM balance** — Meet the **1.5 XLM** reserve. ([FAQ](https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md#xlm-reserve-too-low))"
+`;

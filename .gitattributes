@@ -1,0 +1,9 @@
+* text=auto eol=lf
+dist/** text eol=lf
+src/** text eol=lf
+__tests__/** text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.map text eol=lf
+*.md text eol=lf
+*.json text eol=lf

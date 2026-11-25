@@ -1,0 +1,586 @@
+name: 'TrustBridge Label Gate'
+description: >-
+  Conditional label gate for TrustBridge validation. Checks if an issue has
+  specific labels and runs trustbridge-action only if a gate label is present,
+  avoiding unnecessary validation runs. Supports fail-open on permission errors.
+
+author: 'Stellar-TrustBridge'
+
+inputs:
+  github_token:
+    description: >-
+      GitHub token with `issues: read` (to check labels) and optionally
+      `issues: write` (to post skip comments). GITHUB_TOKEN is typical.
+    required: true
+
+  force_validation:
+    description: >-
+      When true, bypass the label gate and always run TrustBridge. This is an
+      explicit maintainer override; it does not change fail_on_missing.
+    required: false
+    default: 'false'
+
+  gate_labels:
+    description: >-
+      Comma-separated list of label names that open the gate (e.g.
+      "bounty,needs-wallet"). If any label is present on the issue, the gate
+      opens and trustbridge-action runs. If none are present, validation is
+      skipped.
+    required: false
+    default: 'bounty'
+
+  stellar_address_input:
+    description: >-
+      Stellar account address (G-address) to validate when gate is open.
+      Required unless assignee_address_map is set.
+    required: false
+    default: ''
+
+  post_skip_comment:
+    description: >-
+      Post a lightweight info comment when the gate is skipped (no label
+      found). Set to 'false' to post nothing. Requires issues: write permission.
+      Default false.
+    required: false
+    default: 'false'
+
+  fail_on_missing:
+    description: >-
+      When gate is open, pass this to trustbridge-action to control whether
+      validation failures hard-fail the step or only warn. Default true.
+    required: false
+    default: 'true'
+
+  # ─────────────────────────────────────────────────────────────────────
+  # All trustbridge-action inputs are forwarded below (pass-through).
+  # Add new inputs from action.yml here as needed.
+  # ─────────────────────────────────────────────────────────────────────
+
+  horizon_url:
+    description: 'Stellar Horizon API base URL'
+    required: false
+    default: 'https://horizon.stellar.org'
+
+  asset_code:
+    description: 'Asset code to check trustline for'
+    required: false
+    default: 'USDC'
+
+  asset_issuer:
+    description: 'Asset issuer Stellar address (G-address)'
+    required: false
+    default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+  min_xlm_reserve:
+    description: 'Minimum native XLM balance required (string, e.g. 1.5)'
+    required: false
+    default: '1.5'
+
+  assignee_address_map:
+    description: >-
+      Optional JSON object or path to a JSON file mapping GitHub usernames to
+      Stellar G-addresses. When set, trustbridge-action resolves the assignee
+      login from the GitHub event context.
+    required: false
+    default: ''
+
+  debug_mode:
+    description: 'Enable extra action logs for troubleshooting'
+    required: false
+    default: 'false'
+
+  horizon_timeout_ms:
+    description: 'Horizon request timeout in milliseconds'
+    required: false
+    default: '15000'
+
+  sticky_comment:
+    description: >-
+      Update TrustBridge's previous comment instead of posting a new one each
+      run
+    required: false
+    default: 'true'
+
+  wait_until_funded:
+    description: >-
+      Poll Horizon until the account becomes funded instead of immediately
+      returning an unfunded result
+    required: false
+    default: 'false'
+
+  wait_until_funded_timeout_ms:
+    description: >-
+      Maximum total time to poll for funding, in milliseconds. Only used when
+      wait_until_funded is true.
+    required: false
+    default: '120000'
+
+  wait_until_funded_interval_ms:
+    description: >-
+      Delay between polling attempts, in milliseconds. Only used when
+      wait_until_funded is true.
+    required: false
+    default: '5000'
+
+  horizon_url_fallback:
+    description: 'Optional fallback Horizon API base URL'
+    required: false
+    default: ''
+
+  rpc_fallback_url:
+    description: 'Optional secondary/fallback Horizon or RPC URL(s)'
+    required: false
+    default: ''
+
+  use_cache:
+    description: 'Cache successful Horizon responses in job memory'
+    required: false
+    default: 'false'
+
+  horizon_cache_ttl_ms:
+    description: 'In-memory Horizon account cache TTL in milliseconds'
+    required: false
+    default: '60000'
+
+  allow_cross_network_fallback:
+    description: >-
+      Allow fallback URLs to be used even if they resolve to a different
+      Stellar network (public vs testnet)
+    required: false
+    default: 'false'
+
+  trustbridge_config_path:
+    description: 'Path to a consumer trustbridge.yml config file'
+    required: false
+    default: '.trustbridge.yml'
+
+  log_inputs:
+    description: >-
+      Emit a structured JSON log record of all resolved action inputs at run
+      start (redacted — Stellar addresses and URLs are masked)
+    required: false
+    default: 'false'
+
+  check_ledger_freshness:
+    description: 'Enable ledger freshness guard'
+    required: false
+    default: 'false'
+
+  max_ledger_lag_seconds:
+    description: 'Maximum allowed lag in seconds between latest ledger and wall clock'
+    required: false
+    default: '60'
+
+  ledger_freshness_fail_on_stale:
+    description: 'Hard-fail when Horizon is stale; default is warn-only'
+    required: false
+    default: 'false'
+
+  unauthorized_trustline_policy:
+    description: >-
+      How to treat a trustline that exists but is not yet authorized by the issuer
+      (AUTHORIZATION_REQUIRED): "warn" (default, surfaces warning), "fail" (blocks ready),
+      or "ignore" (skips check). (Issue #247)
+    required: false
+    default: 'warn'
+
+  clawback_strict_mode:
+    description: >-
+      When true, fail validation if the configured asset has clawback enabled
+      (is_clawback_enabled / AUTH_CLAWBACK_ENABLED). When false (default), surfaces
+      an informational notice without failing the run. (Issue #247)
+    required: false
+    default: 'false'
+
+outputs:
+  gate_skipped:
+    description: >-
+      'true' if the label gate was closed (no gate label found) and validation
+      was skipped; 'false' if the gate was open and trustbridge-action ran
+    value: ${{ steps.check-gate.outputs.gate_skipped }}
+
+  gate_label_found:
+    description: >-
+      Name of the first gate label that was found, or empty string if no gate
+      label was present
+    value: ${{ steps.check-gate.outputs.gate_label_found }}
+
+  # ─────────────────────────────────────────────────────────────────────
+  # TrustBridge action outputs (forwarded when gate is open, empty when
+  # gate is skipped)
+  # ─────────────────────────────────────────────────────────────────────
+
+  trustline_exists:
+    description: 'Whether the account has a trustline for the configured asset'
+    value: ${{ steps.run-trustbridge.outputs.trustline_exists }}
+
+  xlm_balance:
+    description: 'Current native XLM balance as reported by Horizon'
+    value: ${{ steps.run-trustbridge.outputs.xlm_balance }}
+
+  account_funded:
+    description: 'Whether the account exists and is activated on the Stellar network'
+    value: ${{ steps.run-trustbridge.outputs.account_funded }}
+
+  comment_url:
+    description: 'URL of the created or updated issue comment, when run in an issue context'
+    value: ${{ steps.run-trustbridge.outputs.comment_url }}
+
+  comment_id:
+    description: 'Numeric REST id of the created or updated issue comment, when run in an issue context'
+    value: ${{ steps.run-trustbridge.outputs.comment_id }}
+
+  asset_balance:
+    description: 'Current configured asset (e.g. USDC) balance as reported by Horizon, or 0 / unknown'
+    value: ${{ steps.run-trustbridge.outputs.asset_balance }}
+
+  asset_balance_met:
+    description: 'true when min_asset_balance is not set or the balance meets or exceeds the floor'
+    value: ${{ steps.run-trustbridge.outputs.asset_balance_met }}
+
+  check_account_funded:
+    description: 'Named per-check output — mirrors account_funded'
+    value: ${{ steps.run-trustbridge.outputs.check_account_funded }}
+
+  check_trustline:
+    description: 'Named per-check output — mirrors trustline_exists'
+    value: ${{ steps.run-trustbridge.outputs.check_trustline }}
+
+  check_xlm_reserve:
+    description: 'Named per-check output — true if native XLM balance meets min_xlm_reserve'
+    value: ${{ steps.run-trustbridge.outputs.check_xlm_reserve }}
+
+  ready:
+    description: 'Whether all validation checks passed (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.ready }}
+
+  reason_code:
+    description: >-
+      Machine-readable failure reason code (e.g. SUCCESS, ACCOUNT_NOT_FUNDED,
+      TRUSTLINE_MISSING, TRUSTLINE_UNAUTHORIZED, CLAWBACK_BLOCKED). Empty when
+      the gate was skipped. See docs/ERROR_HANDLING.md for the full catalog.
+    value: ${{ steps.run-trustbridge.outputs.reason_code }}
+
+  checks_json:
+    description: 'JSON string array of individual check results and pass/fail statuses'
+    value: ${{ steps.run-trustbridge.outputs.checks_json }}
+
+  # ── Audit & provenance ────────────────────────────────────────────────
+
+  validated_at:
+    description: 'ISO-8601 timestamp when the validation checks were performed'
+    value: ${{ steps.run-trustbridge.outputs.validated_at }}
+
+  horizon_url:
+    description: 'Horizon API base URL used for validation'
+    value: ${{ steps.run-trustbridge.outputs.horizon_url }}
+
+  asset_code:
+    description: 'Asset code validated by the action'
+    value: ${{ steps.run-trustbridge.outputs.asset_code }}
+
+  asset_issuer:
+    description: 'Asset issuer address validated by the action'
+    value: ${{ steps.run-trustbridge.outputs.asset_issuer }}
+
+  full_report_path:
+    description: >-
+      Absolute path of the full validation report written to the workspace when
+      the comment body exceeded GitHub's size limit. Empty otherwise.
+    value: ${{ steps.run-trustbridge.outputs.full_report_path }}
+
+  native_balance:
+    description: 'Native XLM balance alias of xlm_balance (7-decimal Horizon string)'
+    value: ${{ steps.run-trustbridge.outputs.native_balance }}
+
+  # ── Badges ─────────────────────────────────────────────────────────────
+
+  badge_markdown:
+    description: 'Markdown-formatted badge snippet linking to the TrustBridge repo'
+    value: ${{ steps.run-trustbridge.outputs.badge_markdown }}
+
+  badge_url:
+    description: 'Shields.io badge URL reflecting validation state (pass/fail/pending)'
+    value: ${{ steps.run-trustbridge.outputs.badge_url }}
+
+  badge_etag:
+    description: 'Weak ETag (RFC 7232) derived from the current badge state/label (Issue #796)'
+    value: ${{ steps.run-trustbridge.outputs.badge_etag }}
+
+  # ── Snooze ──────────────────────────────────────────────────────────────
+
+  snooze_expired:
+    description: "\"true\" when this run's comment was posted because an active snooze window just lapsed (Issue #799)"
+    value: ${{ steps.run-trustbridge.outputs.snooze_expired }}
+
+  # ── Timing breakdown ──────────────────────────────────────────────────
+
+  timings_json:
+    description: 'JSON string containing millisecond execution timings for all major phases'
+    value: ${{ steps.run-trustbridge.outputs.timings_json }}
+
+  timing_input_parse_ms:
+    description: 'Execution duration of input parsing phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_input_parse_ms }}
+
+  timing_horizon_fetch_ms:
+    description: 'Execution duration of Horizon API fetch phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_horizon_fetch_ms }}
+
+  timing_checks_ms:
+    description: 'Execution duration of validation checks phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_checks_ms }}
+
+  timing_comment_post_ms:
+    description: 'Execution duration of comment posting phase in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_comment_post_ms }}
+
+  timing_total_ms:
+    description: 'Total execution duration in milliseconds'
+    value: ${{ steps.run-trustbridge.outputs.timing_total_ms }}
+
+  # ── Sponsorship ───────────────────────────────────────────────────────
+
+  num_sponsoring:
+    description: 'Number of accounts this account is sponsoring (numeric string)'
+    value: ${{ steps.run-trustbridge.outputs.num_sponsoring }}
+
+  num_sponsored:
+    description: 'Number of accounts sponsoring this account (numeric string)'
+    value: ${{ steps.run-trustbridge.outputs.num_sponsored }}
+
+  # ── Network passphrase diagnostics ────────────────────────────────────
+
+  network_passphrase_mismatch:
+    description: 'Whether the configured and Horizon network passphrases differ'
+    value: ${{ steps.run-trustbridge.outputs.network_passphrase_mismatch }}
+
+  expected_network_passphrase:
+    description: 'Configured or inferred network passphrase'
+    value: ${{ steps.run-trustbridge.outputs.expected_network_passphrase }}
+
+  actual_network_passphrase:
+    description: 'Network passphrase reported by Horizon'
+    value: ${{ steps.run-trustbridge.outputs.actual_network_passphrase }}
+
+  # ── Assignee matrix ───────────────────────────────────────────────────
+
+  assignee_results_json:
+    description: 'JSON result for the validated assignee, when an assignee is available'
+    value: ${{ steps.run-trustbridge.outputs.assignee_results_json }}
+
+  matrix_ready_map:
+    description: 'JSON map of assignee login to validation readiness'
+    value: ${{ steps.run-trustbridge.outputs.matrix_ready_map }}
+
+  # ── Friendbot (testnet funding) ───────────────────────────────────────
+
+  friendbot_called:
+    description: 'Whether Friendbot was called to fund the testnet account (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_called }}
+
+  friendbot_success:
+    description: 'Whether Friendbot funding succeeded (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_success }}
+
+  friendbot_transaction_hash:
+    description: 'Transaction hash from successful Friendbot funding, if called'
+    value: ${{ steps.run-trustbridge.outputs.friendbot_transaction_hash }}
+
+  # ── Check Runs ────────────────────────────────────────────────────────
+
+  check_run_id:
+    description: 'ID of the created GitHub Check Run when use_check_runs is true, empty otherwise'
+    value: ${{ steps.run-trustbridge.outputs.check_run_id }}
+
+  check_run_conclusion:
+    description: 'Conclusion of the created Check Run (success/failure), empty when skipped'
+    value: ${{ steps.run-trustbridge.outputs.check_run_conclusion }}
+
+  # ── Conflict report ───────────────────────────────────────────────────
+
+  conflict_report:
+    description: 'JSON string of the merge-resolution conflict report (empty object when no conflicts)'
+    value: ${{ steps.run-trustbridge.outputs.conflict_report }}
+
+  has_conflicts:
+    description: 'Whether any input conflicts were detected (true/false)'
+    value: ${{ steps.run-trustbridge.outputs.has_conflicts }}
+
+  # ── Multi-asset (assets_json) ─────────────────────────────────────────
+
+  assets_trustline_status:
+    description: >-
+      JSON array of additional assets from assets_json with asset_code,
+      asset_issuer, trustline_exists, and balance fields
+    value: ${{ steps.run-trustbridge.outputs.assets_trustline_status }}
+
+  trustlines_summary:
+    description: >-
+      Human-readable count of additional assets with trustlines, formatted as
+      "N of M additional trustlines present"
+    value: ${{ steps.run-trustbridge.outputs.trustlines_summary }}
+
+  outputs_truncated:
+    description: >-
+      "true" when a JSON/array output this run produced was truncated to stay
+      under GitHub Actions' per-output size limit; "false" otherwise. Always
+      set — check this before trusting a JSON output's array length as the
+      complete result set (Issue #854).
+    value: ${{ steps.run-trustbridge.outputs.outputs_truncated }}
+
+  # ── Batch mode (stellar_addresses) ────────────────────────────────────
+
+  batch_summary_json:
+    description: >-
+      JSON summary of a batch run (total/passed/failed/failures/failureTaxonomy).
+      Empty unless the action ran in batch mode over multiple addresses.
+    value: ${{ steps.run-trustbridge.outputs.batch_summary_json }}
+
+  batch_passed_count:
+    description: >-
+      Number of addresses that passed every validation check (numeric string).
+      Empty unless the action ran in batch mode.
+    value: ${{ steps.run-trustbridge.outputs.batch_passed_count }}
+
+  batch_failed_count:
+    description: >-
+      Number of addresses that failed at least one validation check (numeric
+      string). Empty unless the action ran in batch mode.
+    value: ${{ steps.run-trustbridge.outputs.batch_failed_count }}
+
+  diagnostics_zip_path:
+    description: >-
+      Absolute path of the redacted diagnostics bundle when diagnostics_zip_path
+      was set and the bundle was written, empty otherwise.
+    value: ${{ steps.run-trustbridge.outputs.diagnostics_zip_path }}
+
+  diagnostics_zip_status:
+    description: >-
+      Outcome of the optional diagnostics bundle: written, unchanged, disabled,
+      invalid_path, invalid_max_bytes, too_large, or write_failed.
+    value: ${{ steps.run-trustbridge.outputs.diagnostics_zip_status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check gate labels
+      id: check-gate
+      shell: bash
+      env:
+        GATE_LABELS: ${{ inputs.gate_labels }}
+        FORCE_VALIDATION: ${{ inputs.force_validation }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        ISSUE_LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
+      run: |
+        set -euo pipefail
+
+        # Initialize outputs
+        echo "gate_skipped=false" >> "$GITHUB_OUTPUT"
+        echo "gate_label_found=" >> "$GITHUB_OUTPUT"
+
+        # An explicit maintainer override always opens the gate and short-circuits
+        # label evaluation, so no label-dependent API work is performed.
+        if [ "${FORCE_VALIDATION,,}" = "true" ]; then
+          echo "::notice::Label gate force path enabled; running trustbridge-action."
+          echo "gate_skipped=false" >> "$GITHUB_OUTPUT"
+          echo "gate_label_found=force" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Check if running in an issue context
+        if [ -z "$ISSUE_LABELS_JSON" ] || [ "$ISSUE_LABELS_JSON" = "null" ]; then
+          echo "::warning::Running outside issue context; label check skipped. Gate assumed open."
+          exit 0
+        fi
+
+        # Parse gate labels (comma-separated)
+        IFS=',' read -ra LABELS_ARRAY <<< "$GATE_LABELS"
+
+        # Extract issue label names from JSON
+        ISSUE_LABELS=$(echo "$ISSUE_LABELS_JSON" | jq -r '.[].name' 2>/dev/null || echo "")
+
+        # Check if any gate label is present
+        gate_open=false
+        found_label=""
+        for gate_label in "${LABELS_ARRAY[@]}"; do
+          gate_label=$(echo "$gate_label" | xargs)  # trim whitespace
+          if echo "$ISSUE_LABELS" | grep -q "^${gate_label}$"; then
+            gate_open=true
+            found_label="$gate_label"
+            break
+          fi
+        done
+
+        if [ "$gate_open" = true ]; then
+          echo "::notice::Label gate open (found label: $found_label). Running trustbridge-action."
+          echo "gate_skipped=false" >> "$GITHUB_OUTPUT"
+          echo "gate_label_found=$found_label" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::Label gate closed (no gate labels found). Validation skipped."
+          echo "gate_skipped=true" >> "$GITHUB_OUTPUT"
+          echo "gate_label_found=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Post skip comment (optional)
+      if: steps.check-gate.outputs.gate_skipped == 'true' && inputs.post_skip_comment == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        # Resolve issue number
+        ISSUE_NUMBER="${{ github.event.issue.number }}"
+        if [ -z "$ISSUE_NUMBER" ] || [ "$ISSUE_NUMBER" = "null" ]; then
+          echo "::warning::Not in issue context; skip comment not posted."
+          exit 0
+        fi
+
+        # Post or update skip comment
+        BODY="**Label Gate Status:** 🔒 Wallet validation gate is closed.
+
+Label gate was not opened because none of the gate labels (${{ inputs.gate_labels }}) are present on this issue.
+
+When you add one of the gate labels, wallet validation will run automatically on the next workflow trigger."
+
+        # Try to find and update an existing skip comment
+        COMMENT_ID=$(gh issue view "$ISSUE_NUMBER" --json comments --jq '.comments[] | select(.body | contains("Label Gate Status")) | .id' 2>/dev/null || echo "")
+
+        if [ -n "$COMMENT_ID" ]; then
+          gh issue comment "$ISSUE_NUMBER" --edit="$COMMENT_ID" --body "$BODY" 2>/dev/null || echo "::warning::Failed to update skip comment."
+        else
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY" 2>/dev/null || echo "::warning::Failed to post skip comment."
+        fi
+
+    - name: Run TrustBridge (gate open)
+      id: run-trustbridge
+      if: steps.check-gate.outputs.gate_skipped != 'true'
+      uses: Stellar-TrustBridge/trustbridge-action@c0f10f03bcd5c13f25cd38eb7a57c6f3a1e4f3db # v1
+      with:
+        stellar_address_input: ${{ inputs.stellar_address_input }}
+        github_token: ${{ inputs.github_token }}
+        horizon_url: ${{ inputs.horizon_url }}
+        asset_code: ${{ inputs.asset_code }}
+        asset_issuer: ${{ inputs.asset_issuer }}
+        min_xlm_reserve: ${{ inputs.min_xlm_reserve }}
+        assignee_address_map: ${{ inputs.assignee_address_map }}
+        fail_on_missing: ${{ inputs.fail_on_missing }}
+        debug_mode: ${{ inputs.debug_mode }}
+        horizon_timeout_ms: ${{ inputs.horizon_timeout_ms }}
+        sticky_comment: ${{ inputs.sticky_comment }}
+        wait_until_funded: ${{ inputs.wait_until_funded }}
+        wait_until_funded_timeout_ms: ${{ inputs.wait_until_funded_timeout_ms }}
+        wait_until_funded_interval_ms: ${{ inputs.wait_until_funded_interval_ms }}
+        horizon_url_fallback: ${{ inputs.horizon_url_fallback }}
+        rpc_fallback_url: ${{ inputs.rpc_fallback_url }}
+        use_cache: ${{ inputs.use_cache }}
+        horizon_cache_ttl_ms: ${{ inputs.horizon_cache_ttl_ms }}
+        allow_cross_network_fallback: ${{ inputs.allow_cross_network_fallback }}
+        trustbridge_config_path: ${{ inputs.trustbridge_config_path }}
+        log_inputs: ${{ inputs.log_inputs }}
+        check_ledger_freshness: ${{ inputs.check_ledger_freshness }}
+        max_ledger_lag_seconds: ${{ inputs.max_ledger_lag_seconds }}
+        ledger_freshness_fail_on_stale: ${{ inputs.ledger_freshness_fail_on_stale }}
+        unauthorized_trustline_policy: ${{ inputs.unauthorized_trustline_policy }}
+        clawback_strict_mode: ${{ inputs.clawback_strict_mode }}

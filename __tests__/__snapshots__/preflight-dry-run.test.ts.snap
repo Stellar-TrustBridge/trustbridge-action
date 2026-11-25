@@ -1,0 +1,29 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`formatMissingPermissionsDryRun (#779) snapshots missing issues: write 1`] = `
+"[trustbridge] preflight (dry-run): missing workflow permissions
+- \`issues: write\` — required to post or update the TrustBridge issue comment
+
+Add to the workflow job:
+
+\`\`\`yaml
+permissions:
+  contents: read
+  issues: write
+\`\`\`"
+`;
+
+exports[`formatMissingPermissionsDryRun (#779) snapshots missing issues: write and id-token: write 1`] = `
+"[trustbridge] preflight (dry-run): missing workflow permissions
+- \`id-token: write\` — required when \`webhook_auth_mode: oidc\` signs webhook deliveries
+- \`issues: write\` — required to post or update the TrustBridge issue comment
+
+Add to the workflow job:
+
+\`\`\`yaml
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+\`\`\`"
+`;

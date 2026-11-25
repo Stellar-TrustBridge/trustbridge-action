@@ -1,0 +1,34 @@
+name: 'TrustBridge Action'
+description: 'Verify, attest, and export trust artifacts for your repository'
+author: 'TrustBridge'
+
+inputs:
+  mode:
+    description: 'Operation mode: verify, attest, export, or delta'
+    required: false
+    default: 'verify'
+  privacy_mode:
+    description: >-
+      Redaction level applied to delta/export artifacts. One of: none, standard,
+      strict. 'none' emits raw contents (no redaction) and is unsafe for shared
+      artifacts; 'standard' redacts secrets, tokens, and PII patterns from delta
+      ZIP contents; 'strict' additionally redacts file paths and metadata. See
+      docs/USAGE.md and docs/CRON_REVALIDATION.md for safe vs redacted examples.
+    required: false
+    default: 'standard'
+  output_dir:
+    description: 'Directory to write exported artifacts into'
+    required: false
+    default: 'trustbridge-out'
+  fail_on_error:
+    description: 'Fail the action when verification errors are found'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'shield'
+  color: 'blue'

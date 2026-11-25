@@ -1,0 +1,169 @@
+################################################################################
+# docs/examples/workflow_run_chained.yml
+#
+# #146 — workflow_run chained TrustBridge trigger
+#
+# PURPOSE
+# -------
+# Runs TrustBridge as a downstream job triggered by an upstream workflow
+# (e.g. the issue-assignment workflow that reads issue templates, resolves
+# the contributor's Stellar address, and writes artifacts/outputs).
+#
+# ARCHITECTURE
+#   upstream.yml  →  workflow_run event  →  this file (trustbridge_chained.yml)
+#
+# WHY workflow_run INSTEAD OF CALLING TrustBridge DIRECTLY?
+# ----------------------------------------------------------
+# Some teams split address resolution into a separate "intake" workflow
+# because it needs write access to internal tooling or secrets that must
+# not run on the public SHA of a contributor's fork. workflow_run lets
+# you isolate the trusted step from the untrusted trigger.
+#
+# CRITICAL DIFFERENCES FROM A DIRECT issues: trigger
+# ---------------------------------------------------
+# 1. github.event.workflow_run does NOT carry github.event.issue — you
+#    must pass the issue number and Stellar address through outputs or
+#    artifacts from the upstream workflow.
+# 2. The GITHUB_TOKEN in a workflow_run job has write permissions on the
+#    *base* repo, not the triggering PR/fork — this is correct for
+#    posting issue comments.
+# 3. Re-runs of the upstream workflow trigger a new workflow_run event,
+#    so sticky_comment (default true) ensures only one TrustBridge comment
+#    lives on the issue across re-runs.
+#
+################################################################################
+
+# ── Upstream workflow (upstream.yml) ─────────────────────────────────────────
+# This workflow runs in the issue context where the address is parsed.
+# It saves the address and issue number as outputs for the downstream job.
+#
+# name: Intake — resolve Stellar address
+#
+# on:
+#   issues:
+#     types: [assigned]
+#
+# jobs:
+#   resolve:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       issues: read
+#       contents: read
+#     outputs:
+#       stellar_address: ${{ steps.extract.outputs.address }}
+#       issue_number:    ${{ steps.meta.outputs.number }}
+#     steps:
+#       - name: Capture issue metadata
+#         id: meta
+#         run: echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+#
+#       - name: Extract Stellar address from issue body
+#         id: extract
+#         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+#         with:
+#           script: |
+#             const body = context.payload.issue?.body ?? '';
+#             const match = body.match(/Stellar address:\s*(G[A-Z2-7]{55})/i);
+#             if (!match) core.setFailed('No Stellar address found in issue body');
+#             core.setOutput('address', match[1]);
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Downstream workflow (this file) ──────────────────────────────────────────
+name: TrustBridge — chained Stellar wallet check
+
+on:
+  workflow_run:
+    workflows: ["Intake — resolve Stellar address"]   # must match upstream name exactly
+    types: [completed]
+
+jobs:
+  trustbridge:
+    # Only run when the upstream workflow succeeded — avoids posting a comment
+    # when address resolution itself failed.
+    if: github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+
+    # GITHUB_TOKEN in a workflow_run job has write access to the base repo.
+    # Add issues: write so TrustBridge can post the comment.
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      # ── Step 1: Download the address artifact uploaded by the upstream job ──
+      # The upstream workflow must upload a JSON artifact named
+      # "trustbridge-inputs" containing { "stellar_address": "G...",
+      # "issue_number": 123 }.
+      #
+      # See the upstream example above for how to produce this artifact.
+      - name: Download address artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: trustbridge-inputs
+          # Download from the run that triggered this workflow_run event
+          run-id: ${{ github.event.workflow_run.id }}
+          # github_token must have actions:read (default for GITHUB_TOKEN)
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/trustbridge
+
+      # ── Step 2: Parse the artifact ──────────────────────────────────────────
+      - name: Parse address and issue number
+        id: inputs
+        run: |
+          PAYLOAD=$(cat /tmp/trustbridge/inputs.json)
+          echo "address=$(echo "$PAYLOAD"  | jq -r '.stellar_address')" >> "$GITHUB_OUTPUT"
+          echo "issue=$(echo "$PAYLOAD"    | jq -r '.issue_number')"    >> "$GITHUB_OUTPUT"
+
+      # ── Step 3: Override issue context ──────────────────────────────────────
+      # workflow_run events do NOT populate github.event.issue — TrustBridge
+      # detects the issue context from the GitHub API event payload, which will
+      # be empty here. Use the composite action trick below OR pass
+      # `issue_number` directly once TrustBridge supports it.
+      #
+      # Workaround: set GITHUB_REF and the synthetic issue event so that
+      # @actions/github picks up the correct issue number.
+      - name: Inject issue context for comment posting
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        # SECURITY: the original spliced ${{ steps.inputs.outputs.issue }}
+        # directly into the script's JS source as a string literal
+        # (`parseInt('${{ ... }}', 10)`). That substitution happens before
+        # Node ever sees the script — GitHub Actions renders it as text
+        # first — so a value containing a single quote and JS code (e.g.
+        # from a tampered artifact) would close the string and execute
+        # arbitrary JavaScript with this job's issues:write token. That's
+        # the same class of bug as unsanitized shell interpolation, just
+        # one runtime up. Passing it through env: and reading
+        # process.env.ISSUE_NUMBER inside the script keeps it as an inert
+        # string no matter what it contains.
+        env:
+          ISSUE_NUMBER: ${{ steps.inputs.outputs.issue }}
+        with:
+          script: |
+            // Write a synthetic issue event so @actions/github resolves the
+            // correct issue number when postIssueComment calls
+            // context.payload.issue.number.
+            const fs = require('fs');
+            const eventPath = process.env.GITHUB_EVENT_PATH;
+            const original = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+            original.issue = { number: parseInt(process.env.ISSUE_NUMBER, 10) };
+            fs.writeFileSync(eventPath, JSON.stringify(original));
+
+      # ── Step 4: Run TrustBridge ─────────────────────────────────────────────
+      - name: TrustBridge check
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
+        with:
+          stellar_address_input: ${{ steps.inputs.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # sticky_comment: true (default) — idempotent across upstream re-runs
+          fail_on_missing: true
+
+      # ── Step 5: Log outputs ─────────────────────────────────────────────────
+      - name: Log validation results
+        run: |
+          echo "account_funded=${{ steps.trustbridge.outputs.account_funded }}"
+          echo "trustline_exists=${{ steps.trustbridge.outputs.trustline_exists }}"
+          echo "xlm_balance=${{ steps.trustbridge.outputs.xlm_balance }}"
+          echo "comment_url=${{ steps.trustbridge.outputs.comment_url }}"

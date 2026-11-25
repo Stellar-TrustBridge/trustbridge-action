@@ -1,0 +1,36 @@
+version: '3.8'
+
+# TrustBridge — Mock Horizon server
+#
+# Uses WireMock (https://wiremock.org) to serve deterministic, offline
+# Horizon API responses for local development and opt-in CI testing.
+#
+# Usage:
+#   docker compose up -d          # start on http://localhost:8089
+#   HORIZON_MOCK_URL=http://localhost:8089 npm run test:mock
+#   docker compose down           # stop and remove the container
+#
+# All stub mappings live in ./mappings/. Edit or add JSON files there
+# and restart the container (docker compose restart) to pick up changes.
+
+services:
+  mock-horizon:
+    image: wiremock/wiremock:3.6.0
+    container_name: trustbridge-mock-horizon
+    ports:
+      - "8089:8080"
+    volumes:
+      # Mount stub mappings into WireMock's default mappings directory
+      - ./mappings:/home/wiremock/mappings:ro
+    command:
+      - "--port=8080"
+      - "--verbose"
+      # Disable request journal pruning so every call is inspectable
+      - "--max-request-journal=500"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/__admin/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: "no"

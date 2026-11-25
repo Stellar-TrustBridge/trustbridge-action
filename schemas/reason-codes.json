@@ -1,0 +1,219 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Stellar-TrustBridge/trustbridge-action/main/schemas/reason-codes.json",
+  "title": "TrustBridge reason_code Catalog",
+  "description": "Canonical catalog of all reason_code values emitted by the trustbridge-action `reason_code` output and the `reasonCode` field in ValidationResult. These codes are a public API surface: dashboard automations and workflow gates switch on them. Renames and removals are BREAKING CHANGES requiring a MAJOR version bump. New codes are ADDITIVE and safe in any minor/patch release. Source of truth: src/checks.ts. See docs/USAGE.md#reason-code-reference for the full documentation table.",
+  "version": "1",
+  "codes": [
+    {
+      "code": "SUCCESS",
+      "description": "All checks passed \u2014 the account is funded, holds the required asset trustline, and meets the minimum XLM reserve.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": true,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_MISSING",
+      "description": "The account is funded and meets the XLM reserve, but the required asset trustline is not present.",
+      "accountFunded": true,
+      "trustlineExists": false,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "RESERVE_TOO_LOW",
+      "description": "The account is funded and has a trustline, but the native XLM balance is below the required minimum reserve.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks)",
+      "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_LIMIT_TOO_LOW",
+      "description": "The account is funded and has a trustline, but the trustline limit is below the configured minimum (`min_trustline_limit`).",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks, only when min_trustline_limit is set)",
+      "since": "v1"
+    },
+    {
+      "code": "ACCOUNT_NOT_FUNDED",
+      "description": "Horizon returned 404 for the account \u2014 the account does not exist on the Stellar network (not yet funded).",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (unfundedAccountResult)",
+      "since": "v1"
+    },
+    {
+      "code": "HORIZON_TIMEOUT",
+      "description": "The Horizon request timed out or was aborted. The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, when error message contains 'timeout' or 'timed out')",
+      "since": "v1"
+    },
+    {
+      "code": "HORIZON_ERROR",
+      "description": "Horizon returned a non-404 non-timeout error (e.g. 429, 502, 503, 504, or a non-retryable HTTP error). The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, for all non-timeout errors)",
+      "since": "v1"
+    },
+    {
+      "code": "TLS_ERROR",
+      "description": "TLS/certificate verification failed for the configured Horizon endpoint. The account state could not be determined. Most common with private/enterprise Horizon mirrors using self-signed certificates.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (tlsFailureResult)",
+      "since": "v1"
+    },
+    {
+      "code": "FAILED",
+      "description": "A generic failure catch-all: the account was funded and the trustline exists and the reserve was met, but some other check (e.g. asset balance minimum) caused the validation to fail.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runValidationChecks fallback when no specific code applies)",
+      "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_UNAUTHORIZED",
+      "description": "Trustline exists but is not authorized by the issuer.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts",
+      "since": "v1"
+    },
+    {
+      "code": "CLAWBACK_BLOCKED",
+      "description": "The configured asset has clawback enabled (`is_clawback_enabled: true`) for this trustline and validation was blocked by `clawback_strict_mode: true`. The issuer can reclaim the held assets at any time.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when clawbackStrictMode is true and the matched trustline has clawback enabled)",
+      "since": "v1"
+    },
+    {
+      "code": "CIRCUIT_OPEN",
+      "description": "The Horizon circuit breaker tripped after repeated consecutive failures, so the run was failed closed without further Horizon requests. Distinct from HORIZON_ERROR: the account state was never determined because no request was attempted. Clear the circuit by resolving the underlying Horizon outage and re-running.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (circuit-breaker failure path, after max_consecutive_failures is exceeded)",
+      "since": "v1"
+    },
+    {
+      "code": "RATE_BUDGET_EXHAUSTED",
+      "description": "The per-run Horizon request budget (`horizon_max_requests`) was exhausted before the account could be validated. The run fails closed by design rather than issuing unbounded requests. Distinct from HORIZON_ERROR: no failing request occurred, the budget was deliberately exhausted. Raise `horizon_max_requests` (batch mode) or retry.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (rateBudgetExhaustedResult, used in single-address and batch validation paths)",
+      "since": "v1"
+    },
+    {
+      "code": "HOME_DOMAIN_MISMATCH",
+      "description": "The asset issuer's on-chain `home_domain` does not match `expected_home_domain` and `home_domain_check_mode: strict` blocked validation. The account itself may be fully funded with the trustline present. In `warn` mode this condition is reported in the comment but does not change the reason code.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when home_domain_check_enabled is true)",
+      "since": "v1"
+    },
+    {
+      "code": "HOME_DOMAIN_MISSING",
+      "description": "The asset issuer has no `home_domain` set on-chain (or its account could not be fetched) and `home_domain_check_mode: strict` blocked validation. Distinct from HOME_DOMAIN_MISMATCH: there is no domain to compare. In `warn` mode this condition is reported in the comment but does not change the reason code.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when home_domain_check_enabled is true)",
+      "since": "v1"
+    },
+    {
+      "code": "MILESTONE_GATE_SKIPPED",
+      "description": "The milestone gate skipped validation because the issue or pull request's milestone was not in `milestone_allowlist` (or no milestone was set while the allowlist was active). No account checks were performed, so this is a skip rather than a validation failure. Set `milestone_fail_on_skip: true` to hard-fail instead of warn.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/index.ts (milestone gate, before any Horizon request)",
+      "since": "v1"
+    },
+    {
+      "code": "REQUIRED_LABELS_MISSING",
+      "description": "The required_labels gate skipped validation because one or more labels listed in `required_labels` are absent from the issue or pull request. No account checks were performed, so this is a skip rather than a validation failure. Set `required_labels_fail_on_skip: true` to hard-fail instead.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/index.ts (required_labels gate, before any Horizon request)",
+      "since": "v1"
+    },
+    {
+      "code": "MAINTAINER_SKIPPED",
+      "description": "Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`).",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": true,
+      "emittedBy": "src/index.ts",
+      "since": "v1"
+    },
+    {
+      "code": "SAC_ISSUER_NOT_VERIFIABLE",
+      "description": "The asset is issued by a Soroban Stellar Asset Contract (C-address). SAC balances are never exposed as classic Horizon trustlines, so the balance cannot be confirmed or denied by this check. Verify the balance on the Stellar Lab contract page or via Soroban RPC `getContractData`.",
+      "accountFunded": true,
+      "trustlineExists": false,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts (runAccountChecks, when asset_issuer is a C-address)",
+      "since": "v1"
+    },
+    {
+      "code": "HORIZON_WAIT_BUDGET_EXHAUSTED",
+      "description": "Horizon kept returning retryable errors until the configured retry wait budget ran out. Distinct from HORIZON_ERROR/HORIZON_TIMEOUT: retries were attempted and exhausted rather than failing on the first request. The account state could not be determined.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/checks.ts (horizonFailureResult, when the retry wait budget is exhausted)",
+      "since": "v1"
+    },
+    {
+      "code": "EXTRA_TRUSTLINE_MISSING",
+      "description": "The primary asset_code/asset_issuer check passed (SUCCESS), but assets_json declared one or more additional required trustlines and at least one of them is missing on the account.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/index.ts (assets_json multi-asset gating, when the primary check is SUCCESS)",
+      "since": "v1"
+    }
+  ]
+}

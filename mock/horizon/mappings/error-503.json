@@ -1,0 +1,13 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb503",
+  "name": "503 Service Unavailable",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+  },
+  "response": {
+    "status": 503,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "error": "Service Unavailable" }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb508",
+  "name": "GET /accounts/{address} — unfunded account (404)",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Mock-Source": "trustbridge-mock-horizon"
+    },
+    "jsonBody": {
+      "type": "https://stellar.org/horizon-errors/not_found",
+      "title": "Resource Missing",
+      "status": 404,
+      "detail": "The resource at /accounts/GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB could not be found."
+    }
+  }
+}

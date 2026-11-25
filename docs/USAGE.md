@@ -2,7 +2,11 @@
 
 How to integrate **trustbridge-action** into your repository workflows.
 
-Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Error handling](ERROR_HANDLING.md)
+Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Plugin Architecture](PLUGIN_ARCHITECTURE.md) · [Error handling](ERROR_HANDLING.md) · [Cron re-validation](CRON_REVALIDATION.md)
+
+> Security warning: TrustBridge strips raw Stellar addresses, muxed addresses, and secret-bearing URL/query values before writing them to GitHub Actions logs. Do not rely on `debug_mode` or `log_inputs` to expose account IDs or webhook secrets in a run; they are automatically scrubbed at the logger boundary and any leaked raw value is treated as a failing regression in the test suite.
+>
+> **Muxed M-address privacy (Issue #460):** Muxed M-addresses (69-character `M...` StrKey form used for payment routing and channel separation) are fully redacted in all log output paths — `core.info`, `core.warning`, `core.error`, and `core.debug`. They are masked to `first-4…last-4` just like G- and C-addresses. If your workflow passes muxed addresses in the `stellar_address_input` field or if they appear in Horizon error messages, they will never appear in plain form in the Actions log.
 
 ---
 
@@ -10,7 +14,7 @@ Related docs: [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Erro
 
 1. A GitHub repository with Actions enabled
 2. A Stellar **G-address** to validate (contributor wallet)
-3. Workflow permissions allowing issue comments
+3. Workflow permissions allowing issue/PR comments (`issues: write`) or discussion comments (`discussions: write` — see [GitHub Discussions — bounty threads](#github-discussions--bounty-threads-issue-221))
 
 ---
 
@@ -40,14 +44,60 @@ Replace `GCONTRIBUTORADDRESSHERE` with your project's method of obtaining the ad
 
 ---
 
+## Milestone gating
+
+If you only want TrustBridge to run on issues assigned to a specific milestone (e.g. only run Horizon checks when assigned to `Wave 12`), use the `milestone_allowlist` input:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: GCONTRIBUTORADDRESSHERE
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    milestone_allowlist: "Wave 12,Wave 13"
+```
+
+- When the issue's milestone matches an entry in the list (case-insensitive), the action proceeds normally.
+- When there is no match (or no milestone), the action safely skips execution and emits a summary note without posting a failure comment.
+- If you prefer the step to explicitly fail instead of skipping gracefully, set `milestone_fail_on_skip: true`.
+
+---
+
 ## Manual run — workflow_dispatch
+
+### Re-checking a contributor after a fix
+
+When a contributor fixes their wallet and wants a re-check without a new assignment event, trigger a revalidation with a comment command in the issue thread:
+
+```text
+/trustbridge
+```
+
+TrustBridge only reacts to the exact `/trustbridge` command at the beginning of a comment body. It ignores unrelated comments and will not recurse on bot-authored comments. Authorization is limited to collaborator or assignee permissions, and the command is only processed for issue comments.
+
+If you need a non-comment driven re-check, a `workflow_dispatch` run with `issue_number` still works.
+
+### merge_group support
+
+Merge queue runs do not have `issues.assigned`, so TrustBridge resolves the SHA from `GITHUB_SHA` / `github.sha` and continues to produce the usual validation outputs and checks even when there is no issue comment context. Comment posting is skipped unless a real issue or PR context exists; this is documented and non-fatal.
+
+### Ready-state labels
+
+Use `pass_label` and `fail_label` to apply board-friendly ready state labels that are distinct from `auto_wallet_labels`:
+
+```yaml
+with:
+  pass_label: "ready: pass"
+  fail_label: "ready: fail"
+```
+
+Empty values are treated as disabled and no-op. These labels are applied only when an issue number is present; they do not create labels automatically and they do not replace the wallet-state label behavior.
 
 ```yaml
 on:
   workflow_dispatch:
     inputs:
       stellar_address:
-        description: 'Stellar G-address'
+        description: "Stellar G-address"
         required: true
 
 jobs:
@@ -60,16 +110,166 @@ jobs:
         with:
           stellar_address_input: ${{ github.event.inputs.stellar_address }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          fail_on_missing: false   # warn only for manual checks
+          fail_on_missing: false # warn only for manual checks
 ```
 
-> **Note:** Comments are only posted when the workflow runs in an **issue** context. For standalone `workflow_dispatch` without an open issue, checks still run and outputs are set; comment posting is skipped with a warning.
+> **Note:** Comments are only posted when the workflow runs in an **issue**, **pull_request**, or **pull_request_target** context (or when `issue_number` is supplied for `workflow_dispatch`). For standalone `workflow_dispatch` without one of those, checks still run and outputs are set; comment posting is skipped with a warning.
+
+---
+
+## Pull request wallet checks (Issue #220)
+
+TrustBridge can post (and sticky-upsert) its validation comment directly on a **pull request's conversation tab**, not just on issues. PRs are issues under the hood as far as GitHub's REST comment API is concerned, so the same `postIssueComment` path — sticky lookup, snooze, size limits — works unchanged; TrustBridge just needs the PR's number instead of an issue's.
+
+```yaml
+name: Verify Stellar wallet on PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### How it works
+
+- On a `pull_request` (or `pull_request_target`) event, TrustBridge resolves the target from `github.event.pull_request.number` — `github.event.issue` is only populated for `issues`/`issue_comment` events, so relying on it alone silently skipped every PR before this fix.
+- Only the numeric PR number is read from the event payload; the PR title/body are never inspected by TrustBridge and can't leak into comment content or Horizon requests.
+- Sticky comments, snoozing, and truncation all behave identically to the issue path — nothing about the comment lifecycle changes for PRs.
+- The `issues` event path is unchanged: when both `payload.issue` and `payload.pull_request` are present (an `issue_comment` event fired on a PR), TrustBridge keeps preferring `payload.issue.number`, matching its existing behaviour.
+
+### Permissions
+
+| Trigger                                       | Required permission                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `issues` events                               | `issues: write`                                                                       |
+| `pull_request` / `pull_request_target` events | `issues: write` (GitHub's REST API treats PR conversation comments as issue comments) |
+
+> **Fork PRs:** on a plain `pull_request` trigger, GitHub gives the automatic `GITHUB_TOKEN` **read-only** access when the PR comes from a fork, regardless of the `permissions:` block above — so comment posting will fail with a 403 even though the preflight's read-only check can pass. If you need TrustBridge to comment on fork PRs, use `pull_request_target` instead, and review [GitHub's security guidance](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/) first, since `pull_request_target` runs with the base branch's workflow file and a token that has write access even for untrusted fork code.
+
+---
+
+## GitHub Discussions — bounty threads (Issue #221)
+
+Some projects run their bounty program from **GitHub Discussions** instead of issues. TrustBridge can post (and sticky-upsert) its validation comment there too.
+
+```yaml
+name: Verify Stellar wallet on discussion activity
+
+on:
+  discussion:
+    types: [created, category_changed]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      discussions: write # required — GraphQL path, not issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### How it works
+
+- Discussion events carry a **GraphQL node id** (e.g. `DIC_…`), **not an issue number**. The REST issues API 404s on a discussion id — or, worse, comments on the wrong issue when the id happens to be numeric.
+- When `github.event_name` is a discussion event, TrustBridge posts the comment through the GitHub **GraphQL API** (`addDiscussionComment` / `updateDiscussionComment` mutations) instead of the REST issues API.
+- **Sticky comments work the same way as issues**: with `sticky_comment: true` (default), the previous TrustBridge comment on the discussion is found (paginated via GraphQL) and updated in place.
+- The issue and PR comment paths (see [Pull request wallet checks](#pull-request-wallet-checks-issue-220)) are **unchanged**; the discussion path is only taken for discussion events.
+
+### Permissions
+
+| Target                        | Required permission                                                                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Issue / PR comments (REST)    | `issues: write` (add `pull-requests: write` too for PR triggers, per [Pull request wallet checks](#pull-request-wallet-checks-issue-220)) |
+| Discussion comments (GraphQL) | `discussions: write`                                                                                                                      |
+
+> **Note:** the repository must have the **Discussions** feature enabled. Discussion polls, and converting a discussion → issue mid-flight, are intentionally out of scope.
+
+---
+
+## GitHub App authentication for org-wide triage (Issue #225)
+
+When running TrustBridge across an entire organization or in centralized triage repositories, `GITHUB_TOKEN` is constrained to the repository executing the workflow. You can authenticate using a **GitHub App installation token** via the `github_app_token` input.
+
+```yaml
+name: Verify Stellar wallet via GitHub App
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.TRUSTBRIDGE_APP_ID }}
+          private-key: ${{ secrets.TRUSTBRIDGE_APP_PRIVATE_KEY }}
+
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: GCONTRIBUTORADDRESSHERE
+          github_app_token: ${{ steps.app-token.outputs.token }}
+```
+
+### Security & Tradeoff: Pre-minted token vs. embedding PEM private keys
+
+- **Pre-minted token preferred**: TrustBridge intentionally accepts a pre-minted installation token (`github_app_token`) rather than requiring raw PEM private keys and `app_id` to be embedded inside this action.
+- **Principle of Least Privilege**: Generating short-lived installation tokens (typically expiring in 1 hour) via dedicated actions like `actions/create-github-app-token` isolates cryptographic signing credentials and avoids persisting long-lived private keys inside downstream action runtimes.
+- **Credential redaction**: Any token or key value passed to TrustBridge is registered with GitHub Actions secret masking (`core.setSecret`) and stripped by the logger (`[REDACTED]`) to prevent accidental disclosure.
+- **Enterprise compatibility**: Works automatically on GitHub Enterprise Server (`baseUrl` is derived from GitHub runner context `apiUrl`).
+- **Same comment APIs**: Whether using `github_token` or `github_app_token`, all sticky comment lookups, GraphQL discussions, and upsert features operate identically.
+
+---
+
+## Assignee Roster Resolution
+
+By default, TrustBridge expects the `stellar_address_input` to be passed directly. However, it can also resolve GitHub usernames to Stellar addresses dynamically:
+
+### Dashboard Roster API (Issue #317)
+```yaml
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
+  dashboard_roster_allow_http: 'false'
+```
+When configured, TrustBridge issues an HTTP GET request to `dashboard_roster_url`. When `dashboard_roster_secret` is set, requests include `X-TrustBridge-Timestamp` and `X-TrustBridge-Signature: sha256=<hex_hmac>` headers. The API must return a JSON dictionary mapping logins to addresses (e.g. `{"alice": "G...", "bob": "G..."}`).
+
+**Security Tradeoffs:** `dashboard_roster_url` enforces HTTPS by default and protects against SSRF (Server-Side Request Forgery) by blocking loopback and private IP addresses. Setting `dashboard_roster_allow_http: 'true'` disables the HTTPS enforcement for the dashboard URL, which may expose the roster fetching traffic (and any signature headers) to interception. This should only be used for local testing or mock endpoints.
+
+### Soroban Contract Roster (Issue #318)
+```yaml
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
+```
+TrustBridge queries a Soroban contract page-by-page to resolve assignee addresses. Single-address lookup remains default behavior; setting `soroban_full_roster: "true"` retrieves the complete roster page-by-page from contract state up to `soroban_roster_page_limit`.
 
 ---
 
 ## Combined trigger (assigned + manual)
 
-Matches the action design target:
+Matches the action design target. Use `issue_number` on `workflow_dispatch` runs to target a specific issue for the result comment (Wave #29):
 
 ```yaml
 on:
@@ -78,10 +278,10 @@ on:
   workflow_dispatch:
     inputs:
       stellar_address:
-        description: 'Stellar G-address (manual runs)'
+        description: "Stellar G-address (manual runs)"
         required: true
       issue_number:
-        description: 'Optional issue number for context'
+        description: "Issue number to post result on (manual runs only)"
         required: false
 
 jobs:
@@ -104,6 +304,7 @@ jobs:
         id: bridge
         with:
           stellar_address_input: ${{ steps.addr.outputs.value }}
+          issue_number: ${{ github.event.inputs.issue_number }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log results
@@ -122,27 +323,394 @@ with:
   stellar_address_input: ${{ steps.addr.outputs.value }}
   asset_code: EURC
   asset_issuer: GISSUERADDRESSHERE
-  min_xlm_reserve: '2.0'
+  min_asset_balance: "100"
+  min_xlm_reserve: "2.0"
   github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ---
 
-## Testnet
+## Asset authorization and clawback flags (Issue #247)
 
-Point Horizon at Stellar testnet:
+Stellar assets can have issuer and trustline flags that affect whether a payment can actually be received:
+- **`AUTHORIZATION_REQUIRED` (`is_authorized: false`)**: The issuer requires explicit approval before trustlines can hold or receive funds. Even if a trustline exists on-chain, payments fail if the issuer has not authorized it via `SetTrustLineFlags` (or legacy `AllowTrust`).
+- **`AUTH_CLAWBACK_ENABLED` (`is_clawback_enabled: true`)**: The issuer retains the right to claw back funds (CAP-0035).
+
+### Configuring authorization policy (`unauthorized_trustline_policy`)
+
+| Setting | Behavior |
+|---|---|
+| `warn` (default) | Trustline check passes with an informational warning note that issuer authorization is required. |
+| `fail` | Trustline check fails, setting `ready = false` and `reason_code = TRUSTLINE_UNAUTHORIZED`. Payout workflows can gate on this. |
+| `ignore` | Ignores the authorization flag entirely. |
+
+### Configuring clawback enforcement (`clawback_strict_mode`)
+
+| Setting | Behavior |
+|---|---|
+| `false` (default) | Surfaces an informational status note (`USDC clawback status`) in the comment indicating clawback is enabled (CAP-0035). |
+| `true` | Fails the run with `reason_code = CLAWBACK_BLOCKED` and remediation steps if clawback is enabled. |
+
+> **Vanilla USDC:** Standard mainnet USDC does not require authorization or enable clawback on normal trustlines, so it passes cleanly without false failures. Older Horizon versions without flag fields safely default to authorized.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: G...
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    unauthorized_trustline_policy: fail
+    clawback_strict_mode: true
+```
+
+---
+
+## Testnet campaign presets
+
+Run dry Waves or onboard contributors on Stellar testnet using first-class campaign presets (`network: testnet` or `preset: testnet`):
 
 ```yaml
 with:
-  horizon_url: https://horizon-testnet.stellar.org
-  asset_code: USDC
-  asset_issuer: GTESTNETISSUER...
+  network: testnet
   stellar_address_input: GTESTNETADDRESS...
   github_token: ${{ secrets.GITHUB_TOKEN }}
-  fail_on_missing: false
 ```
 
-Use [Stellar Laboratory (testnet)](https://laboratory.stellar.org/#account-viewer?network=test) for test accounts.
+Using `network: testnet` automatically populates:
+
+- **Horizon URL:** `https://horizon-testnet.stellar.org`
+- **Asset Code:** `USDC`
+- **Asset Issuer:** `GBBD47IF6LWK2P7MDEVSCWR7DPUWV3NY3DTQEVFL4TWVC5GIOTASHEX2` (Circle Testnet USDC issuer)
+- **Minimum XLM Reserve:** `1.5`
+
+> **Network safety validation:**
+> TrustBridge validates network compatibility before fetching account data. Combining a testnet Horizon endpoint with a mainnet asset issuer (e.g. mainnet USDC `GA5ZSEJY...`) fails fast with an explicit error to prevent accidental configuration errors.
+
+### Friendbot testnet funding
+
+For testnet and futurenet campaigns, TrustBridge can call Stellar Friendbot to fund a new account when Horizon returns 404 ("not found"). Contributors then don't have to visit Friendbot themselves before assignment.
+
+#### Inputs
+
+| Input | Default | Constraints |
+| --- | --- | --- |
+| `use_friendbot` | `false` | Opt-in. Only acts when the account lookup returns 404 **and** `horizon_url` is a test network (testnet or futurenet). Ignored on pubnet. |
+| `friendbot_url` | `https://friendbot.stellar.org` | Must be HTTPS and on the Friendbot allowlist (see below). Path must be empty or `/friendbot`; `/friendbot` is added when missing. Use `https://friendbot-futurenet.stellar.org` on futurenet. |
+| `friendbot_timeout_ms` | `15000` | Per-request timeout, clamped to `1000`–`60000` ms. A timeout is reported as a failed funding attempt. It does not fail the job on its own. |
+
+The default `friendbot_url` is the **testnet** Friendbot. For futurenet, set both `horizon_url` and `friendbot_url` to the futurenet hosts (see [Network presets](#network-presets)).
+
+#### Enabling Friendbot
+
+```yaml
+with:
+  network: testnet
+  stellar_address_input: ${{ steps.lookup.outputs.address }}
+  use_friendbot: true
+  friendbot_url: 'https://friendbot.stellar.org'
+  friendbot_timeout_ms: 15000
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+A complete caller workflow that passes these inputs through the reusable workflow is in [`docs/examples/friendbot-testnet-onboarding.yml`](examples/friendbot-testnet-onboarding.yml). It uses the `use_friendbot`, `friendbot_url` and `friendbot_timeout_ms` inputs of [`trustbridge-reusable.yml`](examples/trustbridge-reusable.yml).
+
+**From input to funded account:**
+
+1. TrustBridge fetches the account from `horizon_url`.
+2. If Horizon returns anything other than 404, Friendbot is not involved.
+3. On 404 with `use_friendbot: true`, TrustBridge checks `horizon_url`:
+   - **Pubnet** (`https://horizon.stellar.org`, or any URL containing `mainnet` / `public.stellar.org`): Friendbot is skipped, a warning is logged, and `friendbot_called` stays `false`. The account is reported as unfunded.
+   - **Test network** (URL containing `testnet`, `test`, or `futurenet`): continue.
+4. `friendbot_url` is checked against the allowlist. A URL that is not allowlisted is refused without any network request.
+5. TrustBridge sends one `GET <friendbot_url>/friendbot?addr=<address>` request, bounded by `friendbot_timeout_ms`. Friendbot is called **at most once per run**, so retries never cause a second funding request.
+6. On success, TrustBridge fetches the account from Horizon again and runs the normal checks against the funded account.
+7. On failure (HTTP error, timeout, network error), the run continues with the original "account not funded" result.
+
+For timing races and recommended waits, see [Friendbot-funded testnet false negatives](FAQ.md#friendbot-testnet-false-negatives).
+
+#### Safety guarantees
+
+**Network guard:** Friendbot only runs against test networks. Pubnet runs never call Friendbot, even when `use_friendbot: true`.
+
+```yaml
+# ❌ Friendbot is skipped for this configuration
+with:
+  horizon_url: https://horizon.stellar.org  # Public network
+  use_friendbot: true  # Skipped: Friendbot is never called on pubnet
+```
+
+**SSRF protection:** Only these official Friendbot hosts are allowed:
+
+- `https://friendbot.stellar.org` (testnet)
+- `https://friendbot-testnet.stellar.org` (testnet)
+- `https://horizon-testnet.stellar.org/friendbot` (testnet)
+- `https://friendbot-futurenet.stellar.org` (futurenet)
+- `https://horizon-futurenet.stellar.org/friendbot` (futurenet)
+
+TrustBridge rejects custom or third-party Friendbot URLs, plain `http://` URLs, and any other path on an allowlisted host.
+
+#### Friendbot outputs
+
+Use these outputs to track Friendbot activity in your workflow:
+
+```yaml
+- id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    network: testnet
+    use_friendbot: true
+    friendbot_url: 'https://friendbot.stellar.org'
+    # ... other inputs
+
+- name: Check friendbot result
+  if: steps.trustbridge.outputs.friendbot_called == 'true'
+  run: |
+    echo "Friendbot was called"
+    echo "Success: ${{ steps.trustbridge.outputs.friendbot_success }}"
+    if [ "${{ steps.trustbridge.outputs.friendbot_success }}" = "true" ]; then
+      echo "Transaction: ${{ steps.trustbridge.outputs.friendbot_transaction_hash }}"
+    fi
+```
+
+| Output | Not called (or skipped on pubnet) | Funding succeeded | Funding failed |
+| --- | --- | --- | --- |
+| `friendbot_called` | `"false"` | `"true"` | `"true"` |
+| `friendbot_success` | `"false"` | `"true"` | `"false"` |
+| `friendbot_transaction_hash` | `""` | transaction hash | `""` |
+
+#### When to use Friendbot
+
+✅ **Good use cases:**
+
+- Onboarding new contributors to testnet campaigns
+- Automated testnet wallet provisioning
+- CI/CD pipelines that create ephemeral test accounts
+
+❌ **Not recommended:**
+
+- Mainnet/public network (skipped by design)
+- Production workflows (testnet only)
+- When you need to control the exact funding amount (Friendbot uses standard amounts)
+
+#### Troubleshooting
+
+See [TROUBLESHOOTING.md — Friendbot funding failed](TROUBLESHOOTING.md#friendbot-funding-failed) for common Friendbot HTTP errors.
+
+**"use_friendbot is enabled but horizon_url is not a test network"**
+
+- Your `horizon_url` points to pubnet
+- Use `network: testnet` or set `horizon_url: https://horizon-testnet.stellar.org`
+
+**"Friendbot URL not on the allowlist"**
+
+- Only official Stellar Friendbot endpoints are supported
+- Use `https://friendbot.stellar.org` or leave `friendbot_url` empty to use the default
+
+**"Friendbot returned HTTP 400: Account already exists"**
+
+- The account is already funded on testnet
+- This is not an error. Validation proceeds normally
+
+**Friendbot times out**
+
+- Increase `friendbot_timeout_ms` (default 15000ms, max 60000ms)
+- Check Stellar testnet status at https://status.stellar.org
+
+---
+
+## Network presets
+
+These are the official SDF defaults for each network. TrustBridge uses them for network inference (`inferStellarNetworkPreset` in `src/links.ts`), passphrase inference when `network_passphrase` is empty, and the Friendbot network guard.
+
+| Network | `horizon_url` | `network_passphrase` | Friendbot |
+| --- | --- | --- | --- |
+| pubnet (`public`) | `https://horizon.stellar.org` | `Public Global Stellar Network ; September 2015` | none (never called) |
+| testnet | `https://horizon-testnet.stellar.org` | `Test SDF Network ; September 2015` | `https://friendbot.stellar.org` |
+| futurenet | `https://horizon-futurenet.stellar.org` | `Test SDF Future Network ; October 2022` | `https://friendbot-futurenet.stellar.org` |
+
+All three Horizon hosts pass the `horizon_url` SSRF allowlist checks (`__tests__/ssrf_allowlist.test.ts`). The Friendbot hosts are on the Friendbot allowlist described in [Friendbot testnet funding](#friendbot-testnet-funding).
+
+**How the network is inferred from `horizon_url`:**
+
+- A URL containing `futurenet` is classified as **futurenet**.
+- A URL containing `testnet` is classified as **testnet**. This also works for custom mirrors such as `https://horizon-testnet.example.com`.
+- Anything else is classified as **pubnet**. For a self-hosted mirror whose hostname does not name its network, set `network_passphrase` explicitly so passphrase validation checks the right network.
+
+**Input examples per network:**
+
+```yaml
+# pubnet
+with:
+  horizon_url: https://horizon.stellar.org
+  network_passphrase: 'Public Global Stellar Network ; September 2015'
+
+# testnet
+with:
+  horizon_url: https://horizon-testnet.stellar.org
+  network_passphrase: 'Test SDF Network ; September 2015'
+  use_friendbot: true
+  friendbot_url: https://friendbot.stellar.org
+
+# futurenet
+with:
+  horizon_url: https://horizon-futurenet.stellar.org
+  network_passphrase: 'Test SDF Future Network ; October 2022'
+  use_friendbot: true
+  friendbot_url: https://friendbot-futurenet.stellar.org
+```
+
+> **Don't mix networks.** `horizon_url`, `network_passphrase`, `friendbot_url`, `asset_issuer` and any fallback URLs must all belong to the same network. A G-address is valid on every network, so a mismatch can quietly validate the wrong ledger. A passphrase that doesn't match the Horizon's network is reported as a [network passphrase mismatch](#network-passphrase-mismatch-detection-issue-2). A `horizon_url_fallback` / `rpc_fallback_url` on a different preset network than `horizon_url` (for example testnet primary with a futurenet fallback) is skipped unless `allow_cross_network_fallback: true`.
+
+**Self-hosted mirrors and GHES:** private Horizon mirrors and GitHub Enterprise Server runners behind egress proxies often use hostnames that differ from the official presets. See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) for proxy and allowlist considerations, and set `network_passphrase` explicitly for any mirror whose hostname doesn't name its network.
+
+**Offline runs:** fixture / offline modes don't contact Horizon or Friendbot. Use the official preset URL for the network you are simulating (for example `https://horizon-testnet.stellar.org`) as a placeholder `horizon_url`, so network inference and comment links still match that network.
+
+### Explorer URL overrides
+
+Explorer account links (`<base>/account/<G-address>`) are built by `buildExplorerAccountLink` in `src/links.ts`. An explorer base URL override is validated **per network** by `validateExplorerBaseUrl` (Issue #910), because an unchecked override would turn every Wave comment into a phishing link.
+
+**Safe defaults** (used when no override is set, or when a rendered link's override is rejected):
+
+| Network | Default explorer base |
+| --- | --- |
+| `public` | `https://stellar.expert/explorer/public` |
+| `testnet` | `https://stellar.expert/explorer/testnet` |
+
+**Host allowlist** (exact, lowercased hostname match — subdomains are not implied):
+
+| Network | Allowed hosts |
+| --- | --- |
+| `public` | `stellar.expert`, `stellarchain.io`, `laboratory.stellar.org` |
+| `testnet` | `stellar.expert`, `testnet.stellarchain.io`, `laboratory.stellar.org` |
+
+**Rules and stable rejection codes:**
+
+| Code | Rejected when |
+| --- | --- |
+| `EXPLORER_URL_EMPTY` | the override is blank |
+| `EXPLORER_URL_TOO_LONG` | longer than 2048 characters |
+| `EXPLORER_URL_MALFORMED` | not an absolute URL |
+| `EXPLORER_URL_INSECURE_SCHEME` | not `https:` — `http:` is **always rejected on `public`** and tolerated on `testnet` only for an allowlisted host; `javascript:`, `data:` and other schemes are rejected everywhere |
+| `EXPLORER_URL_CREDENTIALS` | the URL embeds `user:pass@` |
+| `EXPLORER_URL_HOST_NOT_ALLOWED` | the host is not on the allowlist for that network (e.g. a testnet-only host on `public`, or `stellar.expert.attacker.example`) |
+| `EXPLORER_URL_UNSAFE` | the URL contains characters that would break a Markdown link (`(`, `)`, quotes, whitespace, …) |
+
+Query strings, fragments and trailing slashes are stripped from an accepted base. Rejection messages name the network and host only, never the full override.
+
+Two entry points, matching the existing link helpers:
+
+- `parseExplorerBaseUrlInput(value, network)` in `src/inputs.ts` **fails fast**: it throws `explorer_base_url rejected (<CODE>): <message>` so a bad override is caught before any comment is rendered.
+- `resolveExplorerBaseUrl(network, override)` / `buildExplorerAccountLink(...)` in `src/links.ts` **fall back** to the safe default for an invalid override, the same way `docs_base_url` falls back in `buildFaqLink`, so comment posting is never blocked.
+
+Explorer overrides are not yet exposed as an `action.yml` input; these helpers are the validated surface any future input must go through.
+
+---
+
+## Network passphrase mismatch detection (Issue #2)
+
+TrustBridge automatically detects when your configured `horizon_url` and `network_passphrase` inputs point to different Stellar networks. This prevents confusing 404 errors when, for example, you specify testnet credentials but your Horizon URL points to mainnet.
+
+### How it works
+
+1. **Automatic inference**: When `network_passphrase` is empty, TrustBridge infers the expected passphrase from your `horizon_url`:
+   - `horizon-testnet.stellar.org` → `"Test SDF Network ; September 2015"`
+   - `horizon.stellar.org` → `"Public Global Stellar Network ; September 2015"`
+
+2. **Horizon validation**: TrustBridge fetches the actual network passphrase from the Horizon root endpoint
+
+3. **Mismatch detection**: If they differ, a clear error banner appears in the comment showing both passphrases
+
+### When to set network_passphrase explicitly
+
+```yaml
+with:
+  horizon_url: https://horizon-private.example.com
+  network_passphrase: 'My Custom Network ; 2024'
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Use cases:**
+- Custom/private Stellar networks with non-standard passphrases
+- Avoiding ambiguity when Horizon URL doesn't follow standard naming
+- Ensuring validation against a specific network even if the URL changes
+
+### Example mismatch scenarios
+
+| Configuration | Result |
+|--------------|--------|
+| `horizon_url: horizon-testnet.stellar.org`<br>`network_passphrase: (empty)` | ✅ Match (inferred testnet) |
+| `horizon_url: horizon.stellar.org`<br>`network_passphrase: Test SDF Network ; September 2015` | ❌ Mismatch (public URL, testnet passphrase) |
+| `horizon_url: horizon-testnet.stellar.org`<br>`network_passphrase: Public Global Stellar Network ; September 2015` | ❌ Mismatch (testnet URL, public passphrase) |
+| `horizon_url: custom-horizon.example.com`<br>`network_passphrase: My Custom Network ; 2024` | ✅ Match (if Horizon reports same) |
+
+### Outputs
+
+When a mismatch is detected, these outputs are set:
+
+- `network_passphrase_mismatch`: `"true"` or `"false"`
+- `expected_network_passphrase`: The passphrase you configured/inferred
+- `actual_network_passphrase`: What Horizon reported
+
+Use these in conditional workflow steps:
+
+```yaml
+- name: Alert on network mismatch
+  if: steps.bridge.outputs.network_passphrase_mismatch == 'true'
+  run: |
+    echo "::error::Network configuration error detected"
+    echo "Expected: ${{ steps.bridge.outputs.expected_network_passphrase }}"
+    echo "Actual: ${{ steps.bridge.outputs.actual_network_passphrase }}"
+```
+
+### Disabling the check
+
+To skip network passphrase validation entirely (not recommended):
+
+```yaml
+with:
+  check_network_passphrase: false
+  # ... other inputs
+```
+
+---
+
+## Canary & secondary endpoint failover
+
+To protect Wave validation jobs against transient Horizon regional or provider outages, configure a secondary failover Horizon URL:
+
+```yaml
+with:
+  horizon_url: https://horizon.stellar.org
+  secondary_horizon_url: https://horizon-canary.stellar.org
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+- **Failover behavior:** When the primary Horizon URL fails after exponential retries due to a retryable error (HTTP 5xx, 429 rate limits, or network timeout), TrustBridge transparently attempts the secondary Horizon URL before declaring failure.
+- **Definitive 404s skipped:** If Horizon returns a 404 (account missing / not funded), failover is skipped immediately because 404 is a non-retryable account state, not a transport outage.
+- **Cross-network guard:** Failover between different networks (e.g. mainnet to testnet) is disabled by default (`allow_cross_network_fallback: false` / `allow_cross_network_failover: false`) to avoid silent network context shifts. Set `allow_cross_network_fallback: true` to opt into cross-network fallback anyway.
+- **Observability:** Issue comments and debug logs reflect whether the primary or secondary Horizon base URL served the response.
+
+### Cross-network mismatch detection (Issue #266)
+
+When Horizon returns 404 for the configured `horizon_url`, TrustBridge deterministically probes the **canonical opposite network** (`https://horizon.stellar.org` ↔ `https://horizon-testnet.stellar.org`) with a 5s timeout to see if the same `G…` address is funded elsewhere:
+
+- `404` on public + `200` on testnet (or reverse) → comment names both networks and both canonical URLs: the account was not found on the configured network but is active on the other network. Remediation suggests either funding on the configured network or updating `horizon_url` to the active network URL if that is the intended target.
+- `404` on both networks → genuinely unfunded, no mismatch hint.
+- Opposite returns `503/429/500` or network error/timeout → no hint (avoids false positives when the other Horizon is temporarily unavailable).
+- The opposite URL is SSRF-validated; an invalid URL never gets probed.
+
+This probe is **bounded and allowlisted** — only the two canonical Horizons are ever checked. Arbitrary `horizon_url_fallback` / `secondary_horizon_url` values are **never** probed here; falling back to a user-supplied URL on a different network is gated by `allow_cross_network_fallback` in `src/horizon.ts` (never cross-network unless you opt in). That keeps behavior deterministic and prevents an extra network probe from being treated as a fallback.
+
+```yaml
+with:
+  horizon_url: https://horizon.stellar.org # configured as public
+  # fallback on a different network is disabled by default:
+  secondary_horizon_url: https://horizon-testnet.stellar.org
+  allow_cross_network_fallback: false # default — mismatch hint still shown, but fallback not used
+```
+
+Both directions are tested (public→testnet and testnet→public).
 
 ---
 
@@ -159,6 +727,283 @@ with:
 
 The step succeeds with `core.warning()`; the issue comment still shows ❌ for failed checks.
 
+---
+
+## fail_on_missing patterns: Contributor vs. Maintainer gates (Issue #142)
+
+TrustBridge provides two modes to match the workflow's trust model:
+
+| Mode                                 | `fail_on_missing` | When to use                                                              | Behavior on failure                                                         |
+| ------------------------------------ | ----------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| **Hard-fail (maintainer gate)**      | `true` (default)  | Maintainer audit job or bounty payout (high trust, all checks must pass) | Workflow fails; requires manual intervention to proceed                     |
+| **Warn-only (contributor-friendly)** | `false`           | Contributor assignment workflow (low friction, guidance over blocking)   | Workflow continues; contributor gets warning comment with remediation steps |
+
+### Contributor-friendly assignment workflow
+
+When assigning issues to contributors, use `fail_on_missing: false` to avoid blocking the assignment if the wallet isn't yet ready:
+
+```yaml
+name: Assign and check wallet (non-blocking)
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  check-wallet:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Extract address
+        id: addr
+        run: echo "value=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
+
+      - name: TrustBridge check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.addr.outputs.value }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_missing: false # don't fail; contributor can set up wallet afterward
+```
+
+**Result:**
+
+- ✓ Issue assignment succeeds regardless of wallet status.
+- ✓ Comment posted with clear remediation steps (fund account, add trustline, etc.).
+- ✓ Contributor has a roadmap but isn't blocked.
+
+### Maintainer-only payout audit workflow
+
+For sensitive operations (bounty payouts, grants), use `fail_on_missing: true` to gate on strict wallet readiness:
+
+```yaml
+name: Bounty payout audit (maintainer gate)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: Contributor's Stellar address
+        required: true
+
+jobs:
+  verify-and-payout:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: TrustBridge check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.inputs.stellar_address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_missing: true # hard-fail if wallet not ready
+          min_xlm_reserve: "10" # bounty threshold
+          sticky_comment: true
+
+      - name: Initiate payout
+        run: |
+          # Only runs if TrustBridge checks passed
+          echo "Initiating payout to ${{ github.event.inputs.stellar_address }}"
+          # your payout script here
+```
+
+**Result:**
+
+- ✓ Workflow hard-fails if wallet is unfunded, missing trustline, or low on reserve.
+- ✓ Prevents accidental mis-sends or stuck funds.
+- ✓ Maintainer gets clear error message and comment explaining why.
+
+### Bounty workflow with label gate + hard-fail
+
+Combine the [label gate pattern](LABEL_GATE_DESIGN.md) with `fail_on_missing: true` to validate only when a `bounty` label is explicitly set:
+
+```yaml
+name: Verify Stellar wallet (label gate + hard-fail)
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge-gated:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      issues: write
+      contents: read
+    steps:
+      - name: TrustBridge with label gate
+        id: gate
+        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: GYOURCONTRIBUTORADDRESSHERE
+          gate_labels: 'bounty'            # only validate if "bounty" label is present
+          post_skip_comment: 'true'        # let contributor know why validation skipped
+          fail_on_missing: 'true'          # hard-fail when gate is open
+
+      - name: Process bounty
+        if: steps.gate.outputs.gate_skipped != 'true' && steps.gate.outputs.account_funded == 'true'
+        run: echo "✓ Ready for payout"
+
+      - name: Alert on gate skip
+        if: steps.gate.outputs.gate_skipped == 'true'
+        run: echo "ℹ️  Add the 'bounty' label to trigger wallet validation"
+```
+
+**Result:**
+
+- ✓ Assignment without `bounty` label: validation skipped, skip notice posted.
+- ✓ Assignment with `bounty` label: validation runs, workflow hard-fails if wallet not ready.
+- ✓ Different workflows can have different gates and thresholds (see [`trustbridge-label-gate-branching.yml`](examples/trustbridge-label-gate-branching.yml) for per-label rules).
+
+### Key behavioral guarantees (test-documented)
+
+| Scenario            | `fail_on_missing=true`                            | `fail_on_missing=false`                                 |
+| ------------------- | ------------------------------------------------- | ------------------------------------------------------- |
+| **All checks pass** | ✓ Step succeeds                                   | ✓ Step succeeds                                         |
+| **Checks fail**     | ✗ `core.setFailed()` — step fails, workflow fails | ⚠️ `core.warning()` — step succeeds, workflow continues |
+| **Default**         | Yes (safe by default)                             | —                                                       |
+
+These guarantees are verified by comprehensive test matrix in [`__tests__/fail_on_missing.benchmark.test.ts`](../__tests__/fail_on_missing.benchmark.test.ts).
+
+---
+
+## Federation address resolution and memo requirements (Issue #257 / #883)
+
+TrustBridge can resolve Stellar federation addresses (`user*domain.com`) to G-addresses via the SEP-0002 federation protocol. Enable it with:
+
+```yaml
+with:
+  stellar_address_input: alice*example.com
+  federation_resolution_enabled: true
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+When `federation_resolution_enabled` is `false` (the default), `stellar_address_input` must already be a plain G-address. No network request is made for federation.
+
+### When a memo is mandatory
+
+Federation servers may return a `memo_type` and `memo` alongside the resolved G-address. When present, the memo **must** be attached to every payment sent to that address. Without it, the funds cannot be credited to the correct sub-account and the payment is unroutable.
+
+TrustBridge surfaces this information in the `FederationResolution` object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `gAddress` | `string` | The resolved Stellar G-address. |
+| `memoType` | `"text" \| "id" \| "hash"` | Memo type required by the destination. Present only when a memo is required. |
+| `memo` | `string` | The memo value to attach. Present only when `memoType` is set. |
+| `memoRequired` | `boolean` | `true` when `memoType` is set; `false` when no memo is needed. |
+
+**Gate on `memoRequired` before building a payment:**
+
+```typescript
+const resolution = await resolveFederationAddress('alice*exchange.com');
+if (resolution && resolution.memoRequired) {
+  // Attach resolution.memoType and resolution.memo to the transaction
+  // before submitting. Without the memo, the exchange cannot credit the
+  // funds to Alice's account.
+}
+```
+
+### How missing or malformed memos are reported
+
+If the federation server returns `memo_type` without a `memo` value, or returns a `memo` that is incompatible with the declared `memo_type`, `resolveFederationAddress` returns `null` and logs a warning. The two error codes are:
+
+| Code | Trigger | Remediation |
+|---|---|---|
+| `MEMO_REQUIRED` | `memo_type` is present but `memo` is absent or empty. | The federation server is non-conformant. Contact the domain operator. Do not send funds until the server returns a valid memo pair. |
+| `MEMO_TYPE_MISMATCH` | `memo_type` is unrecognized (not `text`, `id`, or `hash`), or the `memo` value is incompatible with the type (e.g. a non-numeric `id`, a non-hex `hash`, or a `text` over 28 bytes). | The federation server is non-conformant. Contact the domain operator. |
+
+### Memo type rules (SEP-0002)
+
+| `memo_type` | Valid `memo` format | Stellar protocol limit |
+|---|---|---|
+| `text` | Any UTF-8 string | At most **28 bytes** (UTF-8 encoded) |
+| `id` | Decimal string of an unsigned integer | 0 – 18446744073709551615 (uint64) |
+| `hash` | Exactly **64 lowercase or uppercase hex characters** | Encodes a 32-byte value |
+
+### Edge cases
+
+- **No memo fields returned** — `memoRequired` is `false`; `memoType` and `memo` are `undefined`. No memo is needed.
+- **`memo_type` present, `memo` absent** — returns `null` with code `MEMO_REQUIRED`. Do not attempt to send funds.
+- **Unrecognized `memo_type`** — returns `null` with code `MEMO_TYPE_MISMATCH`.
+- **`memo` present without `memo_type`** — the `memo` field is ignored (non-standard server behaviour). The resolution succeeds with `memoRequired: false`.
+- **`text` memo over 28 bytes** — returns `null`. The Stellar protocol rejects transactions with text memos over 28 UTF-8 bytes; building one would fail at the network layer anyway.
+
+### Fixtures for testing
+
+The `__tests__/federation-memo-resolution.test.ts` test file contains ready-made JSON fixture shapes for all memo scenarios:
+
+```json
+// No memo (memoRequired: false)
+{ "account_id": "G..." }
+
+// text memo (memoRequired: true, memoType: "text")
+{ "account_id": "G...", "memo_type": "text", "memo": "invoice-99" }
+
+// id memo (memoRequired: true, memoType: "id")
+{ "account_id": "G...", "memo_type": "id", "memo": "12345" }
+
+// hash memo (memoRequired: true, memoType: "hash")
+{ "account_id": "G...", "memo_type": "hash", "memo": "<64 hex chars>" }
+
+// MEMO_REQUIRED: memo_type present, memo absent → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "text" }
+
+// MEMO_TYPE_MISMATCH: bad id format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "id", "memo": "not-a-number" }
+
+// MEMO_TYPE_MISMATCH: bad hash format → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "hash", "memo": "tooshort" }
+
+// MEMO_TYPE_MISMATCH: unrecognized type → resolveFederationAddress returns null
+{ "account_id": "G...", "memo_type": "return", "memo": "some-value" }
+```
+
+### DNS and HTTP timeouts (Issue #906)
+
+Each federation lookup resolves two hosts (the `stellar.toml` domain and the
+`FEDERATION_SERVER` host). Each host is first resolved under its own **DNS
+timeout**, and only then is the HTTPS request sent under a separate **HTTP
+timeout** — so a slow resolver can never consume the HTTP budget, and a slow
+server is never reported as a DNS failure.
+
+| Knob (`resolveFederationAddress(addr, options)`) | Default | Applies to |
+|---|---|---|
+| `dnsTimeoutMs` | `5000` (`FEDERATION_DNS_TIMEOUT_MS`) | Each host lookup (`stellar.toml` domain, federation server) |
+| `httpTimeoutMs` | `10000` (`FEDERATION_HTTP_TIMEOUT_MS`) | Each HTTPS fetch, measured after DNS has resolved |
+| `dnsLookup` | OS resolver (`defaultSSRFDnsLookup`) | Injectable resolver (tests, custom DNS) |
+
+Values must be positive numbers no greater than `60000`
+(`FEDERATION_MAX_TIMEOUT_MS`); anything else falls back to the default and
+logs a warning with code `INVALID_TIMEOUT`. The resolved DNS answer is
+pinned into `fetchSSRFSafe`'s rebinding guard, so the SSRF check reuses it
+instead of resolving again inside the HTTP budget. Horizon requests
+(`horizon_timeout_ms`, `src/horizon.ts`) keep their own independent timeout
+and are unaffected.
+
+| Code | Timeout that fired |
+|---|---|
+| `TOML_DNS_TIMEOUT` / `FEDERATION_DNS_TIMEOUT` | DNS timeout (`dnsTimeoutMs`) |
+| `TOML_TIMEOUT` / `FEDERATION_TIMEOUT` | HTTP timeout (`httpTimeoutMs`) |
+| `TOML_NXDOMAIN` / `FEDERATION_NXDOMAIN` | Resolver error or empty answer (no timeout) |
+
+```ts
+const resolution = await resolveFederationAddress('alice*example.com', {
+  dnsTimeoutMs: 2000,
+  httpTimeoutMs: 8000,
+});
+```
+
+Test coverage: `__tests__/federation-dns-timeout.test.ts`.
+
+---
+
 ## Debug mode and timeout
 
 ```yaml
@@ -172,16 +1017,189 @@ with:
 - `debug_mode: true` enables extra action logs for troubleshooting.
 - `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
 
+## Snooze duration cap (Issue #962)
+
+`snooze_window_minutes` is clamped to **7 days** (10080 minutes). Unbounded
+snoozes would let a failing Wave gate stay skipped indefinitely — a contributor
+(or a stale :zzz: reaction) could otherwise park a payout gate forever. When the
+configured window exceeds the cap the action logs a warning with
+`reason_code: snooze_window_capped` and uses the cap.
+
+Maintainers can raise the ceiling to **30 days** with `snooze_max_override: "true"`.
+The override never removes the cap. Negative, `NaN` or infinite windows disable
+snoozing. `force_comment` still bypasses snooze entirely.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    snooze_window_minutes: "20160"   # 14 days
+    snooze_max_override: "true"      # maintainer opt-in; otherwise clamped to 7 days
+```
+
+## Emoji-free summaries (Issue #961)
+
+Set `summary_emoji_free: "true"` to render the Job Summary and digest with
+ASCII tokens instead of emoji, for enterprise log drains that strip unicode:
+
+| Emoji | Token |
+|---|---|
+| ✅ | `[PASS]` |
+| ❌ | `[FAIL]` |
+| ⚠️ | `[WARN]` |
+| ⏸️ | `[PAUSED]` |
+| ✓ | `[OK]` |
+| 💤 | `[SNOOZED]` |
+
+Other pictographs are dropped. Default output is unchanged. See also
+[GHES compatibility](GHES_COMPATIBILITY.md).
+
 ## Sticky comments across re-runs
 
 ```yaml
 with:
   github_token: ${{ secrets.GITHUB_TOKEN }}
   stellar_address_input: ${{ steps.address.outputs.address }}
-  sticky_comment: true   # default — update the previous comment instead of posting a new one
+  comment_mode: sticky # default — update the previous comment
 ```
 
-Set `sticky_comment: false` if you want a new comment posted on every run instead (e.g. for a full audit trail). See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
+Set `comment_mode: new` if you want a new top-level comment on every run instead (e.g. for a full audit trail). `sticky_comment` remains available for older workflows; `comment_mode` takes precedence when supplied. See [Comment guide](COMMENT_GUIDE.md) for details on how the prior comment is located.
+
+## Comment threading strategy (`comment_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  comment_mode: sticky # default: 'sticky' | 'new' | 'reply'
+```
+
+- **`sticky`** (default): Updates the previous TrustBridge comment in place, preserving checklist state across re-runs.
+- **`new`**: Always posts a new top-level comment on every run for a complete audit trail.
+- **`reply`**: Posts a chronological reply referencing the first TrustBridge check comment in the thread.
+
+## Comment posting policy (`posting_mode`)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  posting_mode: post # default: 'post' | 'dry-run' | 'off'
+  comment_mode: sticky # independent threading choice
+```
+
+- **`post`** (default): Posts using the selected `comment_mode` threading strategy.
+- **`dry-run`**: Formats the complete comment body and populates all action outputs, but skips GitHub API calls to post comments.
+- **`off`**: Skips comment posting; validation and outputs still run.
+
+`posting_mode` controls whether a comment is posted; `comment_mode` controls how a posted comment is threaded. For backwards compatibility, legacy `post`, `dry-run`, or `off` values in `comment_mode` are treated as `posting_mode` only when `posting_mode` is omitted. New workflows should use the two inputs independently as shown above.
+
+## Onboarding checklist (default on)
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  onboarding_checklist: true # default — include live fund → trustline → balance checklist
+```
+
+The checklist section uses GitHub Markdown task-list checkboxes that reflect live Horizon validation (`accountFunded`, `trustlineExists`, `xlmReserveMet`) and links to [TROUBLESHOOTING.md](TROUBLESHOOTING.md) FAQ anchors. Set `onboarding_checklist: false` to omit it.
+
+## Auto-unassign on not-ready (Issue #228)
+
+Maintainers can opt into automatically unassigning the issue assignee if their Stellar wallet readiness checks fail:
+
+```yaml
+with:
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  stellar_address_input: ${{ steps.address.outputs.address }}
+  unassign_on_not_ready: true # default false (opt-in policy)
+```
+
+### Policy behavior
+
+- **Opt-in only**: Default is `false`. When disabled, assignees are never modified.
+- **Trigger**: Runs only when `ready: false` (one or more readiness checks fail).
+- **Outage protection**: Does not unassign contributors on transient Horizon network/outage errors (`HORIZON_ERROR`, `HORIZON_TIMEOUT`, `TLS_ERROR`).
+- **Bot filtering**: Bot assignees (`type: Bot` or ending in `[bot]`) are ignored.
+- **Permissions**: Requires `issues: write` permission on `github_token`. If permission is missing or an API error occurs, a non-fatal warning is logged and the workflow proceeds without crashing.
+- **Workflow dispatch safety**: Safely skips when there is no issue context (e.g. manual dispatch without an issue).
+
+---
+
+## CODEOWNERS-aware maintainer skip (Issue #241 — opt-in)
+
+Maintainers testing on their own issues or branches can opt in to skipping wallet checks to avoid noisy bot comments:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    stellar_address_input: G...
+    skip_for_maintainers: true     # default: false (opt-in)
+    maintainers_allowlist: 'alice, bob, my-org/core-team' # optional extra maintainers
+```
+
+### How it works
+- **Default off**: `skip_for_maintainers: false` by default.
+- **CODEOWNERS detection**: Auto-detects maintainers from `.github/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS` (or custom `codeowners_path`).
+- **Skip behavior**: When the event actor matches CODEOWNERS or `maintainers_allowlist`, TrustBridge logs an informational message, outputs `ready: true` and `reason_code: MAINTAINER_SKIPPED`, and skips all comment posting and Horizon queries.
+- **Branch safety**:
+  - TrustBridge **never reads CODEOWNERS from untrusted fork PR branches**.
+  - On pull requests from forks, it queries the trusted base branch via the GitHub API. If inaccessible, it safely falls back to standard validation without skipping.
+
+### `skip_for_maintainers` and the deprecated `skip_if_maintainer` alias (Issue #448)
+
+`skip_for_maintainers` is the **canonical** input name. `skip_if_maintainer` is a
+**deprecated alias** kept only so existing workflows keep working; it is
+scheduled for removal in a future major release.
+
+| Input | Status | Notes |
+| --- | --- | --- |
+| `skip_for_maintainers` | **Canonical** | Preferred. Always wins when set explicitly. |
+| `skip_if_maintainer` | **Deprecated** | Consulted only when `skip_for_maintainers` is unset. Emits a deprecation warning when used. |
+
+**Precedence rules** (implemented in `resolveMaintainerSkipInput` in `src/inputs.ts`):
+
+1. If `skip_for_maintainers` holds an explicit boolean (`true`/`false`/`1`/`0`/`yes`/`no`), that value is used — **the alias can never override it**.
+2. Otherwise, if `skip_if_maintainer` holds an explicit boolean, that value is used and a deprecation warning is emitted.
+3. If neither is set, the value is `false` (opt-in only).
+
+> [!IMPORTANT]
+> **Migration**: rename `skip_if_maintainer` to `skip_for_maintainers`. Because the
+> canonical input always wins, renaming is behaviour-preserving as long as you do
+> not set both to different values.
+
+**Conflict handling**: if both inputs are supplied with *different* boolean
+values, TrustBridge uses `skip_for_maintainers` and emits an explicit warning.
+It does **not** silently pick a value.
+
+```yaml
+# Deprecated — still works, but warns
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_if_maintainer: true
+
+# Preferred
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_for_maintainers: true
+
+# Conflict: skip_for_maintainers: false wins, with a warning
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    skip_for_maintainers: false
+    skip_if_maintainer: true
+```
+
+> [!WARNING]
+> **Risk note**: Do **not** enable `skip_for_maintainers: true` on contributor-facing workflows or pull requests where external contributors might forge or bypass checks. Use only for internal maintainer test workflows or triage automation.
+>
+> The deprecated alias carries the **same** risk as the canonical input — it
+> enables exactly the same opt-out. Renaming an input does not change the
+> security posture, so migrating does not require a security review; it is
+> purely a naming cleanup ahead of the alias being removed.
+
+---
 
 ## Waiting for the account to be funded
 
@@ -196,7 +1214,13 @@ with:
 
 Use this when contributors are expected to fund their wallet right after assignment. The action polls `GET /accounts/{id}` every `wait_until_funded_interval_ms` until it stops 404ing or `wait_until_funded_timeout_ms` elapses, then proceeds exactly as it would for a single check (comment, outputs, `fail_on_missing`). Non-404 Horizon errors (rate limits, outages, timeouts) are not retried by the polling loop — the existing per-request retry/backoff in `horizon.ts` handles those, and if they're still failing after that, the run fails fast instead of continuing to poll.
 
-## New output: `comment_url`
+### Cancellation behavior
+
+If the GitHub Actions job is cancelled (or the workflow is stopped) while `wait_until_funded` is polling, the action will **immediately exit the polling loop** rather than waiting for the current poll interval to complete. This is implemented by honoring the job's `AbortSignal` during the sleep between polls. The run logs will show `Funding poll stopped due to cancellation` and the action will fail with `reason_code: HORIZON_ERROR` (or `FUNDING_POLL_CANCELLED` if configured), not `ACCOUNT_NOT_FUNDED`. This prevents wasted runner minutes after a user aborts the workflow.
+
+## Action outputs
+
+### `comment_url`
 
 When the action runs in an issue context, it sets `comment_url` to the created GitHub comment URL.
 
@@ -212,15 +1236,567 @@ When the action runs in an issue context, it sets `comment_url` to the created G
   run: echo "Comment URL: ${{ steps.trustbridge.outputs.comment_url }}"
 ```
 
+### `comment_id` — chaining a follow-up edit (Issue #696)
+
+`comment_id` is the numeric REST id (as a string) of the issue comment TrustBridge created or updated in this run. It comes straight from the `createComment` / `updateComment` response, so downstream steps can edit the same comment without parsing `comment_url`.
+
+| Situation | `comment_url` | `comment_id` |
+| --- | --- | --- |
+| `posting_mode: post` + `comment_mode: sticky`, prior TrustBridge comment found | URL of the updated comment | id of the updated comment (unchanged across re-runs) |
+| `posting_mode: post` + `comment_mode: sticky`, no prior comment (or lookup failed) | URL of the new comment | id of the new comment |
+| `posting_mode: post` + sticky update fails after the comment was found | URL of the fallback new comment | id of the **new** comment — the stale id is never published |
+| `posting_mode: post` + `comment_mode: new` / `reply` | URL of the new comment | id of the new comment |
+| Sticky comment suppressed by the snooze window | URL of the existing comment | id of the existing comment |
+| `posting_mode: dry-run` or `off` | `""` | `""` |
+| No issue / PR context (e.g. `workflow_dispatch` without `issue_number`, fork PR that skips posting) | `""` | `""` |
+| Comment post failed (warning logged, job not failed) | `""` | `""` |
+
+Guard follow-up steps on `comment_id != ''` so dry runs and runs without an issue context never fail just because no comment exists:
+
+```yaml
+permissions:
+  issues: write
+
+steps:
+  - name: TrustBridge check
+    id: trustbridge
+    uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.address.outputs.address }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      comment_mode: sticky
+      posting_mode: post # use dry-run to preview; comment_id stays empty
+
+  - name: Append payout status to the TrustBridge comment
+    if: steps.trustbridge.outputs.comment_id != ''
+    uses: actions/github-script@v7
+    env:
+      COMMENT_ID: ${{ steps.trustbridge.outputs.comment_id }}
+    with:
+      script: |
+        const comment_id = Number(process.env.COMMENT_ID);
+        const { data } = await github.rest.issues.getComment({
+          ...context.repo,
+          comment_id,
+        });
+        await github.rest.issues.updateComment({
+          ...context.repo,
+          comment_id,
+          body: `${data.body}\n\n> Payout queued by ${context.workflow}.`,
+        });
+```
+
+The same recipe works for a `workflow_dispatch` run with an explicit `issue_number` input: the id refers to the comment on that issue. Keep the TrustBridge markers in the body (append, don't replace) so the next sticky run still finds and updates the comment.
+
+`comment_id` is only ever a REST issue-comment id. GitHub Discussions comments use GraphQL node ids and are not published through this output. `comment_id` is not included in the dashboard webhook payload, so `privacy_mode` has nothing extra to redact. See [Comment guide — `comment_id` output](COMMENT_GUIDE.md#comment_id-output-issue-696) for how sticky lookup decides between update and create.
+
+### Readiness badge outputs
+
+The action exposes badge snippets suitable for embedding in READMEs or dashboards:
+
+- **`readiness_badge_markdown`** — Markdown-formatted badge with link to TrustBridge repository
+- **`readiness_badge_url`** — Plain Shields.io badge URL reflecting wallet-check status (pass/fail)
+
+#### Embedding in README
+
+Add the badge to your repository README using the Markdown output:
+
+```yaml
+- name: TrustBridge check
+  id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Update README with badge
+  run: |
+    # Example: update README with the latest badge status
+    echo "Badge: ${{ steps.trustbridge.outputs.readiness_badge_markdown }}" >> README.md
+```
+
+#### Example badge output
+
+---
+
+## Matrix-friendly outputs for parallel validation (Issue #3)
+
+When validating multiple assignees in a GitHub Actions matrix, standard outputs like `ready` are overwritten by each matrix leg. TrustBridge provides **matrix-friendly JSON outputs** that map each assignee to their validation result, enabling stable access to per-assignee data in downstream jobs.
+
+### The problem with standard outputs in matrices
+
+```yaml
+# ❌ This DOESN'T work as expected
+strategy:
+  matrix:
+    assignee: [alice, bob, charlie]
+steps:
+  - id: check
+    uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ matrix.assignee_address }}
+  
+  # Only the LAST matrix leg's value is available!
+  - run: echo "${{ steps.check.outputs.ready }}"
+```
+
+### The solution: JSON map outputs
+
+TrustBridge provides two matrix-friendly outputs:
+
+#### `assignee_results_json`
+
+Complete validation results keyed by assignee login:
+
+```json
+{
+  "alice": {
+    "ready": true,
+    "stellar_address": "GALICE...",
+    "xlm_balance": "5.0",
+    "account_funded": true,
+    "trustline_exists": true,
+    "reason_code": "SUCCESS",
+    "validated_at": "2024-01-15T10:30:00Z"
+  },
+  "bob": {
+    "ready": false,
+    "stellar_address": "GBOB...",
+    "xlm_balance": "0.5",
+    "account_funded": true,
+    "trustline_exists": false,
+    "reason_code": "TRUSTLINE_MISSING",
+    "validated_at": "2024-01-15T10:30:05Z"
+  }
+}
+```
+
+#### `matrix_ready_map`
+
+Simplified boolean map for quick ready checks:
+
+```json
+{
+  "alice": true,
+  "bob": false,
+  "charlie": true
+}
+```
+
+### Usage pattern 1: Parallel validation with per-assignee access
+
+```yaml
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        assignee: [alice, bob, charlie]
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.lookup.outputs.address }}
+          assignee_login: ${{ matrix.assignee }}  # Enable matrix outputs
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Access this assignee's result
+        run: |
+          # Parse the JSON map to get this specific assignee's status
+          READY_MAP='${{ steps.check.outputs.matrix_ready_map }}'
+          MY_STATUS=$(echo "$READY_MAP" | jq -r '.["${{ matrix.assignee }}"]')
+          echo "Assignee ${{ matrix.assignee }} ready: $MY_STATUS"
+```
+
+### Usage pattern 2: Downstream job with aggregated results
+
+```yaml
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.check.outputs.assignee_results_json }}
+      ready_map: ${{ steps.check.outputs.matrix_ready_map }}
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        # ... validation config
+
+  process-payouts:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process only ready assignees
+        run: |
+          RESULTS='${{ needs.validate.outputs.results }}'
+          READY_MAP='${{ needs.validate.outputs.ready_map }}'
+          
+          for assignee in $(echo "$READY_MAP" | jq -r 'to_entries[] | select(.value==true) | .key'); do
+            address=$(echo "$RESULTS" | jq -r --arg a "$assignee" '.[$a].stellar_address')
+            echo "Queue payout for $assignee at $address"
+          done
+```
+
+### Usage pattern 3: Dynamic matrix from ready assignees
+
+```yaml
+jobs:
+  validate-all:
+    outputs:
+      ready_assignees: ${{ steps.filter.outputs.assignees }}
+    steps:
+      - id: check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        # ... batch validation
+      
+      - id: filter
+        run: |
+          READY_MAP='${{ steps.check.outputs.matrix_ready_map }}'
+          # Extract only ready assignees for next job's matrix
+          READY=$(echo "$READY_MAP" | jq -c '[to_entries[] | select(.value==true) | .key]')
+          echo "assignees=$READY" >> $GITHUB_OUTPUT
+
+  payout:
+    needs: validate-all
+    strategy:
+      matrix:
+        assignee: ${{ fromJSON(needs.validate-all.outputs.ready_assignees) }}
+    steps:
+      - name: Execute payout
+        run: echo "Paying ${{ matrix.assignee }}"
+```
+
+### Complete examples
+
+See `docs/examples/` for full workflow files:
+- [`matrix-assignee-validation.yml`](examples/matrix-assignee-validation.yml) — Parallel validation with matrix strategy
+- [`batch-validation-with-matrix-outputs.yml`](examples/batch-validation-with-matrix-outputs.yml) — Single-job batch validation with downstream processing
+
+### Username sanitization
+
+GitHub usernames may contain characters that cause issues in Actions expressions (e.g., hyphens in `my-user`). TrustBridge automatically sanitizes usernames when used as map keys:
+
+- Preserves alphanumerics, underscores, hyphens
+- Replaces other special characters with `_`
+- Prefixes with `_` if starts with a digit
+- Empty/whitespace becomes `"unknown"`
+
+```yaml
+# Username "alice-123" → key "alice-123" (preserved)
+# Username "bob@example" → key "bob_example" (sanitized)
+# Username "42charlie" → key "_42charlie" (prefixed)
+```
+
+### Output size limits
+
+GitHub Actions has a 1MB limit for step outputs. TrustBridge's JSON map approach is more efficient than creating individual outputs per assignee (`ready_alice`, `ready_bob`, etc.), but be mindful when validating hundreds of assignees. Consider:
+
+- Batch validation in smaller groups (e.g., 50 assignees per job)
+- Use `matrix_ready_map` for gating logic (smaller than full results)
+- Store full results in artifacts for large batches
+
+#### Automatic truncation (Issue #854)
+
+Rather than let a run silently exceed GitHub's per-output size limit (which would either reject the output outright or leave a workflow parsing an incomplete JSON payload with no indication anything was cut), TrustBridge caps every JSON/array output it builds at `MAX_OUTPUT_VALUE_BYTES` (900 KB — kept below the 1MB limit for headroom) and truncates **deterministically**: the earliest entries (in the original, stable order — input order for `assets_json`, the address list, or the assignee list) are kept, later ones are dropped. Only the array itself is capped; summary counts (`trustlines_summary`, `batch_summary_json`'s `total`/`passed`/`failed`/`failureTaxonomy`) always report the true, untruncated totals.
+
+Affected outputs:
+
+| Output | What gets truncated |
+|---|---|
+| `assets_trustline_status` | The per-asset status array, if `assets_json` lists enough assets |
+| `assignee_results_json` / `matrix_ready_map` | The per-assignee maps built by `buildMatrixOutputs`, bounded together so they always agree on which assignees are present |
+| `batch_summary_json` | The `failures` array, if a batch run has enough failed addresses |
+
+**Detecting truncation:** check the `outputs_truncated` output (always `"true"` or `"false"`, never empty) before trusting a JSON array's length as the complete result set:
+
+```yaml
+- name: Check for truncated outputs
+  if: steps.trustbridge.outputs.outputs_truncated == 'true'
+  run: |
+    echo "::warning::TrustBridge outputs were truncated — some entries are missing from the JSON outputs. Split this run into smaller batches, or read batch_passed_count/batch_failed_count for the true totals."
+```
+
+A payout workflow that branches on `batch_summary_json`'s `failures` array (rather than the always-accurate `batch_failed_count`/`batch_passed_count` scalar outputs) should always check `outputs_truncated` first — a truncated `failures` array under-reports who failed, which is exactly the "wrong branch decision" risk this guards against.
+
+---
+
+### Example badge output
+
+**Pass state:** [![TrustBridge](https://img.shields.io/badge/trustbridge-Ready-brightgreen)](https://github.com/Stellar-TrustBridge/trustbridge-action)
+
+**Fail state:** [![TrustBridge](https://img.shields.io/badge/trustbridge-Not%20Ready-red)](https://github.com/Stellar-TrustBridge/trustbridge-action)
+
+The badge reflects the validation result without exposing PII (addresses, balances, or asset details).
+
+### Sponsorship outputs
+
+The action exposes sponsorship relationship counts from the Stellar Horizon API when available:
+
+- **`num_sponsoring`** — Number of accounts this account is sponsoring (numeric string)
+- **`num_sponsored`** — Number of accounts sponsoring this account (numeric string)
+
+#### Using sponsorship outputs in workflows
+
+Sponsorship outputs are useful for understanding reserve requirements and sponsorship relationships:
+
+```yaml
+- name: TrustBridge check
+  id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Check sponsorship status
+  run: |
+    echo "Sponsoring: ${{ steps.trustbridge.outputs.num_sponsoring }} accounts"
+    echo "Sponsored by: ${{ steps.trustbridge.outputs.num_sponsored }} accounts"
+```
+
+When an account is **sponsored** (`num_sponsored > 0`), reserve requirements are covered by the sponsoring account. The TrustBridge comment will automatically note this and provide links to Stellar sponsorship documentation for clarity.
+
+### Claimable balances and funded definition (Issue #260)
+
+By default, **funded** means Horizon `GET /accounts/{id}` returned `200`. Claimable balances are **ignored**:
+
+- An address that has `0` native XLM but has claimable balances on Horizon still shows _“not found / unfunded”_ and gets the unfunded remediation (fund + trustline). No extra Horizon request is made, so there is no extra request budget impact. Empty claimables (`0`) are treated as “no hint” in either mode.
+
+To surface claimable balances without changing the `ready` gate, set `claimable_balance_policy: count`:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  claimable_balance_policy: count # default is "ignore"
+```
+
+Then, when the account is `404` but Horizon reports claimable balances for the claimant, the comment adds: _“It has N claimable balance(s) — these must be claimed after funding”_ and the remediation includes the `claimable_balances?claimant=` Horizon link. The check is informational — `account_funded` stays `false` and `ready` is not set true unless you explicitly gate on it. The extra `GET /claimable_balances?claimant=…&limit=5` request is bounded to 5s and is only made when `count` is set.
+
+Policy is tested for both `ignore` (default, no hint) and `count` (hint when >0, no hint when 0).
+
+### SEP-0010 challenge proof (Issue #252)
+
+Proving wallet control beats “please add a trustline” copy-paste. Comments already have SEP-0007 links for funding. You can optionally include a SEP-0010 challenge proof:
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  # Prefer a dashboard Freighter proof link (no nonce in the issue):
+  sep0010_dashboard_url: https://your-dashboard.example/verify?address=G...
+  # Or, if you must, a raw challenge XDR (truncated in the comment, do not reuse nonce):
+  # sep0010_challenge_xdr: AAAA...
+```
+
+- When `sep0010_dashboard_url` (https, not private/loopback) is set, the comment shows _“Proof of wallet control (SEP-0010) — [Open dashboard proof](url)”_ with network context. This is the preferred mode.
+- When only `sep0010_challenge_xdr` is set, the comment shows a truncated `24…8` XDR snippet with signing instructions and a link to SEP-0010. Raw nonces are truncated in the comment and never logged; do not reuse a challenge.
+- If both are set, the dashboard link wins (no raw XDR rendered).
+- The snippet is informational and **does not block `ready`** unless your workflow explicitly gates on it. It is size-capped; if the total comment exceeds GitHub’s 65k limit, the remediation truncation keeps the snippet.
+
+See `docs/COMMENT_GUIDE.md` for snapshot examples and comment-size guidance.
+
+### Split native XLM vs trustline balance (Issue #246)
+
+Maintainers can now tell “has USDC but no XLM” from the inverse. The comment’s `### Balances` section and outputs now distinguish native vs asset:
+
+**Comment:**
+
+```md
+### Balances
+
+- **Native XLM balance:** `10.0000000 XLM`
+- **Minimum required (XLM reserve):** `1.5 XLM` (protocol minimum `1.5 XLM` from 1 subentries/sponsorship, configured floor `1.5 XLM`)
+- **USDC trustline balance:** `100.0000000 USDC` (limit `1000.0000000 USDC`) — or `0 USDC — no trustline`
+```
+
+- `Native XLM balance` is the raw Horizon native balance string (7 decimals, `0` / `_unknown_` on error paths).
+- `USDC trustline balance` is the asset balance for the configured `asset_code`/`asset_issuer` (7 decimals). When the trustline is missing, it shows `0 … — no trustline`; when Horizon is unreachable, `_unknown_`; when `0` balance trustline exists, `0.0000000`.
+- Limits are shown when available (Issue #140).
+
+**Outputs (non-breaking additions):**
+| Output | Description |
+|--------|-------------|
+| `asset_balance` | Configured asset balance (7-decimal Horizon string, `0` if no trustline, `unknown` on error) |
+| `native_balance` | Alias of `xlm_balance` (native XLM, 7 decimals) |
+
+`xlm_balance`, `trustline_exists`, `account_funded`, `checks_json`, `comment_url` etc. are unchanged. Balance parsing follows `docs/DECIMAL_PRECISION.md` — 7-decimal stroops, `BigInt` for maximum precision.
+
+---
+
+## Validating your workflow config against the schema
+
+TrustBridge publishes a [JSON Schema](../schemas/action-inputs.schema.json)
+for all `action.yml` inputs at `schemas/action-inputs.schema.json`. Integrators
+can validate their `with:` block in CI to catch typos, removed inputs, or
+type mismatches **before** they cause silent runtime failures on assignment day.
+
+### What the schema enforces
+
+- Every property matches a declared `action.yml` input.
+- All values are typed as `"string"` (GitHub Actions passes all inputs as strings).
+- `additionalProperties: false` — unknown keys are rejected immediately.
+- `required: ["github_token"]` — the one mandatory input is enforced.
+
+### Validate with ajv-cli (Node)
+
+```bash
+# Install once
+npm install --save-dev ajv-cli
+
+# Create a sample config file — mirrors your workflow's `with:` block
+cat > my-trustbridge-config.json << 'EOF'
+{
+  "github_token": "${{ secrets.GITHUB_TOKEN }}",
+  "stellar_address_input": "GABC...",
+  "fail_on_missing": "true",
+  "horizon_url": "https://horizon.stellar.org"
+}
+EOF
+
+# Validate against the schema
+npx ajv-cli validate \
+  -s schemas/action-inputs.schema.json \
+  -d my-trustbridge-config.json
+```
+
+### Validate with check-jsonschema (Python)
+
+```bash
+pip install check-jsonschema
+
+check-jsonschema \
+  --schemafile schemas/action-inputs.schema.json \
+  my-trustbridge-config.json
+```
+
+### Add it to your CI workflow
+
+```yaml
+- name: Validate TrustBridge config against schema
+  run: |
+    npm install --save-dev ajv-cli
+    npx ajv-cli validate \
+      -s schemas/action-inputs.schema.json \
+      -d ci/trustbridge-config.json
+```
+
+This step fails immediately if you add an unrecognised input or remove a
+required field, giving a clear error message before the action ever runs.
+
+### Schema location
+
+The schema is published alongside the action source and is always in sync
+with `action.yml`. The sync is enforced by:
+
+1. A Jest test suite (`__tests__/action-schema-sync.test.ts`) that parses
+   `action.yml` at runtime and asserts every input appears in the schema and
+   vice-versa. CI fails on any drift.
+2. A dedicated CI step (`Verify action.yml ↔ schema sync`) that runs
+   `npm test -- --testPathPattern action-schema-sync` on every push and PR.
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md#keeping-the-schema-in-sync-with-actionyml)
+for the update checklist maintainers follow when adding or changing inputs.
+
+---
+
+## Ledger freshness guard
+
+The freshness guard detects when a Horizon node is serving stale data by
+comparing the latest ingested ledger close time to the current wall clock.
+
+**Disabled by default** — set `check_ledger_freshness: true` to enable.
+
+```yaml
+with:
+  stellar_address_input: ${{ steps.addr.outputs.value }}
+  github_token: ${{ secrets.GITHUB_TOKEN }}
+  check_ledger_freshness: true
+  max_ledger_lag_seconds: 60 # warn if Horizon is >60 s behind
+  ledger_freshness_fail_on_stale: false # false = warn only (default)
+```
+
+When `ledger_freshness_fail_on_stale: true` is set, a stale node causes the
+action to hard-fail before running any account checks.
+
+The guard fetches `GET <horizon_url>/` and reads
+`history_latest_ledger_closed_at`. If the value is missing or unparseable,
+the guard emits a warning and proceeds (fail-open) — a Horizon outage won't
+cause a silent false-pass.
+
+Freshness lag and latest ledger sequence are recorded as metrics
+(`freshness_lag_seconds`, `freshness_latest_ledger`) and visible in the
+`debug_mode: true` metrics JSON artifact.
+
+---
+
+## Handling oversized reports
+
+Long remediation sections (multi-check failures, expert diagnostics, batch results) can push the comment body past GitHub's 65,536-byte limit. When that happens, TrustBridge automatically:
+
+1. Writes the **full** validation report to a workspace file (`trustbridge-report.md` by default).
+2. Posts a **truncated** comment with a notice explaining where to find the full report.
+3. Sets the `full_report_path` output to the absolute path of the written file.
+
+The file is only written when the body exceeds the limit — normal short comments are unchanged.
+
+### Uploading the report as a workflow artifact
+
+Add an `actions/upload-artifact` step **after** the TrustBridge step to make the full report available for download from the Actions run summary:
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: TrustBridge check
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.addr.outputs.value }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: customise where the full report is written
+          report_output_path: trustbridge-report.md
+
+      - name: Upload full validation report
+        if: steps.trustbridge.outputs.full_report_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-full-report
+          path: ${{ steps.trustbridge.outputs.full_report_path }}
+          retention-days: 7
+```
+
+The `if:` condition means the upload step is skipped entirely on normal runs where the comment fit within the limit.
+
+### Configuring the report path
+
+Use the `report_output_path` input to change where the file is written:
+
+```yaml
+with:
+  report_output_path: reports/trustbridge-${{ github.run_id }}.md
+```
+
+Intermediate directories are created automatically. The path can be workspace-relative or absolute.
+
+### Outputs added by this feature
+
+| Output             | Description                                                                        |
+| ------------------ | ---------------------------------------------------------------------------------- |
+| `full_report_path` | Absolute path of the written report file, or empty string when no file was written |
+
 ---
 
 ## Extracting Stellar addresses from issues
 
 Common patterns:
 
-### Issue template field
+### Automatic extraction via `extract_address_from_issue`
 
-Parse a labeled line from the issue body:
+Parse a labeled line from a free-form Markdown issue body (classic `.md`/`.yml` issue templates, or any issue where contributors paste an address in a known format):
 
 ```yaml
 - name: Extract Stellar address
@@ -238,16 +1814,240 @@ Parse a labeled line from the issue body:
 
 Fetch a custom field or org profile via your own API step, then pass the result to `stellar_address_input`.
 
+### Assignee → address roster map (`assignee_address_map`)
+
+When wallets are stored out-of-band (org variable, private roster file, Actions secret), pass a JSON map of **GitHub username → Stellar G-address**. TrustBridge reads the assignee login from the GitHub event context (`payload.assignee` on `issues.assigned`, otherwise the first issue assignee) and resolves the address **before** calling Horizon — no issue-body parsing required.
+
+**Inline JSON** (small public rosters or values injected from a secret):
+
+```yaml
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer injecting from a secret/org variable rather than hard-coding:
+          assignee_address_map: ${{ vars.STELLAR_ASSIGNEE_ROSTER }}
+          # Example shape: {"alice":"GABC...","bob":"GDEF..."}
+```
+
+**JSON file path** (checked out in the job workspace):
+
+```json
+{
+  "alice": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+  "bob": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"
+}
+```
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      assignee_address_map: rosters/wallets.json
+```
+
+Usernames are matched **case-insensitively**. When the map is set, `stellar_address_input` is not required. Missing assignees fail with an actionable error; invalid G-addresses still go through the existing address validation before Horizon.
+
+> **Security:** Do **not** commit private or sensitive rosters to a public repository. Prefer GitHub Actions secrets / org variables, a private repo path, or a checkout of a restricted artifact. Public exposure of username↔wallet links can deanonymize contributors.
+
+### CSV roster import (Issue #798)
+
+`parseRosterCsv` (`src/roster.ts`) accepts a CSV of logins and/or Stellar addresses and returns a validated, de-duplicated roster plus a rejection summary — useful when a roster is maintained as a spreadsheet export rather than hand-written JSON, and you want bad rows caught *before* a batch validation run instead of surfacing as confusing per-row failures mid-run.
+
+Accepted shapes (a header row is optional and detected automatically by column name):
+
+```csv
+login,address
+alice,GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+bob,GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H
+```
+
+A single-column CSV of addresses only (no `login`) is also accepted — each row becomes an entry in the `addresses` array only (no `addressMap` key, since there is no login to key by).
+
+Validation rules:
+
+- **Invalid addresses are rejected**, not just flagged: a row whose address column fails StrKey validation (G-address checksum, or C-address structural validation — the same `isValidStellarAddress` check used everywhere else) is excluded from the usable roster and reported in `invalid`.
+- **Duplicate addresses are rejected**: the first row to claim an address wins; every later row with the same address (after trimming) is excluded and reported in `duplicates`, rather than being silently kept or silently dropped.
+- **One bad row never blocks the rest of the roster** — a typo on one line does not prevent validating everyone else; only a CSV with no data rows at all, or a header that does not name a recognised address column, throws.
+- The result's `summaryMarkdown` field renders rows-read / valid / duplicate / invalid counts plus up to 20 example rows per rejected category — post it as a job log line or PR/issue comment so a Wave operator sees exactly which rows need fixing before addresses are dropped into the normal `stellar_addresses` / `assignee_address_map` batch inputs.
+
+```ts
+import { parseRosterCsv } from './roster';
+
+const { addresses, addressMap, summaryMarkdown, summary } = parseRosterCsv(csvFileContents);
+if (summary.invalidCount > 0 || summary.duplicateCount > 0) {
+  core.warning(summaryMarkdown);
+}
+// addresses is ready for runBatchValidation(addresses, ...) / parseBatchAddresses-style consumers;
+// addressMap is ready for resolveAddressFromAssigneeMap / filterRosterAddressMap.
+```
+
+This is a library function for workflow authors who maintain a CSV roster upstream of TrustBridge (e.g. in a separate preparation step) — it is not wired to a dedicated `*_csv` action input, so pair it with `stellar_addresses` (for `addresses`) or `assignee_address_map` (for `addressMap`) in your own workflow step.
+
+---
+
+
+#### Accepted CSV dialects (Issue #953)
+
+`parseRosterCsv` accepts what Excel and Google Sheets export:
+
+- **UTF-8 BOM:** a leading `\uFEFF` (Excel's "CSV UTF-8") is stripped, so the header row is still recognised.
+- **Line endings:** CRLF, LF, and bare CR.
+- **Quoted fields (RFC 4180 subset):** `"Doe, Jane"` keeps its comma, and `""` inside quotes is a literal `"`. Whitespace outside quotes is trimmed. Multi-line quoted cells are not supported.
+- **Formulas rejected:** a row with any cell starting with `=`, `+`, `-`, `@`, tab, or CR is rejected into `invalid` with a "spreadsheet formula" reason (CSV-injection guard). The rest of the roster is still imported.
+- **Malformed quotes:** a row with an unterminated quoted field is rejected into `invalid` with `Roster CSV has an unterminated quoted field.`
+
+## Per-check named outputs (fine-grained gating)
+
+> **Note:** `check_account_funded`, `check_trustline` and `check_xlm_reserve` are **not declared in `action.yml`** and are not emitted by `src/outputs.ts`, so in a workflow they read as `''`. Until they are added to the output contract, gate on `account_funded`, `trustline_exists`, `ready` and `reason_code`, or parse `checks_json`. The authoritative output list is the [README Outputs section](../README.md#outputs).
+
+In addition to the legacy `account_funded` and `trustline_exists` outputs,
+TrustBridge exposes three named per-check outputs that map one-to-one onto
+the internal validation checks:
+
+| Output                 | Type               | Description                                          |
+| ---------------------- | ------------------ | ---------------------------------------------------- |
+| `check_account_funded` | `'true'`/`'false'` | Account exists and is funded on Stellar              |
+| `check_trustline`      | `'true'`/`'false'` | Trustline for `asset_code`/`asset_issuer` is present |
+| `check_xlm_reserve`    | `'true'`/`'false'` | Native XLM ≥ `min_xlm_reserve`                       |
+
+These are backward-compatible additions — all existing `account_funded`,
+`trustline_exists`, and `xlm_balance` outputs continue to work unchanged.
+
+### Branching workflow: allow funded-but-trustline-pending path
+
+A common pattern is to let contributors proceed when the account is funded
+even if the trustline is not yet set up (e.g. to unblock an issue assignment
+while the contributor completes wallet configuration):
+
+```yaml
+- name: TrustBridge check
+  id: tb
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.addr.outputs.value }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    fail_on_missing: false # don't hard-fail; we branch on outputs below
+
+- name: Full payout path — all checks passed
+  if: >
+    steps.tb.outputs.check_account_funded == 'true' &&
+    steps.tb.outputs.check_trustline == 'true' &&
+    steps.tb.outputs.check_xlm_reserve == 'true'
+  run: echo "Ready for immediate payout"
+
+- name: Funded but trustline or reserve pending — assign but hold payment
+  if: >
+    steps.tb.outputs.check_account_funded == 'true' &&
+    (steps.tb.outputs.check_trustline != 'true' ||
+     steps.tb.outputs.check_xlm_reserve != 'true')
+  run: echo "Account active — awaiting trustline/reserve setup before payout"
+
+- name: Account not funded — block assignment
+  if: steps.tb.outputs.check_account_funded != 'true'
+  run: |
+    echo "Contributor wallet not yet funded — blocking assignment"
+    exit 1
+```
+
+### Reserve-only gating
+
+Gate a step purely on whether the XLM reserve is met, independent of the
+trustline check:
+
+```yaml
+- name: Assert reserve met
+  if: steps.tb.outputs.check_xlm_reserve != 'true'
+  run: |
+    echo "XLM reserve not met (balance: ${{ steps.tb.outputs.xlm_balance }})"
+    exit 1
+```
+
 ---
 
 ## Outputs in downstream jobs
+
+TrustBridge exposes both legacy outputs and comprehensive audit & timing metadata for downstream automation, payout gating, and compliance monitoring.
+
+### Available Action Outputs
+
+| Output                    | Type                           | Description                                                                                                                                 |
+| ------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`                   | `boolean` (`"true"`/`"false"`) | **Overall readiness gate**: `true` when all validation checks pass, `false` otherwise. Ideal for `if:` condition in downstream payout jobs. |
+| `validated_at`            | `string`                       | ISO 8601 UTC timestamp of when validation occurred.                                                                                         |
+| `horizon_url`             | `string`                       | Horizon endpoint base URL used for account queries.                                                                                         |
+| `asset_code`              | `string`                       | Asset code checked (e.g. `USDC`).                                                                                                           |
+| `asset_issuer`            | `string`                       | Asset issuer Stellar G-address checked.                                                                                                     |
+| `reason_code`             | `string`                       | Machine-readable failure classification code (see Catalog below).                                                                           |
+| `checks_json`             | `string` (JSON)                | Array of check objects: `[{"label": "...", "passed": true, "detail": "..."}]`.                                                              |
+| `timings_json`            | `string` (JSON)                | Execution timing breakdown object in milliseconds.                                                                                          |
+| `timing_input_parse_ms`   | `string`                       | Input parsing phase latency in milliseconds.                                                                                                |
+| `timing_horizon_fetch_ms` | `string`                       | Horizon API query latency in milliseconds.                                                                                                  |
+| `timing_checks_ms`        | `string`                       | Account checks evaluation latency in milliseconds.                                                                                          |
+| `timing_comment_post_ms`  | `string`                       | Issue comment posting latency in milliseconds.                                                                                              |
+| `timing_total_ms`         | `string`                       | Total action execution duration in milliseconds.                                                                                            |
+| `trustline_exists`        | `string` (legacy)              | Whether the account holds a trustline for the asset (`"true"`/`"false"`).                                                                   |
+| `xlm_balance`             | `string` (legacy)              | Native XLM balance as reported by Horizon.                                                                                                  |
+| `account_funded`          | `string` (legacy)              | Whether the account exists on the ledger (`"true"`/`"false"`).                                                                              |
+| `comment_url`             | `string` (legacy)              | Created/updated issue comment URL.                                                                                                          |
+| `comment_id`              | `string`                       | Numeric REST id of the created/updated issue comment; `""` when no comment was posted (dry-run, off, no issue context).                     |
+| `full_report_path`        | `string` (legacy)              | Workspace path to full report when comment body exceeded size limits.                                                                       |
+| `snooze_expired`          | `boolean` (`"true"`/`"false"`) | `"true"` only for the run that resumes posting because an active snooze window just lapsed (Issue #799); see [COMMENT_GUIDE.md](COMMENT_GUIDE.md#snooze_expired-output-issue-799). |
+
+### Failure Reason Code Catalog (`reason_code`)
+
+<!-- BEGIN GENERATED: reason-codes (source: schemas/reason-codes.json) -->
+<!-- AUTOGENERATED — do not edit by hand. Run `npm run reason-codes:doc`. -->
+<!-- 21 codes from schemas/reason-codes.json (catalog version 1). -->
+
+| `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
+| --- | --- | --- | --- | --- | --- |
+| `SUCCESS` | ✅ `true` | ✅ `true` | ✅ `true` | ✅ `true` | All checks passed — the account is funded, holds the required asset trustline, and meets the minimum XLM reserve. |
+| `TRUSTLINE_MISSING` | ❌ `false` | ✅ `true` | ❌ `false` | ✅ `true` | The account is funded and meets the XLM reserve, but the required asset trustline is not present. |
+| `RESERVE_TOO_LOW` | ❌ `false` | ✅ `true` | ✅ `true` | ❌ `false` | The account is funded and has a trustline, but the native XLM balance is below the required minimum reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The account is funded and has a trustline, but the trustline limit is below the configured minimum (`min_trustline_limit`). |
+| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon returned 404 for the account — the account does not exist on the Stellar network (not yet funded). |
+| `HORIZON_TIMEOUT` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The Horizon request timed out or was aborted. The account state could not be determined. |
+| `HORIZON_ERROR` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon returned a non-404 non-timeout error (e.g. 429, 502, 503, 504, or a non-retryable HTTP error). The account state could not be determined. |
+| `TLS_ERROR` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | TLS/certificate verification failed for the configured Horizon endpoint. The account state could not be determined. Most common with private/enterprise Horizon mirrors using self-signed certificates. |
+| `FAILED` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | A generic failure catch-all: the account was funded and the trustline exists and the reserve was met, but some other check (e.g. asset balance minimum) caused the validation to fail. |
+| `TRUSTLINE_UNAUTHORIZED` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | Trustline exists but is not authorized by the issuer. |
+| `CLAWBACK_BLOCKED` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The configured asset has clawback enabled (`is_clawback_enabled: true`) for this trustline and validation was blocked by `clawback_strict_mode: true`. The issuer can reclaim the held assets at any time. |
+| `CIRCUIT_OPEN` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The Horizon circuit breaker tripped after repeated consecutive failures, so the run was failed closed without further Horizon requests. Distinct from HORIZON_ERROR: the account state was never determined because no request was attempted. Clear the circuit by resolving the underlying Horizon outage and re-running. |
+| `RATE_BUDGET_EXHAUSTED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The per-run Horizon request budget (`horizon_max_requests`) was exhausted before the account could be validated. The run fails closed by design rather than issuing unbounded requests. Distinct from HORIZON_ERROR: no failing request occurred, the budget was deliberately exhausted. Raise `horizon_max_requests` (batch mode) or retry. |
+| `HOME_DOMAIN_MISMATCH` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The asset issuer's on-chain `home_domain` does not match `expected_home_domain` and `home_domain_check_mode: strict` blocked validation. The account itself may be fully funded with the trustline present. In `warn` mode this condition is reported in the comment but does not change the reason code. |
+| `HOME_DOMAIN_MISSING` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The asset issuer has no `home_domain` set on-chain (or its account could not be fetched) and `home_domain_check_mode: strict` blocked validation. Distinct from HOME_DOMAIN_MISMATCH: there is no domain to compare. In `warn` mode this condition is reported in the comment but does not change the reason code. |
+| `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The milestone gate skipped validation because the issue or pull request's milestone was not in `milestone_allowlist` (or no milestone was set while the allowlist was active). No account checks were performed, so this is a skip rather than a validation failure. Set `milestone_fail_on_skip: true` to hard-fail instead of warn. |
+| `REQUIRED_LABELS_MISSING` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The required_labels gate skipped validation because one or more labels listed in `required_labels` are absent from the issue or pull request. No account checks were performed, so this is a skip rather than a validation failure. Set `required_labels_fail_on_skip: true` to hard-fail instead. |
+| `MAINTAINER_SKIPPED` | ✅ `true` | ✅ `true` | ✅ `true` | ✅ `true` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
+| `SAC_ISSUER_NOT_VERIFIABLE` | ❌ `false` | ✅ `true` | ❌ `false` | ✅ `true` | The asset is issued by a Soroban Stellar Asset Contract (C-address). SAC balances are never exposed as classic Horizon trustlines, so the balance cannot be confirmed or denied by this check. Verify the balance on the Stellar Lab contract page or via Soroban RPC `getContractData`. |
+| `HORIZON_WAIT_BUDGET_EXHAUSTED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon kept returning retryable errors until the configured retry wait budget ran out. Distinct from HORIZON_ERROR/HORIZON_TIMEOUT: retries were attempted and exhausted rather than failing on the first request. The account state could not be determined. |
+| `EXTRA_TRUSTLINE_MISSING` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The primary asset_code/asset_issuer check passed (SUCCESS), but assets_json declared one or more additional required trustlines and at least one of them is missing on the account. |
+
+<!-- END GENERATED: reason-codes -->
+
+### Example — Downstream Payout Gating
 
 ```yaml
 jobs:
   verify:
     runs-on: ubuntu-latest
     outputs:
-      funded: ${{ steps.bridge.outputs.account_funded }}
+      ready: ${{ steps.bridge.outputs.ready }}
+      reason: ${{ steps.bridge.outputs.reason_code }}
+      checks: ${{ steps.bridge.outputs.checks_json }}
     steps:
       - id: bridge
         uses: Stellar-TrustBridge/trustbridge-action@v1
@@ -257,34 +2057,2798 @@ jobs:
 
   payout:
     needs: verify
-    if: needs.verify.outputs.funded == 'true'
+    if: needs.verify.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Ready for payout pipeline"
+      - name: Execute automated payout
+        run: echo "Account verified ready! Proceeding with payout..."
 ```
+
+### Timing Breakdown & Triage (`timings_json`)
+
+Downstream workflows and maintainers can inspect phase timings to triage slow runs and detect availability anomalies:
+
+- **`timing_horizon_fetch_ms`**: Indicates latency introduced by the Horizon API endpoint. High values suggest Horizon congestion or rate limiting.
+- **`timing_comment_post_ms`**: Indicates GitHub API latency.
+- **`timing_checks_ms`**: Evaluation time in Node runner (typically < 10ms).
+
+> **Balance parsing for release scripts:** The `xlm_balance` output is a raw
+> Horizon decimal string (e.g. `"14.9999700"`). Use `parseFloat()` for
+> threshold comparisons, integer stroop arithmetic for payment math, or
+> `BigInt` for auditable precision. See
+> [DECIMAL_PRECISION.md](DECIMAL_PRECISION.md) for safe-parsing examples and
+> rules to avoid floating-point bugs in downstream payout scripts.
+
+---
+
+## Soroban contract registry lookup
+
+For programs that maintain an on-chain mapping of GitHub usernames to Stellar G-addresses via the `trustbridge-contract` registry, TrustBridge can resolve the address automatically before running Horizon checks.
+
+### How it works
+
+1. When `soroban_rpc_url`, `contract_id`, and `github_username` are all set, TrustBridge calls `get_address(github_username)` on the registry contract via `simulateTransaction`.
+2. If the username is registered, the resolved G-address is used for all subsequent Horizon checks instead of `stellar_address_input`.
+3. If the username is **not registered**, or the registry is **unavailable** (rate-limited, outage, timeout), TrustBridge logs a warning and falls back to `stellar_address_input` — existing workflows are never broken.
+
+### Configuration
+
+| Input             | Required | Default | Description                                                                                             |
+| ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `soroban_rpc_url` | No       | `''`    | Soroban RPC endpoint (e.g. `https://soroban-testnet.stellar.org`). Leave empty to skip registry lookup. |
+| `contract_id`     | No       | `''`    | C-address of the `trustbridge-contract` registry. Required when `soroban_rpc_url` is set.               |
+| `github_username` | No       | `''`    | GitHub username to resolve. Falls back to `stellar_address_input` if not registered.                    |
+
+### Example — resolve assignee address from registry
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    github_username: ${{ github.event.assignee.login }}
+    soroban_rpc_url: https://soroban-testnet.stellar.org
+    contract_id: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+    stellar_address_input: ${{ steps.addr.outputs.value }} # fallback
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Rollout instructions
+
+1. Deploy the `trustbridge-contract` registry to your target Stellar network.
+2. Register contributor GitHub usernames via the contract's `set_address` function.
+3. Add `soroban_rpc_url`, `contract_id`, and `github_username` to your workflow.
+4. Keep `stellar_address_input` set as a fallback for contributors not yet registered.
+5. Gradually migrate contributors to the registry; remove `stellar_address_input` once all are registered.
+
+### Backward compatibility
+
+All three inputs (`soroban_rpc_url`, `contract_id`, `github_username`) default to empty string. Existing workflows that do not set them are completely unaffected — the registry lookup is skipped entirely and the action behaves identically to previous versions.
+
+---
+
+## C-address payout destinations
+
+TrustBridge accepts a Soroban contract destination (`C...`) in `stellar_address_input` when the workflow also provides `soroban_rpc_url`.
+
+### What is checked
+
+- `stellar_address_input` is accepted as a valid C-address when it matches the Soroban contract StrKey format.
+- TrustBridge then calls Soroban RPC with `getContractCode` (or the equivalent contract-existence call supported by the configured RPC) to confirm the contract exists on-chain.
+- Only the existence check runs for the payout destination. Horizon account lookups, trustline checks, and XLM reserve checks are intentionally skipped for C-address destinations because those checks are defined for G-account addresses only.
+
+### What is skipped
+
+- `GET /accounts/{address}` is not called for a C-address destination.
+- Trustline validation for the destination wallet is not attempted.
+- XLM reserve and native balance checks are not evaluated for a C-address destination.
+
+### Fail-closed behavior
+
+- If `stellar_address_input` is a C-address and `soroban_rpc_url` is empty or invalid, the action fails closed instead of silently treating the contract as valid.
+- If the RPC cannot confirm that the contract exists, the workflow is marked not ready and the payout destination is rejected.
+
+### Limitations
+
+This C-address support is intentionally narrow: it verifies that a contract destination exists on-chain and is eligible as a payout target, but it does not attempt full SAC/token-balance validation for every token standard. TrustBridge does not perform a full "all balances and trustlines" audit for contract-based destinations.
+
+---
+
+## Address resolution precedence (Issue #219)
+
+TrustBridge resolves the Stellar G-address to validate using the following precedence order. The **first** source that yields a non-empty address wins; all later sources are skipped.
+
+| Priority    | Source                        | When used                                                                                        | Conflict handling                                                                            |
+| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 1 (highest) | **Soroban contract registry** | `soroban_rpc_url` + `contract_id` are set and `get_address(username)` returns a non-empty result | Wins over assignee map and direct input; contract lookup failure falls through to priority 2 |
+| 2           | **Assignee address map**      | `assignee_address_map` is set and the current assignee login matches an entry                    | Wins over direct input; missing assignee is a hard error                                     |
+| 3 (lowest)  | **Direct input**              | `stellar_address_input` is set                                                                   | Used when neither contract nor map produces an address                                       |
+
+### When multiple sources are configured
+
+If you set both `assignee_address_map` and `stellar_address_input`, the map wins (priority 2 > 3). If you set `soroban_rpc_url` + `contract_id` **and** `assignee_address_map`, the contract wins when the lookup succeeds; on failure, the map is used as fallback.
+
+### Conflict logging
+
+When a source other than direct input resolves the address, TrustBridge logs which source won at `info` level so maintainers can audit the resolution path in workflow logs.
+
+### Example — all three sources configured
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    # Priority 1: contract registry (used when available)
+    soroban_rpc_url: https://soroban-testnet.stellar.org
+    contract_id: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+    # Priority 2: assignee map (fallback if contract lookup fails)
+    assignee_address_map: '{"octocat": "GABC...1234"}'
+    # Priority 3: direct input (last resort)
+    stellar_address_input: GABC...1234
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+---
+
+## Structured Artifacts (Security & Auditing)
+
+TrustBridge can emit a structured JSON artifact summarizing the check results for machine-readability, security reviews, and auditing. This avoids needing to parse markdown comments or action outputs.
+By default, this feature is disabled.
+
+To enable it, set `write_validation_json: 'true'`. You can then upload it using `actions/upload-artifact`:
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.inputs.stellar_address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          write_validation_json: "true"
+          validation_json_path: "validation.json" # Default
+
+      - name: Upload Validation Artifact
+        uses: actions/upload-artifact@v4
+        if: always() # Ensure artifact is uploaded even if validation fails
+        with:
+          name: trustbridge-validation-artifact
+          path: validation.json
+```
+
+**JSON Schema:**
+The `validation.json` file contains:
+
+- `timestamp`: ISO-8601 string of the validation time
+- `address`: The evaluated Stellar account address
+- `asset`: Object containing `code` and `issuer`
+- `horizonUrl`: The Horizon API URL used for checks
+- `readiness`: Object containing `ready` (boolean), `totalChecks`, `passedChecks`, `failedChecks`, and `failedLabels`
+- `checks`: Array of per-check results
+- `balances`: Object containing `xlm` balance string
+
+> **Security Note:** The generated artifact is strictly filtered and will **never** contain the `github_token` or any authentication headers.
+
+---
+
+## Security: validation.json and delta vs previous run
+
+TrustBridge can emit a structured `validation.json` artifact and compare it to the **previous workflow run** so auditors see what newly passed or failed between cron revalidations (Issue #148).
+
+### Recommended strategy: retain artifacts between runs
+
+Download the previous run’s artifact into the job, then pass its path as `previous_validation_path`. Always upload the current `validation.json` (even on failure) so the next run can compare.
+
+```yaml
+name: TrustBridge cron revalidation
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      actions: read # needed only for download-artifact across runs
+    steps:
+      - name: Download previous validation artifact (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: trustbridge-validation
+          path: previous-validation
+          # For cross-run retention, prefer a dedicated store or
+          # gh api + artifact ID lookup; see tradeoffs below.
+
+      - name: TrustBridge check
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ vars.STELLAR_ADDRESS }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          write_validation_json: true
+          validation_json_path: validation.json
+          previous_validation_path: previous-validation/validation.json
+          privacy_mode: true # hash addresses in the JSON artifact
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-validation
+          path: validation.json
+          retention-days: 30
+```
+
+**First run:** if `previous_validation_path` is empty or the file is missing, TrustBridge **omits** the delta section and does not fail.
+
+**Delta surfaces:**
+
+- Issue comment section `### Delta vs previous run` (newly passed / newly failed / unchanged)
+- Optional `delta` object inside `validation.json` when writing is enabled
+
+### Strategy tradeoffs
+
+| Approach                                                               | Pros                                                                               | Cons                                                                                      |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Local artifact path** (`previous_validation_path`) — **recommended** | Explicit matching; no Actions API logic inside the action; soft-fails on first run | Consumer must download/retain artifacts (or copy from a known store)                      |
+| **GitHub Actions API auto-discover** (fallback, Issue #212)            | Zero wiring for consumers                                                          | Needs `actions: read`; brittle around artifact names, matrix jobs, retention; rate limits |
+
+`actions/download-artifact@v4` only downloads artifacts from the _current_ workflow run by default. For cron-to-cron comparison, retain the file outside GitHub (S3, gist, commit to an internal branch) **or** use `gh api` / a custom step to fetch the previous successful run’s artifact ID, then pass the downloaded path to `previous_validation_path`.
+
+> **Note on the auto-discover fallback:** when no local path is configured, TrustBridge queries the Actions API for the previous run's `validation.json` artifact. This is strictly best-effort and **fails open**: if the workflow token lacks `actions: read` (a 403 on a private repo), artifacts are unavailable, or any API error occurs, the delta section is silently omitted and the run is never blocked. A 403 on one run's artifact listing or download also does not stop the scan of the remaining prior runs (Issue #551).
+
+### Privacy mode
+
+When `privacy_mode: true`, addresses and asset issuers in `validation.json` (and its `delta`) are replaced with `sha256:<16 hex>` digests so retained artifacts and public logs do not expose raw G-/C-addresses. Issue comments still use full addresses for remediation. The artifact **never** includes `github_token` or auth headers.
+
+### JSON schema (high level)
+
+- `schemaVersion`, `timestamp`, `address`, `asset`, `horizonUrl`
+- `readiness` — gate summary (`ready`, counts, failed labels)
+- `checks[]` — `{ label, passed, detail }`
+- `balances.xlm`
+- `delta` — optional `{ newlyPassed, newlyFailed, unchanged, improved, regressed, previousTimestamp }`
+- `privacyMode` — present when hashing was applied
+
+---
+
+## SARIF output for GitHub Advanced Security
+
+TrustBridge can emit validation results as SARIF 2.1.0 for integration with GitHub Advanced Security (GHAS) code scanning. This allows wallet-check failures to appear alongside other security findings in the repository's Security tab.
+
+> Upload failing? See [Troubleshooting SARIF upload failures](TROUBLESHOOTING.md#sarif-upload-failures)
+> and the working example in [`docs/examples/sarif-code-scanning.yml`](examples/sarif-code-scanning.yml).
+
+### Enable SARIF output
+
+Set the optional `sarif_output_path` input to a file path where the SARIF JSON will be written:
+
+```yaml
+steps:
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.address.outputs.address }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      sarif_output_path: trustbridge-results.sarif
+
+  - name: Upload SARIF results to GHAS
+    if: always() # run even if TrustBridge checks fail
+    uses: github/codeql-action/upload-sarif@v2
+    with:
+      sarif_file: trustbridge-results.sarif
+```
+
+The SARIF file includes:
+
+- **Rule definitions** — TB001–TB010 (see the table below), plus the TB000 fallback for checks without a dedicated rule. Every `ruleId` in the results is declared in `tool.driver.rules`.
+- **Severity levels** — Passed checks appear as `note`, failed checks as `error`; the TB007 and TB008 advisories use `warning`
+- **Validation gate summary** — Total/passed/failed check counts and the `reason_code` in run properties
+- **Locations** — Links to the Horizon endpoint and checked account address
+- **Stable fingerprints** — Every result carries `partialFingerprints['trustbridge/v1']` so code-scanning alerts stay stable across cosmetic changes (see below)
+
+Rule ids are a stable contract for filtering TrustBridge alerts in code scanning views: new rules are only ever added, existing ids are never renumbered. Several failures can share a rule id (for example the primary and an `assets_json` trustline both under TB002); each result keeps its own message text and `properties.checkLabel`.
+
+### Fingerprint stability (Issue #893)
+
+GitHub code scanning matches a finding across runs by its SARIF `partialFingerprints`, so an unstable fingerprint opens a new alert every time wording or account data moves. TrustBridge hashes only the finding's identity — the rule id, the check label, the asset code and the effective `reason_code` — and excludes the message text, account address, balances, Horizon URL, run timestamp and tool version.
+
+- Editing a check's wording or changing an account balance keeps the same fingerprint (and the same code-scanning alert) while `reason_code` is unchanged.
+- Renaming or changing a `reason_code` moves the fingerprint, so code scanning opens a new result instead of silently re-labelling the old one.
+- The algorithm and inputs are documented in [`docs/SCHEMA.md`](SCHEMA.md#sarif-result-fingerprints-issue-893); the `trustbridge/v1` key is versioned and is bumped with any input change.
+
+### Schema validation before upload (Issue #679)
+
+Before writing `sarif_output_path`, TrustBridge validates the document against the official OASIS SARIF 2.1.0 JSON Schema, vendored at [`schemas/sarif-schema-2.1.0.json`](../schemas/sarif-schema-2.1.0.json) (errata01). The schema is read from the action's own files, so validation works on air-gapped runners and GHES with no network fetch.
+
+If the document is invalid, the file is **not** written and the step fails with an error that lists every violation, e.g.:
+
+```text
+Error: TrustBridge generated SARIF that does not conform to the SARIF 2.1.0 schema, so trustbridge-results.sarif was not written. This is a TrustBridge bug, not a problem with the checked account. Violations:
+  $.runs[0].tool: missing required property "driver"
+Error: SARIF output failed SARIF 2.1.0 schema validation — see the error above.
+```
+
+This catches TrustBridge bugs before `upload-sarif` rejects the file, and makes clear the problem is not with GitHub code scanning. Property bags (`properties`) accept any keys, so extra fields that GitHub or other tools add there still pass. `sarif_output_path` must resolve inside `GITHUB_WORKSPACE`.
+
+### SARIF rule reference
+
+| Rule ID | Check                | Help link                                                                                                                   |
+| ------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| TB001   | Account funded       | [Stellar Accounts](https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/accounts)          |
+| TB002   | Asset trustline      | [Trustlines](https://developers.stellar.org/docs/fundamentals-and-concepts/stellar-data-structures/account-data#trustlines) |
+| TB003   | XLM reserve          | [Reserves & Fees](https://developers.stellar.org/docs/learn/fundamentals/fees-and-metering#reserve)                         |
+| TB004   | Horizon availability | [Horizon API](https://developers.stellar.org/docs/data/apis/horizon)                                                        |
+| TB005   | Clawback safety      | [Clawback](https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8) — emitted when `clawback_strict_mode: true` blocks a clawback-enabled trustline |
+| TB006   | Unauthorized trustline | [Authorization required](https://developers.stellar.org/docs/tokens/control-asset-access#authorization-required-0x1) — `error` when `unauthorized_trustline_policy: fail` blocks a trustline the issuer has not authorized (`reason_code: TRUSTLINE_UNAUTHORIZED`); in `warn` mode the finding stays a TB002 `note` |
+| TB007   | Milestone gate       | [Milestone gating](#milestone-gating) — `warning` when the milestone gate skipped validation (`reason_code: MILESTONE_GATE_SKIPPED`) |
+| TB008   | Clawback advisory    | [Clawback](https://developers.stellar.org/docs/tokens/control-asset-access#clawback-enabled-0x8) — `warning` when the trustline has clawback enabled but `clawback_strict_mode` is off; with strict mode on it is a TB005 `error` instead |
+| TB009   | Rate budget exhausted | [Reason codes](#failure-reason-code-catalog-reason_code) — `error` on the Horizon availability check when `horizon_max_requests` ran out (`reason_code: RATE_BUDGET_EXHAUSTED`), instead of TB004. Recovery: [FAQ playbook](FAQ.md#rate-budget-exhausted) |
+| TB010   | Circuit open         | [Circuit-breaker banner](COMMENT_GUIDE.md#circuit-breaker-banner-issue-434) — `error` on the Horizon availability check when the circuit breaker short-circuited the run (`reason_code: CIRCUIT_OPEN`), instead of TB004 |
+| TB000   | Other check (fallback) | Any check without a dedicated rule (e.g. SEP-0001 home domain, claimable balances); the label is in `properties.checkLabel` |
+
+---
+
+## Internationalization (i18n)
+
+Issue comments can be rendered in multiple languages. Set the optional `locale` input to change the comment language:
+
+```yaml
+steps:
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.address.outputs.address }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      locale: "es" # Spanish
+```
+
+### Supported locales
+
+| Locale | Language | Example comment |
+| ------ | -------- | --------------- |
+| `en` | English (default) | Check labels, remediation, setup cost all in English |
+| `es` | Spanish | "Verificación de Cuenta Stellar", "Cuenta financiada", etc. |
+| `pt` | Portuguese | "Verificação de Conta Stellar", "Conta financiada", etc. |
+| `ja` | Japanese | "Stellarアカウントチェック", "結果", "残高", etc. |
+| `fr` | French | "Vérification du Compte Stellar", "Résultats", etc. |
+| `de` | German | "Stellar-Kontoprüfung", "Ergebnisse", "Guthaben", etc. |
+
+If an unsupported or invalid locale is provided, the action falls back to English (`en`).
+
+> **CJK note (Japanese):** Japanese characters are full-width in terminal character counters, but GitHub renders Markdown in HTML with proportional fonts — no manual padding is required. All Japanese strings are kept concise to avoid layout issues in narrow viewports.
+
+### Example: LATAM campaign
+
+```yaml
+name: Verificar Billetera Stellar
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: "es" # Comment in Spanish
+          fail_on_missing: false # Warn only; don't fail workflow
+```
+
+### Example: Japanese Wave campaign
+
+```yaml
+name: Stellar ウォレット確認
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'ja'  # コメントを日本語で
+          fail_on_missing: false
+```
+
+### Example: French Wave campaign
+
+```yaml
+name: Vérification du portefeuille Stellar
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'fr'  # Commentaire en français
+          fail_on_missing: false
+```
+
+### Example: German Wave campaign
+
+```yaml
+name: Stellar-Wallet-Prüfung
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ github.event.issue.body }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          locale: 'de'  # Kommentar auf Deutsch
+          fail_on_missing: false
+```
+
+---
+
+## Release SBOM (Software Bill of Materials)
+
+TrustBridge publishes a Software Bill of Materials (SBOM) alongside each release for supply-chain security review.
+
+### Accessing the SBOM
+
+1. Go to the [TrustBridge releases page](https://github.com/Stellar-TrustBridge/trustbridge-action/releases)
+2. Open a release (e.g., `v1.0.0`)
+3. Download the attached `trustbridge-sbom.json` file
+
+### SBOM format
+
+The SBOM is generated in **CycloneDX JSON** format, which is widely supported by:
+
+- [Dependency-Track](https://dependencytrack.org/) (software inventory platform)
+- [NTIA SBOM Tool](https://github.com/ntia/sbom-pointers)
+- GitHub's own [Dependency Scanning](https://docs.github.com/en/code-security/supply-chain-security)
+
+### Verifying the SBOM
+
+After downloading, you can verify its structure:
+
+```bash
+# Check that it's valid JSON
+jq . trustbridge-sbom.json > /dev/null && echo "Valid SBOM"
+
+# See all dependencies
+jq '.components[] | {name, version}' trustbridge-sbom.json
+
+# Check for a specific dependency
+jq '.components[] | select(.name == "@actions/core")' trustbridge-sbom.json
+```
+
+### Using the SBOM in your supply chain
+
+```bash
+# Example: Submit to NTIA Tool for policy check
+sbom-tool validate --input-format CycloneDX --input-file trustbridge-sbom.json
+
+# Example: Import into Dependency-Track for monitoring
+curl -X POST "https://your-dependency-track/api/v1/bom" \
+  -H "X-API-Key: <your-key>" \
+  -F "project=<project-uuid>" \
+  -F "bom=@trustbridge-sbom.json"
+```
+
+### Verifying release attestations
+
+Each release includes SLSA provenance attestations for `dist/index.js` and `dist/licenses.txt`, plus a SHA-256 checksum manifest. Supply-chain reviewers can verify the integrity of the action bundle before pinning to a version:
+
+```bash
+TAG=v1.0.1
+
+# Clone the release tag
+git clone --depth 1 --branch "$TAG" https://github.com/Stellar-TrustBridge/trustbridge-action.git
+cd trustbridge-action
+
+# Verify SLSA provenance (requires gh CLI with attestation support)
+gh attestation verify dist/index.js \
+  --repo Stellar-TrustBridge/trustbridge-action \
+  --signer-workflow Stellar-TrustBridge/trustbridge-action/.github/workflows/release.yml \
+  --source-ref "refs/tags/$TAG"
+
+# Download and verify checksums
+gh release download "$TAG" --pattern trustbridge-checksums.txt
+sha256sum -c trustbridge-checksums.txt
+```
+
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the complete verification procedure.
+
+---
+
+## Scheduled wallet re-validation (cron)
+
+A one-time assignment check is insufficient for long-running Waves. Wallets can drift after assignment — trustline removed, balance spent, or address rotated. Run a scheduled sweep before payout to catch stale trustlines early.
+
+See **[CRON_REVALIDATION.md](CRON_REVALIDATION.md)** for a full guide and a ready-to-copy workflow at [`docs/examples/cron-revalidation.yml`](examples/cron-revalidation.yml).
+
+Key recommendations for cron runs:
+
+- Set `fail_on_missing: false` — keeps the cron job green; ❌ appears in the issue comment, not as a CI badge failure.
+- Keep `sticky_comment: true` — updates the existing TrustBridge comment rather than flooding the issue thread.
+- Wire up the maintainer alert step so drift is surfaced even when the job succeeds.
+
+---
+
+## TLS certificate pinning (`horizon_pin_fingerprint`)
+
+TrustBridge supports optional TLS certificate pinning for the Horizon endpoint.
+When `horizon_pin_fingerprint` is set to the SHA-256 fingerprint of the Horizon
+server's TLS certificate, TrustBridge performs a pre-flight TLS probe before
+each Horizon fetch. If the certificate fingerprint does not match, the action
+fails immediately with reason code `TLS_ERROR`.
+
+```yaml
+steps:
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.addr.outputs.value }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      horizon_pin_fingerprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'
+```
+
+### Fingerprint format
+
+The fingerprint must be the SHA-256 hash of the server's DER-encoded
+certificate, formatted as colon-separated uppercase hex:
+
+```
+AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99
+```
+
+- Case-insensitive: lowercase hex is accepted and normalized.
+- Whitespace-tolerant: spaces between colon pairs are stripped before comparison.
+- Empty string (default): pinning is disabled; standard WebPKI certificate
+  validation is used instead.
+
+### Computing the fingerprint
+
+```bash
+# Connect to your Horizon endpoint and extract the certificate fingerprint
+openssl s_client -connect horizon.example.com:443 -servername horizon.example.com < /dev/null 2>/dev/null \
+  | openssl x509 -outform DER \
+  | openssl dgst -sha256 -hex \
+  | awk '{print $2}' \
+  | sed 's/../&:/g; s/:$//' \
+  | tr 'a-f' 'A-F'
+```
+
+### Rotating certificates
+
+When the Horizon endpoint's certificate rotates, update `horizon_pin_fingerprint`
+in your workflow before the old certificate expires. A mismatch fails the
+workflow immediately with `TLS_ERROR`, so plan the fingerprint update ahead of
+the certificate rotation.
+
+### Testing with a local TLS server
+
+Integration tests for TLS pinning are in `__tests__/horizon-pin-integration.test.ts`.
+These tests spin up a local TLS server with a self-signed certificate and validate
+that `checkCertificatePin` correctly handles matching fingerprints, mismatched
+fingerprints, and empty fingerprints. No external infrastructure is required.
+
+See `mock/horizon/README.md` for details on the test setup.
 
 ---
 
 ## Pinning versions
 
-| Reference | When to use |
-| --------- | ------------- |
-| `@v1` | Recommended for production (semver major) |
-| `@main` | Latest development — use for testing only |
+| Reference  | When to use                                   |
+| ---------- | --------------------------------------------- |
+| `@v1`      | Recommended for production (semver major)     |
+| `@main`    | Latest development — use for testing only     |
 | `@abc1234` | Pin to commit SHA for maximum reproducibility |
 
 ---
 
-## Permissions reference
+## GitHub Enterprise Server (GHES) support
 
-```yaml
-permissions:
-  issues: write    # required for comments
-  contents: read   # standard for checkout-less actions
+**Support statement: best-effort.** TrustBridge is not tested against a live GHES instance in CI (no GHES infra is currently available to this project), but the code path that talks to the GitHub REST API — issue comment posting in `src/comment.ts` — is written to respect the enterprise API base rather than assume `github.com`, and is covered by mocked-API-base tests (`__tests__/comment.test.ts`). Horizon/Stellar checks themselves (`src/horizon.ts`) make no GitHub API calls at all, so they behave identically on GHES and github.com.
+
+> **Full compatibility matrix:** See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) for a detailed matrix covering Comments, Checks API, Artifacts, OIDC, permission requirements, and known GHES-specific limitations.
+
+> **Outputs, Job Summary and annotations on GHES:** output and annotation limits match github.com. Older GHES runners may not set `GITHUB_OUTPUT` (outputs fall back to `::set-output`) or `GITHUB_STEP_SUMMARY` (the TrustBridge Job Summary is skipped). Neither changes `ready` or `reason_code`. See [GHES_COMPATIBILITY.md — Actions outputs, summaries and annotations](GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897).
+
+### What changes on GHES
+
+On a GHES runner, the Actions runner sets `GITHUB_API_URL` (and `GITHUB_SERVER_URL`, `GITHUB_GRAPHQL_URL`) to your enterprise instance's endpoints instead of the public GitHub ones, e.g.:
+
+```bash
+GITHUB_API_URL=https://ghes.example.com/api/v3
+GITHUB_SERVER_URL=https://ghes.example.com
 ```
 
-If using `GITHUB_TOKEN`, no extra secret is required beyond workflow permissions.
+`@actions/github`'s `context.apiUrl` reads `GITHUB_API_URL` automatically. TrustBridge passes it explicitly as `baseUrl` when constructing its Octokit client (`github.getOctokit(token, { baseUrl: context.apiUrl })` in `postIssueComment`), so REST calls (`listComments`, `createComment`, `updateComment`) target your enterprise API instead of `api.github.com`. No workflow input needs to change for this — it's automatic based on where the runner executes.
+
+### Verification checklist (no live GHES instance required)
+
+Run through this on your own GHES org before relying on TrustBridge there:
+
+- [ ] Runner is a **self-hosted runner registered to the GHES instance** (GHES doesn't offer GitHub-hosted runners) — confirm `runs-on:` targets a valid self-hosted label.
+- [ ] `GITHUB_TOKEN` (or the PAT passed as `github_token`) has `issues: write` scope/permission on the target repo.
+- [ ] The workflow's `permissions:` block includes `issues: write`, `contents: read`.
+- [ ] Your GHES version supports the REST endpoints TrustBridge uses (`GET /repos/{owner}/{repo}/issues/{n}/comments`, `POST`/`PATCH` on the same) — these are core Issues API endpoints present since early GHES releases; no minimum version issue is currently known.
+- [ ] Network egress from the GHES runner to the public Horizon API (`https://horizon.stellar.org` or your configured `horizon_url`) is allowed — GHES runners are often on restricted networks, and Horizon itself is **not** an enterprise-mirrored service (out of scope for this issue; see Horizon RPC fallback docs above if you run a private Horizon mirror).
+
+### Troubleshooting GHES 404 / permission errors
+
+| Symptom                                                                                                          | Likely cause                                                                                                                                                                                               | Fix                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Could not look up existing TrustBridge comment, falling back to a new comment: ... 404` or similar on every run | `getOctokit` hit `api.github.com` instead of your GHES instance (e.g. an old TrustBridge version without the `baseUrl` fix, or `GITHUB_API_URL` unset because the runner isn't actually GHES-registered)   | Upgrade to a TrustBridge version that includes the GHES `baseUrl` fix; confirm the job actually runs on a GHES-registered self-hosted runner (`echo $GITHUB_API_URL` in a debug step) |
+| `403`/`Resource not accessible by integration` when posting the comment                                          | Token lacks `issues: write`, or your GHES instance enforces stricter default token permissions than github.com                                                                                             | Add `permissions: { issues: write }` to the job/workflow; for a PAT, confirm it has `repo` (classic) or `issues:write` (fine-grained) scope on that specific repo                     |
+| Comment posts to the wrong host / link in the comment 404s                                                       | `comment_url` output correctly reflects whatever host answered the API call — a wrong host here means `GITHUB_API_URL`/`GITHUB_SERVER_URL` are misconfigured on the runner itself, not a TrustBridge issue | Check the self-hosted runner's environment / `_work/_temp` runner config for correct GHES URLs                                                                                        |
+
+### HTTPS proxy support for enterprise networks
+
+GHES runners are often on restricted corporate networks that require an HTTP/HTTPS proxy to reach both the Stellar Horizon API and the GitHub API. TrustBridge honors standard proxy environment variables:
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `HTTPS_PROXY` / `https_proxy` | Proxy URL for HTTPS requests (Horizon + GitHub API) | `http://proxy.corp.com:8080` |
+| `HTTP_PROXY` / `http_proxy` | Fallback proxy URL (used when `HTTPS_PROXY` is unset) | `http://proxy.corp.com:8080` |
+| `NO_PROXY` / `no_proxy` | Comma-separated hostnames to bypass the proxy | `localhost,127.0.0.1,.corp.local` |
+
+**How it works:**
+- Horizon fetches (`src/horizon.ts`) automatically route through the proxy when `HTTPS_PROXY` is set
+- Octokit client (comment posting, Checks API, wallet labels, auto-unassign) uses the proxy agent
+- `NO_PROXY` entries are honored — hosts matching the list connect directly without the proxy
+- SSRF protections remain active — the proxy only handles transport
+- Proxy URLs containing userinfo (username:password) are redacted in logs
+
+**Example — self-hosted runner with corporate proxy:**
+
+```yaml
+jobs:
+  verify:
+    runs-on: [self-hosted, ghes]
+    env:
+      HTTPS_PROXY: http://proxy.corp.com:8080
+      NO_PROXY: github.internal.corp.com,localhost
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: G...
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Troubleshooting:**
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Horizon requests timeout or fail with connection errors | Proxy not configured or `HTTPS_PROXY` not set | Set `HTTPS_PROXY` in the job's `env` block or runner environment |
+| Comment posting fails but Horizon works | Proxy configured but GitHub API host not reachable through it | Ensure `github.internal.corp.com` (or your GHES host) is reachable via the proxy, or add it to `NO_PROXY` if direct connection is preferred |
+| `ECONNREFUSED` to proxy | Proxy URL incorrect or proxy server down | Verify the proxy URL and check with your network admin |
 
 ---
 
-[← Back to README](../README.md)
+## workflow_run chained triggers (#146)
+
+Use `workflow_run` when you want TrustBridge to run as a trusted downstream job triggered by an upstream address-resolution workflow. This is common in organizations that separate the untrusted "read the issue" step from the trusted "validate and comment" step.
+
+### Why use workflow_run instead of a direct issues: trigger?
+
+| Scenario                                                                     | Recommendation                                        |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Simple: address in issue body, single repo                                   | `issues: [assigned]` directly on the TrustBridge step |
+| Complex: address from external API/bot, matrix payouts, fork trust isolation | `workflow_run` + artifact passing                     |
+
+### Critical differences from a direct `issues:` trigger
+
+1. **No issue context in `github.event`** — `workflow_run` events do not carry `github.event.issue`. You must pass the issue number from the upstream workflow via an artifact or repository variable.
+2. **GITHUB_TOKEN has write access to the base repo** — correct for posting issue comments; safe even on fork-triggered `pull_request` or `issues` events.
+3. **Re-runs are idempotent** — `sticky_comment: true` (default) ensures TrustBridge updates its existing comment rather than spamming the issue on each re-run.
+
+### Required permissions
+
+```yaml
+permissions:
+  issues: write # post/update the TrustBridge comment
+  contents: read # standard
+  actions: read # download artifacts from the upstream run
+```
+
+### Passing the Stellar address between workflows
+
+The upstream workflow uploads a JSON artifact; the downstream workflow reads it:
+
+**Upstream (intake workflow):**
+
+```yaml
+- name: Upload TrustBridge inputs
+  uses: actions/upload-artifact@v4
+  with:
+    name: trustbridge-inputs
+    path: /tmp/trustbridge/inputs.json
+    # inputs.json: {"stellar_address":"G...","issue_number":42}
+```
+
+**Downstream (TrustBridge workflow):**
+
+```yaml
+- uses: actions/download-artifact@v4
+  with:
+    name: trustbridge-inputs
+    run-id: ${{ github.event.workflow_run.id }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    path: /tmp/trustbridge
+```
+
+### Injecting issue context
+
+Because `workflow_run` events have no `payload.issue`, you must patch the event file before TrustBridge runs:
+
+```yaml
+- uses: actions/github-script@v7
+  with:
+    script: |
+      const fs = require('fs');
+      const eventPath = process.env.GITHUB_EVENT_PATH;
+      const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+      event.issue = { number: parseInt('${{ steps.inputs.outputs.issue }}', 10) };
+      fs.writeFileSync(eventPath, JSON.stringify(event));
+```
+
+### GITHUB_TOKEN limitations across repos
+
+`GITHUB_TOKEN` can only post comments on the **same repository** as the workflow file. For cross-repo comment posting (rare), use a PAT with `repo` scope or a GitHub App token.
+
+### Troubleshooting "comment skipped" in workflow_run context
+
+If TrustBridge warns "No issue context found — skipping comment", the most common causes are:
+
+| Cause                                      | Fix                                                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `github.event.issue` not injected          | Add the "Inject issue context" step above                                                |
+| `issue_number` is `NaN` or `0`             | Verify your `jq` command extracts a valid integer                                        |
+| Token lacks `issues: write`                | Add `permissions: issues: write` to the job                                              |
+| Upstream workflow was a `push` or PR event | Only `issues`-context runs have issue numbers; use `workflow_dispatch` for manual checks |
+
+See the complete working example: [docs/examples/workflow_run_chained.yml](examples/workflow_run_chained.yml)
+
+---
+
+## Per-check env vars for payout jobs (#147)
+
+For payout bots and matrix workflows, TrustBridge supports a `TRUSTBRIDGE_*` environment variable layer so you can configure asset and network settings without duplicating `with:` inputs across matrix legs.
+
+### Precedence
+
+```
+with: input  >  TRUSTBRIDGE_* env var  >  action.yml default
+```
+
+An explicit `with:` value always wins. The env var is only consulted when the `with:` value is empty.
+
+### Supported env vars
+
+| Env var                                     | Maps to input                   | Notes          |
+| ------------------------------------------- | ------------------------------- | -------------- |
+| `TRUSTBRIDGE_HORIZON_URL`                   | `horizon_url`                   |                |
+| `TRUSTBRIDGE_HORIZON_URL_FALLBACK`          | `horizon_url_fallback`          |                |
+| `TRUSTBRIDGE_RPC_FALLBACK_URL`              | `rpc_fallback_url`              |                |
+| `TRUSTBRIDGE_ASSET_CODE`                    | `asset_code`                    |                |
+| `TRUSTBRIDGE_ASSET_ISSUER`                  | `asset_issuer`                  |                |
+| `TRUSTBRIDGE_MIN_XLM_RESERVE`               | `min_xlm_reserve`               |                |
+| `TRUSTBRIDGE_FAIL_ON_MISSING`               | `fail_on_missing`               | `true`/`false` |
+| `TRUSTBRIDGE_DEBUG_MODE`                    | `debug_mode`                    |                |
+| `TRUSTBRIDGE_HORIZON_TIMEOUT_MS`            | `horizon_timeout_ms`            |                |
+| `TRUSTBRIDGE_STICKY_COMMENT`                | `sticky_comment`                |                |
+| `TRUSTBRIDGE_WAIT_UNTIL_FUNDED`             | `wait_until_funded`             |                |
+| `TRUSTBRIDGE_WAIT_UNTIL_FUNDED_TIMEOUT_MS`  | `wait_until_funded_timeout_ms`  |                |
+| `TRUSTBRIDGE_WAIT_UNTIL_FUNDED_INTERVAL_MS` | `wait_until_funded_interval_ms` |                |
+| `TRUSTBRIDGE_HORIZON_CACHE_TTL_MS`          | `horizon_cache_ttl_ms`          |                |
+| `TRUSTBRIDGE_USE_CACHE`                     | `use_cache`                     |                |
+| `TRUSTBRIDGE_LOG_INPUTS`                    | `log_inputs`                    |                |
+| `TRUSTBRIDGE_PREFLIGHT_ONLY`                | `preflight_only`                |                |
+| `TRUSTBRIDGE_UNASSIGN_ON_NOT_READY`         | `unassign_on_not_ready`         | `true`/`false` |
+
+**Not supported** (intentionally excluded): `github_token`, `stellar_address_input`. These must always be supplied via explicit `with:` inputs. Never place token values in environment variables where they may be printed to job logs.
+
+### Matrix payout example
+
+```yaml
+strategy:
+  matrix:
+    include:
+      - asset_code: USDC
+        asset_issuer: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+        min_xlm_reserve: "1.5"
+      - asset_code: EURC
+        asset_issuer: GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP
+        min_xlm_reserve: "2.0"
+
+env:
+  TRUSTBRIDGE_ASSET_CODE: ${{ matrix.asset_code }}
+  TRUSTBRIDGE_ASSET_ISSUER: ${{ matrix.asset_issuer }}
+  TRUSTBRIDGE_MIN_XLM_RESERVE: ${{ matrix.min_xlm_reserve }}
+  TRUSTBRIDGE_FAIL_ON_MISSING: "true"
+
+steps:
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_address_input: ${{ steps.addr.outputs.value }}
+      github_token: ${{ secrets.GITHUB_TOKEN }}
+      # asset_code, asset_issuer, min_xlm_reserve resolved from env vars above
+```
+
+See the full working example: [docs/examples/payout_matrix.yml](examples/payout_matrix.yml)
+
+---
+
+## issues:write preflight (#145)
+
+TrustBridge automatically runs a **preflight check** before any Horizon calls to verify that the token can post issue comments. This prevents wasting Horizon API quota when permissions are misconfigured.
+
+### What the preflight checks
+
+1. **Issue context** — is there an issue number in the event payload? If not (e.g. `workflow_dispatch` without an issue), comment posting is silently skipped and Horizon runs normally.
+2. **Token permission** — calls `GET /repos/{owner}/{repo}/issues/{number}/comments` (read-only). A 401 or 403 response fails the run immediately with a clear permission error before any Horizon work.
+
+### Preflight-only mode
+
+Set `preflight_only: true` to run only the permission check and exit without calling Horizon. This is a first-class action input and defaults to `false`. Useful when setting up TrustBridge for the first time:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.addr.outputs.value }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    preflight_only: true # exits after permission check, no Horizon call
+```
+
+### Troubleshooting preflight failures
+
+| Error                                               | Cause                    | Fix                                                  |
+| --------------------------------------------------- | ------------------------ | ---------------------------------------------------- |
+| `GitHub token lacks issues: write permission (403)` | Token scope too narrow   | Add `permissions: issues: write` to the workflow job |
+| `GitHub token is not authorized (401)`              | Invalid or expired token | Verify the token / regenerate the PAT                |
+| `Issue #N was not found (404)`                      | Closed or deleted issue  | Run the check on an open issue                       |
+
+---
+
+## Label gate pattern
+
+Use a **label gate** to conditionally run TrustBridge validation based on issue labels. This pattern avoids unnecessary validation runs and controls noise — for example, gate bounty payouts behind a `bounty` label so not every issue assignment triggers wallet checks.
+
+### When to use
+
+- **Reduce noise**: Only validate when an issue has a specific label (e.g., `bounty`, `needs-wallet`).
+- **Control cost**: Skip Horizon queries when validation is not required.
+- **Gate workflows**: Different workflows with different validation rules based on labels.
+- **Explicit opt-in**: Require maintainers to add a label before wallet checks run.
+
+### Design & example workflows
+
+The TrustBridge repository provides:
+
+1. **Composite action** — `.github/actions/trustbridge-label-gate/action.yml` that wraps trustbridge-action with label checking.
+2. **Example workflows** — Ready-to-copy patterns in `docs/examples/`:
+   - [`trustbridge-label-gate.yml`](examples/trustbridge-label-gate.yml) — simple gate with minimal permissions.
+   - [`trustbridge-label-gate-verbose.yml`](examples/trustbridge-label-gate-verbose.yml) — gate with skip comment.
+   - [`trustbridge-label-gate-branching.yml`](examples/trustbridge-label-gate-branching.yml) — per-label rules.
+
+3. **Full design doc** — [`docs/LABEL_GATE_DESIGN.md`](LABEL_GATE_DESIGN.md) with edge cases, error handling, and label conventions.
+
+### Quick start
+
+Copy this into `.github/workflows/trustbridge-gate.yml` in your consumer repository:
+
+```yaml
+name: Verify Stellar wallet (with label gate)
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  trustbridge-gated:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      contents: read
+    steps:
+      - name: TrustBridge with label gate
+        id: gate
+        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: GYOURCONTRIBUTORADDRESSHERE
+          gate_labels: "bounty,needs-wallet" # open gate if any label is present
+          post_skip_comment: "false" # don't post when gate is closed
+          fail_on_missing: "true"
+
+      - name: Continue only if validated and funded
+        if: steps.gate.outputs.gate_skipped != 'true' && steps.gate.outputs.account_funded == 'true'
+        run: echo "Ready for payout"
+```
+
+### Key behaviors
+
+| Scenario                         | Behavior                                                                            |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| Gate label present               | Run trustbridge-action with all inputs; post result comment.                        |
+| No gate label                    | Skip validation; optionally post a skip notice (set `post_skip_comment: true`).     |
+| Multiple gate labels             | Open the gate if **any** label is present.                                          |
+| 403 on label check               | Fall-open: run trustbridge-action anyway (over-validate rather than silently skip). |
+| Network error during label check | Fall-open: run trustbridge-action.                                                  |
+
+### Outputs
+
+| Output                                              | Description                                                                  |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `gate_skipped`                                      | `'true'` if the gate was closed, `'false'` if the gate was open.             |
+| `gate_label_found`                                  | Name of the first gate label that was found, or empty if none.               |
+| `account_funded`, `trustline_exists`, `xlm_balance` | Forwarded from trustbridge-action when the gate is open; empty when skipped. |
+
+### Permissions
+
+**Minimal** (gate only, no skip comment):
+
+```yaml
+permissions:
+  issues: read
+  contents: read # optional; only if using trustbridge_config_path
+```
+
+**With skip comment posting:**
+
+```yaml
+permissions:
+  issues: read    # read labels
+  issues: write   # post skip comment
+  contents: read  # optional
+```
+
+### Recommended label names
+
+| Label          | Use case                             | Color           |
+| -------------- | ------------------------------------ | --------------- |
+| `bounty`       | Bounty payout; wallet must be ready. | Gold (#FFD700)  |
+| `needs-wallet` | Wallet verification required.        | Blue (#0075CA)  |
+| `grant`        | Grant or donation payout.            | Green (#28A745) |
+
+You can define any labels your program requires; these are examples.
+
+---
+
+## Organization-wide policy defaults
+
+Use the **org-defaults composite action** to inject organization-wide policy values (Horizon URL, asset issuer, reserve requirements) so individual repositories don't need to duplicate these settings.
+
+### When to use
+
+- **Consistency**: Ensure all repos in your org use the same Horizon endpoint and asset configuration.
+- **Centralized policy**: Change the org-wide asset issuer or reserve threshold in one place.
+- **Repo flexibility**: Any repo can override org defaults for specific use cases (e.g., a testnet repo).
+
+### How it works
+
+The composite action at `.github/actions/trustbridge-org-defaults/action.yml` defines:
+
+1. **Org policy inputs** (`org_horizon_url`, `org_asset_code`, `org_asset_issuer`, `org_min_xlm_reserve`, `org_fail_on_missing`, `org_sticky_comment`) — organization-wide defaults.
+2. **Repo override inputs** (`horizon_url`, `asset_code`, `asset_issuer`, etc.) — when set, these override the org defaults.
+3. **Passthrough inputs** — all other trustbridge-action inputs forwarded unchanged.
+
+### Quick start
+
+Create `.github/workflows/trustbridge-verify.yml` in your repository:
+
+```yaml
+name: Verify Wallet
+
+on:
+  issues:
+    types: [assigned]
+
+permissions:
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          # Org defaults are used unless overridden here
+```
+
+### Override org defaults per-repo
+
+```yaml
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          # Override org default for this specific repo
+          horizon_url: 'https://horizon-testnet.stellar.org'
+          asset_code: 'EURC'
+```
+
+### Org admin setup
+
+In your organization's `.github` repo, set the org defaults:
+
+```yaml
+# .github/workflows/trustbridge-verify.yml
+      - uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-org-defaults@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: G...
+          org_horizon_url: 'https://horizon.stellar.org'
+          org_asset_code: 'USDC'
+          org_asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+          org_min_xlm_reserve: '2.0'
+          org_fail_on_missing: 'true'
+          org_sticky_comment: 'true'
+```
+
+### Outputs
+
+The composite action forwards all TrustBridge outputs: `ready`, `trustline_exists`, `xlm_balance`, `account_funded`, `comment_url`, `asset_balance`, `native_balance`, `horizon_url_used`, `reason_code`.
+
+---
+
+## Integrations and extension examples
+
+### KYC gate (optional consumer logic)
+
+Wave programs that require identity verification before payout can add an
+optional KYC check via the [plugin architecture](PLUGIN_ARCHITECTURE.md).
+A hardened reference example — with safe comment output, no PII in logs,
+and full Markdown escaping — is available at:
+
+- **Plugin source:** [`docs/examples/kyc-plugin.ts`](examples/kyc-plugin.ts)
+- **Guide:** [`docs/examples/kyc-plugin.md`](examples/kyc-plugin.md)
+
+The KYC plugin is **never enforced by default**. It only runs when you
+explicitly register it alongside the core checks.
+
+---
+
+[← Back to README](../README.md) · [Cron re-validation →](CRON_REVALIDATION.md)
+
+## New Features — Wave #26-28 Enhancements
+
+### Badge outputs for README/dashboard embeds
+
+TrustBridge now exposes `badge_markdown` and `badge_url` outputs containing pass/fail/pending status badges suitable for embedding in README.md or maintainer dashboards.
+
+**Outputs available:**
+
+- `badge_markdown`: Markdown-formatted badge link (e.g. `[![TrustBridge Ready](https://img.shields.io/badge/trustbridge-ready-brightgreen)](...)`)
+- `badge_url`: Direct Shields.io badge URL for embedding in HTML or docs
+- `badge_etag`: Weak ETag (RFC 7232) derived from the current badge state/label (Issue #796)
+
+**Use case:** Display wallet readiness status in your project README without exposing account details.
+
+#### Cache freshness after a recheck (Issue #796)
+
+`badge_url` carries a `?cacheSeconds=60` query parameter (`DEFAULT_BADGE_CACHE_SECONDS` in `src/badge.ts`). Shields.io honors `cacheSeconds` as the `Cache-Control: max-age` it serves the badge image with, which is TrustBridge's only lever over the actual HTTP caching of a Shields.io-hosted image — this action does not serve the SVG itself. The shorter lifetime (vs. Shields.io's longer default) keeps a badge embedded in an issue comment or status board from showing a stale pass/fail state for long after a recheck changes it.
+
+If you mirror or proxy the badge image yourself (rather than hot-linking `badge_url`), use `badge_etag` as the `ETag` response header for that proxy: it changes only when the rendered badge would actually look different, so you can safely return `304 Not Modified` on a matching `If-None-Match` instead of re-fetching from Shields.io.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  id: bridge
+  with:
+    stellar_address_input: G...
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Create badge
+  run: |
+    echo "${{ steps.bridge.outputs.badge_markdown }}" >> README.md
+```
+
+### Persistent cache backend (opt-in)
+
+When running matrix validation jobs, each leg re-fetches the same account from Horizon and risks hitting rate limits (429s). TrustBridge now supports optional persistent caching via GitHub Actions cache backend to reuse account data across matrix legs and between workflow runs.
+
+**Inputs:**
+
+- `use_cache`: Enable in-memory TTL cache within a single action run (default: `false`)
+- `use_actions_cache_backend`: Persist cache to GitHub Actions backend across runs (default: `false`)
+- `horizon_cache_ttl_ms`: Cache TTL in milliseconds (default: `60000`, max: `3600000`)
+
+**Constraints:**
+
+- Cache misses on HTTP 404 (unfunded accounts may become funded) — always re-fetches
+- Cache keys are namespaced by Horizon URL + address to prevent cross-network collisions
+- No secrets or sensitive data in cache keys (addresses are hashed)
+- Fail-open: cache backend errors never block validation
+
+**Example — matrix payout with persistent cache:**
+
+```yaml
+strategy:
+  matrix:
+    address: [GAAA..., GBBB..., GCCC...]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ matrix.address }}
+          use_cache: "true"
+          use_actions_cache_backend: "true"
+          horizon_cache_ttl_ms: "300000" # 5 minutes
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Dead code cleanup
+
+Removed duplicate/orphaned modules:
+
+- `src/error-log.ts` — was a duplicate of `src/horizon.ts`
+- `src/validator.ts` — was a duplicate of `src/metrics.ts`
+
+**Migration:** No action needed. These modules were not exposed in the public API and existing workflows are unaffected.
+
+### GitHub Checks API for required status gates
+
+When enabled via `use_check_runs: true`, TrustBridge creates a GitHub Check Run with individual validation checks as annotations and a conclusion (success/failure) reflecting the overall result. This allows merge queues and required checks to gate on TrustBridge as a named check.
+
+**Permissions required:**
+
+```yaml
+permissions:
+  issues: write
+  checks: write # NEW: required for Check Run creation
+```
+
+**Behavior:**
+
+- Each validation check (account funded, trustline exists, XLM reserve) appears as an annotation in the Check Run
+- Check conclusion is `success` if all checks pass, `failure` otherwise
+- Annotations are visible in the Actions UI under the "Annotations" panel
+- Fail-open: if Checks API returns 403 (permission denied), a warning is logged and validation continues
+
+> For GitHub Enterprise Server (GHES) support, permission considerations, and fail-open behavior, see [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md#api-feature-matrix).
+
+**Example — gated merge queue:**
+
+```yaml
+name: Verify wallet + allow merge
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      checks: write # NEW
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: G...
+          use_check_runs: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**In GitHub UI:**
+
+1. Open a pull request targeting this repository
+2. Navigate to the "Checks" tab
+3. Find the "TrustBridge Validation" check
+4. Click to see individual check annotations (account funded, trustline, reserve)
+5. Add this check as a required status check in branch protection rules to gate merges
+
+**Troubleshooting:**
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Checks API permission denied (403)` | Token lacks `checks: write` | Add `permissions: { checks: write }` to the workflow job |
+| No Check Run appears | `use_check_runs: false` or not set | Set `use_check_runs: 'true'` in the action input |
+| Check Run appears but no annotations | Checks API annotation limit (50 per request) — TrustBridge truncates to first 50 | This is expected behavior; all checks still run locally |
+
+**Known limitations:**
+
+- Fork pull requests: `GITHUB_TOKEN` in fork runs is read-only by default; you need an org-level token or GitHub App to post checks from a fork (GitHub Actions limitation, not specific to TrustBridge).
+- GitHub Enterprise Server: Supported via the existing `@actions/github` Octokit client (same as comment posting). Follow the comment-posting GHES guide above; no additional setup is required for Check Runs.
+
+---
+
+## Schema & Output Contract
+
+TrustBridge maintains a JSON schema for all outputs to enable consumer tooling (code generation, validation, type-checking) and catch API mismatches early.
+
+### Schema files
+
+- `schemas/action-inputs.schema.json` — validates `action.yml` inputs and `.trustbridge.yml` config files
+- **Outputs schema** — currently maintained as inline TypeScript interfaces in `src/outputs.ts` and `src/badge.ts`
+
+### All declared outputs
+
+**Legacy (backward compatible):**
+
+- `trustline_exists` (boolean string)
+- `xlm_balance` (decimal string)
+- `account_funded` (boolean string)
+- `comment_url` (URL string or empty)
+- `full_report_path` (file path string or empty)
+
+**Audit & integration:**
+
+- `ready` (boolean string)
+- `validated_at` (ISO-8601 timestamp string)
+- `horizon_url` (URL string)
+- `asset_code` (asset code string)
+- `asset_issuer` (G-address string)
+- `reason_code` (enum string: SUCCESS, ACCOUNT_NOT_FUNDED, TRUSTLINE_MISSING, RESERVE_TOO_LOW, etc.)
+- `checks_json` (JSON array string of `{ label, passed, detail }` objects)
+
+**Badge:**
+
+- `badge_markdown` (Markdown string with embedded Shields.io URL)
+- `badge_url` (Shields.io URL string)
+
+**Timing:**
+
+- `timings_json` (JSON object string: `{ input_parse_ms, horizon_fetch_ms, checks_ms, comment_post_ms, total_ms }`)
+- `timing_*_ms` (individual phase timings as numeric strings)
+
+**Sponsorship:**
+
+- `num_sponsoring` (numeric string)
+- `num_sponsored` (numeric string)
+
+All outputs are **strings** (GitHub Actions limitation). Consume them as:
+
+- Boolean: `${{ steps.bridge.outputs.ready == 'true' }}`
+- Number: `parseFloat('${{ steps.bridge.outputs.timing_total_ms }}')`
+- JSON: `JSON.parse('${{ steps.bridge.outputs.checks_json }}')`
+
+### Boolean outputs in `if:` conditions (Issue #919)
+
+Every boolean output is published as **exactly** the lower-case string
+`"true"` or `"false"` — never empty, never `"True"`, `"1"`/`"0"`, or
+`"undefined"` — on every code path (single-address, batch, dry-run). The
+normalization lives in `src/outputs.ts` (`toBooleanOutput`,
+`normalizeBooleanOutputs`) and runs as the last step before
+`core.setOutput`.
+
+| Output | `"true"` when |
+| --- | --- |
+| `ready` | All validation checks passed. |
+| `trustline_exists` | The account holds the configured asset trustline. |
+| `account_funded` | Horizon found the account on the ledger. |
+| `snooze_expired` | This run posted because a snooze window just lapsed. |
+| `has_conflicts` | At least one input source conflict was detected. |
+| `network_passphrase_mismatch` | Configured and Horizon network passphrases differ. |
+| `friendbot_called` | Friendbot was called to fund a testnet account. |
+| `friendbot_success` | Friendbot funding succeeded. |
+| `outputs_truncated` | A JSON/array output was truncated to fit the size cap. |
+
+Always compare against the string literal:
+
+```yaml
+- name: Pay out
+  if: steps.trustbridge.outputs.ready == 'true'
+  run: ./payout.sh
+
+- name: Explain why not
+  if: steps.trustbridge.outputs.ready != 'true'
+  run: echo "Not ready: ${{ steps.trustbridge.outputs.reason_code }}"
+```
+
+Do **not** write `if: steps.trustbridge.outputs.ready` on its own: GitHub
+expressions treat any non-empty string — including `"false"` — as truthy, so
+that condition is always true. Do **not** use `fromJSON(...)` on the value
+either; the `== 'true'` comparison is the stable contract.
+
+**Legacy `1`/`0` values.** Boolean *inputs* already accept `true`/`false`,
+`1`/`0`, and `yes`/`no` (`parseBooleanInput` in `src/inputs.ts`). For
+*outputs*, an internal producer that hands over a legacy `1`/`0` (number or
+string), `"TRUE"`, or surrounding whitespace is normalized to
+`"true"`/`"false"`; `null`, `undefined`, and `""` mean `"false"`. Any other
+value (for example `"yes"`, `2`, `NaN`, or an object) is a producer bug: the
+output **fails closed** to `"false"` — a payout gate never opens on garbage —
+and a workflow warning is emitted:
+
+```
+Output "ready" expects a boolean (true/false, or legacy 1/0); received string "maybe". Publishing "false" (fail closed).
+```
+
+The warning names the output and the value's type, never a long raw value,
+so it cannot leak addresses into logs. Tests: `npx jest __tests__/outputs-boolean.test.ts`.
+
+---
+
+## GitHub Projects v2 status updates (Issue #222)
+
+Maintainer project boards frequently track bounty issues or contributor tasks. TrustBridge can automatically update an issue or pull request's status field on a GitHub Projects v2 board based on the validation result.
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      # If using default GITHUB_TOKEN for organization-level projects, ensure project permissions:
+      # project: write (for GitHub App/PAT)
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          project_id: "PVT_kwDOAB1234567890"
+          project_status_field: "Status"
+          project_status_pass: "Ready to Pay"
+          project_status_fail: "Needs Wallet"
+          # If your GITHUB_TOKEN lacks organization project scopes, pass a PAT:
+          project_token: ${{ secrets.PROJECTS_PAT || secrets.GITHUB_TOKEN }}
+```
+
+### Inputs
+
+| Input                  | Type   | Default    | Description                                                                                |
+| ---------------------- | ------ | ---------- | ------------------------------------------------------------------------------------------ |
+| `project_id`           | string | `""`       | Optional ProjectV2 Node ID (e.g. `PVT_...`). When empty, project updates are skipped.      |
+| `project_status_field` | string | `"Status"` | The name of the project field to update (supports Single-Select and Text fields).          |
+| `project_status_pass`  | string | `""`       | Value/option name to set when all validation checks pass.                                  |
+| `project_status_fail`  | string | `""`       | Value/option name to set when validation checks fail.                                      |
+| `project_token`        | string | `""`       | Optional token with `project` or `write:org` permissions if different from `github_token`. |
+
+### Behavior & Error Handling
+
+- **Opt-in only:** When `project_id` is omitted or empty, no GraphQL project operations run.
+- **Automatic Item Enrollment:** If the issue is not yet an item on the project board, TrustBridge will automatically add it before updating the status field.
+- **Fail-open:** Missing permissions or Project API errors emit clear warnings (e.g. reminding maintainers about the required `project` scope) and will **never** fail the workflow step or wallet validation checks.
+
+---
+
+## Multi-repo allowlist matching for org-wide Wave runs (Issue #855)
+
+`matchesRepoAllowlist` (`src/projects.ts`) is a pure, dependency-free function a reusable workflow or wrapper script can call to decide whether a calling repository's `owner/repo` string (e.g. `${{ github.repository }}`) is in scope for org-wide Wave automation, before it validates anything. It is a library function — call it from your own `workflow_call` wrapper or a pre-step; it is not itself wired to an `action.yml` input.
+
+**Supported pattern forms** (one per allowlist entry):
+
+| Pattern | Matches |
+|---|---|
+| `"owner/repo"` | That exact repository only |
+| `"owner"` | Every repository under that org |
+| `"owner/*"` | Every repository under that org (equivalent to the bare `"owner"` form) |
+
+Matching is case-insensitive on both segments. Any other pattern shape — `"*"`, `"*/repo"`, `"owner/re*po"`, `"owner/**"`, a pattern with more than one `/`, etc. — is an **ambiguous glob** and is rejected outright: it is reported in the result's `rejectedPatterns` and can never match anything, so a malformed or overly broad pattern only ever narrows access, never accidentally widens it.
+
+**Fail-closed by default:** an empty allowlist (or an allowlist where every pattern was rejected as invalid) denies every repository. This is intentionally the opposite of `filterRosterAddressMap`'s "empty allowlist means allow all" — that function filters an already-trusted roster, while this one is the primary boundary deciding whether org-wide automation may touch a repository at all. An operator who wants "every repo in the org" must say so explicitly with `"owner"` or `"owner/*"`.
+
+**What it does not do:** this is a pure string match against `owner/repo`, not a GitHub API call. It cannot detect that a repository was renamed (an allowlist entry for the old name simply fails closed — there is no fuzzy or historical matching) or that a repository is archived (archival status is not encoded in `owner/repo`; check `github.context.payload.repository.archived` separately if you need to exclude archived repos).
+
+```ts
+import { matchesRepoAllowlist } from './projects';
+
+const result = matchesRepoAllowlist(process.env.GITHUB_REPOSITORY!, [
+  'Stellar-TrustBridge', // every repo in this org
+  'some-partner-org/specific-repo', // one specific repo in another org
+]);
+if (!result.allowed) {
+  core.setFailed(`Repository not in the Wave allowlist: ${result.reason}`);
+}
+```
+
+---
+
+## Dashboard webhook receiver contract (Issue #326)
+
+TrustBridge POSTs a signed JSON notification to `webhook_url` after every validation run. This section is the **action-side contract freeze** — everything described here is guaranteed by the code in `src/webhook.ts` and is covered by the golden fixture at `__tests__/fixtures/webhook-payload.json`.
+
+### Enabling webhooks
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: 'https://dashboard.example.com/api/webhooks/trustbridge-action'
+          webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+```
+
+### HTTP request contract
+
+| Property | Value |
+|----------|-------|
+| Method | `POST` |
+| Content-Type | `application/json` |
+| User-Agent | `trustbridge-action/1` |
+| Timeout | `5000 ms` (configurable via `webhook_timeout_ms`) |
+| Retry | None — webhook delivery is best-effort, one attempt per run |
+
+### Signature header
+
+When `webhook_secret` is set, the request includes:
+
+```
+X-TrustBridge-Signature: sha256=<64-hex-chars>
+```
+
+The signature is `HMAC-SHA256` over the **raw UTF-8 JSON body**, formatted as `sha256=<hex-digest>` — the same convention used by GitHub's own webhook signatures.
+
+When `webhook_secret` is empty the `X-TrustBridge-Signature` header is **omitted entirely** (the request is sent unsigned). Always set a secret in production.
+
+### Rotating the webhook secret without downtime (Issue #795)
+
+Set `webhook_secret_previous` to open a **dual-key accept window**. While it is set, every request carries two signatures over the same body:
+
+```
+X-TrustBridge-Signature:          sha256=<HMAC with webhook_secret (new key)>
+X-TrustBridge-Signature-Previous: sha256=<HMAC with webhook_secret_previous (old key)>
+```
+
+Rotation sequence:
+
+1. **Receiver:** accept both keys — verify against `[NEW_SECRET, OLD_SECRET]` (newest first).
+2. **Workflow:** set `webhook_secret: ${{ secrets.NEW }}` and `webhook_secret_previous: ${{ secrets.OLD }}`. Receivers on either key keep verifying.
+3. Wait until every receiver accepts the new key. `matchedKeyIndex` shows which key matched, so you can see when old-key matches stop.
+4. **Workflow:** remove `webhook_secret_previous`. Only the new key signs.
+5. **Receiver:** drop `OLD_SECRET`. Requests signed only with the old key now fail with `SIGNATURE_MISMATCH`.
+
+`webhook_secret_previous` never signs on its own: with an empty `webhook_secret` no signature headers are sent. A previous key equal to the current key is ignored.
+
+```ts
+import { verifyWebhookSignatureWithRotation } from './src/webhook';
+
+const check = verifyWebhookSignatureWithRotation(
+  rawBody,
+  [req.headers['x-trustbridge-signature'], req.headers['x-trustbridge-signature-previous']],
+  [process.env.WEBHOOK_SECRET_NEW, process.env.WEBHOOK_SECRET_OLD],
+);
+if (!check.valid) return res.status(401).send(check.reason);
+// reason: NO_SIGNATURE | MALFORMED_SIGNATURE | NO_SECRETS | SIGNATURE_MISMATCH
+```
+
+### Payload body (schema version `"1"`)
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "<ISO-8601 UTC>",
+  "repository": "owner/repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true }
+    ]
+  }
+}
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `"1"` (string literal) | Contract version. Will be bumped (e.g. `"2"`) on any breaking payload change. |
+| `event` | `"validation_complete"` (string literal) | Event type. Reserved for future event types. |
+| `timestamp` | ISO-8601 UTC string | When the validation ran (`new Date().toISOString()`). |
+| `repository` | `"owner/repo"` string | Full repository name from the GitHub Actions context. |
+| `issue_number` | integer or `null` | Issue number when run in an issue context; `null` for non-issue runs (e.g. `workflow_dispatch` without an issue). |
+| `stellar_address` | redacted string | Contributor address masked to `first4…last4` (e.g. `GA5Z…KZVN`). The full address is **never** sent to the webhook receiver. |
+| `result.valid` | boolean | `true` when all checks passed. |
+| `result.account_funded` | boolean | `true` when Horizon found an active account. |
+| `result.trustline_exists` | boolean | `true` when the configured asset trustline is present. |
+| `result.xlm_balance` | string | Native XLM balance reported by Horizon (`"0"` when unfunded). |
+| `result.checks` | array | One entry per check: `{ "label": string, "passed": boolean }`. The `detail` field present in internal `ValidationResult` is intentionally excluded. Any Stellar address embedded in a `label` is redacted. |
+| `assets` | array (optional) | Per-asset trustline / clawback outcome — see [Per-asset `reason_code`](#per-asset-reason_code-issue-676). Omitted when per-asset evaluations are not supplied, so plain v1 payloads are unchanged. |
+| `truncated` | boolean (optional) | Present and `true` only when the body exceeded the hard size cap and trailing entries were dropped — see [Body size cap and truncation markers](#body-size-cap-and-truncation-markers-issue-894). Absent on an untruncated payload. |
+| `dropped_fields` | array of strings (optional) | Names of the payload fields whose trailing entries were dropped, in drop order: `["assets"]`, or `["assets", "result.checks"]`. Always present together with `truncated: true`. |
+
+#### Per-asset `reason_code` (Issue #676)
+
+When the action is given per-asset evaluations (the primary `asset_code`/`asset_issuer` pair plus every `assets_json` entry), the payload carries an **optional, additive** `assets` array. It lets dashboard automations gate on asset-level clawback without parsing the comment Markdown. `schema_version` stays `"1"`.
+
+```json
+"assets": [
+  { "asset_code": "USDC", "asset_issuer": "GA5Z...KZVN", "primary": true,  "trustline_exists": true,  "clawback_enabled": false, "reason_code": "SUCCESS" },
+  { "asset_code": "EURC", "asset_issuer": "GDHU...ARCC", "primary": false, "trustline_exists": false, "clawback_enabled": false, "reason_code": "TRUSTLINE_MISSING" },
+  { "asset_code": "TOKEN", "asset_issuer": "CAAA...D2KM", "primary": false, "trustline_exists": true,  "clawback_enabled": true,  "reason_code": "CLAWBACK_BLOCKED" }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `assets[].asset_code` | string | Asset code. |
+| `assets[].asset_issuer` | redacted string | Issuer masked to `first4…last4`, for both G-accounts and Soroban C-contracts. |
+| `assets[].primary` | boolean | `true` for the primary `asset_code`/`asset_issuer` pair (always the first entry). An `assets_json` entry that repeats the primary pair is not listed twice. |
+| `assets[].trustline_exists` | boolean | `true` when the account holds a trustline for this `code:issuer` pair. |
+| `assets[].clawback_enabled` | boolean | `true` when the trustline has `is_clawback_enabled`. Reported in both warn and strict mode. |
+| `assets[].reason_code` | `SUCCESS` \| `TRUSTLINE_MISSING` \| `CLAWBACK_BLOCKED` | Per-asset code from `schemas/reason-codes.json`. |
+
+**Precedence:**
+
+- Within one asset, `TRUSTLINE_MISSING` outranks `CLAWBACK_BLOCKED`, because a clawback flag only exists on a trustline that is present.
+- `CLAWBACK_BLOCKED` is only emitted when `clawback_strict_mode: true` is set. In warn mode a clawback-enabled asset stays `SUCCESS` with `clawback_enabled: true`.
+- The per-asset codes do not replace the run-level outcome. `result.valid` and the `reason_code` output stay authoritative for the run as a whole.
+
+**Size:** the array is capped at 100 entries (`maxItems` in the schema). Longer `assets_json` lists are truncated in the payload.
+
+**Receivers that ignore `schema_version`** and parse strictly against an older copy of the schema will reject the new key. Refresh your copy of `schemas/webhook-payload.schema.json`, or ignore unknown keys.
+
+#### Snooze expiry signal (Issue #799)
+
+`buildWebhookPayload`/`sendWebhookNotification` (`src/webhook.ts`) accept an optional `snoozeExpired` argument. When passed `true`, the payload carries an **optional, additive** `snooze_expired: true` field — omitted entirely otherwise, so every existing caller that never passes it keeps the byte-for-byte v1 shape. `schema_version` stays `"1"`.
+
+```json
+"snooze_expired": true
+```
+
+This lets a dashboard distinguish "comments resumed because an active snooze window just ended" from any other reason a `validation_complete` event fired, without diffing two polls of the issue comment itself. Pass `evaluateCombinedSnoozeState(...).snoozeExpired` (or `enforceSnoozeWindow(...).state.snoozeExpired` — see [`src/snooze.ts`](../src/snooze.ts)) as the argument, or read the action's own `snooze_expired` output (see [COMMENT_GUIDE.md — `snooze_expired` output](COMMENT_GUIDE.md#snooze_expired-output-issue-799)) if you build the webhook call yourself from the action's outputs rather than importing this library directly.
+
+#### Body size cap and truncation markers (Issue #894)
+
+Oversized bodies are rejected by receivers and, from the sender's side, fail **silently** — a payout-readiness signal a Wave dashboard gates on is lost with no error. The action therefore enforces a hard cap of **900 000 UTF-8 bytes** (`WEBHOOK_MAX_BODY_BYTES` in `src/webhook.ts`) on every outbound body.
+
+When a payload would exceed the cap, it is truncated **deterministically** — earlier entries are always kept, later ones dropped, so two runs over the same input drop the same entries — and the loss is marked:
+
+| Marker | Value | Meaning |
+|--------|-------|---------|
+| `truncated` | `true` | Set only on a truncated body; absent otherwise. |
+| `dropped_fields` | `["assets"]` or `["assets", "result.checks"]` | Fields whose trailing entries were dropped, in drop order. |
+
+Truncation order:
+
+1. **`assets` first** — trailing `assets[]` entries are dropped (additive, receiver-ignorable), keeping every `result.checks[]` entry and the run-level `result.valid` signal intact.
+2. **`result.checks` only if needed** — every asset is dropped, then trailing `result.checks[]` entries. The boolean fields (`result.valid`, `result.account_funded`, `result.trustline_exists`) and `result.xlm_balance` always survive, so the payout gate stays authoritative.
+
+Sizing is multibyte-safe: bytes are counted with `Buffer.byteLength(…, 'utf8')`, not `String.length`, so a CJK label or emoji is capped by real byte size and whole entries are dropped — a character is never split.
+
+Delivery outcomes surface on the delivery result's `reason` field:
+
+| `reason` | `sent` | Meaning |
+|----------|--------|---------|
+| `WEBHOOK_PAYLOAD_TRUNCATED` | `true` | A truncated body was delivered; `truncated: true` and `dropped_fields` are set. |
+| `WEBHOOK_SIZE_LIMIT_EXCEEDED` | `false` | Even an empty `assets`/`result.checks` body exceeds the cap; nothing was sent (fail closed). The delivery log carries an actionable message. |
+
+Receivers MUST treat a `truncated: true` payload as a **partial** signal, not a malformed body: gate on the run-level `result` fields, and re-read the full run from the PR comment or the action outputs when the dropped `assets` / `result.checks` detail matters. An untruncated payload is byte-for-byte the frozen v1 shape — the marker keys are absent.
+
+#### Redaction policy (Issue #675)
+
+Every Stellar identifier is redacted to `first4…last4` before the payload leaves the runner, and before it is written to the debug log. This covers `stellar_address`, `assets[].asset_issuer`, and any address inside a `result.checks[].label`. It applies to classic G-accounts and to 56-character Soroban C-contract ids alike. The match uses the same StrKey rule as `validation.ts` (`C` + 55 base32 characters). An id glued to other text (for example `sac_CAAA…`) is still redacted. With `debug_mode: true` the action logs the outbound JSON, and no full 56-character G- or C-address appears in it. Receivers that hash the address therefore see only the redacted form; use `repository` + `issue_number` as the stable correlation key.
+
+**Golden fixture:** `__tests__/fixtures/webhook-payload.json` contains a canonical example of a passing-run payload and is imported by `webhook.test.ts` to verify structural compliance.
+
+### Verifying the signature (Node.js receiver snippet)
+
+```javascript
+// Express / Node.js example receiver for
+// POST /api/webhooks/trustbridge-action
+
+const crypto = require('crypto');
+const express = require('express');
+const app = express();
+
+// Parse the raw body as a Buffer so we sign exactly what was sent.
+app.use('/api/webhooks/trustbridge-action', express.raw({ type: 'application/json' }));
+
+app.post('/api/webhooks/trustbridge-action', (req, res) => {
+  const secret = process.env.WEBHOOK_SECRET; // same value as webhook_secret in the workflow
+  const signature = req.headers['x-trustbridge-signature'];
+
+  if (!signature) {
+    res.status(401).json({ error: 'missing signature' });
+    return;
+  }
+
+  // Compute the expected signature over the raw body bytes.
+  const expected = 'sha256=' +
+    crypto.createHmac('sha256', secret)
+          .update(req.body)          // req.body is a Buffer when using express.raw()
+          .digest('hex');
+
+  // Constant-time comparison to prevent timing attacks.
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    res.status(403).json({ error: 'invalid signature' });
+    return;
+  }
+
+  const payload = JSON.parse(req.body.toString('utf8'));
+
+  // Guard against future schema versions your receiver doesn't understand yet.
+  if (payload.schema_version !== '1') {
+    res.status(422).json({ error: `unsupported schema_version: ${payload.schema_version}` });
+    return;
+  }
+
+  // Additive fields (new optional keys, new checks, new reason codes) can
+  // appear in any v1.x release without a schema_version bump. Read only the
+  // fields you need and ignore the rest — never reject on an unknown key.
+
+  // Process the payload.
+  const { event, repository, issue_number, stellar_address, result } = payload;
+  console.log(`[${event}] repo=${repository} issue=${issue_number} address=${stellar_address} valid=${result.valid}`);
+
+  res.status(200).json({ received: true });
+});
+
+app.listen(3000);
+```
+
+### Handling new fields and reason codes (Issue #917)
+
+Within `schema_version: "1"`, TrustBridge may add optional fields (top-level,
+on `result`, on `result.checks[]` or `assets[]` items) and new reason-code
+values in any minor or patch release. Removing, renaming, or retyping a field
+— or changing what a reason code means — only happens with a new
+`schema_version`. Your receiver should therefore:
+
+- route on `X-TrustBridge-Schema-Version` and reject versions it does not
+  implement (`422`),
+- ignore fields it does not know,
+- treat an unknown `assets[].reason_code` as "not ready for that asset"
+  without rejecting the delivery, and gate on `result.valid`.
+
+`readWebhookPayloadForConsumer(rawBody)` in `src/webhook.ts` applies these
+rules and returns `WEBHOOK_PAYLOAD_TOO_LARGE`, `WEBHOOK_PAYLOAD_MALFORMED`, or
+`WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` on failure, or the known-field payload
+plus `ignoredFields` / `unknownReasonCodes` on success. Full policy and
+examples: [SCHEMA.md — Webhook payload versioning policy](SCHEMA.md#webhook-payload-versioning-policy-issue-917).
+
+### End-to-end dry-run verification
+
+The repository's [`dry-run.yml`](../.github/workflows/dry-run.yml) workflow runs
+the action against the deterministic WireMock Horizon server in a Node 20/22
+matrix. Each job also starts a local mock receiver that verifies the signature
+over the raw request body with a timing-safe comparison and rejects payloads
+whose `schema_version` is not `"1"`. The workflow uses `posting_mode: dry-run`
+and never calls a live dashboard or sends the test secret to logs.
+
+Use this workflow as the reference for validating changes to Horizon requests,
+webhook signing, and the versioned webhook contract together.
+
+> **Important:** Use `express.raw()` (or equivalent middleware that gives you the raw bytes before JSON parsing) when verifying the signature. Running `JSON.stringify(JSON.parse(body))` can silently reorder keys and produce a different byte sequence, causing every signature check to fail.
+
+### HMAC test vector
+
+The known vector used in `webhook.test.ts` for regression testing:
+
+```
+body:   "test"
+secret: "secret"
+result: sha256=0329a06b62cd16b33eb6792be8c60b158d89a2ee3a876fce9a881ebb488c0914
+```
+
+Verify with:
+
+```bash
+echo -n "test" | openssl dgst -sha256 -hmac "secret"
+```
+
+### Schema versioning policy
+
+`schema_version` is a **string** (not a number) to allow future values like `"1.1"` without breaking strict parsers. The current version is `"1"`. Any addition of a new **required** field, removal of an existing field, or change to the meaning of an existing field constitutes a breaking change and will increment the version. New **optional** fields may be added within the same version. Your receiver should check `schema_version` on every request and return `422` for unknown versions rather than silently processing unexpected data.
+
+---
+
+## OIDC Federation for Dashboard Webhooks (Issue #224)
+
+By default, dashboard webhook notifications use HMAC-SHA256 signatures with a long-lived shared secret (`webhook_secret`). To eliminate the risk of leaked secrets in fork workflows and repository settings, TrustBridge supports **OpenID Connect (OIDC) federation** with `trustbridge-dashboard`.
+
+When `webhook_auth_mode: oidc` is configured, TrustBridge requests a short-lived OIDC ID token directly from GitHub's OIDC provider (with `id-token: write` permission) and sends it in the HTTP `Authorization: Bearer <token>` header.
+
+> **GitHub Enterprise Server:** OIDC webhooks need GHES 3.8+ and self-hosted runners. GHES tokens use a different issuer (`https://HOSTNAME/_services/token`) and JWKS location. See the [GHES OIDC webhook matrix](GHES_COMPATIBILITY.md#oidc-webhook-authentication-matrix-issue-677) for permissions, issuer and audience values, and known limitations per platform.
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      id-token: write # required for OIDC federation
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: "https://dashboard.stellar-trustbridge.org/api/v1/webhook"
+          webhook_auth_mode: "oidc"
+          webhook_oidc_audience: "trustbridge-dashboard" # default audience
+```
+
+### OIDC Claims & Dashboard Verification Contract
+
+The minted GitHub OIDC token contains standard JWT claims that the receiver validates:
+
+- `iss`: `https://token.actions.githubusercontent.com` on github.com, or `https://HOSTNAME/_services/token` on GHES (see the [GHES OIDC webhook matrix](GHES_COMPATIBILITY.md#oidc-webhook-authentication-matrix-issue-677))
+- `aud`: Configured audience (default `trustbridge-dashboard`)
+- `repository`: Current GitHub repository (`owner/repo`)
+- `repository_owner`: Repository owner login
+- `workflow`: Workflow name
+- `actor`: Initiating GitHub user or bot
+
+**Security Guarantees:**
+
+- **Zero long-lived secrets:** No shared webhook secret needs to be stored or rotated in GitHub Secrets.
+- **Never logged:** The action registers the minted OIDC token with `core.setSecret()` to prevent accidental exposure in runner logs.
+- **HMAC remains default:** Workflows without `webhook_auth_mode: oidc` continue using HMAC-SHA256 signing transparently.
+- **Fail-closed on token errors (Issue #674):** if the OIDC ID token cannot be minted (missing `id-token: write`, a fork `pull_request` run, a provider error, or an empty token), the step **fails** via `core.setFailed` and the webhook is **not sent**. There is no fallback to HMAC signing or to an unsigned request, so a receiver that trusts the bearer token never gets an unauthenticated delivery. The failure message is redacted: no JWT material is logged. When `webhook_url` is unset, no token is minted.
+- **Delivery errors stay non-fatal:** once a token is minted, network timeouts and receiver errors are logged as warnings and never block comment posting or validation results.
+- **`continue-on-error`:** a job step with `continue-on-error: true` still reports success after an OIDC mint failure. Do not use it on the TrustBridge step if your dashboard must receive every run.
+
+### Troubleshooting OIDC
+
+| Symptom | Likely cause | Fix |
+| ------- | ------------ | --- |
+| Step fails with `OIDC token minting failed ... The job has no 'permissions: id-token: write'` and no webhook is sent | Job lacks `id-token: write`, or the run is a fork `pull_request` (forks never receive an ID token) | Add `id-token: write` to the job `permissions:`; use `webhook_auth_mode: hmac` for fork-triggered runs |
+| Step fails with `OIDC token minting failed ... The GitHub OIDC provider returned an error` | Transient provider error, or an empty token was returned | Re-run the job; OIDC mode fails closed and never falls back to HMAC or unsigned delivery |
+| Receiver returns `401`/`403` with an invalid `aud` claim | `webhook_oidc_audience` differs from the audience the receiver accepts | Set both to the exact same string (default `trustbridge-dashboard`) |
+| Receiver reports a missing or invalid `X-TrustBridge-Signature` | Receiver verifies HMAC while the action runs in OIDC mode (no signature header is sent) | Verify the bearer JWT on the receiver, or switch the action back to `webhook_auth_mode: hmac` |
+| Tokens rejected only on GHES | Receiver trusts only `https://token.actions.githubusercontent.com` | Trust `https://<your-ghes-host>/_services/token` (GHES 3.8+); see [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) |
+
+See the [FAQ](FAQ.md#oidc-webhook-troubleshooting) for details on each case.
+
+---
+
+## Reusable Workflow & Required Status Checks (Issue #223)
+
+To simplify adoption across multiple repositories and prevent permission misconfigurations, TrustBridge provides a blessed reusable workflow at `.github/workflows/trustbridge-reusable.yml`.
+
+Organizations can invoke this reusable workflow with `workflow_call` and configure it as a **required status check** in GitHub Branch Protection rules.
+
+The reusable workflow should resolve the target issue or PR number in the caller and pass it through as `issue_number`. TrustBridge will use that explicit number for comment posting instead of reading a number from the event payload body or any untrusted PR text.
+
+### Reusable Workflow Caller Example
+
+Create a workflow file in your repository (e.g. `.github/workflows/wallet-check.yml`):
+
+```yaml
+name: Contributor Wallet Validation Gate
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: "Stellar G-address"
+        required: true
+      issue_number:
+        description: 'Target issue or pull request number for the reusable workflow'
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  verify-wallet:
+    name: verify-wallet
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@v1
+    secrets: inherit
+    with:
+      stellar_address_input: ${{ github.event.inputs.stellar_address || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
+      fail_on_missing: true
+```
+
+### Reusable workflow inputs matrix (Issue #713)
+
+Every `workflow_call` input that `.github/workflows/trustbridge-reusable.yml` accepts is listed below, with the `action.yml` key it is forwarded to and its default. Defaults are copied from the workflow YAML. Where the workflow's default differs from the action's own default, the action default is shown in the notes. Inputs that are not listed here are **not** forwarded; see [Inputs the reusable workflow does not forward](#inputs-the-reusable-workflow-does-not-forward).
+
+#### Target account and comment target
+
+| Reusable input | Type | Default | Forwarded to `action.yml` | Required? | Notes |
+|---|---|---|---|---|---|
+| `stellar_address_input` | string | `""` | `stellar_address_input` | Optional | G-address to validate. Leave empty only if the caller resolves the address another way; an empty value fails validation. |
+| `issue_number` | string | `""` | `issue_number` | **Required for comment posting** outside `issues` / `pull_request` events | Pass `${{ github.event.pull_request.number \|\| github.event.issue.number }}`. Without it, `workflow_dispatch` / `merge_group` callers have no comment target. |
+
+#### Asset and reserve policy
+
+| Reusable input | Type | Default | Forwarded to `action.yml` | Required? | Notes |
+|---|---|---|---|---|---|
+| `asset_code` | string | `"USDC"` | `asset_code` | Optional | Trustline asset code. |
+| `asset_issuer` | string | `"GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"` | `asset_issuer` | Optional | Mainnet USDC issuer by default. Change it together with `horizon_url` when targeting testnet. |
+| `min_xlm_reserve` | string | `"1.5"` | `min_xlm_reserve` | Optional | Floor over the protocol minimum reserve. Strings only (`"2.5"`), because `workflow_call` has no decimal type. |
+| `clawback_strict_mode` | boolean | `false` | `clawback_strict_mode` | Optional | `true` fails the check when the trustline has clawback enabled (`reason_code: CLAWBACK_BLOCKED`). |
+
+#### Network
+
+| Reusable input | Type | Default | Forwarded to `action.yml` | Required? | Notes |
+|---|---|---|---|---|---|
+| `horizon_url` | string | `"https://horizon.stellar.org"` | `horizon_url` | Optional (set it for testnet) | Must be a public HTTPS host; private/loopback/metadata hosts are rejected (see [INPUT_VALIDATION.md](INPUT_VALIDATION.md)). |
+
+#### Gate and comment behaviour
+
+| Reusable input | Type | Default | Forwarded to `action.yml` | Required? | Notes |
+|---|---|---|---|---|---|
+| `fail_on_missing` | boolean | `true` | `fail_on_missing` | Optional | Keep `true` when the job is a required status check. |
+| `posting_mode` | string | `""` | `posting_mode` | Optional | `post`, `dry-run` or `off`. Empty defers to `comment_mode`. **Set `post` to actually comment.** |
+| `comment_mode` | string | `"dry-run"` | `comment_mode` | Optional | Legacy posting switch, only honoured when `posting_mode` is empty. Note that the reusable default is `dry-run`, whereas the action default is `sticky` / post. |
+
+#### Values the workflow sets for you
+
+| `action.yml` key | Value | Notes |
+|---|---|---|
+| `github_token` | `${{ github.token }}` | Required by the action; supplied automatically. No PAT or secret input is needed. |
+
+| Job permission | Why |
+|---|---|
+| `issues: write` | Post / update the sticky comment. |
+| `contents: read` | Read `.trustbridge.yml`. |
+| `pull-requests: read` | Resolve PR context. |
+
+**Outputs:** `ready` and `reason_code` (from the action step), available to the caller as `needs.<job>.outputs.ready` / `needs.<job>.outputs.reason_code`.
+
+#### Secrets and fork pull requests
+
+- The reusable workflow declares **no `secrets:`**. `secrets: inherit` is harmless and keeps the call forward-compatible, but nothing has to be configured.
+- The token is the **caller's** `GITHUB_TOKEN`, so the caller's `permissions:` block must grant at least `issues: write` (and `pull-requests: read`). A caller with `permissions: {}` or `contents: read` only makes comment posting fail with 403.
+- **Fork pull requests:** GitHub gives `pull_request` runs from forks a read-only `GITHUB_TOKEN` and no repository secrets, whatever the caller requests. On those runs, use `posting_mode: dry-run` (outputs and the required status still work), or post the comment from a separate `workflow_run` job. Do not switch to `pull_request_target` just to get a write token without reading [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) and the fork-safety notes in the README.
+- **GHES:** the `uses: …/trustbridge-reusable.yml@v1` reference must resolve on your GHES instance (mirror the repository or sync it with GitHub Connect). See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md).
+
+#### Org-wide caller with every input set explicitly
+
+```yaml
+name: TrustBridge wallet gate
+
+on:
+  issues:
+    types: [assigned]
+  pull_request:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  verify-wallet:
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@v1
+    secrets: inherit
+    with:
+      # Target account and comment target
+      stellar_address_input: ${{ vars.CONTRIBUTOR_ADDRESS }}
+      issue_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+      # Asset and reserve policy
+      asset_code: USDC
+      asset_issuer: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+      min_xlm_reserve: "2"
+      clawback_strict_mode: true
+      # Network
+      horizon_url: https://horizon.stellar.org
+      # Gate and comment behaviour
+      fail_on_missing: true
+      posting_mode: ${{ github.event.pull_request.head.repo.fork && 'dry-run' || 'post' }}
+      comment_mode: sticky
+
+  payout:
+    needs: verify-wallet
+    if: needs.verify-wallet.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "reason=${{ needs.verify-wallet.outputs.reason_code }}"
+```
+
+#### Overlap with the `trustbridge-label-gate` composite
+
+[`trustbridge-label-gate`](../.github/actions/trustbridge-label-gate/action.yml) (see [Label gate pattern](#label-gate-pattern) and [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md)) forwards a larger subset of `action.yml`. Inputs shared by both use the same names and defaults, so a caller can switch between them without renaming:
+
+| Input | Reusable workflow | Label-gate composite |
+|---|---|---|
+| `stellar_address_input` | ✅ `""` | ✅ `''` |
+| `horizon_url` | ✅ | ✅ |
+| `asset_code` | ✅ | ✅ |
+| `asset_issuer` | ✅ | ✅ |
+| `min_xlm_reserve` | ✅ `"1.5"` | ✅ `'1.5'` |
+| `fail_on_missing` | ✅ `true` | ✅ `'true'` |
+| `clawback_strict_mode` | ✅ `false` | ✅ `'false'` |
+| `github_token` | set to `github.token` | **required** input |
+| `posting_mode` / `comment_mode` / `issue_number` | ✅ | — (uses `sticky_comment`) |
+| `gate_labels`, `post_skip_comment`, `assignee_address_map`, fallback / cache / freshness inputs | — | ✅ |
+
+Use the label-gate composite when you need label gating, `assignee_address_map`, or Horizon fallback / cache tuning. Use the reusable workflow when you want a single, centrally pinned required status check.
+
+#### Inputs the reusable workflow does not forward
+
+Retry caps (`retry_max_delay_ms`, `retry_max_total_wait_ms`), `stellar_toml_*`, `home_domain_*`, `assets_json`, `horizon_url_fallback` and the other `action.yml` inputs keep their action defaults when called through the reusable workflow. If you need them, call the action directly, use the label-gate composite, or set them in `.trustbridge.yml` / [organization-wide policy defaults](#organization-wide-policy-defaults). Renaming any reusable input requires updating this table and `__tests__/reusable-workflows.test.ts` together.
+
+### Configuring as a Required Status Check
+
+1. In your GitHub repository, navigate to **Settings** → **Branches** (or **Rules** → **Rulesets**).
+2. Under **Branch protection rules**, select or add a rule for your target branch (e.g. `main`).
+3. Enable **Require status checks to pass before merging**.
+4. In the search box, search for the status check name:
+   `verify-wallet / TrustBridge Status Check` (or `<job-id> / TrustBridge Status Check`).
+5. Select the check and save changes.
+
+### Security and Best Practices
+
+- **Minimal Permissions:** The reusable workflow job requests only `contents: read`, `issues: write`, and `pull-requests: read`.
+- **Pinned Version:** Always pin the reusable workflow to a major version tag (e.g. `@v1`) or a specific commit SHA.
+- **Pass-through Secrets:** Using `secrets: inherit` automatically forwards `GITHUB_TOKEN` to post/update sticky issue comments without hardcoding personal access tokens.
+- **Explicit comment target:** Pass `issue_number` from the caller workflow when the reusable workflow needs to comment on an issue or PR. This keeps TrustBridge away from untrusted body text and makes the target deterministic for `workflow_call` consumers.
+- **Merge Queue Support:** Works seamlessly with `merge_group` trigger events.
+
+---
+
+## Certificate pinning (optional, Issue #303)
+
+For high-security environments where you want to guard against certificate
+substitution attacks (e.g. enterprise MITM proxies, rogue CA abuse), you can
+pin the Horizon TLS certificate to an expected SHA-256 fingerprint:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    horizon_pin_fingerprint: 'AA:BB:CC:DD:...:FF'   # SHA-256, colon-separated hex
+```
+
+When `horizon_pin_fingerprint` is set, TrustBridge opens a TLS probe connection
+to `horizon_url` **before** any account fetch, retrieves the server certificate,
+computes its SHA-256 fingerprint over the raw DER bytes, and compares it against
+the configured value. If they differ, the action fails immediately with a clear
+`HorizonPinMismatchError` and no Horizon data is consumed.
+
+> **Security warning:**
+> Pin rotation will break your workflow until you update `horizon_pin_fingerprint`.
+> Certificate changes happen during:
+> - Scheduled renewals (e.g. Let's Encrypt: ~90 days)
+> - Incident response (emergency certificate replacement)
+> - Infrastructure or CDN migrations
+>
+> Do **not** set this in shared public workflow templates — only use it in
+> private, security-controlled workflows where you can promptly update the pin.
+>
+> `horizon_pin_fingerprint` is **disabled by default** (empty string). All
+> workflows use standard WebPKI certificate validation unless you explicitly
+> opt in.
+
+### Getting the fingerprint
+
+Retrieve the current Horizon certificate fingerprint with OpenSSL:
+
+```bash
+openssl s_client -connect horizon.stellar.org:443 </dev/null 2>/dev/null \
+  | openssl x509 -fingerprint -sha256 -noout \
+  | sed 's/SHA256 Fingerprint=//'
+```
+
+Or using `curl` (macOS / modern Linux):
+
+```bash
+curl -vvI https://horizon.stellar.org 2>&1 \
+  | grep -i "subject:\|start date:\|expire date:\|SHA"
+```
+
+### Fallback URL and pinning
+
+When `horizon_url_fallback` is also set, the pin check applies **only** to the
+primary `horizon_url`. The fallback URL uses standard WebPKI validation. This
+is intentional — fallback endpoints may carry different certificates, and a
+misconfigured pin should not block all fallback attempts.
+
+---
+
+## Horizon Retry & Exponential Backoff Configuration (Issue #203)
+
+TrustBridge includes full plumbing for configurable retry attempts and exponential backoff parameters on Horizon API requests (including 429 rate limits, 502/503/504 gateway errors, and transient network timeouts).
+
+### Inputs
+
+| Input                 | Type   | Default | Description                                                                      |
+| --------------------- | ------ | ------- | -------------------------------------------------------------------------------- |
+| `max_retries`         | number | `3`     | Maximum number of retry attempts for retryable Horizon responses (0 to 20).      |
+| `retry_base_delay_ms` | number | `1000`  | Initial base delay in milliseconds for exponential backoff (`base * 2^attempt`). |
+| `retry_max_delay_ms`  | number | `30000` | Maximum cap in milliseconds for any single backoff delay.                        |
+
+### Example configuration
+
+```yaml
+jobs:
+  trustbridge:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_address_input: ${{ steps.extract.outputs.address }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          max_retries: 5
+          retry_base_delay_ms: 500
+          retry_max_delay_ms: 15000
+```
+
+### Behavior & Guarantees
+
+- **Respects `Retry-After`:** When Horizon returns HTTP 429 with a `Retry-After` header, TrustBridge uses the header value (capped at `retry_max_delay_ms`).
+- **Zero Retries Supported:** Setting `max_retries: 0` disables retries and fails immediately on the first error.
+- **Failover Compatibility:** Works seamlessly with `horizon_url_fallback` and `rpc_fallback_url`.
+
+---
+
+## Roster & Security Policy Configuration (#314, #315, #317, #318)
+
+### Org-Level Policy Discovery & Overrides (#314)
+TrustBridge automatically discovers organization-level policy configuration files located at `.github/trustbridge.yml`. Any settings declared in the local repository configuration override organization defaults.
+
+### Horizon URL Allowlist (#315)
+To prevent unauthorized Horizon endpoint usage, specify `horizon_url_allowlist`:
+
+```yaml
+with:
+  horizon_url: 'https://horizon.stellar.org'
+  horizon_url_allowlist: 'horizon.stellar.org,horizon-testnet.stellar.org'
+```
+
+### Dashboard Assignee Roster API with HMAC (#317)
+Fetch the assignee address roster dynamically from a remote API endpoint via HTTP GET:
+
+```yaml
+with:
+  dashboard_roster_url: 'https://dashboard.example.com/api/roster'
+  dashboard_roster_secret: '${{ secrets.ROSTER_SECRET }}'
+  dashboard_roster_timeout_ms: '5000'
+```
+
+When `dashboard_roster_secret` is set, requests include:
+- `X-TrustBridge-Signature`: `sha256=<hex_hmac>`
+- `X-TrustBridge-Timestamp`: Unix timestamp (seconds)
+
+Expects JSON payload mapping logins to addresses: `{ "alice": "G...", "bob": "G..." }`.
+
+### Paginated Soroban Contract Roster (#318)
+To retrieve the complete roster page-by-page from a Soroban contract:
+
+```yaml
+with:
+  contract_id: 'C...'
+  soroban_full_roster: 'true'
+  soroban_roster_page_limit: '10'
+```
+
+---
+
+## Validation & Testing
+
+TrustBridge runs a comprehensive test suite covering all features:
+
+```bash
+# Run all tests (unit + integration)
+npm test
+
+# Run badge tests only
+npm test -- --testPathPattern badge
+
+# Run cache tests only
+npm test -- --testPathPattern cache
+
+# Run output contract tests
+npm test -- --testPathPattern outputs
+
+# Check + build (required before PR)
+npm run lint && npm run build
+```
+
+Tests validate:
+
+- Output contract (all declared outputs are set and have correct types)
+- Badge generation (pass/fail/pending states correctly mapped to shield states)
+- Cache behavior (TTL expiration, hit/miss, persistent backend)
+- Check Run creation (permission errors handled gracefully, fail-open)
+- Dead code is removed (no orphaned modules imported)
+
+---
+
+## Changelog
+
+### Wave #28 — Badge Outputs Contract
+
+- **Added:** `badge_markdown` and `badge_url` outputs declared in `action.yml`
+- **Fixed:** Consumer workflows using badge outputs no longer break in composite actions
+- **Docs:** Badge output examples in README and USAGE.md
+
+### Wave #27 — Persistent Cache Backend
+
+- **Added:** `use_cache` and `use_actions_cache_backend` inputs
+- **Added:** `CacheBackendOptions` and `PersistentCacheBackend` interfaces for pluggable backends
+- **Constraint:** 404 responses never cached (unfunded accounts may become funded)
+- **Testing:** Cache behavior validated across matrix legs and runs
+
+### Wave #26 — GitHub Checks API
+
+- **Added:** `use_check_runs` input and `checks-run.ts` module
+- **Added:** Per-check annotations visible in GitHub UI
+- **Fail-open:** Permission errors logged as warnings, validation continues
+- **Testing:** Checks API mocked for unit tests (no live GitHub integration required)
+
+### Cleanup — Dead Code Removal
+
+- **Removed:** `src/error-log.ts` (duplicate of `src/horizon.ts`)
+- **Removed:** `src/validator.ts` (duplicate of `src/metrics.ts`)
+- **Impact:** Zero; these modules were not part of the public API
+- **Verify:** `npm run build && npm test` confirm no imports of deleted modules
+
+
+---
+
+## Webhook Dashboard Integration (Issue #295)
+
+TrustBridge can dispatch a signed HTTP POST to a consumer-controlled dashboard endpoint after every validation run. The payload is a structured JSON object whose shape is governed by the JSON Schema at [`schemas/webhook-payload.schema.json`](../schemas/webhook-payload.schema.json).
+
+### Enabling webhooks
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    webhook_url: ${{ secrets.TRUSTBRIDGE_WEBHOOK_URL }}
+    webhook_secret: ${{ secrets.TRUSTBRIDGE_WEBHOOK_SECRET }}
+```
+
+### Payload schema (`schema_version: "1"`)
+
+The webhook body is a JSON object that satisfies the JSON Schema at `schemas/webhook-payload.schema.json`. The canonical shape:
+
+```json
+{
+  "schema_version": "1",
+  "event": "validation_complete",
+  "timestamp": "2026-08-31T07:05:25.189Z",
+  "repository": "my-org/my-repo",
+  "issue_number": 42,
+  "stellar_address": "GA5Z...KZVN",
+  "result": {
+    "valid": true,
+    "account_funded": true,
+    "trustline_exists": true,
+    "xlm_balance": "10.5000000",
+    "checks": [
+      { "label": "Account funded", "passed": true },
+      { "label": "USDC trustline", "passed": true },
+      { "label": "XLM reserve", "passed": true }
+    ]
+  }
+}
+```
+
+#### Field reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `"1"` (string) | Always `"1"` in the current release. Bump on breaking schema changes only. |
+| `event` | `"validation_complete"` | Always `"validation_complete"`. |
+| `timestamp` | ISO-8601 string | UTC time the webhook was dispatched. |
+| `repository` | `"owner/repo"` | Repository where the action ran. |
+| `issue_number` | integer ≥ 1 or `null` | GitHub issue number, or `null` for `workflow_dispatch` runs. |
+| `stellar_address` | `"GABC...XYZ"` | Redacted Stellar address (first-4…last-4). The full address is never sent. |
+| `result.valid` | boolean | `true` when all checks passed and the account is payout-ready. |
+| `result.account_funded` | boolean | `true` when Horizon confirmed the account exists. |
+| `result.trustline_exists` | boolean | `true` when the configured asset trustline is present. |
+| `result.xlm_balance` | string | Native XLM balance (7-decimal Horizon string) or `"0"`. |
+| `result.checks` | array | Per-check results (`label` + `passed`). Stable in v1; new checks are additive. |
+
+### PII policy
+
+- The full Stellar address is **never** included. Only the redacted `first-4…last-4` form appears.
+- `github_token` and other secrets are **never** included.
+- `result.checks[].detail` (internal diagnostic text) is **stripped** from the webhook payload.
+
+### Signature verification
+
+Every request carries an `X-TrustBridge-Signature: sha256=<hex>` header when `webhook_secret` is set. Verification (Node.js example):
+
+```js
+const crypto = require('crypto');
+
+function verifyWebhook(rawBody, secret, header) {
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(header));
+}
+```
+
+### Dashboard implementation checklist
+
+Dashboard receivers **MUST**:
+
+1. Check `schema_version` on every request and return HTTP 400 for unknown versions.
+2. Verify the `X-TrustBridge-Signature` header before processing the body.
+3. Respond with `2xx` within the webhook timeout (default 5 s) to avoid retry noise.
+4. Not rely on `result.checks[]` array length or order — new checks may be appended additively.
+5. Treat `issue_number: null` as a non-issue-triggered run (e.g. `workflow_dispatch`).
+
+Dashboard receivers **MUST NOT**:
+
+- Attempt to reconstruct the full Stellar address from the redacted `stellar_address` field.
+- Treat `result.valid: false` as an error — it is a valid terminal state.
+- Cache or persist the `timestamp` as a unique event ID — use `repository` + `issue_number` + `timestamp` together as a composite key.
+
+---
+
+## reason_code Reference (Issue #297)
+
+The `reason_code` output is a machine-readable string that identifies why a validation run produced its result. Dashboard automations and workflow gates that switch on this value are protected by the catalog at [`schemas/reason-codes.json`](../schemas/reason-codes.json) — any rename or removal of a code is a breaking change detected by CI.
+
+### Catalog (v1)
+
+| `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
+|---------------|---------|-----------------|-------------------|-------------------|-------------|
+| `SUCCESS` | ✅ `true` | ✅ | ✅ | ✅ | All checks passed — the account is ready for payout. |
+| `TRUSTLINE_MISSING` | ❌ `false` | ✅ | ❌ | ✅ | Account is funded and meets the reserve, but the required asset trustline is missing. |
+| `RESERVE_TOO_LOW` | ❌ `false` | ✅ | ✅ | ❌ | Account is funded and has a trustline, but the native XLM balance is below the minimum reserve. |
+| `TRUSTLINE_LIMIT_TOO_LOW` | ❌ `false` | ✅ | ✅ | ✅ | Account has the trustline but its limit is below `min_trustline_limit`. Only emitted when `min_trustline_limit` is set. |
+| `ACCOUNT_NOT_FUNDED` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned 404 — account does not exist on the network yet. |
+| `HORIZON_TIMEOUT` | ❌ `false` | ❌ | ❌ | ❌ | The Horizon request timed out. Account state could not be determined. |
+| `HORIZON_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | Horizon returned a non-404, non-timeout error (429, 502, 503, 504, etc.). |
+| `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
+| `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
+| `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ | ❌ | ❌ | Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed. |
+| `REQUIRED_LABELS_MISSING` | ❌ `false` | ❌ | ❌ | ❌ | Required-label gate skipped validation because a label in `required_labels` is missing. No account checks were performed. |
+
+### Switching on reason_code in downstream jobs
+
+```yaml
+- name: TrustBridge check
+  id: tb
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_address_input: ${{ steps.address.outputs.address }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Handle result
+  run: |
+    case "${{ steps.tb.outputs.reason_code }}" in
+      SUCCESS)             echo "Account ready for payout" ;;
+      TRUSTLINE_MISSING)   echo "Contributor needs to add a USDC trustline" ;;
+      RESERVE_TOO_LOW)     echo "Contributor needs more XLM" ;;
+      ACCOUNT_NOT_FUNDED)  echo "Contributor has not funded their account yet" ;;
+      HORIZON_TIMEOUT|HORIZON_ERROR) echo "Horizon unavailable — retry later" ;;
+      TLS_ERROR)           echo "Horizon TLS issue — check the endpoint certificate" ;;
+      MILESTONE_GATE_SKIPPED) echo "Milestone gate skipped — issue milestone not in allowlist" ;;
+      *)                   echo "Unknown code: ${{ steps.tb.outputs.reason_code }}" ;;
+    esac
+```
+
+### Versioning guarantee
+
+- `reason_code` values in the catalog above are **immutable** for all v1.x releases.
+- New codes are **additive** — your switch/case should have a `default`/`*` branch.
+- A rename or removal is a **MAJOR** version bump and will appear in [docs/BREAKING_CHANGES.md](BREAKING_CHANGES.md).
+- The CI lock test at `__tests__/reason-codes.test.ts` fails if any known code is renamed in `src/checks.ts` without updating the catalog.
+
+---
+
+## OpenTelemetry Tracing (Issue #299)
+
+TrustBridge ships a lightweight, opt-in tracing layer that wraps the three main phases of every run — Horizon fetch, GitHub comment post, and dashboard webhook delivery — with structured spans compatible with the OpenTelemetry Traces data model.
+
+**Tracing is off by default.** There is no overhead, no vendor dependency, and no required collector unless you explicitly enable it.
+
+### Enabling tracing
+
+Set these environment variables in your workflow:
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'log'     # emit spans as core.debug JSON lines (default)
+```
+
+Or forward to a real collector (e.g. OpenTelemetry Collector, Jaeger, Honeycomb):
+
+```yaml
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://your-collector.example.com'
+```
+
+### Exporter options
+
+| `OTEL_TRACES_EXPORTER` | Behavior |
+|------------------------|----------|
+| `log` (default) | Spans emitted as `core.debug` JSON lines — visible in GitHub Actions logs when debug logging is enabled. |
+| `console` | Spans written to `process.stdout` — useful for local development and shell scripts. |
+| `none` | Spans collected in-process but not exported — used in tests to inspect spans without log noise. |
+| `otlp` | Spans exported via OTLP/HTTP JSON to `OTEL_EXPORTER_OTLP_ENDPOINT` — compatible with any standard OTel collector. |
+
+### Trace sampling ratio (Issue #967)
+
+When tracing is enabled, the `trace_sampling_ratio` input controls what fraction of Action runs actually record/export spans:
+
+```yaml
+with:
+  trace_sampling_ratio: '0.25'   # sample about 1 in 4 runs
+```
+
+| Value | `pull_request` | Other events |
+|-------|----------------|--------------|
+| `''` (default) | `0` — no spans | `1` — all enabled runs |
+| `0` | no spans | no spans |
+| `0 < r < 1` | sample ~`r` of runs | sample ~`r` of runs |
+| `1` | all enabled runs | all enabled runs |
+| invalid / out of range | `0` (fail closed) | `0` (fail closed) |
+
+The PR default of `0` is deliberately conservative: fork events cannot create telemetry cost or export data unless a maintainer opts in. Invalid values never throw; they resolve to `0` so a typo cannot silently enable full tracing. Sampling does **not** change redaction — sampled spans still mask Stellar addresses (`first4...last4`), strip URL paths, and drop secret-like attributes. See [docs/ARCHITECTURE.md#trace-sampling-policy-issue-967](ARCHITECTURE.md#trace-sampling-policy-issue-967) for the cost/PII policy.
+
+### Instrumented phases
+
+| Phase | Span name | Key attributes |
+|-------|-----------|----------------|
+| Horizon account fetch | `horizon.fetch_account` | `horizon_url` (host only), `stellar_address` (redacted) |
+| GitHub comment post/update | `github.post_comment` | `issue_number`, `comment_action` (create/update/skip) |
+| Dashboard webhook delivery | `webhook.deliver` | `webhook_url` (host only), `auth_mode` |
+| Full action run | `trustbridge.run` | `stellar_address` (redacted) |
+
+### PII redaction
+
+All span attributes are scrubbed before export:
+
+- **Stellar addresses** (`G…` / `C…`, 56 chars) are masked to `first-4…last-4` (e.g. `GA5Z…KZVN`).
+- **URL paths** are stripped — only the scheme and hostname are exported (e.g. `https://horizon.stellar.org`).
+- **Secret fields** (`github_token`, `webhook_secret`, `api_key`, etc.) are replaced with `[REDACTED]` and **never** appear in any span attribute.
+
+### Forwarding to a vendor
+
+Any OTLP/HTTP-compatible collector works. Examples:
+
+```yaml
+# Honeycomb
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io'
+  OTEL_EXPORTER_OTLP_HEADERS: 'x-honeycomb-team=${{ secrets.HONEYCOMB_API_KEY }}'
+
+# Local OpenTelemetry Collector (docker-compose or similar)
+env:
+  OTEL_TRACES_ENABLED: 'true'
+  OTEL_TRACES_EXPORTER: 'otlp'
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318'
+```
+
+OTLP export is fire-and-forget — a collector outage never fails the action.
+
+### Notes for test authors
+
+Tests that assert span behavior should:
+1. Set `process.env['OTEL_TRACES_ENABLED'] = 'true'` before the call under test.
+2. Set `process.env['OTEL_TRACES_EXPORTER'] = 'none'` to suppress log output.
+3. Call `clearTraceSpans()` in `beforeEach`.
+4. Inspect collected spans via `getTraceSpans()`.
+
+No live collector is required at any point.
+
+## Wave freeze operations
+
+Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
+
+### Snooze audit log (Issue #908)
+
+A snooze never skips validation silently. Whenever `enforceSnoozeWindow`
+(`src/snooze.ts`) skips validation because an issue is inside an active
+snooze window, it:
+
+1. **Emits one structured log line** (`core.info`, always visible — not
+   gated on `debug_mode`):
+
+   ```text
+   Validation skipped: issue is within an active snooze window (source=marker, expires 2026-01-01T13:00:00.000Z). {"component":"snooze","event":"snooze_skip","reason_code":"snoozed","check":"snooze","source":"marker","snoozeWindowMs":3600000,"elapsedMs":900000,"remainingMs":2700000,"expiresAt":"2026-01-01T13:00:00.000Z","issueNumber":7}
+   ```
+
+   | Field | Meaning |
+   |---|---|
+   | `event` | Always `snooze_skip` (`SNOOZE_AUDIT_EVENT`). |
+   | `reason_code` / `check` | Always `snoozed` / `snooze` — grep either to find every skipped run. |
+   | `source` | `marker` (repeated failure inside the window) or `reaction` (maintainer :zzz:/:eyes: reaction). Reaction user logins are never logged. |
+   | `snoozeWindowMs`, `elapsedMs`, `remainingMs` | Window size and how far into it this run is. |
+   | `expiresAt` | ISO-8601 UTC time the window lapses, or `unknown`. |
+   | `issueNumber` | Present when the caller passes `issueNumber`. |
+
+   Pass `audit: false` only if the caller emits the line itself via
+   `emitSnoozeAuditLog` / `buildSnoozeAuditLogContext`.
+
+2. **Returns a concise comment notice with the expiry**, e.g.
+   ``⏸️ **Validation snoozed** — … Validation will resume automatically in ~45m (snooze expires `2026-01-01T13:00:00.000Z`). …``
+
+3. **Records skipped metrics** when a `MetricsCollector` is passed via
+   `metrics`: the `snooze_skipped` counter and a `snooze_skipped` metric
+   tagged with `source` (bounded: `marker` | `reaction`) are incremented, and
+   the job outcome is recorded as `skipped` (`trustbridge_job_outcome_total{outcome="skipped"}`).
+
+When a sticky-comment **update** is suppressed by the snooze window
+(`upsertIssueComment` / discussion comments in `src/comment.ts`), the
+existing "Snooze window active … Suppressing comment update" line is now a
+structured line with the same fields and `event: snooze_comment_suppressed`.
+
+Runs that are **not** snoozed — a passing check, a first failure, an expired
+window, or `force_comment: true` — emit no audit line and record no skipped
+metric. Test coverage: `__tests__/snooze-audit-log.test.ts`.
+
+## Wave runtime safeguards (Issues #861–#864)
+
+### Job Summary budget
+
+GitHub Actions Job Summaries have a practical 1 MiB UTF-8 budget. TrustBridge renders the compact metrics overview first and treats the verbose JSON artifact as lower priority. If the complete report would exceed the budget, the JSON details block is omitted before the compact report is line-boundary truncated. The final summary includes a visible `summary-truncated` marker and points operators to workflow logs. This is a soft failure: validation results, action outputs, and the workflow conclusion are unchanged.
+
+### Legacy input aliases
+
+Legacy aliases such as `skip_if_maintainer`, `ready_pass_label`, `ready_label_pass`, `ready_fail_label`, and `ready_label_fail` remain accepted during the deprecation window. The canonical value wins when both forms are supplied. When an alias is explicitly configured, TrustBridge emits one consolidated deprecation warning per run; migrate to `skip_for_maintainers`, `pass_label`, and `fail_label`.
+
+### Dry-run side-effect boundary
+
+`posting_mode: dry-run` computes the same Horizon checks, summaries, outputs, and failure decision as enforce mode, but performs no GitHub mutations. It skips issue comments, check runs, wallet/ready labels, assignee removal, and Projects v2 status updates. Use it for rehearsal workflows and fork pull requests.
+
+### Horizon Retry-After behavior
+
+For HTTP 429, 502, 503, and 504 responses, TrustBridge parses `Retry-After` as either delta-seconds or an HTTP-date. The parsed wait is capped by `retry_max_delay_ms`, receives bounded 10% jitter to avoid synchronized retries, and remains subject to `retry_max_total_wait_ms`. The metrics artifact records `horizon_retry_after_wait` samples and aggregate `horizon_retry_after_waits` / `horizon_retry_after_wait_ms` counters. Malformed, negative, or non-finite headers fall back to jittered exponential backoff.
+## Batch failure aggregation and fatal errors (#869)
+
+Batch mode always preserves per-address failures in `batch_summary_json`. Account-level failures such as an unfunded 404, trustline failure, or ordinary Horizon outage remain recoverable rows. Configuration/authentication failures (HTTP 400/401/403), cancellation, and exhausted request budgets are classified with `FATAL_*` reason codes or `RATE_BUDGET_EXHAUSTED` and set `fatal: true`; callers should fail the job rather than treating the batch as a green partial result. No raw response bodies or secrets are included.
+
+## Batch address limit
+
+Batch mode (`stellar_addresses`) validates at most `batch_max_addresses`
+**unique** addresses per run (default `500`, maximum `2000`; duplicates are
+removed before counting). Issue #911.
+
+| Input | Default | Allowed values |
+| --- | --- | --- |
+| `batch_max_addresses` | `500` | Whole number from `1` to `2000` |
+
+When the list is longer than the limit, the run fails **before any Horizon
+request** (including the single-address checks), so an oversized matrix never
+spends rate budget or runner memory. The error carries the stable code
+`BATCH_ADDRESS_LIMIT_EXCEEDED` and says how to split the run:
+
+```text
+stellar_addresses contains 742 unique addresses, which exceeds the batch_max_addresses limit of 500 (BATCH_ADDRESS_LIMIT_EXCEEDED). No Horizon requests were made. Split the addresses across a job matrix with at most 500 addresses per leg (at least 2 legs), or raise batch_max_addresses (maximum 2000). See docs/USAGE.md#batch-address-limit.
+```
+
+A malformed value (`abc`, `1.5`, `0`, `2001`) fails with
+`batch_max_addresses must be a whole number between 1 and 2000. Received: "<value>"`.
+
+To split a large roster, pass one slice per matrix leg:
+
+```yaml
+strategy:
+  matrix:
+    slice: [0, 1]
+steps:
+  - id: slice
+    run: |
+      # 500 addresses per leg, taken from a newline-separated roster file
+      tail -n +$(( ${{ matrix.slice }} * 500 + 1 )) roster.txt | head -n 500 > slice.txt
+      {
+        echo 'addresses<<EOF'
+        cat slice.txt
+        echo 'EOF'
+      } >> "$GITHUB_OUTPUT"
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_addresses: ${{ steps.slice.outputs.addresses }}
+      batch_max_addresses: '500'
+```
+
+Library callers get the same guard from `parseBatchAddresses(raw, { maxAddresses })`
+and `runBatchValidation(addresses, config, horizonUrl, { maxAddresses })`, both
+of which throw `BatchAddressLimitError` (`reasonCode`, `count`, `limit`,
+`suggestedJobs`) from `src/batch.ts`. The error only reports counts; addresses
+are never included in the message.
+
+## Negative Horizon account caching (#870)
+
+When `horizon_cache_ttl_ms` is enabled, not-found account responses use a separate 15-second negative-cache TTL (`negativeCacheTtlMs` for library callers). Negative entries contain only status and a safe message, never account payloads. Expiry is required so an account funded during a later run becomes visible; set the library option to `0` to disable negative caching.
+
+## Safe roster patterns (#872)
+
+Roster allowlist and denylist entries may be exact addresses or bounded `*` / `?` globs. Patterns are limited to 256 characters and 32 wildcards and are matched by a linear-time matcher rather than user-supplied regular expressions. Denylist entries always take precedence.
+
+## Clock-skew tolerance (#871)
+
+Freshness checks tolerate a ledger close timestamp up to 30 seconds in the future, which covers normal runner/NTP skew. A future timestamp beyond that tolerance is reported as `status: unknown` and remains fail-open; it is never treated as proof that Horizon is fresh. Library callers can override this with `clockSkewToleranceSeconds`. Keep runner clocks synchronized and investigate repeated `freshness_clock_skew_unknown` metrics.
+
+## Snooze timezone and DST boundary enforcement (#873)
+
+Snooze windows that cross Daylight Saving Time (DST) boundaries or are stored without timezone context can reopen early or late. Wave freeze snoozes that reopen prematurely re-fail assignees before their grace or freeze period has elapsed.
+
+TrustBridge enforces UTC physical millisecond invariance for all snooze evaluations:
+
+1. **UTC Normalization**: Every snooze timestamp — whether stored in comment body markers (`<!-- trustbridge-action:snooze:... -->`), GitHub reaction timestamps (`created_at`), or operator configurations — is normalized to UTC epoch milliseconds via `normalizeToUtc` in `src/snooze.ts`.
+2. **Naive Timestamp Handling**: Any date/time string stored without explicit timezone context (e.g. `2026-11-01T01:30:00` or `2026-11-01 01:30:00`) is parsed strictly as UTC (never runner-local time), preventing 1-hour shifts when runners reside in non-UTC or DST-observing zones.
+3. **DST Boundary Invariance**: Elapsed duration (`elapsedMs = nowUtcMs - startUtcMs`) measures physical time. Across Autumn fall-back (e.g. EDT to EST) and Spring forward (e.g. EST to EDT) transitions, a 120-minute snooze window remains active for exactly 120 physical minutes (7,200,000 ms) and never reopens 1 hour early or late.
+4. **Documented Operator Format**:
+   - **Canonical format:** ISO 8601 UTC string (`YYYY-MM-DDTHH:mm:ssZ`), e.g. `2026-11-01T02:00:00Z`.
+   - **Offset format:** ISO 8601 with explicit timezone offset (`YYYY-MM-DDTHH:mm:ss±HH:mm`), e.g. `2026-11-01T03:00:00+01:00`.
+   - **Unix epoch ms:** Integer milliseconds since Unix epoch, e.g. `1761962400000`.
+   - **Marker format:** `<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=<unix-ms|iso-utc>(?:,timezone=<tz>)? -->`.
+   - **Duration format:** `snooze_window_minutes: <number>` in workflow inputs (0 to 43200 minutes).
+5. **Fail-Closed Validation**: Empty, non-finite, negative, or malformed timestamps fail closed with stable errors (`validateSnoozeTimestamp`) rather than causing premature un-snoozing or workflow aborts.
+
+## Combined authorization and clawback states (Issue #865)
+
+Horizon can report several issuer/trustline flags at once. TrustBridge keeps
+the checks independent and uses actionable reason-code precedence:
+
+1. an existing unauthorized trustline blocked by `unauthorized_trustline_policy: fail` yields `TRUSTLINE_UNAUTHORIZED`;
+2. otherwise a clawback-enabled trustline blocked by `clawback_strict_mode: true` yields `CLAWBACK_BLOCKED`;
+3. a missing trustline yields `TRUSTLINE_MISSING`.
+
+`auth_immutable` and `auth_revocable` describe issuer capabilities; they do not
+turn an authorized trustline into an unauthorized one. In `warn` mode an
+unauthorized trustline remains ready but is called out in the comment. In
+`ignore` mode that authorization signal is omitted. See the combined offline
+fixture at [`fixtures/account-auth-required-immutable-clawback.json`](../fixtures/account-auth-required-immutable-clawback.json).
+
+### Issuer authorization flag decision table (Issue #898)
+
+`resolveIssuerAuthFlagVerdict` in `src/assets.ts` is the single source of
+truth for how `auth_required`, `auth_revocable`, `auth_immutable`, trustline
+`is_authorized`, trustline `is_clawback_enabled`,
+`unauthorized_trustline_policy` and `clawback_strict_mode` combine into a
+`reason_code`. `runAccountChecks` in `src/checks.ts` calls it, so the
+top-level `reason_code` output follows the same rules.
+
+Precedence (first match wins):
+
+1. `TRUSTLINE_MISSING` — no matching trustline. No trustline flag can apply.
+2. `TRUSTLINE_UNAUTHORIZED` — `is_authorized: false` and `unauthorized_trustline_policy: fail`.
+3. `CLAWBACK_BLOCKED` — `is_clawback_enabled: true` and `clawback_strict_mode: true`.
+4. `SUCCESS`.
+
+The issuer flags `auth_required`, `auth_revocable` and `auth_immutable` never
+change the code on their own. Only the trustline's current `is_authorized` and
+`is_clawback_enabled` values do. A missing or malformed Horizon field (older
+Horizon, or a non-boolean value) is read as the permissive default:
+authorized, clawback disabled, flag unset. An unknown policy string is read as
+`warn`.
+
+| Row id | Trustline | `is_authorized` | `is_clawback_enabled` | Issuer flags | Policy / strict mode | `reason_code` |
+|---|---|---|---|---|---|---|
+| `no-trustline` | absent | — | — | required, revocable, immutable | `fail` / `true` | `TRUSTLINE_MISSING` |
+| `authorized-plain` | present | `true` | — | none | defaults | `SUCCESS` |
+| `authorized-all-issuer-flags` | present | `true` | — | required, revocable, immutable | `fail` / default | `SUCCESS` |
+| `unauthorized-warn` | present | `false` | — | required | `warn` / default | `SUCCESS` (warning in comment) |
+| `unauthorized-ignore` | present | `false` | — | required | `ignore` / default | `SUCCESS` |
+| `unauthorized-fail` | present | `false` | — | required | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-fail-revocable` | present | `false` | — | required, revocable | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-fail-immutable` | present | `false` | — | required, immutable | `fail` / default | `TRUSTLINE_UNAUTHORIZED` |
+| `clawback-warn` | present | `true` | `true` | revocable | default / `false` | `SUCCESS` (warning in comment) |
+| `clawback-strict` | present | `true` | `true` | revocable | default / `true` | `CLAWBACK_BLOCKED` |
+| `unauthorized-fail-clawback-strict` | present | `false` | `true` | required, immutable | `fail` / `true` | `TRUSTLINE_UNAUTHORIZED` |
+| `unauthorized-warn-clawback-strict` | present | `false` | `true` | required | `warn` / `true` | `CLAWBACK_BLOCKED` |
+| `unauthorized-fail-clawback-warn` | present | `false` | `true` | required | `fail` / `false` | `TRUSTLINE_UNAUTHORIZED` |
+| `legacy-horizon-no-flags` | present | absent | absent | absent | defaults | `SUCCESS` |
+
+The same rows are exported as `ISSUER_AUTH_FLAG_DECISION_TABLE` and stored in
+[`__tests__/fixtures/issuer-auth-flag-decision-table.json`](../__tests__/fixtures/issuer-auth-flag-decision-table.json).
+`__tests__/issuer-auth-flag-precedence.test.ts` fails if the code, the fixture,
+this table or `runAccountChecks` disagree.
+
+## Label gate force path (Issue #868)
+
+The label-gate composite skips validation when no configured gate label is
+present, before TrustBridge or Horizon is called. Set `force_validation: true`
+for an explicit maintainer override; it opens the gate without evaluating
+labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
+applies only after the gate is open. Label-check failures should fail open and
+run validation, while an optional skip comment is best effort and must not
+block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).
+
+## Link host safety (Issue #963)
+
+`docs_base_url` and `sep0010_dashboard_url` end up as clickable links in issue comments, so a look-alike host would phish contributors. The action rejects these overrides and falls back to the default link (with a warning naming the reason) when the value:
+
+| Reason | Example |
+|--------|---------|
+| `invalid_url` | not an absolute URL |
+| `not_https` | `http://...`, `javascript:...` |
+| `embedded_credentials` | `https://user:pass@host` |
+| `blocked_host` | private, loopback, link-local or cloud-metadata hosts |
+| `unsafe_characters` | whitespace, `( ) < > " ' \``: percent-encode them |
+| `invisible_characters` | zero-width, bidirectional-override, soft-hyphen or control characters anywhere in the URL |
+| `non_ascii_host` | `https://ex<U+0430>mple.org` (the `a` is Cyrillic U+0430, shown here as an escape), fullwidth letters, or a percent-encoded host |
+| `punycode_host` | `https://xn--exmple-4nf.org` (any `xn--` label) |
+
+Internationalized hosts are rejected **unless allowlisted**. If you really use one, list the exact host in `idn_host_allowlist` (comma or newline separated; Unicode or punycode, stored as punycode):
+
+```yaml
+with:
+  docs_base_url: https://docs.bücher.example/trustbridge
+  idn_host_allowlist: docs.bücher.example
+```
+
+Entries must be bare hosts: a scheme, port, path, credentials, whitespace or wildcard is rejected (`INVALID_ALLOWLIST_ENTRY`), as is a list over 50 entries (`ALLOWLIST_TOO_LARGE`); an invalid allowlist is ignored with a warning, which keeps every look-alike host blocked. The allowlist only exempts the two internationalized-host reasons for that exact host (no subdomains); every other check still applies.
+
+## Deterministic ordering (Issue #964)
+
+Matrix and payout jobs fan out over batch outputs, so the same input always yields the same order:
+
+- **Input**: `stellar_addresses` keeps the first occurrence of each address in the order given (JSON array and newline lists alike). More than 1000 unique addresses fails with `BATCH_INPUT_TOO_LARGE`; other malformed input fails with `BATCH_INPUT_EMPTY`, `BATCH_INPUT_INVALID_JSON`, `BATCH_INPUT_NOT_ARRAY`, `BATCH_INPUT_ITEM_NOT_STRING` or `BATCH_INPUT_NO_ENTRIES`.
+- **Results**: one row per address, in input order, whatever `maxConcurrency` is and however Horizon responses interleave. This is enforced at runtime: a misaligned result list fails with `BATCH_ORDER_COUNT_MISMATCH`, `BATCH_ORDER_ROW_MISSING` or `BATCH_ORDER_ADDRESS_MISMATCH` instead of being emitted.
+- **`batch_summary_json`**: `failures` follow input order, `fatalReasonCodes` is sorted, `failureTaxonomy` keys are fixed. If the output is truncated to fit the size limit, the earliest failures are kept.
+- **Matrix outputs** (`assignee_results_json`, `matrix_ready_map`): assignees appear in input order. Integer-like logins such as `123` are not hoisted to the front the way a plain JavaScript object would, and a login named `__proto__` is kept. A duplicate login keeps its first position with the last value.
+
+Parse these outputs with `fromJSON`; do not rely on object key order across other tools.
+
+## Matrix strategy patterns for large roster splits (Issue #952)
+
+One job that validates a huge `stellar_addresses` list runs into several limits. Batch concurrency is capped at `MAX_BATCH_CONCURRENCY` (20, `src/batch.ts`). Each output is capped at `MAX_OUTPUT_VALUE_BYTES` (~900 KB, `src/outputs.ts`), and when the `failures` array is cut to fit, `outputs_truncated` is set to `"true"`. A GitHub matrix also caps out at 256 jobs. To stay inside these limits, split the roster into shards and give each shard its own matrix leg.
+
+**Pattern 1: fixed shards (copy-paste)**
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: split
+        # roster.txt: one address per line. SHARD_SIZE ≤ a few hundred keeps
+        # each batch_summary_json far below the output cap.
+        run: |
+          SHARD_SIZE=200
+          jq -R -s -c --argjson n "$SHARD_SIZE" \
+            'split("\n") | map(select(length > 0)) | unique as $a
+             | [range(0; $a|length; $n) as $i | {index: ($i / $n), addresses: ($a[$i:$i+$n] | join("\n"))}]' \
+            roster.txt > shards.json
+          echo "shards=$(cat shards.json)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one bad shard must not cancel the others
+      max-parallel: 4           # stay friendly to Horizon rate limits
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - id: tb
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_addresses: ${{ matrix.shard.addresses }}
+          posting_mode: off      # aggregate once instead of N comments
+      - name: Persist shard result
+        run: echo '${{ steps.tb.outputs.batch_summary_json }}' > "summary-${{ matrix.shard.index }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-shard-${{ matrix.shard.index }}
+          path: summary-*.json
+```
+
+**Pattern 2: aggregate shard outputs**
+
+Matrix legs cannot pass outputs to a downstream job reliably, because only one leg's value survives. Upload each shard's `batch_summary_json` as an artifact and merge them:
+
+```yaml
+  aggregate:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: trustbridge-shard-*, merge-multiple: true }
+      - env:
+          EXPECTED: ${{ needs.plan.outputs.shard_count }}   # add `shard_count=$(jq length shards.json)` in plan
+        run: |
+          test "$(ls summary-*.json | wc -l)" -eq "$EXPECTED"   # a missing shard is a failure, not "0 failures"
+          jq -s '{total: map(.total) | add, passed: map(.passed) | add,
+                  failed: map(.failed) | add, failures: map(.failures) | add}' summary-*.json > batch.json
+          test "$(jq .failed batch.json)" -eq 0
+```
+
+**Aggregation notes**
+
+- **Count every shard.** Compare the number of summary files to the number of shards from `plan`. A missing file means a leg crashed. Never treat it as "0 failures".
+- **Check truncation per shard.** If any leg reports `outputs_truncated == 'true'`, that shard's `failures` array is incomplete, so lower `SHARD_SIZE`. `total`, `passed`, and `failed` are always exact.
+- **Sort and deduplicate before splitting.** Shards then stay stable between runs, and one address can never land in two shards.
+- **Keep shards ≤ 256** (the GitHub matrix limit). For bigger rosters, raise `SHARD_SIZE` or chain workflows.
+
+A full working example (including `shard_count`) is in [`docs/examples/batch-validation-with-matrix-outputs.yml`](examples/batch-validation-with-matrix-outputs.yml) (job `sharded-validate`).
+
+## Delta ignore-list for volatile fields (Issue #926)
+
+The delta section (`previous_validation_path`) compares each check's status, and also its other per-check fields, against the previous `validation.json`. Fields that change on every run are ignored so the comment only highlights meaningful changes:
+
+- **Default ignore-list** (`DEFAULT_DELTA_IGNORED_FIELDS` in `src/delta.ts`): `timestamp`, `checkedAt`, `fetchedAt`, `durationMs`, `latencyMs`, `elapsedMs`, `requestId`, `traceId`.
+- **Embedded ISO-8601 timestamps** in free-text fields such as `detail` are normalized before comparison, so `ok at 2026-01-01T00:00:00Z` and `ok at 2026-11-24T10:11:12Z` count as equal.
+- **Extra fields** can be passed via `computeValidationDelta(prev, curr, { ignoreFields })`. `parseDeltaIgnoreFields()` parses a comma- or newline-separated list and returns invalid (non-identifier) names separately, so a caller can fail with a stable message.
+- `label` and `passed` can never be ignored. Status transitions (newly passed / newly failed) are always reported.
+
+Checks whose status is unchanged but whose non-volatile fields differ are listed under **Details changed** in the comment (`ValidationDelta.changed`).
+
+## Per-address deadline (Issue #928)
+
+In batch mode (`stellar_addresses`), `per_address_timeout_ms` caps the time spent validating any single address, including all of its Horizon requests and retries. When an address exceeds it:
+
+- its in-flight requests are aborted;
+- its row is reported with `reason_code: ADDRESS_TIMEOUT`;
+- the batch moves on to the next address, so one hung address cannot use up the whole job budget.
+
+Precedence:
+
+1. **Global cancellation / job timeout wins.** If the batch-level signal fires, affected rows are `CANCELLED`, even if the per-address deadline also expired.
+2. **Per-address deadline.** It applies to each address independently and never stops the rest of the batch.
+3. **`horizon_timeout_ms`** still bounds each individual Horizon request inside that deadline.
+
+`0` (the default), empty, or non-finite values disable the deadline and keep the previous behavior exactly. The shared helper is `runWithAddressDeadline` in `src/checks-run.ts`.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_addresses: ${{ env.WAVE_ADDRESSES }}
+    per_address_timeout_ms: '20000'
+```
+
+## Required-label gate
+
+Issue #955. Set `required_labels` to require labels on the issue/PR before any Horizon request is made:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    required_labels: "wave, ready-for-payout"
+    required_labels_fail_on_skip: "false"
+```
+
+- Matching is case-insensitive; entries are comma- or newline-separated, trimmed and de-duplicated.
+- When any label is missing the run skips with `ready=false`, `reason_code=REQUIRED_LABELS_MISSING`, `checks_json=[]`, and the job outcome metric records `skipped`.
+- `required_labels_fail_on_skip: true` turns the skip into a step failure.
+- More than 20 labels, or a label longer than 50 characters, fails the step with a `required_labels_invalid` error before any network traffic.
+- The gate runs after `milestone_allowlist`; see [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md#required-label-presence-gate) for how it interacts with `pass_label` / `fail_label`.
+
+## Federation memo hash validation
+
+Issue #957. When a federation server returns `memo_type: "hash"`, the `memo` must be exactly 64 hex characters (32 bytes). Non-hex input (for example base64) and wrong-length hex both fail with the stable code `MEMO_TYPE_MISMATCH`; the error message states which (`not hex-encoded` vs `invalid length N`) and never echoes the memo value.

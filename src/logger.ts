@@ -9,13 +9,96 @@ import { redactProxyCredentials } from './proxy';
  * log line is run through a redaction step before it is written to GitHub
  * Actions log output. See `redactStellarAddress`, `redactHorizonUrl`, and
  * `redactContext` for the exact policies.
+ *
+ * Structured logs always carry a stable `reason_code` and `check` label so
+ * Wave CI failures can be grepped and triaged automatically (Issue #771).
  */
 
 export interface LogContext {
   component?: string;
   stellarAddress?: string;
   horizonUrl?: string;
+  reason_code?: string;
+  check?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Stable structured field keys that every structured log line must include
+ * so automated triage can grep Wave CI failures (Issue #771).
+ */
+export const STRUCTURED_FIELD_KEYS = ['reason_code', 'check'] as const;
+
+/**
+ * Fallback values used when a caller does not supply a structured field.
+ * These keep the keys present (never `undefined`) so log lines stay
+ * greppable even on unexpected failure paths.
+ */
+export const DEFAULT_REASON_CODE = 'unknown';
+
+export const DEFAULT_CHECK_LABEL = 'unknown';
+
+// ---------------------------------------------------------------------------
+// Correlation id propagation (Issue #904)
+// ---------------------------------------------------------------------------
+
+/** Structured log key carrying the per-run correlation id. */
+export const CORRELATION_ID_LOG_KEY = 'correlation_id';
+
+let logCorrelationId: string | undefined;
+
+/**
+ * Set (or clear with `undefined`) the per-run correlation id attached to
+ * every structured log line. Called by `initCorrelationId` in
+ * `src/diagnostics.ts`; the id is validated there, so it is never a secret.
+ */
+export function setLogCorrelationId(id: string | undefined): void {
+  logCorrelationId = id && id.trim() !== '' ? id.trim() : undefined;
+}
+
+/** Current correlation id attached to log lines, if any. */
+export function getLogCorrelationId(): string | undefined {
+  return logCorrelationId;
+}
+
+/**
+ * Return `context` with `correlation_id` added when one is set and the
+ * caller did not supply its own. No-op (same object) when none is set, so
+ * log output is byte-identical to earlier releases until a run opts in.
+ */
+function withCorrelationId(context: LogContext | undefined): LogContext | undefined {
+  if (!logCorrelationId) return context;
+  if (context && context[CORRELATION_ID_LOG_KEY] !== undefined) return context;
+  return { ...(context ?? {}), [CORRELATION_ID_LOG_KEY]: logCorrelationId };
+}
+
+/**
+ * Normalize a structured field value to a non-empty string. Empty, nullish,
+ * or whitespace-only values fall back to the provided default so the key is
+ * always emitted with a stable, greppable value.
+ */
+function normalizeStructuredField(value: unknown, fallback: string): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return fallback;
+}
+
+/**
+ * Ensure a log context always carries the structured `reason_code` and
+ * `check` fields. Existing values are preserved (trimmed); missing or empty
+ * values are filled with stable defaults so the keys are never absent.
+ */
+export function withStructuredFields(context: LogContext = {}): LogContext {
+  return {
+    ...withCorrelationId(context),
+    reason_code: normalizeStructuredField(context.reason_code, DEFAULT_REASON_CODE),
+    check: normalizeStructuredField(context.check, DEFAULT_CHECK_LABEL),
+  };
 }
 
 /**
@@ -24,54 +107,190 @@ export interface LogContext {
  */
 const ADDRESS_CONTEXT_KEYS = new Set<string>([
   'stellarAddress',
+  'stellar_address',
   'assetIssuer',
+  'asset_issuer',
+  'issuer',
   'accountId',
   'account_id',
   'contractAddress',
+  'contract_address',
+  // Issue #730 — Soroban SAC issuers are contract ids (C-addresses). Any log
+  // context key that carries one must be redacted exactly like a G-address so
+  // debug output never leaks a full contract id.
+  'contractId',
+  'contract_id',
+  'sacContractId',
+  'issuerContractId',
 ]);
 
 /**
- * Pattern matching Stellar G-addresses (classic) and C-addresses (Soroban
- * contracts): 56-character StrKey starting with G or C, followed by 55
- * base32 characters (A-Z, 2-7).
+ * Pattern matching Stellar account identifiers that may appear in logs:
+ * classic G-addresses (56 chars), C-addresses / Soroban contracts (56 chars),
+ * and short-form M-address-like patterns (56 chars starting with M).
+ * All standard StrKey addresses begin with G or C and are exactly 56 characters.
+ *
+ * Issue #675 — boundaries follow the StrKey alphabet rather than `\b`, so the
+ * match covers exactly what `validation.ts` accepts as a C-address
+ * (`/^C[A-Z2-7]{55}$/`) and a G-address, wherever it is embedded. `\b`
+ * treated `_`, lowercase letters and digits as word characters, so a
+ * contract id glued to an identifier (`sac_CAAA…`, `issuer=xCAAA…`) leaked
+ * unredacted. A 56-char run that is part of a longer base32 run is still
+ * left alone.
  */
-const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+const STELLAR_ADDRESS_REGEX = /(?<![A-Z2-7])([GC][A-Z2-7]{55})(?![A-Z2-7])/g;
 
 /**
- * Redacts a single Stellar address (G- or C-address) to its first 4 and
- * last 4 characters, separated by `...`. Non-address strings are returned
- * unchanged so non-address log values never collide with the redaction
- * pass.
+ * Compact JWS/JWT (`header.payload.signature`, base64url). OIDC ID tokens
+ * must never reach a log line even inside a provider error message
+ * (Issue #674).
+ */
+const JWT_REGEX = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
+
+/**
+ * Pattern matching muxed M-addresses in free-form text.
+ * Muxed accounts encode as 69 characters: M + 68 base32 chars (version byte,
+ * 32-byte ed25519 key, 8-byte muxed ID, 2-byte CRC-16/XMODEM checksum).
+ * These are distinct from G/C addresses and require a separate regex.
+ */
+const MUXED_ADDRESS_REGEX = /\bM[A-Z2-7]{68}\b/g;
+
+const PEM_PRIVATE_KEY_REGEX =
+  /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z0-9_-]* PRIVATE KEY-----/gi;
+
+const SECRET_ASSIGNMENT_REGEX =
+  /((?:[A-Za-z0-9_-]*?(?:token|secret|signature|hmac|key|auth|authorization)[A-Za-z0-9_-]*?)\s*(?:=|:)\s*)(?!-----BEGIN)([^\s,;]+)/gi;
+
+const SENSITIVE_SECRET_KEYS = new Set<string>([
+  'token',
+  'githubtoken',
+  'github_token',
+  'githubapptoken',
+  'github_app_token',
+  'apptoken',
+  'app_token',
+  'key',
+  'privatekey',
+  'private_key',
+  'appprivatekey',
+  'app_private_key',
+  'secret',
+  'secretkey',
+  'secret_key',
+  'apikey',
+  'api_key',
+  'auth',
+  'authorization',
+  'password',
+]);
+
+export function isSensitiveSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  const normalized = lower.replace(/[-_]/g, '');
+  return (
+    SENSITIVE_SECRET_KEYS.has(lower) ||
+    normalized.includes('token') ||
+    normalized.includes('secret') ||
+    normalized.includes('privatekey') ||
+    normalized.includes('signature') ||
+    normalized.includes('hmac') ||
+    normalized.includes('authorization') ||
+    normalized.includes('auth')
+  );
+}
+
+/**
+ * Redacts a single Stellar address to its first 4 and last 4 characters,
+ * separated by `...`. Handles:
+ *   - G-addresses and C-addresses (Soroban contracts): exactly 56 characters.
+ *   - Muxed M-addresses: exactly 69 characters (M + 68 base32 chars).
+ * Non-address strings are returned unchanged so non-address log values
+ * never collide with the redaction pass.
  *
  * Examples:
  *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
  *     => 'GA5Z...KZVN'
+ *   redactStellarAddress('MA7QYNF7SOWQ3GLR2BGMZEHXR8' + 'A'.repeat(43))
+ *     => 'MA7Q...AAAA'
  */
 export function redactStellarAddress(address: string): string {
   if (!address) return address;
   const trimmed = address.trim();
-  if (trimmed.length !== 56) return address;
   const first = trimmed.charAt(0);
-  if (first !== 'G' && first !== 'C') return address;
-  if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
-    // Reset regex state (global flag); bail out if it's not a clean match.
-    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+
+  // Muxed M-address: exactly 69 chars
+  if (first === 'M' && trimmed.length === 69) {
+    MUXED_ADDRESS_REGEX.lastIndex = 0;
+    if (MUXED_ADDRESS_REGEX.test(trimmed)) {
+      MUXED_ADDRESS_REGEX.lastIndex = 0;
+      return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+    }
+    MUXED_ADDRESS_REGEX.lastIndex = 0;
     return address;
   }
-  STELLAR_ADDRESS_REGEX.lastIndex = 0;
-  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+
+  // Classic G-address or C-address: exactly 56 chars
+  if ((first === 'G' || first === 'C') && trimmed.length === 56) {
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
+      // Reset regex state (global flag); bail out if it's not a clean match.
+      STELLAR_ADDRESS_REGEX.lastIndex = 0;
+      return address;
+    }
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+  }
+
+  return address;
 }
 
 /**
- * Redacts every Stellar address embedded in an arbitrary free-form
- * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
- * Uses the same first-4/last-4 policy as `redactStellarAddress`.
+ * Redact a Soroban contract id (C-address) for log output (Issue #730).
+ *
+ * SAC issuers are contract ids, not accounts, but they carry exactly the same
+ * redaction requirement: a debug log line must never contain the full
+ * contract id. Delegates to {@link redactStellarAddress} so the C-address and
+ * G-address policies can never drift apart, and returns the input unchanged
+ * when it is not a well-formed C-address so a non-address value is never
+ * mangled.
+ *
+ * Examples:
+ *   redactContractAddress('CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM')
+ *     => 'CAAA...D2KM'
+ */
+export function redactContractAddress(contractId: string): string {
+  if (!contractId) return contractId;
+  const trimmed = contractId.trim();
+  if (!/^C[A-Z2-7]{55}$/.test(trimmed)) {
+    return contractId;
+  }
+  return redactStellarAddress(trimmed);
+}
+
+/**
+ * Redacts every Stellar address (G-, C-, and muxed M-addresses), JWT and PEM
+ * private key embedded in an arbitrary free-form string — error messages,
+ * Horizon URLs, JSON snippets, stack traces, etc.
+ *
+ * Muxed M-addresses (69 chars) are scanned first so their longer pattern
+ * cannot be partially matched by the 56-char G/C regex.
  */
 export function redactString(value: string): string {
   if (!value) return value;
-  value = redactProxyCredentials(value);
+  let masked = redactProxyCredentials(value);
+  masked = masked.replace(PEM_PRIVATE_KEY_REGEX, '[REDACTED_PRIVATE_KEY]');
+  masked = masked.replace(SECRET_ASSIGNMENT_REGEX, (_match, prefix: string, rawValue: string) => {
+    if (rawValue.startsWith('-----') || rawValue.startsWith('[REDACTED')) {
+      return `${prefix}${rawValue}`;
+    }
+    return `${prefix}[REDACTED]`;
+  });
+  masked = masked.replace(JWT_REGEX, '[REDACTED_JWT]');
+  // Redact muxed M-addresses (69 chars) before G/C addresses (56 chars)
+  MUXED_ADDRESS_REGEX.lastIndex = 0;
+  masked = masked.replace(MUXED_ADDRESS_REGEX, (match) => `${match.slice(0, 4)}...${match.slice(-4)}`);
   STELLAR_ADDRESS_REGEX.lastIndex = 0;
-  return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+  return masked.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
 }
 
 /**
@@ -80,11 +299,21 @@ export function redactString(value: string): string {
  * matching an address shape are masked before the URL reaches a log line.
  * The base hostname / protocol is preserved so operators can still verify
  * which Horizon instance was called.
+ *
+ * Handles all three Stellar address forms:
+ *   - G-addresses and C-addresses (56 chars)
+ *   - Muxed M-addresses (69 chars)
  */
 export function redactHorizonUrl(url: string): string {
   if (!url) return url;
   const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
+  // Redact muxed M-addresses (69 chars) in path segments first
   let masked = url.replace(
+    /\/accounts\/(M[A-Z2-7]{68})([^A-Z2-7]|$)/g,
+    (_m, addr, rest) => `/accounts/${addr.slice(0, 4)}...${addr.slice(-4)}${rest ?? ''}`,
+  );
+  // Then redact classic G/C addresses (56 chars) in path segments
+  masked = masked.replace(
     /\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g,
     (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`,
   );
@@ -92,76 +321,364 @@ export function redactHorizonUrl(url: string): string {
     const parsed = new URL(masked);
     const safeParams = new URLSearchParams();
     for (const [key, rawValue] of parsed.searchParams.entries()) {
-      safeParams.set(key, redactString(rawValue));
+      if (isSensitiveSecretKey(key)) {
+        safeParams.set(key, '[REDACTED]');
+      } else {
+        safeParams.set(key, redactString(rawValue));
+      }
     }
     const query = safeParams.toString();
     parsed.search = query ? `?${query}` : '';
     masked = parsed.toString();
-    if (!hadTrailingSlash) {
-      masked = masked.replace(/\/(?=\?|#|$)/, '');
+    if (hadTrailingSlash && !masked.endsWith('/')) {
+      masked = `${masked}/`;
     }
+    return masked;
   } catch {
-    // If the URL is malformed, fall back to regex-only redaction on the
-    // raw string — we never want the redaction step itself to throw and
-    // mask the underlying log event we were trying to emit.
+    // Not a parseable URL — fall back to string-level redaction.
+    masked = redactString(masked);
   }
-  return redactString(masked);
+  return masked;
 }
 
 /**
- * Redacts a `LogContext` record in place (returns a new object, no
- * mutation) for safe logging. Policy per key type:
+ * Base allowlist of structured log context keys (Issue #858).
  *
- * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
- *   raw string value.
- * - Key == `horizonUrl`             → run `redactHorizonUrl`.
- * - Unknown string values           → scan and mask embedded addresses
- *   via `redactString` so free-form messages attached to context don't
- *   leak.
- * - Non-string values               → passed through as-is (numbers,
- *   booleans). Objects and arrays are recursed shallowly for the common
- *   case of nested debug payloads.
+ * Includes every key `LogContext` itself declares, every key in
+ * {@link ADDRESS_CONTEXT_KEYS} (already individually redacted, so safe to
+ * admit), and the generic operational metadata keys documented in
+ * docs/ARCHITECTURE.md's "Context key allowlist" section (`operation`,
+ * `status`, `count`, `durationMs`).
+ *
+ * This is the allowlist {@link redactContext}'s `strict` option enforces.
+ * It is intentionally **not** applied by default — see that option's
+ * docstring for why — so adding a key here only ever affects callers that
+ * explicitly opt into strict mode.
  */
-export function redactContext(context: LogContext | undefined): LogContext | undefined {
-  if (!context) return context;
-  const safe: LogContext = {};
-  for (const key of Object.keys(context)) {
-    const raw = context[key];
-    if (key === 'component') {
-      safe.component = raw as string | undefined;
-      continue;
-    }
-    if (key === 'horizonUrl' && typeof raw === 'string') {
-      safe.horizonUrl = redactHorizonUrl(raw);
-      continue;
-    }
-    if (ADDRESS_CONTEXT_KEYS.has(key) && typeof raw === 'string') {
-      safe[key] = redactStellarAddress(raw);
-      continue;
-    }
-    safe[key] = redactValue(raw);
-  }
-  return safe;
+export const LOG_CONTEXT_KEY_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  'component',
+  'stellarAddress',
+  'horizonUrl',
+  'reason_code',
+  'check',
+  'operation',
+  'status',
+  'count',
+  'durationMs',
+  CORRELATION_ID_LOG_KEY,
+  ...ADDRESS_CONTEXT_KEYS,
+]);
+
+/** True when `key` is in {@link LOG_CONTEXT_KEY_ALLOWLIST} or `extraAllowedKeys`. */
+export function isAllowedLogContextKey(
+  key: string,
+  extraAllowedKeys: readonly string[] = [],
+): boolean {
+  return LOG_CONTEXT_KEY_ALLOWLIST.has(key) || extraAllowedKeys.includes(key);
 }
 
-function redactValue(raw: unknown): unknown {
+export interface RedactContextOptions {
+  /**
+   * When `true`, any top-level context key that is not in
+   * {@link LOG_CONTEXT_KEY_ALLOWLIST} (or `extraAllowedKeys`) is dropped
+   * entirely — not redacted-and-kept, simply absent from the result — so an
+   * unreviewed field can never reach the log even in redacted form.
+   *
+   * Defaults to `false`: every existing call site keeps its current
+   * behavior (every key processed, values redacted, nothing dropped)
+   * unless it explicitly opts in. This lets strict mode be adopted
+   * incrementally per call site instead of being a breaking change to
+   * every logger call in the codebase at once.
+   */
+  strict?: boolean;
+  /** Additional keys to accept in strict mode, beyond the base allowlist. */
+  extraAllowedKeys?: readonly string[];
+}
+
+/**
+ * Redacts a log context object. Address-bearing keys are masked with
+ * {@link redactStellarAddress}; sensitive secret keys are replaced with
+ * `[REDACTED]`; all other string values are passed through
+ * {@link redactString} so embedded addresses never leak.
+ *
+ * In `strict` mode (Issue #858), a key not on {@link LOG_CONTEXT_KEY_ALLOWLIST}
+ * is dropped instead of redacted-and-kept — see {@link RedactContextOptions}.
+ */
+export function redactContext(
+  context: LogContext = {},
+  options: RedactContextOptions = {},
+): LogContext {
+  const redacted: LogContext = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (options.strict && !isAllowedLogContextKey(key, options.extraAllowedKeys)) {
+      continue;
+    }
+    if (value === undefined || value === null) {
+      redacted[key] = value;
+      continue;
+    }
+    if (isSensitiveSecretKey(key)) {
+      redacted[key] = '[REDACTED]';
+      continue;
+    }
+    if (typeof value === 'string') {
+      if (ADDRESS_CONTEXT_KEYS.has(key)) {
+        redacted[key] = redactStellarAddress(value);
+      } else if (key === 'horizonUrl') {
+        redacted[key] = redactHorizonUrl(value);
+      } else {
+        redacted[key] = redactString(value);
+      }
+      continue;
+    }
+    // Deep-redact nested objects/arrays (Issue #225) so tokens embedded in
+    // structured context values can never reach the Actions log unmasked.
+    redacted[key] = redactValue(value);
+  }
+  return redacted;
+}
+
+/**
+ * Format a structured log line. Always includes the `reason_code` and
+ * `check` fields (Issue #771) so Wave CI failures can be grepped, and
+ * redacts the context before serialization.
+ */
+export function formatStructuredLog(message: string, context: LogContext = {}): string {
+  const safeContext = redactContext(withStructuredFields(context));
+  return `${redactString(message)} ${JSON.stringify(safeContext)}`;
+}
+
+function emit(level: 'info' | 'warning' | 'error', message: string, context: LogContext = {}): void {
+  const line = formatStructuredLog(message, context);
+  if (level === 'error') {
+    core.error(line);
+  } else if (level === 'warning') {
+    core.warning(line);
+  } else {
+    core.info(line);
+  }
+}
+
+export function logInfo(message: string, context: LogContext = {}): void {
+  emit('info', message, context);
+}
+
+export function logWarning(message: string, context: LogContext = {}): void {
+  emit('warning', message, context);
+}
+
+export function logError(message: string, context: LogContext = {}): void {
+  emit('error', message, context);
+}
+
+// ---------------------------------------------------------------------------
+// StructuredLogger, Horizon retry helpers and the shared `logger` instance.
+// Restored after the #771 rewrite dropped them while src/horizon.ts,
+// src/webhook.ts and ~10 other modules still import `logger`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum nesting depth {@link redactValue} will recurse into. A context
+ * value this deep is already not useful log output; capping it turns a
+ * pathological or accidentally-huge payload into a stable placeholder
+ * instead of a very large log line or a stack overflow (Issue #858).
+ */
+const MAX_REDACT_DEPTH = 10;
+
+function redactValue(raw: unknown, depth = 0, ancestors: Set<unknown> = new Set()): unknown {
   if (typeof raw === 'string') return redactString(raw);
   if (raw === null || raw === undefined) return raw;
-  if (Array.isArray(raw)) return raw.map((item) => redactValue(item));
-  if (typeof raw === 'object') {
+  if (typeof raw !== 'object') return raw;
+
+  if (depth >= MAX_REDACT_DEPTH) return '[REDACTED_DEPTH_EXCEEDED]';
+
+  // Cycle guard (Issue #858): a context value with a circular reference
+  // (e.g. accidentally logging a live object graph) must never hang or
+  // crash the logger. Tracks the current ancestor chain only — the same
+  // object referenced twice from different branches (a DAG, not a cycle)
+  // is still redacted normally, only a true self-reference is replaced.
+  if (ancestors.has(raw)) return '[CIRCULAR]';
+  ancestors.add(raw);
+  try {
+    if (Array.isArray(raw)) {
+      return raw.map((item) => redactValue(item, depth + 1, ancestors));
+    }
     const safeObj: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+      if (isSensitiveSecretKey(k)) {
+        safeObj[k] = '[REDACTED]';
+      } else if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
         safeObj[k] = redactStellarAddress(v);
       } else if (k === 'horizonUrl' && typeof v === 'string') {
         safeObj[k] = redactHorizonUrl(v);
       } else {
-        safeObj[k] = redactValue(v);
+        safeObj[k] = redactValue(v, depth + 1, ancestors);
       }
     }
     return safeObj;
+  } finally {
+    ancestors.delete(raw);
   }
-  return raw;
+}
+
+/**
+ * Events per key that are emitted in full before sampling starts (Issue #924).
+ * With the default of 3, the first three identical exhaustion warnings in a
+ * window are logged and the rest are counted instead of printed.
+ */
+export const HORIZON_RETRY_SAMPLE_BURST = 3;
+
+/** Length of one sampling window for a key (Issue #924). */
+export const HORIZON_RETRY_SAMPLE_WINDOW_MS = 60_000;
+
+/** Summary of events suppressed for one key in one window (Issue #924). */
+export interface RepeatSampleSummary<T> {
+  key: string;
+  /** The first event recorded for the key in this window, kept for context. */
+  sample: T;
+  /** Every event recorded in the window, emitted or not. */
+  total: number;
+  /** Events not emitted because the burst limit was already reached. */
+  suppressed: number;
+  /** Timestamp (ms) of the first event in the window. */
+  firstAt: number;
+  /** Timestamp (ms) of the most recent event in the window. */
+  lastAt: number;
+}
+
+interface SampleGroup<T> {
+  sample: T;
+  windowStart: number;
+  total: number;
+  emitted: number;
+  lastAt: number;
+}
+
+/**
+ * Sample repeated events by key so a burst of identical warnings does not
+ * flood the Actions log (Issue #924).
+ *
+ * For each key, the first `burst` events in a window are emitted. Later events
+ * in the same window are counted and suppressed. A window ends once
+ * `windowMs` has passed since its first event; the next event for that key
+ * then returns a summary for the window that just closed. {@link flush}
+ * returns summaries for every key that still has suppressed events, so the
+ * last window is not lost at the end of a run.
+ *
+ * The clock is injectable so tests can drive windows without real waits.
+ */
+export class RepeatWarningSampler<T> {
+  private readonly groups = new Map<string, SampleGroup<T>>();
+
+  constructor(
+    private readonly burst: number = HORIZON_RETRY_SAMPLE_BURST,
+    private readonly windowMs: number = HORIZON_RETRY_SAMPLE_WINDOW_MS,
+    private readonly now: () => number = () => Date.now(),
+  ) {
+    if (!Number.isInteger(burst) || burst < 0) {
+      throw new RangeError('burst must be a non-negative integer');
+    }
+    if (!(windowMs > 0)) {
+      throw new RangeError('windowMs must be a positive number');
+    }
+  }
+
+  /**
+   * Record one event for `key`. `emit` says whether this event should be
+   * logged in full. `rolled` is set when a previous window for the same key
+   * just closed with suppressed events.
+   */
+  record(key: string, sample: T): { emit: boolean; rolled?: RepeatSampleSummary<T> } {
+    const t = this.now();
+    let rolled: RepeatSampleSummary<T> | undefined;
+    let group = this.groups.get(key);
+    if (group && t - group.windowStart >= this.windowMs) {
+      rolled = this.summarize(key, group);
+      group = undefined;
+    }
+    if (!group) {
+      group = { sample, windowStart: t, total: 0, emitted: 0, lastAt: t };
+      this.groups.set(key, group);
+    }
+    group.total += 1;
+    group.lastAt = t;
+    const emit = group.emitted < this.burst;
+    if (emit) group.emitted += 1;
+    return rolled ? { emit, rolled } : { emit };
+  }
+
+  /**
+   * Return summaries for every key with suppressed events and clear all
+   * state. Call once at the end of a run.
+   */
+  flush(): RepeatSampleSummary<T>[] {
+    const out: RepeatSampleSummary<T>[] = [];
+    for (const [key, group] of this.groups) {
+      const summary = this.summarize(key, group);
+      if (summary) out.push(summary);
+    }
+    this.groups.clear();
+    return out;
+  }
+
+  /** Drop all state without producing summaries (used by tests). */
+  reset(): void {
+    this.groups.clear();
+  }
+
+  private summarize(key: string, group: SampleGroup<T>): RepeatSampleSummary<T> | undefined {
+    const suppressed = group.total - group.emitted;
+    this.groups.delete(key);
+    if (suppressed <= 0) return undefined;
+    return {
+      key,
+      sample: group.sample,
+      total: group.total,
+      suppressed,
+      firstAt: group.windowStart,
+      lastAt: group.lastAt,
+    };
+  }
+}
+
+/** Sampler for Horizon exhaustion warnings, shared by every Horizon call in a run (Issue #924). */
+export const horizonRetrySampler = new RepeatWarningSampler<LogContext>();
+
+/**
+ * Group key for sampling: the failure pattern without the account address, so
+ * the same outage across many accounts collapses into one sampled stream.
+ */
+export function horizonRetrySampleKey(event: HorizonRetryEvent): string {
+  return [
+    horizonRetryReasonCode(event),
+    event.endpointKind,
+    event.kind,
+    String(event.status),
+    redactHorizonBaseUrl(event.horizonUrl),
+  ].join('|');
+}
+
+/**
+ * Emit the summary line for one sampled window (Issue #924). Keeps first and
+ * last timestamps and the counts, and reuses the first event's redacted
+ * context so the reason code and endpoint stay greppable.
+ */
+export function formatRepeatSampleSummary(summary: RepeatSampleSummary<LogContext>): {
+  message: string;
+  context: LogContext;
+} {
+  const reasonCode = String(summary.sample.reasonCode ?? 'unknown');
+  return {
+    message: `Horizon retry warnings sampled (${reasonCode}): ${summary.suppressed} suppressed of ${summary.total}`,
+    context: {
+      ...summary.sample,
+      event: 'horizon_retry_sampled',
+      suppressedCount: summary.suppressed,
+      totalCount: summary.total,
+      firstAt: new Date(summary.firstAt).toISOString(),
+      lastAt: new Date(summary.lastAt).toISOString(),
+    },
+  };
 }
 
 class StructuredLogger {
@@ -182,21 +699,21 @@ class StructuredLogger {
    * Log an informational message.
    */
   info(message: string, context?: LogContext): void {
-    core.info(this.formatMessage(redactString(message), redactContext(context)));
+    core.info(this.formatMessage(redactString(message), this.redact(context)));
   }
 
   /**
    * Log a warning message.
    */
   warn(message: string, context?: LogContext): void {
-    core.warning(this.formatMessage(redactString(message), redactContext(context)));
+    core.warning(this.formatMessage(redactString(message), this.redact(context)));
   }
 
   /**
    * Log an error message.
    */
   error(message: string, context?: LogContext, error?: Error): void {
-    let fullMessage = this.formatMessage(redactString(message), redactContext(context));
+    let fullMessage = this.formatMessage(redactString(message), this.redact(context));
     if (error) {
       fullMessage += `\n  Error: ${redactString(error.message)}`;
       if (error.stack) {
@@ -211,7 +728,48 @@ class StructuredLogger {
    */
   debug(message: string, context?: LogContext): void {
     if (this.debugMode) {
-      core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
+      core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, this.redact(context)));
+    }
+  }
+
+  /**
+   * Redact a context, attaching the per-run correlation id when one is set
+   * (Issue #904). Returns `undefined` for an absent context with no id so
+   * the line layout is unchanged in that case.
+   */
+  private redact(context?: LogContext): LogContext | undefined {
+    const withId = withCorrelationId(context);
+    return withId === undefined ? undefined : redactContext(withId);
+  }
+
+  /**
+   * Log a structured Horizon retry event (Issue #697).
+   *
+   * Scheduled retries are written at debug level; final exhaustion is
+   * written at warning level so operators can find rate-limit failures
+   * without enabling debug mode. The context always uses the fixed
+   * {@link HORIZON_RETRY_LOG_FIELDS} schema and is run through
+   * `redactContext` like every other log line.
+   */
+  horizonRetry(event: HorizonRetryEvent): void {
+    const level = horizonRetryLogLevel(event);
+    const message = formatHorizonRetryMessage(event);
+    const context = buildHorizonRetryLogContext(event);
+    if (level === 'warning') {
+      // Issue #924: exhaustion warnings are sampled per failure pattern so a
+      // rate-limit storm cannot flood the log. Counts are kept, not dropped.
+      const { emit, rolled } = horizonRetrySampler.record(horizonRetrySampleKey(event), context);
+      if (rolled) {
+        const summary = formatRepeatSampleSummary(rolled);
+        this.warn(summary.message, summary.context);
+      }
+      if (emit) {
+        this.warn(message, context);
+      }
+    } else if (level === 'info') {
+      this.info(message, context);
+    } else {
+      this.debug(message, context);
     }
   }
 
@@ -265,42 +823,296 @@ function stringifyForLog(value: unknown): string {
   }
 }
 
+/**
+ * Structured Horizon retry event (Issue #697).
+ *
+ * - `scheduled`: a retry will be attempted after `delayMs`.
+ * - `exhausted`: no further retries will be attempted; the request fails.
+ */
+export interface HorizonRetryEvent {
+  phase: 'scheduled' | 'exhausted';
+  /** Zero-based index of the attempt that just failed. */
+  attempt: number;
+  /** Total attempts allowed (maxRetries + 1). */
+  maxAttempts: number;
+  /** HTTP status of the failed attempt; 0 for transport errors. */
+  status: number;
+  /** Wait before the next attempt (0 when exhausted). */
+  delayMs: number;
+  /** True when the wait was clamped by retry_max_delay_ms. */
+  capped: boolean;
+  /** What failed: an HTTP status, a timeout, or a network error. */
+  kind: 'http' | 'timeout' | 'network';
+  /** Which endpoint was used: the primary horizon_url or a fallback. */
+  endpointKind: 'primary' | 'fallback';
+  /** Horizon base URL; reduced to a query-free, redacted base before logging. */
+  horizonUrl: string;
+  /** Account being fetched; redacted to first-4/last-4 before logging. */
+  stellarAddress?: string;
+  /** True when the delay came from a Retry-After header. */
+  retryAfterFromHeader?: boolean;
+  /** Why retries stopped (exhausted phase only). */
+  reason?: 'max_retries' | 'wait_budget';
+}
+
+export type HorizonRetryLogLevel = 'debug' | 'info' | 'warning';
+
+/**
+ * Fixed field names emitted with every Horizon retry log line. Documented in
+ * docs/TROUBLESHOOTING.md — keep both in sync.
+ */
+export const HORIZON_RETRY_LOG_FIELDS = [
+  'event',
+  'phase',
+  'endpointKind',
+  'horizonUrl',
+  'stellarAddress',
+  'attempt',
+  'maxAttempts',
+  'nextAttempt',
+  'status',
+  'kind',
+  'delayMs',
+  'capped',
+  'retryAfterFromHeader',
+  'reasonCode',
+] as const;
+
+/** reason_code-style tag for a Horizon retry event. */
+export const HORIZON_RETRY_REASON_CODES = {
+  scheduled: 'HORIZON_RETRY_SCHEDULED',
+  max_retries: 'HORIZON_RETRIES_EXHAUSTED',
+  wait_budget: 'HORIZON_WAIT_BUDGET_EXHAUSTED',
+} as const;
+
+/**
+ * Choose the log level for a retry event: scheduled retries are debug noise,
+ * final exhaustion is a warning.
+ */
+export function horizonRetryLogLevel(event: HorizonRetryEvent): HorizonRetryLogLevel {
+  return event.phase === 'exhausted' ? 'warning' : 'debug';
+}
+
+/**
+ * Reduce a Horizon URL to its redacted base: credentials, query string and
+ * fragment are dropped so failover logs can say which host was used without
+ * leaking query params, and any account path segment is masked.
+ */
+export function redactHorizonBaseUrl(url: string): string {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    const hadPath = parsed.pathname !== '/';
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    const base = redactHorizonUrl(parsed.toString().replace(/\/$/, ''));
+    // URL normalisation re-adds a trailing slash for a bare origin; strip it
+    // so the base URL stays canonical (no trailing slash unless a path exists).
+    return !hadPath && base.endsWith('/') ? base.slice(0, -1) : base;
+  } catch {
+    return redactHorizonUrl(url.split(/[?#]/)[0]);
+  }
+}
+
+function horizonRetryReasonCode(event: HorizonRetryEvent): string {
+  if (event.phase === 'scheduled') return HORIZON_RETRY_REASON_CODES.scheduled;
+  return HORIZON_RETRY_REASON_CODES[event.reason ?? 'max_retries'];
+}
+
+/**
+ * Build the fixed-schema, redacted log context for a retry event. Only the
+ * keys in {@link HORIZON_RETRY_LOG_FIELDS} are emitted, so no response body
+ * or extra field can reach the log line.
+ */
+export function buildHorizonRetryLogContext(event: HorizonRetryEvent): LogContext {
+  const context: LogContext = {
+    component: 'horizon',
+    event: 'horizon_retry',
+    phase: event.phase,
+    endpointKind: event.endpointKind,
+    horizonUrl: redactHorizonBaseUrl(event.horizonUrl),
+    stellarAddress: event.stellarAddress,
+    attempt: event.attempt,
+    maxAttempts: event.maxAttempts,
+    nextAttempt: event.phase === 'scheduled' ? event.attempt + 1 : null,
+    status: event.status,
+    kind: event.kind,
+    delayMs: event.phase === 'scheduled' ? Math.max(0, Math.round(event.delayMs)) : 0,
+    capped: event.capped,
+    retryAfterFromHeader: event.retryAfterFromHeader ?? false,
+    reasonCode: horizonRetryReasonCode(event),
+  };
+  return redactContext(context) as LogContext;
+}
+
+/**
+ * Human-readable summary line for a retry event. Contains no URL or address;
+ * those live (redacted) in the structured context.
+ */
+export function formatHorizonRetryMessage(event: HorizonRetryEvent): string {
+  if (event.phase === 'scheduled') {
+    return event.kind === 'http' ? 'Horizon retry scheduled' : 'Horizon transport retry scheduled';
+  }
+  const what = event.kind === 'http' ? `HTTP ${event.status}` : event.kind;
+  const reasonCode = horizonRetryReasonCode(event);
+  return `Horizon retries exhausted (${reasonCode}): ${what} on ${event.endpointKind} endpoint after ${event.attempt + 1}/${event.maxAttempts} attempt(s)`;
+}
+
 export const logger = new StructuredLogger();
 
 /**
- * Create a timing helper for performance measurement.
+ * Emit a summary for every Horizon retry window that still has suppressed
+ * warnings (Issue #924). Call once when the run ends so the final window is
+ * not lost. Safe to call when nothing was suppressed.
  */
-export class Timer {
-  private startTime: number;
-  private name: string;
-
-  constructor(name: string) {
-    this.name = name;
-    this.startTime = Date.now();
+export function flushHorizonRetrySamples(): number {
+  const summaries = horizonRetrySampler.flush();
+  for (const summary of summaries) {
+    const formatted = formatRepeatSampleSummary(summary);
+    logger.warn(formatted.message, formatted.context);
   }
+  return summaries.length;
+}
 
-  /**
-   * Get elapsed time since timer creation.
-   */
-  elapsed(): number {
-    return Date.now() - this.startTime;
+/**
+ * Logs an informational message. Context values are redacted before output.
+ */
+export function log(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.info(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.info(safeMessage);
   }
+}
 
-  /**
-   * Log the elapsed time and reset the timer.
-   */
-  logAndReset(): number {
-    const elapsed = this.elapsed();
-    logger.logMetric(this.name, elapsed, 'ms');
-    this.startTime = Date.now();
-    return elapsed;
+/**
+ * Logs a debug message. Only emitted when the `debug` input is enabled, but
+ * the redaction pass runs unconditionally so enabling debug can never leak a
+ * raw address or token into public Actions logs.
+ */
+export function debug(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.debug(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.debug(safeMessage);
   }
+}
 
-  /**
-   * Return a formatted elapsed time string.
-   */
-  toString(): string {
-    const elapsed = this.elapsed();
-    return `${elapsed}ms`;
+/**
+ * Logs a warning message. Context values are redacted before output.
+ */
+export function warning(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.warning(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.warning(safeMessage);
   }
+}
+
+/**
+ * Logs an error message. Context values are redacted before output.
+ */
+export function error(message: string, context?: LogContext): void {
+  const safeMessage = redactString(message);
+  if (context && Object.keys(context).length > 0) {
+    core.error(`${safeMessage} ${JSON.stringify(redactContext(context))}`);
+  } else {
+    core.error(safeMessage);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Action inputs structured log record (log_inputs, Issue #771)
+// ---------------------------------------------------------------------------
+
+/**
+ * Represents the full set of resolved action inputs that may be logged
+ * as a structured JSON artifact when `log_inputs` is enabled.
+ *
+ * Every field that could carry a Stellar address or sensitive URL is typed
+ * as `string` so the redaction helpers can process it uniformly before the
+ * record reaches any log output.
+ */
+export interface ActionInputsLogRecord {
+  horizonUrl: string;
+  horizonUrlFallback: string;
+  rpcFallbackUrl: string;
+  assetCode: string;
+  assetIssuer: string;
+  minXlmReserve: string;
+  /** Optional minimum trustline limit (Issue #140). */
+  minTrustlineLimit?: string;
+  stellarAddress: string;
+  failOnMissing: boolean;
+  debugMode: boolean;
+  horizonTimeoutMs: number;
+  stickyComment: boolean;
+  waitUntilFunded: boolean;
+  waitUntilFundedTimeoutMs: number;
+  waitUntilFundedIntervalMs: number;
+  horizonCacheTtlMs: number;
+  useCache: boolean;
+  horizonMaxRequests: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs: number;
+  logInputs: boolean;
+  allowCrossNetworkFallback?: boolean;
+}
+
+/**
+ * Build a redacted copy of the resolved action inputs suitable for writing
+ * to structured log output.  All Stellar addresses and Horizon/RPC URLs are
+ * masked before the record is returned; no value is emitted verbatim.
+ *
+ * The returned object is plain JSON-serialisable — every value is a
+ * primitive (string, number, boolean) so `JSON.stringify` produces a
+ * deterministic, machine-readable artifact.
+ */
+export function buildInputsLogRecord(inputs: ActionInputsLogRecord): ActionInputsLogRecord {
+  return {
+    horizonUrl: redactHorizonUrl(inputs.horizonUrl),
+    horizonUrlFallback: inputs.horizonUrlFallback ? redactHorizonUrl(inputs.horizonUrlFallback) : '',
+    rpcFallbackUrl: inputs.rpcFallbackUrl ? redactString(inputs.rpcFallbackUrl) : '',
+    assetCode: inputs.assetCode,
+    assetIssuer: redactStellarAddress(inputs.assetIssuer) || redactString(inputs.assetIssuer),
+    minXlmReserve: inputs.minXlmReserve,
+    minTrustlineLimit: inputs.minTrustlineLimit ?? '',
+    stellarAddress: redactStellarAddress(inputs.stellarAddress),
+    failOnMissing: inputs.failOnMissing,
+    debugMode: inputs.debugMode,
+    horizonTimeoutMs: inputs.horizonTimeoutMs,
+    stickyComment: inputs.stickyComment,
+    waitUntilFunded: inputs.waitUntilFunded,
+    waitUntilFundedTimeoutMs: inputs.waitUntilFundedTimeoutMs,
+    waitUntilFundedIntervalMs: inputs.waitUntilFundedIntervalMs,
+    horizonCacheTtlMs: inputs.horizonCacheTtlMs,
+    useCache: inputs.useCache,
+    horizonMaxRequests: inputs.horizonMaxRequests,
+    maxRetries: inputs.maxRetries ?? 3,
+    retryBaseDelayMs: inputs.retryBaseDelayMs ?? 1000,
+    retryMaxDelayMs: inputs.retryMaxDelayMs ?? 30000,
+    logInputs: inputs.logInputs,
+    allowCrossNetworkFallback: inputs.allowCrossNetworkFallback ?? false,
+  };
+}
+
+/**
+ * Emit a structured JSON log record of all resolved action inputs to GitHub
+ * Actions log output.  The record is built via `buildInputsLogRecord` so
+ * every address/URL field is already redacted before it is written.
+ *
+ * The record is emitted with `core.info` so it is always visible (not gated
+ * on debug mode) whenever the caller opts in via `log_inputs: true`.
+ *
+ * @param inputs  The raw resolved inputs from `src/index.ts`.
+ */
+export function emitInputsLogRecord(inputs: ActionInputsLogRecord): void {
+  const redacted = buildInputsLogRecord(inputs);
+  core.info(`[TrustBridge] action inputs: ${JSON.stringify(redacted)}`);
 }

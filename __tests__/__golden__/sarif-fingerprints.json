@@ -1,0 +1,136 @@
+{
+  "issue": 893,
+  "key": "trustbridge/v1",
+  "algorithm": "sha256(ruleId + NUL + checkLabel + NUL + assetCode + NUL + reasonCode) -> lowercase hex, first 32 chars",
+  "fingerprints": [
+    {
+      "name": "tb002-trustline-missing",
+      "inputs": {
+        "ruleId": "TB002",
+        "checkLabel": "USDC trustline",
+        "assetCode": "USDC",
+        "reasonCode": "TRUSTLINE_MISSING"
+      },
+      "fingerprint": "8501d6ec1dc1df7759ac42dbd964a162"
+    },
+    {
+      "name": "tb002-trustline-missing-renamed",
+      "inputs": {
+        "ruleId": "TB002",
+        "checkLabel": "USDC trustline",
+        "assetCode": "USDC",
+        "reasonCode": "TRUSTLINE_MISSING_RENAMED"
+      },
+      "fingerprint": "197a0ed07dfe63480d8d19ebb1098dca"
+    },
+    {
+      "name": "tb003-reserve-too-low",
+      "inputs": {
+        "ruleId": "TB003",
+        "checkLabel": "XLM reserve",
+        "assetCode": "USDC",
+        "reasonCode": "RESERVE_TOO_LOW"
+      },
+      "fingerprint": "a4f16a9ff03639eeba79eb811aaec668"
+    },
+    {
+      "name": "tb007-milestone-gate",
+      "inputs": {
+        "ruleId": "TB007",
+        "checkLabel": "Milestone gate",
+        "assetCode": "USDC",
+        "reasonCode": "MILESTONE_GATE_SKIPPED"
+      },
+      "fingerprint": "becea4923379572ef3243dca82cbc06b"
+    },
+    {
+      "name": "tb008-clawback-advisory",
+      "inputs": {
+        "ruleId": "TB008",
+        "checkLabel": "USDC clawback advisory",
+        "assetCode": "USDC",
+        "reasonCode": "SUCCESS"
+      },
+      "fingerprint": "8a7d71efece22e9c6eccefd85f5658db"
+    },
+    {
+      "name": "tb000-extra-trustline",
+      "inputs": {
+        "ruleId": "TB000",
+        "checkLabel": "extra trustline",
+        "assetCode": "USDC",
+        "reasonCode": "FAILED"
+      },
+      "fingerprint": "18d07df650b77647697dd563499a3d33"
+    },
+    {
+      "name": "tb002-eurc-trustline",
+      "inputs": {
+        "ruleId": "TB002",
+        "checkLabel": "EURC trustline",
+        "assetCode": "EURC",
+        "reasonCode": "TRUSTLINE_MISSING"
+      },
+      "fingerprint": "1cb257fd43bf6eb2188e5f806272ce35"
+    },
+    {
+      "name": "empty-inputs",
+      "inputs": {
+        "ruleId": "",
+        "checkLabel": "",
+        "assetCode": "",
+        "reasonCode": ""
+      },
+      "fingerprint": "709e80c88487a2411e1ee4dfb9f22a86"
+    },
+    {
+      "name": "whitespace-label",
+      "inputs": {
+        "ruleId": "TB002",
+        "checkLabel": "  ",
+        "assetCode": "USDC",
+        "reasonCode": "TRUSTLINE_MISSING"
+      },
+      "fingerprint": "f6c19aee40f2e81784a2c5d4fd6fa9f4"
+    },
+    {
+      "name": "tb001-account-funded",
+      "inputs": {
+        "ruleId": "TB001",
+        "checkLabel": "Account funded",
+        "assetCode": "USDC",
+        "reasonCode": "TRUSTLINE_MISSING"
+      },
+      "fingerprint": "de2cdb42c82fd18159a47732fb0ccedc"
+    },
+    {
+      "name": "tb003-xlm-reserve",
+      "inputs": {
+        "ruleId": "TB003",
+        "checkLabel": "XLM reserve",
+        "assetCode": "USDC",
+        "reasonCode": "TRUSTLINE_MISSING"
+      },
+      "fingerprint": "40a0f78caadec579f28978ad17023d2f"
+    }
+  ],
+  "document": {
+    "name": "trustline-missing-run",
+    "assetCode": "USDC",
+    "reasonCode": "TRUSTLINE_MISSING",
+    "results": [
+      {
+        "checkLabel": "Account funded",
+        "fingerprint": "de2cdb42c82fd18159a47732fb0ccedc"
+      },
+      {
+        "checkLabel": "USDC trustline",
+        "fingerprint": "8501d6ec1dc1df7759ac42dbd964a162"
+      },
+      {
+        "checkLabel": "XLM reserve",
+        "fingerprint": "40a0f78caadec579f28978ad17023d2f"
+      }
+    ]
+  }
+}

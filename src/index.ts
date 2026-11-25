@@ -1,24 +1,547 @@
 import * as core from '@actions/core';
+import * as github from '@actions/github';
+import {
+  evaluateRequiredLabels,
+  parseRequiredLabels,
+  REASON_CODE_REQUIRED_LABELS_MISSING,
+} from './preflight';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CheckConfig,
+  HomeDomainCheckMode,
   horizonFailureResult,
   parseMinXlmReserve,
   runAccountChecks,
+  runMultiAssetChecks,
   unfundedAccountResult,
   validateStellarAddress,
+  rateBudgetExhaustedResult,
+  ValidationResult,
 } from './checks';
-import { fetchAccount, HorizonError, waitForFundedAccount } from './horizon';
-import { formatCommentBody, postIssueComment } from './comment';
-import { normalizeAssetConfig } from './assets';
-import { getErrorMessage, parseBooleanInput, parseNumberInput } from './inputs';
-import { formatFailureSummary } from './summary';
-import { setValidationOutputs } from './outputs';
-import { logger } from './logger';
-import { globalMetrics } from './metrics';
-import { validateContractAddress } from './validation';
+import {
+  callFriendbot,
+  fetchAccount,
+  fetchHomeDomainIssuerAccount,
+  getAssetBalance,
+  HorizonError,
+  isTestnetHorizon,
+  waitForFundedAccount,
+  applyWalletLabels,
+  applyReadyLabels,
+} from './horizon';
+import { formatCommentBody, postIssueComment, upsertIssueComment, writeFullReport, COMMENT_SIZE_LIMIT_BYTES } from './comment';
+import { normalizeAssetConfig, parseAssetsJson, dedupeAssets } from './assets';
+import {
+  parseBatchAddresses,
+  runBatchValidation,
+  buildBatchSummary,
+  formatBatchSummaryMarkdown,
+  BatchSummary,
+} from './batch';
+import { createCheckRun, determineCheckConclusion } from './checks-run';
+import { getOctokitProxyOptions } from './proxy';
+import { updateProjectV2Status } from './projects';
+import {
+  getErrorMessage,
+  getRunnerLanguage,
+  parseBooleanInput,
+  parseNumberInput,
+  resolveReadyLabelInputs,
+  resolveTraceSamplingRatio,
+  listDeprecatedInputAliases,
+  detectInputConflicts,
+  INPUT_CONFLICT_MATRIX,
+  parseBatchMaxAddressesInput,
+  parseNetworkInput,
+  parseHomeDomainCheckModeInput,
+} from './inputs';
+import { negotiateLocale } from './i18n';
+import { configureTraceSampling } from './tracing';
+import { capSnoozeWindow } from './snooze';
+import { inferStellarNetworkPreset } from './links';
+import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
+import { logger, emitInputsLogRecord } from './logger';
+import {
+  describeLinkRejection,
+  explainLinkRejection,
+  LinkAllowlistError,
+  LinkHostPolicy,
+  parseIdnHostAllowlist,
+} from './links';
+import {
+  writeDiagnosticsZip,
+  parseDiagnosticsZipMaxBytes,
+  DIAGNOSTICS_ZIP_REASONS,
+  DiagnosticsInputSnapshot,
+} from './diagnostics';
 
-async function run(): Promise<void> {
+import {
+  setValidationOutputs,
+  validateActionOutput,
+  AssetTrustlineStatus,
+  truncateJsonArray,
+  resolveOutputTransport,
+  toBooleanOutput,
+} from './outputs';
+import { logger, emitInputsLogRecord, flushHorizonRetrySamples, logInfo, logWarning } from './logger';
+import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
+import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
+import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
+import { validateContractAddress, clearSpans, getSpans } from './validation';
+import { readTrustbridgeConfig } from './configReader';
+import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
+import { runStellarTomlCheck, DEFAULT_STELLAR_TOML_CACHE_TTL_MS, MAX_STELLAR_TOML_CACHE_TTL_MS } from './toml';
+
+export type PostingMode = 'post' | 'dry-run' | 'off';
+export const VALID_POSTING_MODES: PostingMode[] = ['post', 'dry-run', 'off'];
+export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
+const VALID_COMMENT_THREADING_MODES: CommentThreadingMode[] = ['sticky', 'new', 'reply'];
+
+/** Emit legacy input migration guidance once for the current action run. */
+export function emitDeprecatedInputWarnings(): void {
+  const aliases = listDeprecatedInputAliases({
+    maintainerAlias: core.getInput('skip_if_maintainer'),
+    readyPassAlias: core.getInput('ready_pass_label'),
+    readyLabelPassAlias: core.getInput('ready_label_pass'),
+    readyFailAlias: core.getInput('ready_fail_label'),
+    readyLabelFailAlias: core.getInput('ready_label_fail'),
+  });
+  if (aliases.length === 0) return;
+
+  core.warning(
+    `[TrustBridge] Deprecated input alias${aliases.length === 1 ? '' : 'es'} detected: ${aliases.join(', ')}. ` +
+      'Use the canonical input names; aliases remain supported for this major version but may be removed in a future release.',
+  );
+}
+
+export function resolveCommentModes(
+  postingModeInput: string,
+  commentModeInput: string,
+): { postingMode: PostingMode; commentThreadingMode?: CommentThreadingMode } {
+  const normalizedPostingMode = postingModeInput.trim().toLowerCase();
+  const normalizedCommentMode = commentModeInput.trim().toLowerCase();
+  const legacyPostingMode = VALID_POSTING_MODES.includes(
+    normalizedCommentMode as PostingMode,
+  )
+    ? (normalizedCommentMode as PostingMode)
+    : undefined;
+  const postingModeRaw =
+    normalizedPostingMode || legacyPostingMode || 'post';
+
+  if (!VALID_POSTING_MODES.includes(postingModeRaw as PostingMode)) {
+    throw new Error(
+      `Invalid posting_mode "${postingModeRaw}". Expected one of: ${VALID_POSTING_MODES.join(', ')}.`,
+    );
+  }
+
+  const commentThreadingMode = VALID_COMMENT_THREADING_MODES.includes(
+    normalizedCommentMode as CommentThreadingMode,
+  )
+    ? (normalizedCommentMode as CommentThreadingMode)
+    : undefined;
+
+  return {
+    postingMode: postingModeRaw as PostingMode,
+    commentThreadingMode,
+  };
+}
+
+/**
+ * Options for `handleAutoUnassign` (Issue #228).
+ */
+export interface AutoUnassignOptions {
+  octokit: {
+    rest: {
+      issues: {
+        removeAssignees: (params: {
+          owner: string;
+          repo: string;
+          issue_number: number;
+          assignees: string[];
+        }) => Promise<unknown>;
+      };
+    };
+  };
+  owner: string;
+  repo: string;
+  issueNumber?: number;
+  payload: unknown;
+  result: ValidationResult;
+  unassignOnNotReady: boolean;
+}
+
+/**
+ * Automatically unassigns the assignee(s) from the GitHub issue when
+ * readiness checks fail (ready is false) and the policy input is enabled.
+ *
+ * Safe guards:
+ * - Default off (requires opt-in via unassign_on_not_ready: true).
+ * - Only runs when ready is false (result.valid === false).
+ * - Never unassigns on transient Horizon infrastructure/connectivity errors
+ *   (HORIZON_ERROR, HORIZON_TIMEOUT, TLS_ERROR).
+ * - Filters out bot assignees (e.g. app/bot accounts).
+ * - Non-fatal: permission errors or GitHub API failures are logged as warnings.
+ * - Safely skips when there is no issue context (e.g. workflow_dispatch).
+ */
+export async function handleAutoUnassign(
+  options: AutoUnassignOptions,
+): Promise<string[] | undefined> {
+  if (!options.unassignOnNotReady) {
+    return undefined;
+  }
+
+  if (options.result.valid) {
+    logger.debug(
+      "Skipping auto-unassign: readiness checks passed (valid is true)",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  // Horizon outage guard: do not unassign contributors when failure is due to Horizon network/connectivity outage
+  if (
+    options.result.reasonCode === 'HORIZON_ERROR' ||
+    options.result.reasonCode === 'HORIZON_TIMEOUT' ||
+    options.result.reasonCode === 'TLS_ERROR' ||
+    options.result.reasonCode === 'RATE_BUDGET_EXHAUSTED'
+  ) {
+    core.info(
+      "Skipping auto-unassign on not-ready: failure was caused by Horizon connectivity/outage rather than an invalid account.",
+    );
+    return undefined;
+  }
+
+  const payload = options.payload as
+    | {
+        assignee?: { login?: string; type?: string };
+        issue?: {
+          number?: number;
+          assignees?: Array<{ login?: string; type?: string }>;
+        };
+      }
+    | null
+    | undefined;
+
+  const issueNumber = options.issueNumber ?? payload?.issue?.number;
+  if (!issueNumber) {
+    logger.debug(
+      "Skipping auto-unassign: no issue context found (e.g. workflow_dispatch without issue)",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  const isBot = (login?: string, type?: string): boolean => {
+    if (!login) return false;
+    return type === "Bot" || login.endsWith("[bot]");
+  };
+
+  const targetAssignees: string[] = [];
+
+  // Case 1: Specific assignee from issues.assigned event
+  const eventAssignee = payload?.assignee;
+  if (eventAssignee?.login && !isBot(eventAssignee.login, eventAssignee.type)) {
+    targetAssignees.push(eventAssignee.login);
+  } else if (Array.isArray(payload?.issue?.assignees)) {
+    // Case 2: All non-bot assignees on the issue
+    for (const assignee of payload.issue.assignees) {
+      if (assignee?.login && !isBot(assignee.login, assignee.type)) {
+        if (!targetAssignees.includes(assignee.login)) {
+          targetAssignees.push(assignee.login);
+        }
+      }
+    }
+  }
+
+  if (targetAssignees.length === 0) {
+    logger.debug(
+      "Skipping auto-unassign: no eligible human assignees found on issue",
+      {
+        component: "index",
+      },
+    );
+    return undefined;
+  }
+
+  try {
+    await options.octokit.rest.issues.removeAssignees({
+      owner: options.owner,
+      repo: options.repo,
+      issue_number: issueNumber,
+      assignees: targetAssignees,
+    });
+    core.info(
+      `Auto-unassigned ${targetAssignees.join(", ")} from issue #${issueNumber} because readiness checks failed.`,
+    );
+    return targetAssignees;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `Failed to unassign ${targetAssignees.join(", ")} from issue #${issueNumber} (non-fatal): ${msg}`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the ready-state label pair, honouring the deprecated aliases that
+ * action.yml still declares. See `resolveReadyLabelInputs` for the precedence
+ * rules and the whitespace-only-as-unset rationale. (Issue #669)
+ */
+function resolveConfiguredReadyLabels(): {
+  passLabel: string;
+  failLabel: string;
+} {
+  const resolved = resolveReadyLabelInputs({
+    passLabel: core.getInput("pass_label"),
+    readyPassLabel: core.getInput("ready_pass_label"),
+    readyLabelPass: core.getInput("ready_label_pass"),
+    failLabel: core.getInput("fail_label"),
+    readyFailLabel: core.getInput("ready_fail_label"),
+    readyLabelFail: core.getInput("ready_label_fail"),
+  });
+
+  if (resolved.usedDeprecatedAlias) {
+    logger.warn(
+      "Using a deprecated ready-label input alias. Migrate to pass_label/fail_label; " +
+        "the aliases (ready_pass_label, ready_label_pass, ready_fail_label, " +
+        "ready_label_fail) are retained for backward compatibility and may be removed.",
+    );
+  }
+
+  return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
+}
+
+/**
+ * Result of evaluating the milestone gate (Issue #230).
+ */
+export interface MilestoneGateDecision {
+  /** True when the issue/PR should be skipped because of the milestone gate. */
+  shouldSkip: boolean;
+  /** Human-readable reason for the skip (empty when shouldSkip is false). */
+  reason: string;
+  /** Full message including the "Skipping validation." suffix. */
+  fullMessage: string;
+  /** The raw milestone title from the event payload (empty if none). */
+  milestoneTitle: string;
+}
+
+/**
+ * Evaluate the milestone gate for the given event payload.
+ *
+ * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
+ * is checked against the allowlist. If the milestone is missing or not in the
+ * list, the result indicates the step should be skipped (with the reason).
+ *
+ * This function is side-effect-free so it can be unit-tested without mocking
+ * `@actions/core`.
+ */
+export function evaluateMilestoneGate(
+  milestoneAllowlistRaw: string,
+  _milestoneFailOnSkip: boolean,
+  payload: Record<string, unknown>,
+): MilestoneGateDecision {
+  const empty: MilestoneGateDecision = {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: '',
+  };
+
+  const raw = milestoneAllowlistRaw.trim();
+  if (!raw) {
+    return empty;
+  }
+
+  const allowedMilestones = raw
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowedMilestones.length === 0) {
+    return empty;
+  }
+
+  const p = payload as Record<string, unknown>;
+  const isIssueContext = p.issue !== undefined;
+  const isPullRequest = p.pull_request !== undefined;
+
+  let currentMilestoneRaw = '';
+  if (isIssueContext) {
+    const issue = p.issue as { milestone?: { title?: unknown } | null } | undefined;
+    // Numeric org-level milestone titles coerce via String(); nullish stays ''.
+    currentMilestoneRaw = String(issue?.milestone?.title ?? '');
+  } else if (isPullRequest) {
+    const pr = p.pull_request as { milestone?: { title?: unknown } | null } | undefined;
+    currentMilestoneRaw = String(pr?.milestone?.title ?? '');
+  }
+  const currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+
+  let skipReason = '';
+  if (!currentMilestone) {
+    skipReason =
+      'Milestone gate: No milestone found on this event, but milestone_allowlist is active.';
+  } else if (!allowedMilestones.includes(currentMilestone)) {
+    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+  }
+
+  if (skipReason) {
+    return {
+      shouldSkip: true,
+      reason: skipReason,
+      fullMessage: `${skipReason} Skipping validation.`,
+      milestoneTitle: currentMilestoneRaw,
+    };
+  }
+
+  return {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: currentMilestoneRaw,
+  };
+}
+
+export async function run(): Promise<void> {
+  const jobController = new AbortController();
+  // Issue #967 — configure sampling before any instrumented work. Empty input
+  // means full sampling outside PRs and no sampling on pull_request runs;
+  // explicit ratios must be in [0, 1] or the run fails closed.
+  configureTraceSampling(
+    resolveTraceSamplingRatio(
+      core.getInput('trace_sampling_ratio'),
+      github.context.eventName,
+    ),
+  );
+  emitDeprecatedInputWarnings();
+  // Issue #899: each run records exactly one job outcome.
+  globalMetrics.resetJobOutcome();
+
+  // Issue #951: fail early on mutually exclusive inputs, before any network work.
+  const conflictInputNames = [...new Set(INPUT_CONFLICT_MATRIX.flatMap((rule) => [...rule.inputs]))];
+  const inputConflicts = detectInputConflicts(
+    Object.fromEntries(conflictInputNames.map((name) => [name, core.getInput(name)])),
+  );
+  if (inputConflicts.length > 0) {
+    for (const conflict of inputConflicts) core.error(conflict.message);
+    core.setFailed(
+      `Conflicting inputs detected (${inputConflicts.length}). ` +
+        'See docs/INPUT_VALIDATION.md#mutually-exclusive-inputs.',
+    );
+    return;
+  }
+
+  // Issue #904: one correlation id per run, attached to every structured log
+  // line (and the comment footer when debug_mode is on).
+  const correlation = initCorrelationId();
+  globalMetrics.setCorrelationId(correlation.correlationId);
+  if (correlation.rejectedReason) {
+    logWarning(
+      `Ignoring ${CORRELATION_ID_ENV}: ${correlation.rejectedReason}. Generated a new correlation id instead.`,
+      { component: 'diagnostics', reason_code: CORRELATION_ID_INVALID_REASON_CODE, check: 'correlation_id' },
+    );
+  }
+  logInfo(`TrustBridge correlation id: ${correlation.correlationId} (source=${correlation.source})`, {
+    component: 'diagnostics',
+    reason_code: 'CORRELATION_ID',
+    check: 'correlation_id',
+  });
+  try {
+    process.on('SIGINT', () => jobController.abort());
+    process.on('SIGTERM', () => jobController.abort());
+  } catch {
+    // Runner without signal handlers (e.g. non-Node test harness) — continue without them.
+  }
+
+  // Milestone gating (Issue #230): skip the run before any Horizon traffic
+  // when the event milestone is not allowlisted.
+  const milestoneAllowlistRaw = core.getInput('milestone_allowlist') || '';
+  const milestoneFailOnSkip = parseBooleanInput(
+    core.getInput('milestone_fail_on_skip'),
+    false,
+  );
+
+  const milestoneDecision = evaluateMilestoneGate(
+    milestoneAllowlistRaw,
+    milestoneFailOnSkip,
+    github.context.payload as Record<string, unknown>,
+  );
+
+  if (milestoneDecision.shouldSkip) {
+    const fullMessage = milestoneDecision.fullMessage;
+    if (milestoneFailOnSkip) {
+      core.setFailed(fullMessage);
+    } else {
+      core.info(fullMessage);
+    }
+
+    core.setOutput('ready', 'false');
+    core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+    // Issue #969 — even early-return paths publish schema-valid JSON.
+    validateActionOutput('checks_json', '[]');
+    core.setOutput('checks_json', '[]');
+
+    // Issue #899: a gate skip is its own outcome, never pass or fail.
+    globalMetrics.recordJobOutcome('skipped');
+    await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
+
+    return;
+  }
+
+  // Issue #955: required-label gate. Runs after the milestone gate and before
+  // any Horizon traffic, so a skip leaves no partial state.
+  const requiredLabelsFailOnSkip = parseBooleanInput(
+    core.getInput('required_labels_fail_on_skip'),
+    false,
+  );
+  let requiredLabels: string[];
+  try {
+    requiredLabels = parseRequiredLabels(core.getInput('required_labels'));
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.setFailed(msg);
+    return;
+  }
+  const labelDecision = evaluateRequiredLabels(
+    requiredLabels,
+    github.context.payload as Record<string, unknown>,
+  );
+  if (labelDecision.shouldSkip) {
+    if (requiredLabelsFailOnSkip) {
+      core.setFailed(labelDecision.message);
+    } else {
+      core.info(labelDecision.message);
+    }
+    core.setOutput('ready', 'false');
+    core.setOutput('reason_code', REASON_CODE_REQUIRED_LABELS_MISSING);
+    core.setOutput('checks_json', '[]');
+    globalMetrics.recordJobOutcome('skipped');
+    await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
+    return;
+  }
+
+  // Issue #901: reject unknown enum values (network, enforcement modes)
+  // before any Horizon traffic so a workflow typo fails fast with the list
+  // of allowed values. See docs/INPUT_VALIDATION.md.
+  parseNetworkInput(core.getInput('network'));
+  const homeDomainCheckMode: HomeDomainCheckMode = parseHomeDomainCheckModeInput(
+    core.getInput('home_domain_check_mode'),
+  );
+
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
+  // Issue #974 — optional explicit locale wins, then the Actions runner
+  // language, then English. An empty default lets the runner language be
+  // used when a workflow does not set `locale` explicitly.
+  const locale = negotiateLocale({
+    explicitLocale: core.getInput('locale'),
+    runnerLanguage: getRunnerLanguage(),
+  });
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
     core.getInput('asset_issuer') ||
@@ -45,6 +568,7 @@ async function run(): Promise<void> {
   );
   const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
   const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+  const allowCrossNetworkFallback = parseBooleanInput(core.getInput('allow_cross_network_fallback'), false);
   const fallbackUrls = rpcFallbackUrlRaw
     ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
     : horizonUrlFallback
@@ -54,8 +578,185 @@ async function run(): Promise<void> {
     min: 0,
     max: 3_600_000,
   });
+  const horizonMaxRequests = parseNumberInput(core.getInput('horizon_max_requests'), 0, {
+    min: 0,
+  });
+  // Retry / Retry-After caps (Issue #705). Every sleep is min(Retry-After or
+  // backoff, retry_max_delay_ms); the cumulative sleep per endpoint is bounded
+  // by retry_max_total_wait_ms. See docs/ERROR_HANDLING.md.
+  const maxRetries = parseNumberInput(core.getInput('max_retries'), 3, { min: 0, max: 10 });
+  const retryBaseDelayMs = parseNumberInput(core.getInput('retry_base_delay_ms'), 1000, {
+    min: 0,
+    max: 60000,
+  });
+  const retryMaxDelayMs = parseNumberInput(core.getInput('retry_max_delay_ms'), 30000, {
+    min: 0,
+    max: 300000,
+  });
+  const retryMaxTotalWaitMs = parseNumberInput(core.getInput('retry_max_total_wait_ms'), 120000, {
+    min: 0,
+    max: 600000,
+  });
+
+  // SEP-0001 optional stellar.toml fetch (Issue #709).
+  const stellarTomlFetchEnabled = parseBooleanInput(core.getInput('stellar_toml_fetch_enabled'), false);
+  const stellarTomlCacheTtlMs = parseNumberInput(
+    core.getInput('stellar_toml_cache_ttl_ms'),
+    DEFAULT_STELLAR_TOML_CACHE_TTL_MS,
+    { min: 0, max: MAX_STELLAR_TOML_CACHE_TTL_MS },
+  );
+  const stellarTomlHashPin = (core.getInput('stellar_toml_hash_pin') || '').trim();
+
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
+  const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
+  const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+
+  // Friendbot testnet onboarding (Issue #4 / #699). See docs/USAGE.md#friendbot-testnet-funding.
+  const useFriendbot = parseBooleanInput(core.getInput('use_friendbot'), false);
+  const friendbotUrl = core.getInput('friendbot_url') || 'https://friendbot.stellar.org';
+  const friendbotTimeoutMs = parseNumberInput(core.getInput('friendbot_timeout_ms'), 15000, {
+    min: 1000,
+    max: 60000,
+  });
+  let friendbotCalled = false;
+  let friendbotSuccess = false;
+  let friendbotTransactionHash = '';
+
+  // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
+  const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
+  const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
+  const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
+  // Optional redacted diagnostics bundle for artifact upload (Issue #965).
+  const diagnosticsZipPath = (core.getInput('diagnostics_zip_path') || '').trim();
+  const diagnosticsZipMaxBytesInput = core.getInput('diagnostics_zip_max_bytes') || '';
+  let diagnosticsZipEmitted = false;
+  const emitDiagnosticsZipOnce = (): void => {
+    if (diagnosticsZipEmitted) return;
+    diagnosticsZipEmitted = true;
+    emitDiagnosticsZip(diagnosticsZipPath, diagnosticsZipMaxBytesInput, {
+      horizonUrl,
+      horizonUrlFallback,
+      assetCode,
+      assetIssuer,
+      minXlmReserve: minXlmReserveRaw,
+      horizonTimeoutMs,
+      useCache,
+      cacheTtlMs: horizonCacheTtlMs,
+      allowCrossNetworkFallback: false,
+      debugMode,
+      stellarAddress,
+    });
+  };
+
+  // Link overrides (Issue #963): docs/dashboard bases are rendered as clickable
+  // links in issue comments, so look-alike (non-ASCII / punycode) hosts are
+  // rejected unless the exact host is listed in `idn_host_allowlist`.
+  let idnHostAllowlist: string[] = [];
+  try {
+    idnHostAllowlist = parseIdnHostAllowlist(core.getInput('idn_host_allowlist'));
+  } catch (allowlistError) {
+    if (!(allowlistError instanceof LinkAllowlistError)) throw allowlistError;
+    core.warning(
+      `idn_host_allowlist ignored (${allowlistError.code}): ${allowlistError.message} No look-alike hosts will be allowed.`,
+    );
+  }
+  const linkHostPolicy: LinkHostPolicy = { allowedIdnHosts: idnHostAllowlist };
+  const resolveLinkOverride = (inputName: string): string | undefined => {
+    const value = (core.getInput(inputName) || '').trim();
+    if (!value) return undefined;
+    const reason = explainLinkRejection(value, linkHostPolicy);
+    if (reason) {
+      core.warning(
+        `${inputName} ignored (${reason}): the value ${describeLinkRejection(reason)}. The default link target is used instead.`,
+      );
+      return undefined;
+    }
+    return value;
+  };
+  const docsBaseUrl = resolveLinkOverride('docs_base_url');
+  const sep0010DashboardUrl = resolveLinkOverride('sep0010_dashboard_url');
+
+  // Comment threading + batch inputs.
+  const { postingMode, commentThreadingMode } = resolveCommentModes(
+    core.getInput('posting_mode'),
+    core.getInput('comment_mode'),
+  );
+  const forceComment = parseBooleanInput(core.getInput('force_comment'), false);
+  const snoozeWindowMinutes = parseNumberInput(core.getInput('snooze_window_minutes'), 0, {
+    min: 0,
+    max: 60 * 24 * 30,
+  });
+  // Issue #962 — cap the snooze window; maintainers may raise the cap (never remove it).
+  // Duration is still UTC physical ms (Issue #873 DST invariant) after the cap.
+  const snoozeMaxOverride = parseBooleanInput(core.getInput('snooze_max_override'), false);
+  const snoozeCap = capSnoozeWindow(snoozeWindowMinutes * 60 * 1000, { maintainerOverride: snoozeMaxOverride });
+  if (snoozeCap.capped) {
+    core.warning(
+      `snooze_window_minutes exceeds the maximum snooze window; clamped to ${snoozeCap.windowMs / 60000} minutes (reason_code: ${snoozeCap.reasonCode}).`,
+    );
+  }
+  const snoozeWindowMs = snoozeCap.windowMs;
+  const issueNumberInputRaw = core.getInput('issue_number') || '';
+  const issueNumberInput = issueNumberInputRaw.trim()
+    ? parseNumberInput(issueNumberInputRaw, 0, { min: 1 })
+    : undefined;
+  const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+  const batchMaxAddresses = parseBatchMaxAddressesInput(core.getInput('batch_max_addresses'));
+  // Issue #911: parse and cap the batch list up front so an oversized matrix
+  // throws BatchAddressLimitError before *any* Horizon request (including the
+  // single-address checks below) is made.
+  const batchAddresses = stellarAddressesRaw.trim()
+    ? parseBatchAddresses(stellarAddressesRaw, { maxAddresses: batchMaxAddresses })
+    : [];
+
+  // Check runs, labels, unassign, Projects v2 (Issues #228, #222, #200, #421).
+  const useCheckRuns = parseBooleanInput(core.getInput('use_check_runs'), false);
+  const autoWalletLabels = parseBooleanInput(core.getInput('auto_wallet_labels'), false);
+  const unassignOnNotReady = parseBooleanInput(core.getInput('unassign_on_not_ready'), false);
+  const projectId = core.getInput('project_id') || '';
+  const projectStatusField = core.getInput('project_status_field') || '';
+  const projectStatusPass = core.getInput('project_status_pass') || '';
+  const projectStatusFail = core.getInput('project_status_fail') || '';
+  const projectToken = core.getInput('project_token') || '';
+  const reportOutputPath = core.getInput('report_output_path') || '';
+
+  // Create RateBudgetTracker if horizon_max_requests > 0
+  const rateBudgetTracker = horizonMaxRequests > 0 ? new RateBudgetTracker(horizonMaxRequests) : undefined;
   const githubToken = core.getInput('github_token', { required: true });
+
+  // SEP-0007 wallet deep links (Issue #44)
+  const sep0007DeepLinks = parseBooleanInput(core.getInput('sep0007_deep_links'), false);
+  const sep0007OriginDomain = core.getInput('sep0007_origin_domain') || '';
+
+  // Extra trustlines from assets_json (Issue #536).
+  // Parse up front so a malformed JSON string fails fast before hitting Horizon.
+  const assetsJsonRaw = core.getInput('assets_json') || '';
+  let extraAssets: ReturnType<typeof parseAssetsJson> = [];
+  if (assetsJsonRaw.trim()) {
+    try {
+      extraAssets = dedupeAssets(parseAssetsJson(assetsJsonRaw));
+    } catch (parseErr) {
+      core.setFailed(`assets_json parse error: ${getErrorMessage(parseErr)}`);
+      return;
+    }
+  }
+
+  // Clear validation spans from any prior run in the same process (safety).
+  clearSpans();
+
+  // Load optional consumer .trustbridge.yml config file (Issue #45).
+  // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
+  // validation errors surface via result.validation.errors so we fail fast
+  // with a clear message rather than silently ignoring bad configuration.
+  const consumerConfig = readTrustbridgeConfig(trustbridgeConfigPath, undefined, {
+    strict: core.getInput('trustbridge_config_strict').trim().toLowerCase() === 'true',
+  });
+  if (consumerConfig.found && !consumerConfig.validation.valid) {
+    core.setFailed(
+      `trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`,
+    );
+    return;
+  }
 
   logger.setDebugMode(debugMode);
   logger.debug('Action inputs loaded', {
@@ -74,7 +775,40 @@ async function run(): Promise<void> {
     waitUntilFundedIntervalMs,
     rpcFallbackUrl: rpcFallbackUrlRaw,
     useCache,
+    sep0007DeepLinks,
+    maxRetries,
+    retryBaseDelayMs,
+    retryMaxDelayMs,
+    retryMaxTotalWaitMs,
+    homeDomainCheckEnabled,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPinSet: Boolean(stellarTomlHashPin),
   });
+
+  if (logInputs) {
+    emitInputsLogRecord({
+      horizonUrl,
+      horizonUrlFallback,
+      rpcFallbackUrl: rpcFallbackUrlRaw,
+      assetCode,
+      assetIssuer,
+      minXlmReserve: minXlmReserveRaw,
+      stellarAddress,
+      failOnMissing,
+      debugMode,
+      horizonTimeoutMs,
+      stickyComment,
+      waitUntilFunded,
+      waitUntilFundedTimeoutMs,
+      waitUntilFundedIntervalMs,
+      horizonCacheTtlMs,
+      useCache,
+      horizonMaxRequests,
+      retryMaxDelayMs,
+      logInputs,
+    });
+  }
 
   validateStellarAddress(stellarAddress);
   const minXlmReserve = parseMinXlmReserve(minXlmReserveRaw);
@@ -100,8 +834,14 @@ async function run(): Promise<void> {
 
   const checkConfig: CheckConfig = {
     ...normalizedAsset,
-    minXlmReserve,
+    minXlmReserve: Number(minXlmReserve),
     horizonUrl,
+    homeDomainCheckEnabled,
+    expectedHomeDomain: expectedHomeDomain || undefined,
+    homeDomainCheckMode,
+    stellarTomlFetchEnabled,
+    stellarTomlCacheTtlMs,
+    stellarTomlHashPin: stellarTomlHashPin || undefined,
   };
 
   core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
@@ -114,12 +854,22 @@ async function run(): Promise<void> {
 
   let result;
 
+  // Populated inside the try block when assets_json is provided (Issue #536).
+  let assetsTrustlineStatusExtras: AssetTrustlineStatus[] = [];
+
   const horizonOptions = {
     timeoutMs: horizonTimeoutMs,
     horizonUrlFallback: horizonUrlFallback || undefined,
     fallbackUrls,
+    allowCrossNetworkFallback,
     cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
     useCache,
+    rateBudgetTracker,
+    maxRetries,
+    retryBaseDelayMs,
+    retryMaxDelayMs,
+    retryMaxTotalWaitMs,
+    signal: jobController.signal,
   };
 
   try {
@@ -131,6 +881,7 @@ async function run(): Promise<void> {
             timeoutMs: waitUntilFundedTimeoutMs,
             pollIntervalMs: waitUntilFundedIntervalMs,
             requestTimeoutMs: horizonTimeoutMs,
+            signal: jobController.signal,
             onPoll: (attempt, elapsedMs) =>
               logger.debug(`Account not yet funded — polling again`, {
                 component: 'index',
@@ -141,10 +892,132 @@ async function run(): Promise<void> {
           (hUrl, sAddr, opts) => fetchAccount(hUrl, sAddr, { ...horizonOptions, ...opts }),
         )
       : await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
-    result = runAccountChecks(account, checkConfig);
+    // The home domain lives on the issuer account, not the contributor's.
+    const issuerAccount = homeDomainCheckEnabled
+      ? await fetchHomeDomainIssuerAccount(horizonUrl, normalizedAsset.assetIssuer, horizonOptions)
+      : undefined;
+    result = runAccountChecks(account, checkConfig, issuerAccount);
+
+    // Issue #709 — optional stellar.toml fetch layered on top of the on-chain
+    // home_domain check. When stellar_toml_fetch_enabled is false the
+    // SSRF-guarded HTTP client is never called.
+    if (homeDomainCheckEnabled && stellarTomlFetchEnabled) {
+      const tomlDomain = expectedHomeDomain || result.homeDomainCheck?.actualHomeDomain;
+      const tomlOutcome = await runStellarTomlCheck(tomlDomain, {
+        enabled: stellarTomlFetchEnabled,
+        cacheTtlMs: stellarTomlCacheTtlMs,
+        hashPin: stellarTomlHashPin || undefined,
+        // Issue #960 — pubnet is HTTPS-only; testnet may tolerate http:// (upgraded).
+        network: inferStellarNetworkPreset(horizonUrl),
+        allowInsecureTestnet: parseBooleanInput(core.getInput('stellar_toml_allow_insecure_testnet'), false),
+      });
+      if (tomlOutcome.status !== 'skipped') {
+        // A pinned hash always fails closed; otherwise fetch errors only block
+        // in strict home_domain_check_mode.
+        const blocks =
+          tomlOutcome.status === 'failed' && (Boolean(stellarTomlHashPin) || homeDomainCheckMode === 'strict');
+        result.checks.push({
+          passed: !blocks,
+          label: 'SEP-0001 stellar.toml',
+          detail: tomlOutcome.detail,
+        });
+        result.valid = result.checks.every((c) => c.passed);
+        if (!result.valid && result.reasonCode === 'SUCCESS') {
+          result.reasonCode = 'FAILED';
+        }
+      }
+    }
+
+    // Issue #536 — extra trustlines from assets_json gate the ready output.
+    // runAccountChecks only validates the single primary asset_code/asset_issuer
+    // pair. When assets_json is provided we run a multi-asset trustline check
+    // and append a failing check item for every extra asset whose trustline is
+    // absent. The combined valid flag is then re-derived so `ready` reflects
+    // all required trustlines, not just the primary one.
+    if (extraAssets.length > 0) {
+      const { results: extraResults } = runMultiAssetChecks(account, extraAssets);
+      for (const assetResult of extraResults) {
+        if (!assetResult.trustlineExists) {
+          result.checks.push({
+            passed: false,
+            label: `${assetResult.assetCode} trustline (extra)`,
+            detail: `Extra trustline for **${assetResult.assetCode}** (issuer: \`${assetResult.assetIssuer}\`) is missing — add it before this account can receive the asset.`,
+          });
+        }
+      }
+      // Recompute valid from the full (now-extended) checks array so every
+      // caller that reads result.valid (outputs, comment, fail_on_missing) sees
+      // the correct gated value without needing to know about assets_json.
+      result.valid = result.checks.every((c) => c.passed);
+      if (!result.valid && result.reasonCode === 'SUCCESS') {
+        result.reasonCode = 'EXTRA_TRUSTLINE_MISSING';
+      }
+
+      // Populate the assetsTrustlineStatus extras so the assets_trustline_status
+      // and trustlines_summary outputs are set correctly.
+      assetsTrustlineStatusExtras = extraResults.map((r) => ({
+        assetCode: r.assetCode,
+        assetIssuer: r.assetIssuer,
+        trustlineExists: r.trustlineExists,
+        balance: getAssetBalance(account, r.assetCode, r.assetIssuer),
+      }));
+    }
   } catch (error) {
-    if (error instanceof HorizonError && error.statusCode === 404) {
+    if (error instanceof RateBudgetExhaustedError) {
+      globalMetrics.incrementCounter('rate_budget_exhausted');
+      result = rateBudgetExhaustedResult(error.message, checkConfig);
+    } else if (
+      jobController.signal.aborted ||
+      (error instanceof HorizonError && error.statusCode === 499) ||
+      (error instanceof Error && error.name === 'AbortError') ||
+      (error instanceof Error && error.message.toLowerCase().includes('aborted')) ||
+      (error instanceof Error && error.message.toLowerCase().includes('cancelled'))
+    ) {
+      logger.info('Funding poll stopped due to cancellation');
+      core.info('Funding poll stopped due to cancellation');
+      result = horizonFailureResult('Funding poll cancelled', checkConfig);
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
+      if (useFriendbot && !isTestnetHorizon(horizonUrl)) {
+        // Pubnet guard: never request Friendbot funding against a public
+        // network Horizon, so friendbot_called stays false.
+        core.warning('use_friendbot is enabled but horizon_url is not a test network — Friendbot was not called.');
+      } else if (useFriendbot && !friendbotCalled) {
+        // Guarded so a single run never issues more than one funding request.
+        friendbotCalled = true;
+        logger.info('Account 404 encountered and use_friendbot enabled — calling Friendbot', {
+          component: 'index',
+          stellarAddress,
+          friendbotUrl,
+        });
+        const fbResult = await callFriendbot(
+          stellarAddress,
+          { friendbotUrl, timeoutMs: friendbotTimeoutMs },
+          horizonUrl,
+        );
+        friendbotSuccess = fbResult.success;
+        friendbotTransactionHash = fbResult.transactionHash ?? '';
+        if (fbResult.success) {
+          logger.info('Friendbot funding succeeded — re-fetching account', {
+            component: 'index',
+            transactionHash: friendbotTransactionHash,
+          });
+          try {
+            const fundedAccount = await fetchAccount(horizonUrl, stellarAddress, horizonOptions);
+            const issuerAccount = homeDomainCheckEnabled
+              ? await fetchHomeDomainIssuerAccount(horizonUrl, normalizedAsset.assetIssuer, horizonOptions)
+              : undefined;
+            result = runAccountChecks(fundedAccount, checkConfig, issuerAccount);
+          } catch (refetchErr) {
+            logger.warn('Failed to re-fetch account after Friendbot funding', {
+              component: 'index',
+              error: getErrorMessage(refetchErr),
+            });
+          }
+        } else {
+          logger.warn(`Friendbot funding failed: ${fbResult.message}`, { component: 'index' });
+        }
+      }
     } else if (error instanceof HorizonError) {
       core.error(error.message);
       result = horizonFailureResult(error.message, checkConfig);
@@ -155,10 +1028,93 @@ async function run(): Promise<void> {
     }
   }
 
-  setValidationOutputs(result);
+  // (Single-address outputs are published once at the end of the run —
+  // see below — so batch and comment results are final first.)
+
+  // Batch mode (Issue #105 / #537): validate a list of addresses and post one
+  // summary comment. Batch outputs are published after the single-address
+  // outputs below so they are never clobbered by the defaults.
+  let batchSummary: BatchSummary | undefined;
+  if (batchAddresses.length > 0) {
+    core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
+
+    const batchCheckConfig: CheckConfig = {
+      ...normalizedAsset,
+      minXlmReserve: Number(minXlmReserve),
+      horizonUrl,
+      homeDomainCheckEnabled,
+      stellarTomlFetchEnabled,
+      stellarTomlCacheTtlMs,
+      stellarTomlHashPin: stellarTomlHashPin || undefined,
+      clawbackStrictMode: checkConfig.clawbackStrictMode,
+    };
+
+    const batchResults = await runBatchValidation(
+      batchAddresses,
+      batchCheckConfig,
+      horizonUrl,
+      {
+        fetchOptions: {
+          timeoutMs: horizonTimeoutMs,
+          maxRetries,
+          retryBaseDelayMs,
+          retryMaxDelayMs,
+        },
+        maxAddresses: batchMaxAddresses,
+        // Issue #928: optional per-address deadline (0/empty disables it).
+        perAddressTimeoutMs: Number(core.getInput('per_address_timeout_ms') || '0') || undefined,
+      },
+    );
+
+    const batchSummaryLocal = buildBatchSummary(batchResults, {
+      clawbackStrictMode: checkConfig.clawbackStrictMode,
+    });
+    batchSummary = batchSummaryLocal;
+    if (batchSummaryLocal.fatal) {
+      const reasons = (batchSummaryLocal.fatalReasonCodes ?? []).join(', ');
+      core.setFailed(
+        `Batch validation encountered fatal errors (${reasons}). Per-address results remain available in batch_summary_json.`,
+      );
+    }
+    const batchMarkdown = formatBatchSummaryMarkdown(
+      batchSummaryLocal,
+      normalizedAsset.assetCode,
+    );
+
+    if (postingMode === 'post') {
+      try {
+        const batchCommentUrl = await postIssueComment(
+          githubToken,
+          batchMarkdown,
+          {
+            sticky: stickyComment,
+            commentMode: commentThreadingMode,
+            forceComment,
+            snoozeWindowMs,
+            issueNumber: issueNumberInput,
+          },
+        );
+        if (batchCommentUrl) {
+          logger.info('Batch comment created', {
+            component: 'index',
+            commentUrl: batchCommentUrl,
+          });
+        }
+      } catch (commentError) {
+        const message =
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError);
+        core.warning(`Failed to post batch comment (non-fatal): ${message}`);
+      }
+    } else {
+      core.info(`posting_mode is "${postingMode}" — skipping batch comment post (outputs still set).`);
+    }
+  }
 
   const commentBody = formatCommentBody(result, {
     ...checkConfig,
+    locale,
     stellarAddress,
     horizonUrl,
     failOnMissing,
@@ -166,25 +1122,301 @@ async function run(): Promise<void> {
     waitUntilFunded,
     waitUntilFundedTimeoutMs,
     waitUntilFundedIntervalMs,
+    sep0007DeepLinks,
+    sep0007OriginDomain,
+    assets: assetsTrustlineStatusExtras,
+    docsBaseUrl,
+    sep0010DashboardUrl,
+    linkHostPolicy,
+
+    correlationId: correlation.correlationId,
+    correlationFooter: debugMode,
   });
 
+  // Issue #696 — comment_id is only published from a successful
+  // createComment/updateComment response. dry-run, off, a missing issue
+  // context, or a failed post all leave it (and comment_url) empty.
   let commentUrl: string | undefined;
-  try {
-    commentUrl = await postIssueComment(githubToken, commentBody, { sticky: stickyComment });
-    if (commentUrl) {
-      logger.info('Issue comment created', { component: 'index', commentUrl });
+  let commentId: string | undefined;
+  // Issue #799: surfaced only when `upsertIssueComment` actually enforces a
+  // snooze window for this call (the batch path above already passes
+  // `snoozeWindowMs`; wiring it into this single-address call as well is a
+  // separate, larger behavioral change outside this issue's scope, since
+  // `snooze_window_minutes` defaults to 30 and currently has no effect here).
+  let snoozeExpired = false;
+  if (postingMode === 'post') {
+    try {
+      const posted = await upsertIssueComment(githubToken, commentBody, { sticky: stickyComment });
+      if (posted) {
+        commentUrl = posted.url;
+        commentId = posted.id !== undefined ? String(posted.id) : undefined;
+        snoozeExpired = posted.snoozeExpired ?? false;
+        logger.info('Issue comment created', { component: 'index', commentUrl, commentId });
+      }
+    } catch (commentError) {
+      const message = getErrorMessage(commentError);
+      core.warning(`Failed to post issue comment: ${message}`);
     }
-  } catch (commentError) {
-    const message = getErrorMessage(commentError);
-    core.warning(`Failed to post issue comment: ${message}`);
+  } else {
+    core.info(`posting_mode is "${postingMode}" — skipping issue comment.`);
   }
 
-  setValidationOutputs(result, commentUrl);
+  // Issue #535 — publish every action output exactly once, at the end of the
+  // run. Comment URL, full report path and check-run values are only final
+  // at this point, so this call replaces the earlier partial call.
+  // ---------------------------------------------------------------------------
+  // GitHub Checks API integration (Wave #26 / Issue #421). When
+  // use_check_runs is true, creates a Check Run with check annotations. The
+  // check_run_id / check_run_conclusion outputs are published through
+  // setValidationOutputs below (Issue #550) so it remains the single
+  // publisher of every action.yml output.
+  // ---------------------------------------------------------------------------
+  let checkRunId: string | undefined;
+  let checkRunConclusion: string | undefined;
+  if (useCheckRuns && postingMode === 'post') {
+    if (!githubToken) {
+      core.info('use_check_runs is true but no github_token was provided — skipping Check Run creation.');
+    } else {
+      try {
+        const checkRun = await createCheckRun(result, githubToken, {
+          stellarAddress,
+        });
+        checkRunId = checkRun.checkRunId !== undefined ? String(checkRun.checkRunId) : undefined;
+        checkRunConclusion = checkRun.success ? determineCheckConclusion(result) : undefined;
+      } catch (checkRunError) {
+        const message =
+          checkRunError instanceof Error ? checkRunError.message : String(checkRunError);
+        core.warning(`Failed to create Check Run (non-fatal): ${message}`);
+      }
+    }
+  }
+
+  // Full-report overflow: when the comment body exceeds GitHub's comment size
+  // limit, write the full report to report_output_path and publish its path.
+  let fullReportPath: string | undefined;
+  if (reportOutputPath) {
+    const commentBytes = Buffer.byteLength(commentBody, 'utf8');
+    if (commentBytes > COMMENT_SIZE_LIMIT_BYTES) {
+      core.warning(
+        `Comment body is ${commentBytes} bytes, which exceeds GitHub's ${COMMENT_SIZE_LIMIT_BYTES}-byte limit. ` +
+          `Writing full report to ${reportOutputPath} and posting a truncated comment instead.`,
+      );
+      fullReportPath = writeFullReport(commentBody, reportOutputPath) ?? undefined;
+    }
+  }
+
+  // Issue #897: older GHES runners lack GITHUB_OUTPUT / GITHUB_STEP_SUMMARY.
+  // Both degrade without failing the run; say so in the debug log so an
+  // operator can tell a GHES gap from a TrustBridge bug.
+  if (resolveOutputTransport() === 'workflow-command') {
+    core.debug('GITHUB_OUTPUT is not set; outputs use the legacy ::set-output command. See docs/GHES_COMPATIBILITY.md.');
+  }
+  if (!isJobSummaryAvailable()) {
+    core.debug('GITHUB_STEP_SUMMARY is not set; the TrustBridge Job Summary will be skipped. See docs/GHES_COMPATIBILITY.md.');
+  }
+
+  const validatedAt = new Date().toISOString();
+  setValidationOutputs(result, commentUrl, fullReportPath, {
+    horizonUrl,
+    assetCode: normalizedAsset.assetCode,
+    assetIssuer: normalizedAsset.assetIssuer,
+    assetsTrustlineStatus: assetsTrustlineStatusExtras,
+    friendbotCalled,
+    friendbotSuccess,
+    friendbotTransactionHash,
+    validatedAt,
+    timings: globalMetrics.getTimingBreakdown(),
+    checkRunId,
+    checkRunConclusion,
+    snoozeExpired,
+  });
+
+  // Batch outputs last so the single-address defaults above never clobber
+  // the real batch summary (Issue #537).
+  if (batchSummary) {
+    // Issue #854: a Wave payout-week batch of hundreds of addresses can
+    // produce a `failures` array large enough to exceed GitHub's per-output
+    // size limit. Truncate deterministically (keep the earliest failures,
+    // drop the rest) rather than let the runner silently truncate or reject
+    // the output — a matrix workflow parsing an incomplete failures list
+    // would otherwise make the wrong branch decision.
+    const { json: batchSummaryJson, truncated: batchOutputsTruncated } = truncateJsonArray(
+      batchSummary.failures,
+      (failuresSubset) => JSON.stringify({ ...batchSummary, failures: failuresSubset }),
+    );
+    // Issue #969 — batch mode publishes its own JSON output outside
+    // setValidationOutputs, so validate it on that path too.
+    validateActionOutput('batch_summary_json', batchSummaryJson);
+    core.setOutput('batch_summary_json', batchSummaryJson);
+    core.setOutput('batch_passed_count', String(batchSummary.passed));
+    core.setOutput('batch_failed_count', String(batchSummary.failed));
+    // Authoritative for batch mode — overwrites setValidationOutputs's
+    // single-address-derived value above, same precedence as the other
+    // batch outputs.
+    core.setOutput('outputs_truncated', toBooleanOutput(batchOutputsTruncated, 'outputs_truncated'));
+  }
+  emitDiagnosticsZipOnce();
+
+  // ---------------------------------------------------------------------------
+  // Wallet labels (Issue #200)
+  // When auto_wallet_labels is true and we're in an issue context, apply
+  // the appropriate wallet state label to the issue.
+  // ---------------------------------------------------------------------------
+  if (autoWalletLabels && postingMode === 'post') {
+    const issueNumber = github.context.payload.issue?.number;
+    if (issueNumber) {
+      const { owner, repo } = github.context.repo;
+      try {
+        const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
+        const labelResult = await applyWalletLabels(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+          {
+            accountFunded: result.accountFunded,
+            trustlineExists: result.trustlineExists,
+            xlmReserveMet: result.xlmReserveMet,
+          },
+          { removeStale: true },
+        );
+        if (labelResult.error) {
+          core.warning(`Wallet label failed (non-fatal): ${labelResult.error}`);
+        } else {
+          core.info(`Applied wallet label: ${labelResult.applied}`);
+        }
+      } catch (labelError) {
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
+        core.warning(`Failed to apply wallet label (non-fatal): ${msg}`);
+      }
+    }
+  }
+
+  // Ready labels (Issue #669): pass/fail label sync on the issue.
+  const readyLabels = resolveConfiguredReadyLabels();
+  if ((readyLabels.passLabel || readyLabels.failLabel) && postingMode === 'post') {
+    const issueNumber = github.context.payload.issue?.number;
+    if (issueNumber) {
+      const { owner, repo } = github.context.repo;
+      try {
+        const octokit = github.getOctokit(githubToken);
+        const readyLabelResult = await applyReadyLabels(
+          octokit,
+          owner,
+          repo,
+          issueNumber,
+          {
+            ready: result.valid,
+            passLabel: readyLabels.passLabel,
+            failLabel: readyLabels.failLabel,
+          },
+        );
+        if (readyLabelResult.error) {
+          core.warning(
+            `Ready label update failed (non-fatal): ${readyLabelResult.error}`,
+          );
+        } else if (readyLabelResult.applied) {
+          core.info(`Applied ready label: ${readyLabelResult.applied}`);
+        }
+      } catch (labelError) {
+        const msg =
+          labelError instanceof Error ? labelError.message : String(labelError);
+        core.warning(`Failed to apply ready label (non-fatal): ${msg}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-unassign on not-ready (Issue #228)
+  // When unassign_on_not_ready is true and readiness checks fail,
+  // automatically unassign the GitHub assignee(s) from the issue.
+  // ---------------------------------------------------------------------------
+  if (unassignOnNotReady && !result.valid && postingMode === 'post') {
+    const issueNumber = github.context.payload.issue?.number;
+    const { owner, repo } = github.context.repo;
+    const octokit = github.getOctokit(githubToken, getOctokitProxyOptions());
+    await handleAutoUnassign({
+      octokit,
+      owner,
+      repo,
+      issueNumber: issueNumberInput ?? issueNumber,
+      payload: github.context.payload,
+      result,
+      unassignOnNotReady,
+    });
+  }
+
+  // GitHub Projects v2 integration (Issue #222)
+  const targetProjectStatus = result.valid
+    ? projectStatusPass
+    : projectStatusFail;
+  if (projectId.trim() && targetProjectStatus.trim() && postingMode === 'post') {
+    const contentNodeId =
+      github.context.payload.issue?.node_id ??
+      github.context.payload.pull_request?.node_id ??
+      '';
+
+    if (!projectToken) {
+      core.warning(
+        "[Projects v2] A project status is configured, but no GitHub token is available; skipping status update.",
+      );
+    } else if (!contentNodeId) {
+      core.warning(
+        "[Projects v2] A project status is configured, but this event has no issue or pull request node ID; skipping status update.",
+      );
+    } else {
+      try {
+        const octokit = github.getOctokit(projectToken, getOctokitProxyOptions());
+        await updateProjectV2Status({
+          octokit,
+          projectId,
+          contentNodeId,
+          statusFieldName: projectStatusField,
+          targetStatusValue: targetProjectStatus,
+        });
+      } catch (projectError) {
+        const message =
+          projectError instanceof Error
+            ? projectError.message
+            : String(projectError);
+        core.warning(
+          `[Projects v2] Failed to initialize status update (non-fatal): ${message}`,
+        );
+      }
+    }
+  }
+
+  // SARIF 2.1.0 output (Issue #197). Includes rule TB004 for the home domain
+  // check when home_domain_check_enabled is true (Issue #708).
+  if (sarifOutputPath) {
+    writeSarifOutput(sarifOutputPath, result, {
+      horizonUrl,
+      stellarAddress,
+      assetCode: normalizedAsset.assetCode,
+      homeDomainCheckMode,
+    });
+  }
+
+  emitDiagnosticsZipOnce();
 
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
     core.debug(globalMetrics.toJSON());
+
+    // Emit validation spans for observability (Issue #35)
+    const spans = getSpans();
+    if (spans.length > 0) {
+      logger.debug('Validation spans', { component: 'validation', spanCount: spans.length });
+      core.debug(JSON.stringify(spans, null, 2));
+    }
   }
+
+  // Issue #899: job-level outcome plus per-check skipped counts, recorded
+  // before the Job Summary so they land in the metrics JSON artifact.
+  globalMetrics.recordJobOutcome(result.valid ? 'pass' : 'fail', listSkippedCheckKinds(result));
+
+  await writeJobSummary(globalMetrics.buildJobSummary(globalHorizonHistogram));
 
   if (result.valid) {
     core.info('All TrustBridge checks passed.');
@@ -202,6 +1434,75 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
-  core.setFailed(getErrorMessage(error));
-});
+/**
+ * Write the optional diagnostics bundle and publish `diagnostics_zip_path` /
+ * `diagnostics_zip_status`. A failure here is a warning, never a failed run:
+ * the bundle is a debugging aid and must not change the validation verdict.
+ */
+function emitDiagnosticsZip(
+  outputPath: string,
+  maxBytesInput: string,
+  snapshot: DiagnosticsInputSnapshot,
+): void {
+  if (!outputPath) {
+    core.setOutput('diagnostics_zip_path', '');
+    core.setOutput('diagnostics_zip_status', DIAGNOSTICS_ZIP_REASONS.disabled);
+    return;
+  }
+  const maxBytes = parseDiagnosticsZipMaxBytes(maxBytesInput);
+  if (!maxBytes.ok) {
+    core.warning(`Diagnostics bundle skipped: ${maxBytes.message}`);
+    core.setOutput('diagnostics_zip_path', '');
+    core.setOutput('diagnostics_zip_status', DIAGNOSTICS_ZIP_REASONS.invalidMaxBytes);
+    return;
+  }
+  const outcome = writeDiagnosticsZip({
+    config: { inputs: snapshot },
+    outputPath,
+    maxBytes: maxBytes.value,
+    now: new Date(),
+  });
+  const published = outcome.status === 'written' || outcome.status === 'unchanged';
+  core.setOutput('diagnostics_zip_path', published ? (outcome.path ?? '') : '');
+  core.setOutput('diagnostics_zip_status', outcome.reason);
+  if (published) core.info(outcome.message);
+  else core.warning(`Diagnostics bundle not written (${outcome.reason}): ${outcome.message}`);
+}
+
+function writeSarifOutput(
+  sarifOutputPath: string,
+  result: Parameters<typeof sarifOutcomeFromResult>[0],
+  context: Parameters<typeof sarifOutcomeFromResult>[1],
+): void {
+  const workspaceRoot = path.normalize(process.env.GITHUB_WORKSPACE || process.cwd());
+  const resolved = path.normalize(
+    path.isAbsolute(sarifOutputPath) ? sarifOutputPath : path.join(workspaceRoot, sarifOutputPath),
+  );
+  // Path traversal guard: SARIF is only ever written inside the workspace.
+  if (!resolved.startsWith(workspaceRoot + path.sep)) {
+    core.warning('sarif_output_path resolves outside GITHUB_WORKSPACE — SARIF output skipped.');
+    return;
+  }
+  try {
+    const sarifJson = serialiseSarif(buildSarifDocument(sarifOutcomeFromResult(result, context)));
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    fs.writeFileSync(resolved, sarifJson, 'utf8');
+    core.info(`Wrote SARIF 2.1.0 output to ${resolved}`);
+  } catch (sarifError) {
+    core.warning(`Failed to write SARIF output (non-fatal): ${getErrorMessage(sarifError)}`);
+  }
+}
+
+// Skip auto-run under Jest so performance / integration tests can import `run`.
+if (process.env.JEST_WORKER_ID === undefined) {
+  run().catch((error) => {
+    // Issue #899: an aborted run counts as `fail` unless an outcome was
+    // already recorded (recordJobOutcome is first-wins).
+    globalMetrics.recordJobOutcome('fail');
+    core.setFailed(getErrorMessage(error));
+  }).finally(() => {
+    // Issue #924: emit the summary for any Horizon retry window that was
+    // still open, so suppressed warnings are counted rather than lost.
+    flushHorizonRetrySamples();
+  });
+}

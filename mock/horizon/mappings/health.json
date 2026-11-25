@@ -1,0 +1,26 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb509",
+  "name": "GET / — Horizon root health probe",
+  "request": {
+    "method": "GET",
+    "url": "/"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Mock-Source": "trustbridge-mock-horizon"
+    },
+    "jsonBody": {
+      "horizon_version": "mock-2.27.0",
+      "core_version": "mock-v19.10.0",
+      "network_passphrase": "Public Global Stellar Network ; September 2015",
+      "_links": {
+        "account": {
+          "href": "http://localhost:8089/accounts/{account_id}",
+          "templated": true
+        }
+      }
+    }
+  }
+}

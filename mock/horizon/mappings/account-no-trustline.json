@@ -1,0 +1,31 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb507",
+  "name": "GET /accounts/{address} — funded account with sufficient XLM but no USDC trustline",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Mock-Source": "trustbridge-mock-horizon"
+    },
+    "jsonBody": {
+      "id": "GDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "account_id": "GDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "sequence": "111111111",
+      "subentry_count": 0,
+      "num_sponsoring": 0,
+      "num_sponsored": 0,
+      "balances": [
+        {
+          "balance": "10.0000000",
+          "asset_type": "native",
+          "buying_liabilities": "0.0000000",
+          "selling_liabilities": "0.0000000"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb502",
+  "name": "502 Bad Gateway",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+  },
+  "response": {
+    "status": 502,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "error": "Bad Gateway" }
+  }
+}

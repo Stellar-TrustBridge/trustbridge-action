@@ -1,0 +1,73 @@
+# Example consumer workflow that calls the shared reusable workflow in
+# trustbridge-reusable.yml instead of duplicating the trustbridge-action
+# step directly. Copy this into any repo's `.github/workflows/` and adjust
+# the `uses:` ref to point at wherever your org publishes
+# trustbridge-reusable.yml (a shared workflows repo, or this same repo).
+#
+# See docs/USAGE.md#workflow_call-reusable-workflow for details.
+#
+# SECURITY NOTE ON THE `uses:` PIN BELOW:
+# Pinned to a released commit SHA rather than @main — see the same note
+# in trustbridge-label-gate.yml for why. Bump the pin only as part of a
+# deliberate release, same as any other third-party action/workflow ref.
+#
+# TODO(maintainers): replace 07b97d28d482a18d277285f980dd5d7206673eb5 with the commit SHA of the
+# release tag this example should track.
+
+name: Verify Stellar wallet (via reusable workflow)
+
+on:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate'
+        required: true
+
+jobs:
+  resolve-address:
+    runs-on: ubuntu-latest
+    outputs:
+      address: ${{ steps.addr.outputs.value }}
+    steps:
+      - name: Resolve address
+        id: addr
+        # workflow_dispatch inputs are passed via env: rather than
+        # interpolated directly into the shell script, so a value
+        # containing shell metacharacters is treated as an inert string
+        # instead of being substituted into the script before it runs.
+        env:
+          INPUT_STELLAR_ADDRESS: ${{ github.event.inputs.stellar_address }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${INPUT_STELLAR_ADDRESS}" >> "$GITHUB_OUTPUT"
+          else
+            # See docs/USAGE.md#extracting-stellar-addresses-from-issues for
+            # a robust issue-form extraction example.
+            echo "value=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
+          fi
+
+  trustbridge:
+    needs: resolve-address
+    # Replace `Stellar-TrustBridge/trustbridge-action` with your org's
+    # shared-workflows repo if trustbridge-reusable.yml lives elsewhere, and
+    # pin to a release tag/SHA the same way you would for the action itself.
+    uses: Stellar-TrustBridge/trustbridge-action/.github/workflows/trustbridge-reusable.yml@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note above
+    # `secrets: inherit` forwards every secret available to this caller
+    # workflow (including GITHUB_TOKEN) to the called workflow under the
+    # same names — the reusable workflow reads it as `secrets.github_token`.
+    secrets: inherit
+    with:
+      stellar_address_input: ${{ needs.resolve-address.outputs.address }}
+      issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
+      fail_on_missing: true
+      sticky_comment: true
+
+  use-outputs:
+    needs: trustbridge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Continue only if funded
+        if: needs.trustbridge.outputs.account_funded == 'true'
+        run: echo "Account is active, trustline_exists=${{ needs.trustbridge.outputs.trustline_exists }}"

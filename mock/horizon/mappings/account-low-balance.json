@@ -1,0 +1,39 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb506",
+  "name": "GET /accounts/{address} — funded account with USDC trustline but low XLM balance",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Mock-Source": "trustbridge-mock-horizon"
+    },
+    "jsonBody": {
+      "id": "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "account_id": "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "sequence": "987654321",
+      "subentry_count": 1,
+      "num_sponsoring": 0,
+      "num_sponsored": 0,
+      "balances": [
+        {
+          "balance": "0.5000000",
+          "asset_type": "native",
+          "buying_liabilities": "0.0000000",
+          "selling_liabilities": "0.0000000"
+        },
+        {
+          "balance": "10.0000000",
+          "asset_type": "credit_alphanum4",
+          "asset_code": "USDC",
+          "asset_issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+          "buying_liabilities": "0.0000000",
+          "selling_liabilities": "0.0000000"
+        }
+      ]
+    }
+  }
+}

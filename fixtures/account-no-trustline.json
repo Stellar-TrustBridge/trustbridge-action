@@ -1,0 +1,16 @@
+{
+  "id": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  "account_id": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  "sequence": "123456789",
+  "subentry_count": 0,
+  "num_sponsoring": 0,
+  "num_sponsored": 0,
+  "balances": [
+    {
+      "balance": "10.0000000",
+      "asset_type": "native",
+      "buying_liabilities": "0.0000000",
+      "selling_liabilities": "0.0000000"
+    }
+  ]
+}

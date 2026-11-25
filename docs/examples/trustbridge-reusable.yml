@@ -1,0 +1,211 @@
+# Reusable `workflow_call` wrapper around trustbridge-action.
+#
+# Publish this file at `.github/workflows/trustbridge-reusable.yml` in an
+# org-level "shared workflows" repository (or in any single repo you want to
+# call it from), then invoke it from any repo in your org via `uses:` (see
+# `trustbridge-caller.yml` for the calling side). One copy of this file lets
+# every downstream repo share the same validation pipeline instead of
+# duplicating the trustbridge-action step in every workflow.
+#
+# See docs/USAGE.md#workflow_call-reusable-workflow for the full
+# inputs/outputs/secrets reference and context-limitation notes.
+
+name: TrustBridge (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      stellar_address_input:
+        description: 'Stellar account address (G-address) to validate'
+        required: true
+        type: string
+      issue_number:
+        description: 'Explicit issue or pull request number to post the result comment on'
+        required: false
+        type: string
+        default: ''
+      horizon_url:
+        description: 'Stellar Horizon API base URL'
+        required: false
+        type: string
+        default: 'https://horizon.stellar.org'
+      horizon_url_fallback:
+        description: 'Optional fallback Horizon API base URL'
+        required: false
+        type: string
+        default: ''
+      rpc_fallback_url:
+        description: 'Optional secondary/fallback Horizon or RPC URL(s), comma-separated'
+        required: false
+        type: string
+        default: ''
+      asset_code:
+        description: 'Asset code to check trustline for'
+        required: false
+        type: string
+        default: 'USDC'
+      asset_issuer:
+        description: 'Asset issuer Stellar address (G-address) or Soroban contract (C-address)'
+        required: false
+        type: string
+        default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+      min_xlm_reserve:
+        description: 'Minimum native XLM balance required'
+        required: false
+        type: string
+        default: '1.5'
+      fail_on_missing:
+        description: 'Fail the workflow step when checks do not pass'
+        required: false
+        type: boolean
+        default: true
+      debug_mode:
+        description: 'Enable extra action logs for troubleshooting'
+        required: false
+        type: boolean
+        default: false
+      sticky_comment:
+        description: 'Update the previous TrustBridge comment instead of posting a new one each run'
+        required: false
+        type: boolean
+        default: true
+      wait_until_funded:
+        description: 'Poll Horizon until the account becomes funded'
+        required: false
+        type: boolean
+        default: false
+      wait_until_funded_timeout_ms:
+        description: 'Maximum total time to poll for funding, in milliseconds'
+        required: false
+        type: number
+        default: 120000
+      wait_until_funded_interval_ms:
+        description: 'Delay between funded-account polling attempts, in milliseconds'
+        required: false
+        type: number
+        default: 5000
+      horizon_timeout_ms:
+        description: 'Horizon request timeout in milliseconds'
+        required: false
+        type: number
+        default: 15000
+      horizon_cache_ttl_ms:
+        description: 'In-memory Horizon account cache TTL in milliseconds (0 disables caching)'
+        required: false
+        type: number
+        default: 60000
+      use_cache:
+        description: 'Cache successful Horizon responses in job memory'
+        required: false
+        type: boolean
+        default: false
+      trustbridge_config_path:
+        description: 'Path to a consumer trustbridge.yml config file'
+        required: false
+        type: string
+        default: '.trustbridge.yml'
+      log_inputs:
+        description: 'Emit a redacted structured JSON log record of resolved inputs'
+        required: false
+        type: boolean
+        default: false
+      sep0007_deep_links:
+        description: 'Emit SEP-0007 wallet deep links in the issue comment'
+        required: false
+        type: boolean
+        default: false
+      sep0007_origin_domain:
+        description: 'Optional origin domain embedded in SEP-0007 URIs'
+        required: false
+        type: string
+        default: ''
+      use_friendbot:
+        description: 'Fund unfunded (404) accounts via Friendbot on testnet/futurenet only; ignored on pubnet'
+        required: false
+        type: boolean
+        default: false
+      friendbot_url:
+        description: 'Allowlisted Friendbot endpoint (use https://friendbot-futurenet.stellar.org on futurenet)'
+        required: false
+        type: string
+        default: 'https://friendbot.stellar.org'
+      friendbot_timeout_ms:
+        description: 'Friendbot request timeout in milliseconds (1000-60000)'
+        required: false
+        type: number
+        default: 15000
+    secrets:
+      github_token:
+        description: >-
+          Token with `issues: write` used to post/update the issue comment.
+          Optional here because most callers pass `secrets: inherit`, which
+          makes the caller's own `GITHUB_TOKEN` available under the same
+          name automatically — see trustbridge-caller.yml.
+        required: false
+    outputs:
+      trustline_exists:
+        description: 'Whether the account has a trustline for the configured asset'
+        value: ${{ jobs.verify.outputs.trustline_exists }}
+      xlm_balance:
+        description: 'Current native XLM balance as reported by Horizon'
+        value: ${{ jobs.verify.outputs.xlm_balance }}
+      account_funded:
+        description: 'Whether the account exists and is activated on the Stellar network'
+        value: ${{ jobs.verify.outputs.account_funded }}
+      comment_url:
+        description: 'URL of the created or updated issue comment, when run in an issue context'
+        value: ${{ jobs.verify.outputs.comment_url }}
+      friendbot_called:
+        description: 'Whether Friendbot was called to fund the account (true/false)'
+        value: ${{ jobs.verify.outputs.friendbot_called }}
+      friendbot_success:
+        description: 'Whether Friendbot funding succeeded (true/false)'
+        value: ${{ jobs.verify.outputs.friendbot_success }}
+      friendbot_transaction_hash:
+        description: 'Transaction hash from successful Friendbot funding, empty otherwise'
+        value: ${{ jobs.verify.outputs.friendbot_transaction_hash }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    outputs:
+      trustline_exists: ${{ steps.trustbridge.outputs.trustline_exists }}
+      xlm_balance: ${{ steps.trustbridge.outputs.xlm_balance }}
+      account_funded: ${{ steps.trustbridge.outputs.account_funded }}
+      comment_url: ${{ steps.trustbridge.outputs.comment_url }}
+      friendbot_called: ${{ steps.trustbridge.outputs.friendbot_called }}
+      friendbot_success: ${{ steps.trustbridge.outputs.friendbot_success }}
+      friendbot_transaction_hash: ${{ steps.trustbridge.outputs.friendbot_transaction_hash }}
+    steps:
+      - name: TrustBridge check
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
+        with:
+          stellar_address_input: ${{ inputs.stellar_address_input }}
+          issue_number: ${{ inputs.issue_number }}
+          github_token: ${{ secrets.github_token || github.token }}
+          horizon_url: ${{ inputs.horizon_url }}
+          horizon_url_fallback: ${{ inputs.horizon_url_fallback }}
+          rpc_fallback_url: ${{ inputs.rpc_fallback_url }}
+          asset_code: ${{ inputs.asset_code }}
+          asset_issuer: ${{ inputs.asset_issuer }}
+          min_xlm_reserve: ${{ inputs.min_xlm_reserve }}
+          fail_on_missing: ${{ inputs.fail_on_missing }}
+          debug_mode: ${{ inputs.debug_mode }}
+          sticky_comment: ${{ inputs.sticky_comment }}
+          wait_until_funded: ${{ inputs.wait_until_funded }}
+          wait_until_funded_timeout_ms: ${{ inputs.wait_until_funded_timeout_ms }}
+          wait_until_funded_interval_ms: ${{ inputs.wait_until_funded_interval_ms }}
+          horizon_timeout_ms: ${{ inputs.horizon_timeout_ms }}
+          horizon_cache_ttl_ms: ${{ inputs.horizon_cache_ttl_ms }}
+          use_cache: ${{ inputs.use_cache }}
+          trustbridge_config_path: ${{ inputs.trustbridge_config_path }}
+          log_inputs: ${{ inputs.log_inputs }}
+          sep0007_deep_links: ${{ inputs.sep0007_deep_links }}
+          sep0007_origin_domain: ${{ inputs.sep0007_origin_domain }}
+          use_friendbot: ${{ inputs.use_friendbot }}
+          friendbot_url: ${{ inputs.friendbot_url }}
+          friendbot_timeout_ms: ${{ inputs.friendbot_timeout_ms }}

@@ -43,9 +43,12 @@ npm ci
 | `npm test` | Run Jest unit tests |
 | `npm run test:coverage` | Coverage report in `coverage/` |
 | `npm run lint` | ESLint on `src/` and `__tests__/` |
+| `npm run typecheck` | TypeScript type-check without emitting files |
 | `npm run build` | Compile TypeScript to `dist/` |
 
 All commands must pass before opening a PR. CI runs the same pipeline (see `.github/workflows/ci.yml`).
+
+> **Strict CI gate:** The `check` job in CI runs `npm run typecheck` and `npm test` without `|| true` fallbacks. Any TypeScript error or failing Jest test will block merges. Ensure both commands succeed locally before pushing.
 
 ---
 
@@ -81,6 +84,17 @@ Do not import `@actions/github` outside `comment.ts` / `index.ts`.
 - Update [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design changes
 - Update [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) for new failure modes
 - Cross-link new docs from README “Documentation index”
+
+---
+
+## Debug logging and address redaction
+
+When troubleshooting in a fork or a throwaway repo, you may temporarily raise the Actions log verbosity (`ACTIONS_STEP_DEBUG`). Before doing so, understand what `src/logger.ts` masks:
+
+- **Redacted in `core.info` / `core.debug` output:** Stellar `G…` account addresses, `C…` contract addresses, and `M…` muxed addresses (matched by `STELLAR_ADDRESS_REGEX` and `MUXED_ADDRESS_REGEX`).
+- **Not redacted:** PR comment bodies and webhook payloads may still contain full addresses by design — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+Do **not** disable or bypass redaction in production workflows. If you need to inspect a real address, reproduce with a test fixture instead of live logs. The behavioral contract lives in `__tests__/logger.test.ts` — run `npm test -- logger` after touching redaction helpers.
 
 ---
 
@@ -144,3 +158,15 @@ Open a [GitHub Discussion](https://github.com/Stellar-TrustBridge/trustbridge-ac
 ---
 
 [← Back to README](README.md)
+
+### Testing against a mocked Horizon locally (Issue #789)
+
+For fast local loops, unit-test Horizon code against the recorded fixtures in `fixtures/` with the helpers in `docs/examples/mocked-horizon.ts` (`createMockHorizon`, `loadAccountFixture`, `fetchMockedAccount`). Copy-paste snippets: [docs/typescript-snippets.md](docs/typescript-snippets.md#local-mocked-horizon-runs) / [docs/javascript-snippets.md](docs/javascript-snippets.md#local-mocked-horizon-runs).
+
+```bash
+npx jest __tests__/typescript-snippets-mocked-horizon.test.ts
+```
+
+### License report
+
+If you change `package-lock.json`, run `npm run license:report` and commit the updated `docs/LICENSE_REPORT.md` — CI runs `npm run license:report:check` and fails on drift (Issue #791).

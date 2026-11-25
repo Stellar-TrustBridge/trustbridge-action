@@ -1,6 +1,431 @@
+import { StellarNetwork } from './links';
+/**
+ * Return the Actions runner language value used for locale negotiation
+ * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
+ * (a preference list), then `LC_ALL`, then `LANG`. Values are returned
+ * verbatim — `negotiateLocale()` handles parsing and fallback.
+ */
+export declare function getRunnerLanguage(env?: NodeJS.ProcessEnv): string;
+/**
+ * Resolve the OpenTelemetry trace sampling ratio (Issue #967).
+ *
+ * Tracing remains opt-in via `OTEL_TRACES_ENABLED`; this ratio decides what
+ * fraction of enabled runs actually record/export spans. Values outside the
+ * inclusive `[0, 1]` range, non-decimal strings, and non-finite numbers are
+ * treated as `0` (fail closed). When the input is empty, `pull_request` runs
+ * default to `0` so untrusted fork events cannot inflate CI cost or export
+ * telemetry; other events retain the prior "sample everything" behavior.
+ */
+export declare function resolveTraceSamplingRatio(value: string | undefined, eventName: string | undefined): number;
 export declare function parseBooleanInput(value: string, defaultValue: boolean): boolean;
+/**
+ * Canonical list of input names declared in `action.yml`.
+ *
+ * Kept in sync with `action.yml` by the schema parity test
+ * (`__tests__/inputs-schema-parity.test.ts`), which fails CI when an input is
+ * added to one side only (Issue #769).
+ */
+export declare const DECLARED_INPUTS: readonly ["skip_for_maintainers", "skip_if_maintainer", "assignee_address_map"];
+export type DeclaredInput = (typeof DECLARED_INPUTS)[number];
+/**
+ * Result of {@link resolveMaintainerSkipInput}, carrying the resolved value
+ * plus provenance so the action can emit a precise warning instead of
+ * guessing which input the user meant.
+ */
+export interface MaintainerSkipResolution {
+    /** Effective value used for the maintainer skip gate. */
+    enabled: boolean;
+    /** Which input supplied the effective value. */
+    source: 'skip_for_maintainers' | 'skip_if_maintainer' | 'default';
+    /** True when both inputs were supplied with conflicting boolean values. */
+    conflict: boolean;
+    /** True when the deprecated alias was used and the canonical input was not. */
+    usedDeprecatedAlias: boolean;
+}
+/**
+ * Resolve the maintainer-skip input, honouring the canonical
+ * `skip_for_maintainers` name and the deprecated `skip_if_maintainer` alias
+ * (Issue #448).
+ *
+ * Precedence rules, in order:
+ *
+ * 1. `skip_for_maintainers` wins whenever it carries an explicit boolean.
+ *    A caller who writes `skip_for_maintainers: false` alongside a stale
+ *    `skip_if_maintainer: true` gets the explicit `false` — the canonical
+ *    input is never silently overridden.
+ * 2. The alias is consulted only when the canonical input is unset/empty.
+ *    This is what makes the alias usable at all: `action.yml` gives the
+ *    canonical input a `false` default, so "canonical is unset" is detected
+ *    from the raw (pre-default) input string rather than from the parsed
+ *    value.
+ * 3. If neither is supplied, the value is `false` (opt-in only).
+ *
+ * When both are supplied with conflicting values, `conflict` is set so the
+ * caller can warn; the canonical value is still the one used.
+ *
+ * @param canonicalValue Raw `skip_for_maintainers` input.
+ * @param aliasValue     Raw `skip_if_maintainer` input.
+ * @returns              Resolved value plus provenance.
+ */
+export declare function resolveMaintainerSkipInput(canonicalValue: string | undefined, aliasValue: string | undefined): MaintainerSkipResolution;
 export declare function parseNumberInput(value: string, defaultValue: number, options?: {
     min?: number;
     max?: number;
 }): number;
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+export declare const DEFAULT_BATCH_MAX_ADDRESSES = 500;
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+export declare const BATCH_MAX_ADDRESSES_CEILING = 2000;
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+export declare function parseBatchMaxAddressesInput(value: string | undefined): number;
 export declare function getErrorMessage(error: unknown): string;
+/**
+ * Maintainer-provided roster: GitHub username (assignee login) → Stellar G-address.
+ * Keys are stored lowercased for case-insensitive GitHub username matching.
+ */
+export type AssigneeAddressMap = Record<string, string>;
+export interface ParseAssigneeAddressMapOptions {
+    /** Workspace root used when `raw` is a relative file path. Defaults to cwd. */
+    workspaceRoot?: string;
+}
+/**
+ * Parse `assignee_address_map` from either inline JSON or a path to a JSON file.
+ *
+ * Inline JSON must start with `{`. Anything else is treated as a file path
+ * relative to `workspaceRoot` (or absolute).
+ */
+export declare function parseAssigneeAddressMap(raw: string, options?: ParseAssigneeAddressMapOptions): AssigneeAddressMap;
+/**
+ * Look up a Stellar address for an assignee login in a parsed roster map.
+ * Throws an actionable error when the login is missing or not in the map.
+ */
+export declare function resolveAddressFromAssigneeMap(map: AssigneeAddressMap, assigneeLogin: string | undefined | null): string;
+export type UnauthorizedTrustlinePolicy = 'fail' | 'warn' | 'ignore';
+/**
+ * Parses the `unauthorized_trustline_policy` input, which controls how a
+ * trustline that exists but is not yet authorized by the issuer
+ * (AUTHORIZATION_REQUIRED) is treated:
+ *   - "fail"   — the trustline check does not pass; readiness outputs
+ *                reflect the stricter meaning.
+ *   - "warn"   — the trustline check still passes, but a warning is added
+ *                to the comment. This is the safe default: it surfaces the
+ *                risk without breaking existing green workflows.
+ *   - "ignore" — no additional check or warning (pre-#72 behavior).
+ */
+export declare function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTrustlinePolicy;
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+export declare const VALID_NETWORK_INPUTS: readonly ["testnet", "public", "mainnet"];
+export type NetworkInput = (typeof VALID_NETWORK_INPUTS)[number];
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+export declare const VALID_HOME_DOMAIN_CHECK_MODES: readonly ["warn", "strict"];
+export type HomeDomainCheckModeInput = (typeof VALID_HOME_DOMAIN_CHECK_MODES)[number];
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+export declare function parseNetworkInput(value: string | undefined): NetworkInput | '';
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+export declare function parseHomeDomainCheckModeInput(value: string | undefined): HomeDomainCheckModeInput;
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+export declare function parseExplorerBaseUrlInput(value: string | undefined, network: StellarNetwork, inputName?: string): string;
+/**
+ * Mapping of TRUSTBRIDGE_* environment variable names to action input names.
+ * Explicit `with:` values always win; env is only used when with: is empty.
+ */
+export declare const TRUSTBRIDGE_ENV_MAP: Record<string, string>;
+/**
+ * Resolve an action input with TRUSTBRIDGE_* env fallback.
+ */
+export declare function resolveInput(inputName: string, withValue: string, env?: Record<string, string | undefined>): string;
+/**
+ * Resolve campaign preset name from network/preset inputs.
+ * Empty string means "no preset".
+ */
+export declare function parsePresetInput(networkInput?: string, presetInput?: string): string;
+export interface GitHubAuthTokenOptions {
+    githubToken?: string;
+    githubAppToken?: string;
+}
+/**
+ * Resolves the effective GitHub authentication token from either `github_app_token`
+ * (for GitHub App installation auth) or standard `github_token`.
+ *
+ * When `github_app_token` is provided (e.g. from actions/create-github-app-token),
+ * it takes precedence over `github_token`.
+ * (Issue #225)
+ */
+export declare function resolveGitHubAuthToken(options: GitHubAuthTokenOptions): string;
+/** Raw (untrimmed) values for the ready-label input alias chains. */
+export interface ReadyLabelInputOptions {
+    passLabel?: string;
+    readyPassLabel?: string;
+    readyLabelPass?: string;
+    failLabel?: string;
+    readyFailLabel?: string;
+    readyLabelFail?: string;
+}
+export interface ResolvedReadyLabels {
+    passLabel: string;
+    failLabel: string;
+    /** True when either chain resolved from a deprecated alias. */
+    usedDeprecatedAlias: boolean;
+}
+/**
+ * Resolve the ready-state label pair from the documented alias chains.
+ *
+ * action.yml declares four deprecated aliases alongside the canonical
+ * `pass_label` / `fail_label`:
+ *
+ *   pass_label → ready_pass_label → ready_label_pass
+ *   fail_label → ready_fail_label → ready_label_fail
+ *
+ * Only the canonical names were read at runtime, so a workflow still using a
+ * deprecated name silently lost its label automation after upgrading instead
+ * of erroring. (Issue #669)
+ *
+ * A whitespace-only value counts as unset, matching `core.getInput` semantics
+ * where an omitted input yields ''. Trimming means a value such as
+ * `' wallet-ready '` resolves to `'wallet-ready'` rather than creating a
+ * differently-spaced label that GitHub would treat as distinct.
+ *
+ * Both chains resolve independently: a workflow may set a pass label through
+ * the canonical name and a fail label through a deprecated one.
+ */
+export declare function resolveReadyLabelInputs(options: ReadyLabelInputOptions): ResolvedReadyLabels;
+/**
+ * Return the deprecated aliases explicitly supplied by a workflow. The action
+ * entrypoint uses this list to emit one consolidated warning per run instead
+ * of repeating warnings for each resolved field.
+ */
+export declare function listDeprecatedInputAliases(options: {
+    maintainerAlias?: string;
+    readyPassAlias?: string;
+    readyLabelPassAlias?: string;
+    readyFailAlias?: string;
+    readyLabelFailAlias?: string;
+}): string[];
+/**
+ * Every input declared in `action.yml`, keyed by its exact snake_case name.
+ *
+ * `inputs-schema-parity.test.ts` locks this list to `action.yml`: adding,
+ * removing or renaming an action input without updating this interface
+ * fails CI. All inputs arrive as strings via `core.getInput`; only
+ * `github_token` is required.
+ */
+export interface Inputs {
+    max_retries?: string;
+    retry_base_delay_ms?: string;
+    horizon_url?: string;
+    asset_code?: string;
+    asset_issuer?: string;
+    min_xlm_reserve?: string;
+    min_trustline_limit?: string;
+    min_asset_balance?: string;
+    stellar_address_input?: string;
+    assignee_address_map?: string;
+    fail_on_missing?: string;
+    preflight_only?: string;
+    issue_number?: string;
+    debug_mode?: string;
+    horizon_timeout_ms?: string;
+    per_address_timeout_ms?: string;
+    sticky_comment?: string;
+    comment_mode?: string;
+    wait_until_funded?: string;
+    wait_until_funded_timeout_ms?: string;
+    wait_until_funded_interval_ms?: string;
+    horizon_url_fallback?: string;
+    horizon_cache_ttl_ms?: string;
+    rpc_fallback_url?: string;
+    horizon_max_requests?: string;
+    retry_max_delay_ms?: string;
+    retry_max_total_wait_ms?: string;
+    use_cache?: string;
+    use_actions_cache_backend?: string;
+    allow_cross_network_fallback?: string;
+    log_inputs?: string;
+    trustbridge_config_path?: string;
+    trustbridge_config_strict?: string;
+    milestone_allowlist?: string;
+    milestone_fail_on_skip?: string;
+    /** Issue #955 — labels that must be present before checks run. */
+    required_labels?: string;
+    required_labels_fail_on_skip?: string;
+    github_token: string;
+    github_app_token?: string;
+    assets_json?: string;
+    sep0007_deep_links?: string;
+    auto_wallet_labels?: string;
+    pass_label?: string;
+    fail_label?: string;
+    sep0007_origin_domain?: string;
+    snooze_window_minutes?: string;
+    snooze_max_override?: string;
+    force_comment?: string;
+    summary_emoji_free?: string;
+    webhook_url?: string;
+    webhook_secret?: string;
+    webhook_secret_previous?: string;
+    webhook_timeout_ms?: string;
+    webhook_auth_mode?: string;
+    webhook_oidc_audience?: string;
+    docs_base_url?: string;
+    network?: string;
+    preset?: string;
+    posting_mode?: string;
+    use_check_runs?: string;
+    use_friendbot?: string;
+    friendbot_url?: string;
+    friendbot_timeout_ms?: string;
+    fixture_mode?: string;
+    fixture_path?: string;
+    dashboard_webhook_url?: string;
+    onboarding_checklist?: string;
+    check_ledger_freshness?: string;
+    max_ledger_lag_seconds?: string;
+    ledger_freshness_fail_on_stale?: string;
+    network_passphrase?: string;
+    home_domain_check_enabled?: string;
+    expected_home_domain?: string;
+    home_domain_check_mode?: string;
+    stellar_toml_fetch_enabled?: string;
+    stellar_toml_cache_ttl_ms?: string;
+    stellar_toml_hash_pin?: string;
+    stellar_toml_allow_insecure_testnet?: string;
+    write_validation_json?: string;
+    validation_json_path?: string;
+    trustbridge_plugins_path?: string;
+    sarif_output_path?: string;
+    use_plugin_runner?: string;
+    locale?: string;
+    trace_sampling_ratio?: string;
+    stellar_addresses?: string;
+    batch_max_addresses?: string;
+    unassign_on_not_ready?: string;
+    project_id?: string;
+    project_status_field?: string;
+    project_status_pass?: string;
+    project_status_fail?: string;
+    project_token?: string;
+    claimable_balance_policy?: string;
+    sep0010_challenge_xdr?: string;
+    sep0010_dashboard_url?: string;
+    unauthorized_trustline_policy?: string;
+    clawback_strict_mode?: string;
+    skip_for_maintainers?: string;
+    skip_if_maintainer?: string;
+    maintainers_allowlist?: string;
+    horizon_pin_fingerprint?: string;
+    federation_resolution_enabled?: string;
+    horizon_url_allowlist?: string;
+    dashboard_roster_url?: string;
+    dashboard_roster_secret?: string;
+    dashboard_roster_timeout_ms?: string;
+    dashboard_roster_allow_http?: string;
+    soroban_full_roster?: string;
+    soroban_roster_page_limit?: string;
+    custom_comment_template_path?: string;
+    ready_pass_label?: string;
+    ready_label_pass?: string;
+    ready_fail_label?: string;
+    ready_label_fail?: string;
+    codeowners_path?: string;
+    github_username?: string;
+    previous_validation_path?: string;
+    report_output_path?: string;
+    privacy_mode?: string;
+    soroban_rpc_url?: string;
+    contract_id?: string;
+}
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+export declare function parseStrictBooleanInput(name: string, raw: string | undefined, defaultValue?: boolean): boolean;
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+export declare const INPUT_CONFLICT_REASON_CODE = "INPUT_CONFLICT";
+/** One row of the mutually exclusive input matrix. */
+export interface InputConflictRule {
+    /** Stable identifier, e.g. `preflight_only+wait_until_funded`. */
+    id: string;
+    /** The two boolean inputs that cannot both be `true`. */
+    inputs: readonly [string, string];
+    /** Actionable explanation appended to the error message. */
+    reason: string;
+}
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+export declare const INPUT_CONFLICT_MATRIX: readonly InputConflictRule[];
+/** A detected conflict between two enabled inputs. */
+export interface InputConflict {
+    id: string;
+    inputs: readonly [string, string];
+    reasonCode: typeof INPUT_CONFLICT_REASON_CODE;
+    message: string;
+}
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+export declare function detectInputConflicts(rawInputs: Record<string, string | undefined>): InputConflict[];
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+export declare function assertNoInputConflicts(rawInputs: Record<string, string | undefined>): void;
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export declare function buildSorobanContractConfig(raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>): import('./soroban').ContractConfig | null;

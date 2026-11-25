@@ -1,30 +1,256 @@
 /**
  * Simple in-memory cache for Horizon API responses.
- * Useful for reducing redundant calls within a single GitHub Actions job.
+ *
+ * Lifetime: this cache lives only in the Node.js process heap for a single
+ * invocation of the action (one workflow step run). It is created fresh
+ * every time `dist/index.js` starts and is discarded when that process
+ * exits. It is never persisted to disk and never shared across:
+ *   - separate steps in the same job (each `uses:` step is its own process),
+ *   - separate jobs in the same workflow,
+ *   - matrix legs (each matrix combination runs on its own runner/process),
+ *   - concurrent or subsequent workflow runs.
+ *
+ * Cache keys are built in `horizon.ts` (`buildCacheKey`) from the
+ * normalized Horizon base URL and the Stellar address being checked, so
+ * entries for different Horizon endpoints (e.g. mainnet vs testnet in a
+ * matrix build) or different accounts never collide even when a cache
+ * instance is reused programmatically (e.g. in tests).
+ *
+ * When enabled via `useActionsCacheBackend: true`, this cache also persists
+ * to GitHub Actions cache backend on save operations, allowing data to be
+ * reused across matrix legs and subsequent workflow runs (subject to TTL).
  */
+export interface NegativeCacheEntry {
+    statusCode: 404;
+    message: string;
+    cachedAt: number;
+}
+export interface CacheBackendOptions {
+    /**
+     * Enable GitHub Actions cache backend persistence (true) or in-memory only (false).
+     * Default: false (backward compatible).
+     */
+    useActionsCacheBackend?: boolean;
+    /**
+     * Cache namespace prefix to avoid collisions with other actions.
+     * Only used when useActionsCacheBackend is true.
+     * Default: 'trustbridge'
+     */
+    cacheKeyPrefix?: string;
+    /**
+     * Optional cache backend implementation (for testing or alternative storage).
+     * When provided, overrides useActionsCacheBackend.
+     */
+    backend?: PersistentCacheBackend;
+    /**
+     * Named backend selector. Supported values: `"github-actions"` (persists via
+     * GitHub Actions cache API) and `"memory"` (in-memory only, default).
+     *
+     * Any other value is **not supported** and will be ignored with a warning.
+     * The cache will fall back to in-memory-only mode so the workflow does not
+     * break, but the selected backend will not be active.
+     *
+     * @example
+     * ```ts
+     * new SimpleCache({ selectedBackend: 'github-actions' })
+     * ```
+     */
+    selectedBackend?: string;
+}
+/**
+ * Interface for pluggable persistent cache backends (GitHub Actions cache, Redis, etc.).
+ */
+export interface PersistentCacheBackend {
+    /**
+     * Retrieve a cached value, returning null if not found or expired.
+     */
+    getCache(key: string): Promise<string | null>;
+    /**
+     * Save a value to the persistent cache.
+     */
+    saveCache(key: string, value: string, ttlMs: number): Promise<void>;
+    /**
+     * Attempt to restore cache from persistent storage on startup.
+     * Returns true if cache was found and restored, false otherwise.
+     */
+    restoreCache?(key: string): Promise<boolean>;
+    /**
+     * Clean up resources when cache is disposed.
+     */
+    dispose?(): Promise<void>;
+}
+/**
+ * GitHub Actions cache backend implementation.
+ * Uses the @actions/cache module to store and retrieve check-result data in the
+ * GitHub Actions cache backend across matrix jobs and workflow runs.
+ */
+export declare class GitHubActionsCacheBackend implements PersistentCacheBackend {
+    private cacheKeyPrefix;
+    private cacheDir;
+    private memCache;
+    constructor(cacheKeyPrefix?: string);
+    private hashKey;
+    private getFilePath;
+    private getActionsCacheKey;
+    getCache(key: string): Promise<string | null>;
+    saveCache(key: string, value: string, ttlMs: number): Promise<void>;
+    restoreCache(key: string): Promise<boolean>;
+    dispose(): Promise<void>;
+}
+/**
+ * Issue #958 — default maximum time (ms) a single-flight waiter blocks on a
+ * leader's in-flight fetch before failing with {@link SingleFlightTimeoutError}.
+ */
+export declare const DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS = 30000;
+/** Issue #958 — stable error code for a waiter that gave up on a hung leader. */
+export declare const SINGLE_FLIGHT_WAIT_TIMEOUT_CODE = "SINGLE_FLIGHT_WAIT_TIMEOUT";
+/**
+ * Issue #958 — thrown to a single-flight *waiter* (never the leader) when the
+ * leader's fetch does not settle within `waiterTimeoutMs`. The message carries
+ * no cache key, because keys embed Stellar addresses.
+ */
+export declare class SingleFlightTimeoutError extends Error {
+    readonly code = "SINGLE_FLIGHT_WAIT_TIMEOUT";
+    readonly timeoutMs: number;
+    constructor(timeoutMs: number);
+}
+/** Issue #958 — counters exposed by {@link SimpleCache.getSingleFlightStats}. */
+export interface SingleFlightStats {
+    /** Calls that started a fetch (cache miss, no fetch in flight). */
+    leaders: number;
+    /** Calls that joined an existing in-flight fetch. */
+    waiters: number;
+    /** Waiters that received the leader's result (success or error). */
+    waiterResolved: number;
+    /** Waiters that gave up with {@link SingleFlightTimeoutError}. */
+    waiterTimeouts: number;
+    /** Fetches currently in flight. */
+    inFlight: number;
+}
+export interface GetOrFetchOptions {
+    /** TTL for the stored value. Defaults to 60 seconds. */
+    ttlMs?: number;
+    /** Max wait for waiters. Defaults to {@link DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS}. */
+    waiterTimeoutMs?: number;
+}
 export declare class SimpleCache {
     private store;
+    private negativeStore;
+    private backend?;
+    private useBackend;
+    private inFlight;
+    private sfStats;
+    constructor(options?: CacheBackendOptions);
     /**
      * Get a cached value if it exists and hasn't expired.
+     *
+     * Checks the in-memory store first; entries are evicted lazily on access
+     * when their TTL has elapsed.  If a persistent backend is configured, it
+     * must be pre-warmed via {@link restoreAsync} because this method is
+     * synchronous and cannot await a backend call.
+     *
+     * Cache keys are opaque strings.  In practice they are built by
+     * `buildCacheKey` in `horizon.ts` using the format
+     * `horizon:account:<normalizedHorizonUrl>:<stellarAddress>`, which ensures
+     * that entries for different Horizon endpoints (mainnet vs testnet matrix
+     * legs) and different Stellar addresses never collide even when a single
+     * `SimpleCache` instance is shared across calls.
+     *
+     * @param key  The opaque cache key (built by `buildCacheKey` in `horizon.ts`).
+     * @returns    The cached value, or `null` on a miss or after expiry.
      */
     get<T>(key: string): T | null;
     /**
-     * Set a value in the cache with an expiration time.
-     * @param key Cache key
-     * @param data Data to cache
-     * @param ttlMs Time to live in milliseconds (default: 60 seconds)
+     * Asynchronously restore a single cache entry from the persistent backend.
+     *
+     * Must be called before any {@link get} calls when using a persistent
+     * backend, because {@link get} is synchronous.  If no backend is configured
+     * this is a no-op and returns `null`.  Restored entries are also written to
+     * the in-memory store with the default 60-second in-memory TTL so that
+     * subsequent synchronous reads remain fast.
+     *
+     * @param key  The opaque cache key to look up in the backend.
+     * @returns    The restored value, or `null` if not found, expired, or on error.
+     */
+    restoreAsync<T>(key: string): Promise<T | null>;
+    /** Return a short-lived account-not-found marker, never a positive payload. */
+    getNegative(key: string): NegativeCacheEntry | null;
+    /** Store only a redacted 404 marker; no address or response body is persisted. */
+    setNegative(key: string, message: string, ttlMs: number): void;
+    deleteNegative(key: string): boolean;
+    /**
+     * Store a value in the cache with an expiration time.
+     *
+     * The entry is written to the in-memory store immediately.  If a
+     * persistent backend is configured the write is also dispatched
+     * asynchronously (fire-and-forget) — backend write failures are silently
+     * swallowed so they never block the caller or break the primary code path.
+     *
+     * **Note on key isolation.** Each `(horizonUrl, stellarAddress)` pair
+     * receives its own distinct key (see `buildCacheKey` in `horizon.ts`), so
+     * there is no risk of a mainnet entry overwriting a testnet entry even when
+     * the same `SimpleCache` instance is reused across matrix legs.
+     *
+     * **Note on 404 responses.** Account-not-found (404) results are *never*
+     * passed to `set` — the caller (`fetchAccount` in `horizon.ts`) skips
+     * caching entirely for not-found responses so a contributor who funds their
+     * account mid-job is picked up on the next request.
+     *
+     * @param key     Opaque cache key (built by `buildCacheKey` in `horizon.ts`).
+     * @param data    The value to store.  Must be JSON-serializable when a
+     *                persistent backend is configured.
+     * @param ttlMs   Time to live in milliseconds.  Defaults to 60 seconds.
      */
     set<T>(key: string, data: T, ttlMs?: number): void;
     /**
-     * Clear all cached entries.
+     * Remove a single entry from the in-memory store.
+     *
+     * Used when a cached value is found to be untrustworthy (for example a
+     * stellar.toml body that no longer matches the configured hash pin) so the
+     * next read goes back to the network instead of serving the stale entry.
+     *
+     * @param key  The opaque cache key to evict.
+     * @returns    `true` when an entry was removed.
      */
-    clear(): void;
+    delete(key: string): boolean;
     /**
-     * Get cache statistics for debugging.
+     * Issue #958 — single-flight read-through.
+     *
+     * Returns a cached value when present. Otherwise the first caller for `key`
+     * becomes the *leader* and runs `fetcher`; concurrent callers become
+     * *waiters* and share the leader's promise. Waiters block at most
+     * `waiterTimeoutMs`, then reject with {@link SingleFlightTimeoutError} so a
+     * hung leader cannot stall a whole batch. The leader itself is not
+     * time-limited here (it owns its own request timeout) and a timed-out
+     * waiter never writes to the cache, so no partial state is left behind.
+     */
+    getOrFetch<T>(key: string, fetcher: () => Promise<T>, options?: GetOrFetchOptions): Promise<T>;
+    /** Issue #958 — snapshot of single-flight counters (no keys, no addresses). */
+    getSingleFlightStats(): SingleFlightStats;
+    /**
+     * Remove all cached entries from the in-memory store and, if a persistent
+     * backend is configured, call its `dispose` lifecycle hook.
+     *
+     * This is a full reset — all keys, regardless of their remaining TTL, are
+     * discarded.  Useful in tests to guarantee a clean slate between cases.
+     */
+    clear(): Promise<void>;
+    /**
+     * Return a snapshot of the current in-memory cache state for debugging.
+     *
+     * Keys in the returned `entries` array are **not** redacted here — callers
+     * that log or export the stats should pass them through `redactCacheStats`
+     * in `horizon.ts` before they reach any log output so that embedded
+     * Stellar addresses are masked to first-4/last-4.
+     *
+     * @returns `{ size, entries }` — count of live entries and their raw keys.
+     *          Also includes `backendEnabled: true` when a persistent backend
+     *          is active.
      */
     getStats(): {
         size: number;
         entries: string[];
+        backendEnabled?: boolean;
     };
 }
 export declare const defaultCache: SimpleCache;

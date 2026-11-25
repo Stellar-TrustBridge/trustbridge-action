@@ -1,8 +1,12 @@
-import { HorizonError, isCreditBalance,
+import { HorizonError, HorizonRateLimitError, isCreditBalance,
   isRetryableStatus,
   parseRetryAfterMs,
-  parseHorizonBalance, normalizeHorizonUrl } from '../src/horizon';
-import { fetchAccount, HorizonAccount, waitForFundedAccount, getNativeBalance, hasTrustline } from '../src/horizon';
+  fetchNetworkPassphrase, FetchLike,
+  parseHorizonBalance, normalizeHorizonUrl, getAssetBalance } from '../src/horizon';
+import { fetchAccount, HorizonAccount, waitForFundedAccount, getNativeBalance, hasTrustline, fetchClaimableBalanceCount } from '../src/horizon';
+import { applyWalletLabels, applyReadyLabels } from '../src/horizon';
+import { HorizonCircuitOpenError, isCircuitOpenError } from '../src/horizon';
+import { CircuitBreaker, CircuitOpenError } from '../src/resilience';
 import * as loggerModule from '../src/logger';
 import { SimpleCache } from '../src/cache';
 import type { Request, RequestInit, Response } from 'node-fetch';
@@ -76,7 +80,7 @@ function assertContextHasNoRawAddress(
     if (typeof value === 'string') {
       assertNoRawAddress(value, rawAddress);
     } else if (typeof value === 'object' && value !== null) {
-      const json = JSON.stringify(value);
+      const json = JSON.stringify(value, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
       assertNoRawAddress(json, rawAddress);
     }
   }
@@ -163,10 +167,31 @@ describe('isCreditBalance', () => {
     expect(isCreditBalance({ balance: '1', asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: 'GISSUERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', buying_liabilities: '0', selling_liabilities: '0' })).toBe(true);
     expect(isCreditBalance({ balance: '1', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' })).toBe(false);
   });
+
+  it('returns false for liquidity_pool_shares', () => {
+    expect(isCreditBalance({
+      balance: '1',
+      asset_type: 'liquidity_pool_shares',
+      liquidity_pool_id: 'abc123',
+      buying_liabilities: '0',
+      selling_liabilities: '0',
+      limit: '1000',
+      is_authorized: true,
+      is_authorized_to_maintain_liabilities: true,
+    })).toBe(false);
+  });
+
+  it('returns false for claimable_balance_id', () => {
+    expect(isCreditBalance({
+      asset_type: 'claimable_balance_id',
+      balance: '1',
+      claimable_balance_id: 'xyz',
+    })).toBe(false);
+  });
 });
 
 describe('parseHorizonBalance', () => {
-  it('parses numeric balances and falls back to zero', () => {
+  it('returns valid numbers or 0', () => {
     expect(parseHorizonBalance('1.5000000')).toBe(1.5);
     expect(parseHorizonBalance('bad')).toBe(0);
   });
@@ -188,6 +213,101 @@ describe('getNativeBalance & hasTrustline', () => {
     const account = makeAccount();
     expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
     expect(hasTrustline(account, 'EURT', TEST_ADDRESS_2)).toBe(false);
+  });
+
+  it('does not false-positive on liquidity_pool_shares entries', () => {
+    const account = makeAccount();
+    account.balances = [
+      { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+      {
+        balance: '1.0000000',
+        asset_type: 'liquidity_pool_shares',
+        liquidity_pool_id: 'pool123',
+        buying_liabilities: '0',
+        selling_liabilities: '0',
+        limit: '1000',
+        is_authorized: true,
+        is_authorized_to_maintain_liabilities: true,
+      },
+    ];
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(false);
+  });
+
+  it('finds trustline in account with 100+ mixed balance entries', () => {
+    const account = makeAccount();
+    const manyBalances: HorizonAccount['balances'] = [
+      { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+    ];
+    // 98 LP share entries
+    for (let i = 0; i < 98; i++) {
+      manyBalances.push({
+        balance: '1.0000000',
+        asset_type: 'liquidity_pool_shares',
+        liquidity_pool_id: `pool${i}`,
+        buying_liabilities: '0',
+        selling_liabilities: '0',
+        limit: '1000',
+        is_authorized: true,
+        is_authorized_to_maintain_liabilities: true,
+      });
+    }
+    // target trustline at the end
+    manyBalances.push({
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0',
+      selling_liabilities: '0',
+    });
+    account.balances = manyBalances;
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
+  });
+});
+
+describe('getAssetBalance', () => {
+  it('extracts asset balance for matching code and issuer', () => {
+    const account = makeAccount();
+    expect(getAssetBalance(account, 'USDC', TEST_ADDRESS_2)).toBe('5.0000000');
+  });
+
+  it('returns 0 when asset trustline does not exist', () => {
+    const account = makeAccount();
+    expect(getAssetBalance(account, 'EURT', TEST_ADDRESS_2)).toBe('0');
+    expect(getAssetBalance(account, 'USDC', FALLBACK_ADDRESS)).toBe('0');
+  });
+
+  it('returns 0 when balances array is empty', () => {
+    const account = makeAccount();
+    account.balances = [];
+    expect(getAssetBalance(account, 'USDC', TEST_ADDRESS_2)).toBe('0');
+  });
+
+  it('matches asset code and issuer exactly', () => {
+    const account = makeAccount();
+    account.balances.push({
+      balance: '25.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: FALLBACK_ADDRESS,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+    });
+    expect(getAssetBalance(account, 'USDC', TEST_ADDRESS_2)).toBe('5.0000000');
+    expect(getAssetBalance(account, 'USDC', FALLBACK_ADDRESS)).toBe('25.0000000');
+  });
+
+  it('handles 12-character asset codes (credit_alphanum12)', () => {
+    const account = makeAccount();
+    account.balances.push({
+      balance: '99.0000000',
+      asset_type: 'credit_alphanum12',
+      asset_code: 'LONGASSET12',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+    });
+    expect(getAssetBalance(account, 'LONGASSET12', TEST_ADDRESS_2)).toBe('99.0000000');
   });
 });
 
@@ -375,15 +495,74 @@ describe('Horizon debug log redaction', () => {
         const retryCtx = requireContext(retrySched);
         expect(retryCtx.nextAttempt).toBe(1);
         expect(retryCtx.retryAfterFromHeader).toBe(true);
+        expect(retryCtx.stellarAddress).toBe(expectedRedacted);
+        // Issue #697: retryable (429/503) response bodies are never logged.
         const parsedErr = calls.find((c) => c.message === 'Horizon error response parsed');
         const parsedErrCtx = requireContext(parsedErr);
-        expect(parsedErrCtx.errorDetail).not.toContain(TEST_ADDRESS);
-        expect(parsedErrCtx.errorDetail).toContain(expectedRedacted);
+        expect(parsedErrCtx.bodyOmitted).toBe(true);
+        expect(parsedErrCtx.errorDetail).toBeUndefined();
         assertAllCallsRedacted(calls, RAW_ADDRESSES);
       } finally {
         global.setTimeout = origSetTimeout;
         jest.restoreAllMocks();
         restore();
+      }
+    });
+
+    it('caps Retry-After at retryMaxDelayMs and still retries on 429', async () => {
+      const errBody = { type: 'rate_limit', title: 'Too Many Requests', status: 429, detail: `Rate limited` };
+      let callCount = 0;
+      const mock = makeMockFetch(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return makeMockResponse(429, errBody, { headers: { 'retry-after': '120' } });
+        }
+        return makeMockResponse(200, { id: TEST_ADDRESS, balances: [{ asset_type: 'native', balance: '100' }] });
+      });
+
+      const origSetTimeout = global.setTimeout;
+      global.setTimeout = ((callback: Parameters<typeof setTimeout>[0]) =>
+        origSetTimeout(callback, 0)) as typeof setTimeout;
+
+      try {
+        const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 2,
+          cacheTtlMs: 0,
+          retryMaxDelayMs: 60000,
+          fetchFn: mock,
+        });
+
+        expect(result).toBeDefined();
+        expect(callCount).toBe(2);
+      } finally {
+        global.setTimeout = origSetTimeout;
+      }
+    });
+
+    it('reports wait-budget context if total wait exceeds max total wait', async () => {
+      const errBody = { type: 'rate_limit', title: 'Too Many Requests', status: 429, detail: `Rate limited` };
+      let callCount = 0;
+      const mock = makeMockFetch(async () => {
+        callCount += 1;
+        // Two consecutive 429s, each asking to wait 40 seconds (40000ms).
+        return makeMockResponse(429, errBody, { headers: { 'retry-after': '40' } });
+      });
+      const origSetTimeout = global.setTimeout;
+      global.setTimeout = ((callback: Parameters<typeof setTimeout>[0]) =>
+        origSetTimeout(callback, 0)) as typeof setTimeout;
+
+      try {
+        await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 2,
+          cacheTtlMs: 0,
+          retryMaxDelayMs: 60000, // per-retry cap is generous enough
+          retryMaxTotalWaitMs: 70000, // but total wait cap will be exceeded on 2nd retry (40k + 40k = 80k > 70k)
+          fetchFn: mock,
+        })).rejects.toThrow(/retry wait budget exhausted/i);
+        // It should have made 2 calls (first attempt + 1 retry, before failing before 2nd retry)
+        expect(mock).toHaveBeenCalledTimes(2);
+      } finally {
+        global.setTimeout = origSetTimeout;
       }
     });
   });
@@ -560,6 +739,193 @@ describe('Horizon debug log redaction', () => {
         restore();
       }
     });
+
+    it('bypasses failover when primary returns 404 (account missing is not retryable)', async () => {
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(404, { title: 'Resource Missing' });
+        }
+        return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+      });
+
+      await expect(
+        fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 0,
+          horizonUrlFallback: FALLBACK_HORIZON,
+          fetchFn: mock,
+        }),
+      ).rejects.toThrow(/not found on Horizon/);
+
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('prevents failover across different networks when allowCrossNetworkFailover is false', async () => {
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(500, { title: 'Internal Error' });
+        }
+        return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+      });
+
+      const testnetSecondary = 'https://horizon-testnet.stellar.org';
+
+      await expect(
+        fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 0,
+          secondaryHorizonUrl: testnetSecondary,
+          allowCrossNetworkFailover: false,
+          fetchFn: mock,
+        }),
+      ).rejects.toThrow(/Horizon request failed/);
+
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('attaches _servedByUrl to the returned account object on primary and secondary success', async () => {
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(500, { title: 'Internal Error' });
+        }
+        return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+      });
+
+      const secondaryHorizon = 'https://horizon-secondary.stellar.org';
+      const account = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        secondaryHorizonUrl: secondaryHorizon,
+        fetchFn: mock,
+      });
+
+      expect(account._servedByUrl).toBe(secondaryHorizon);
+    });
+  });
+
+  describe('RPC fallback network binding rule', () => {
+    const TESTNET_FALLBACK_HORIZON = 'https://horizon-testnet.stellar.org';
+
+    it('refuses a cross-network fallback by default with an explicit blocked error', async () => {
+      const { calls, restore } = captureDebugCalls();
+      const primaryErrBody = { type: 'server_error', title: 'Bad Gateway', status: 502, detail: 'primary down' };
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(502, primaryErrBody);
+        }
+        // The fallback must never be called for a cross-network mismatch.
+        return makeMockResponse(200, makeAccount(FALLBACK_ADDRESS));
+      });
+      loggerModule.logger.setDebugMode(true);
+
+      try {
+        // Issue #687: the refusal is fail-closed with an explicit
+        // cross-network error (synthetic status 0), not the primary error.
+        await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 0,
+          cacheTtlMs: 0,
+          horizonUrlFallback: TESTNET_FALLBACK_HORIZON,
+          fetchFn: mock,
+        })).rejects.toMatchObject({ statusCode: 0 });
+
+        // Only the primary request was made — the mismatched-network
+        // fallback was never attempted.
+        expect(mock).toHaveBeenCalledTimes(1);
+
+        const skipped = calls.find(
+          (c) => c.message === 'Horizon RPC fallback skipped: primary and fallback resolve to different networks',
+        );
+        const skippedCtx = requireContext(skipped);
+        expect(skippedCtx.primaryNetwork).toBe('public');
+        expect(skippedCtx.fallbackNetwork).toBe('testnet');
+
+        const switched = calls.find(
+          (c) => c.message === 'Horizon RPC fallback: primary exhausted, switching to fallback URL',
+        );
+        expect(switched).toBeUndefined();
+      } finally {
+        jest.restoreAllMocks();
+        restore();
+      }
+    });
+
+    it('uses a cross-network fallback when allowCrossNetworkFallback is explicitly set', async () => {
+      const account = makeAccount(FALLBACK_ADDRESS);
+      const primaryErrBody = { type: 'server_error', title: 'Bad Gateway', status: 502, detail: 'primary down' };
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(502, primaryErrBody);
+        }
+        return makeMockResponse(200, account);
+      });
+
+      const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 0,
+        horizonUrlFallback: TESTNET_FALLBACK_HORIZON,
+        allowCrossNetworkFallback: true,
+        fetchFn: mock,
+      });
+
+      expect(result.account_id).toBe(FALLBACK_ADDRESS);
+      expect(mock).toHaveBeenCalledTimes(2);
+      jest.restoreAllMocks();
+    });
+
+    it('still uses the fallback when both URLs resolve to the same network', async () => {
+      const account = makeAccount(FALLBACK_ADDRESS);
+      const primaryErrBody = { type: 'server_error', title: 'Bad Gateway', status: 502, detail: 'primary down' };
+      const mock = makeMockFetch(async (url) => {
+        if (typeof url === 'string' && url.startsWith(PRIMARY_HORIZON)) {
+          return makeMockResponse(502, primaryErrBody);
+        }
+        return makeMockResponse(200, account);
+      });
+
+      const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 0,
+        horizonUrlFallback: FALLBACK_HORIZON,
+        fetchFn: mock,
+      });
+
+      expect(result.account_id).toBe(FALLBACK_ADDRESS);
+      expect(mock).toHaveBeenCalledTimes(2);
+      jest.restoreAllMocks();
+    });
+  });
+
+  describe('never caches a 404 as a successful/funded result', () => {
+    it('does not populate the cache on a 404 and refetches on the next call', async () => {
+      const cache = new SimpleCache();
+      const account = makeAccount(TEST_ADDRESS);
+      const notFoundBody = { type: 'not_found', title: 'Not Found', status: 404, detail: 'Account not found' };
+      let callCount = 0;
+      const mock = makeMockFetch(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return makeMockResponse(404, notFoundBody);
+        }
+        return makeMockResponse(200, account);
+      });
+
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 60_000,
+        cache,
+        fetchFn: mock,
+      })).rejects.toMatchObject({ statusCode: 404 });
+
+      expect(cache.getStats().size).toBe(0);
+
+      const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 60_000,
+        cache,
+        fetchFn: mock,
+      });
+
+      expect(result.account_id).toBe(TEST_ADDRESS);
+      expect(callCount).toBe(2);
+      jest.restoreAllMocks();
+    });
   });
 
   describe('safeAccountSummary: never emits sensitive account fields into debug context', () => {
@@ -593,5 +959,949 @@ describe('Horizon debug log redaction', () => {
         restore();
       }
     });
+
+    it('excludes liquidity_pool_shares from creditTrustlineCount', async () => {
+      const { calls, restore } = captureDebugCalls();
+      const account = makeAccount(TEST_ADDRESS);
+      account.balances = [
+        { balance: '10.0000000', asset_type: 'native', buying_liabilities: '0', selling_liabilities: '0' },
+        {
+          balance: '1.0000000',
+          asset_type: 'liquidity_pool_shares',
+          liquidity_pool_id: 'pool1',
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+          limit: '1000',
+          is_authorized: true,
+          is_authorized_to_maintain_liabilities: true,
+        },
+        {
+          balance: '5.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: TEST_ADDRESS_2,
+          buying_liabilities: '0',
+          selling_liabilities: '0',
+        },
+      ];
+      const mock = makeMockFetch(async () => makeMockResponse(200, account));
+      loggerModule.logger.setDebugMode(true);
+
+      try {
+        await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 0,
+          cacheTtlMs: 0,
+          fetchFn: mock,
+        });
+        const success = calls.find((c) => c.message === 'Horizon fetch success');
+        const ctx = requireContext(success);
+        expect(ctx.balancesCount).toBe(3);
+        // LP share must NOT be counted as a credit trustline
+        expect(ctx.creditTrustlineCount).toBe(1);
+      } finally {
+        jest.restoreAllMocks();
+        restore();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal / job-cancellation tests (Issue #82)
+// ---------------------------------------------------------------------------
+
+describe('AbortSignal cancellation', () => {
+  describe('fetchAccount: pre-flight abort', () => {
+    it('rejects immediately (non-retryable) when signal is already aborted before fetch starts', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const mock = makeMockFetch(async () => makeMockResponse(200, makeAccount()));
+
+      await expect(
+        fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 2,
+          cacheTtlMs: 0,
+          signal: controller.signal,
+          fetchFn: mock,
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('aborted'),
+        retryable: false,
+      });
+
+      // The fetch function should NOT have been called at all.
+      expect(mock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fetchAccount: mid-request abort stops retries', () => {
+    it('does not retry after the parent signal fires during a request', async () => {
+      const controller = new AbortController();
+
+      // Simulate: first call triggers the job abort, second call should never run.
+      let callCount = 0;
+      const mock = makeMockFetch(async () => {
+        callCount += 1;
+        controller.abort(); // cancel the job during the first request
+        // Throw an AbortError as fetch would when the signal fires.
+        const err = new Error('The user aborted a request.');
+        err.name = 'AbortError';
+        throw err;
+      });
+
+      await expect(
+        fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          maxRetries: 3,
+          cacheTtlMs: 0,
+          signal: controller.signal,
+          fetchFn: mock,
+        }),
+      ).rejects.toMatchObject({
+        retryable: false,
+        message: expect.stringContaining('aborted'),
+      });
+
+      // Should have been called exactly once — no retries after cancellation.
+      expect(callCount).toBe(1);
+    });
+  });
+
+  describe('waitForFundedAccount: abort stops polling', () => {
+    it('exits without retrying when signal is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const fetchAccountFn = jest.fn().mockRejectedValue(new HorizonError('not found', 404, false));
+
+      await expect(
+        waitForFundedAccount(
+          PRIMARY_HORIZON,
+          TEST_ADDRESS,
+          { timeoutMs: 5000, pollIntervalMs: 5, signal: controller.signal },
+          fetchAccountFn,
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('aborted'),
+        retryable: false,
+      });
+
+      // fetch should not have been called — aborted before first attempt.
+      expect(fetchAccountFn).not.toHaveBeenCalled();
+    });
+
+    it('stops polling mid-loop when signal fires between polls', async () => {
+      const controller = new AbortController();
+      let calls = 0;
+
+      const fetchAccountFn = jest.fn().mockImplementation(async () => {
+        calls += 1;
+        // Abort after the first 404 to simulate job cancellation between polls.
+        if (calls === 1) {
+          controller.abort();
+        }
+        throw new HorizonError('not found', 404, false);
+      });
+
+      await expect(
+        waitForFundedAccount(
+          PRIMARY_HORIZON,
+          TEST_ADDRESS,
+          { timeoutMs: 30000, pollIntervalMs: 1, signal: controller.signal },
+          fetchAccountFn,
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('aborted'),
+        retryable: false,
+      });
+
+      // Only one fetch should have been attempted before the abort was processed.
+      expect(calls).toBe(1);
+    });
+
+    it('does not produce a misleading "account not funded" error on abort', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const fetchAccountFn = jest.fn().mockRejectedValue(new HorizonError('not found', 404, false));
+
+      const error = await waitForFundedAccount(
+        PRIMARY_HORIZON,
+        TEST_ADDRESS,
+        { timeoutMs: 5000, pollIntervalMs: 5, signal: controller.signal },
+        fetchAccountFn,
+      ).catch((e) => e as HorizonError);
+
+      // Must NOT look like a genuine "account not funded" (404) error.
+      expect(error).toBeInstanceOf(HorizonError);
+      expect((error as HorizonError).statusCode).toBe(0);
+      expect((error as HorizonError).message).not.toContain('not funded');
+      expect((error as HorizonError).message).not.toContain('wait_until_funded');
+    });
+  });
+
+  describe('RateBudgetTracker integration', () => {
+    it('throws RateBudgetExhaustedError when horizonMaxRequests is exceeded', async () => {
+      const { RateBudgetExhaustedError } = require('../src/resilience');
+      const account = makeAccount(TEST_ADDRESS);
+      const mock = makeMockFetch(async () => makeMockResponse(200, account));
+      
+      const rateBudgetTracker = new (require('../src/resilience').RateBudgetTracker)(2);
+
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        fetchFn: mock,
+        rateBudgetTracker,
+        cacheTtlMs: 0,
+      });
+
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        fetchFn: mock,
+        rateBudgetTracker,
+        cacheTtlMs: 0,
+      });
+
+      expect(rateBudgetTracker.requestsMade).toBe(2);
+
+      await expect(
+        fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+          fetchFn: mock,
+          rateBudgetTracker,
+          cacheTtlMs: 0,
+        }),
+      ).rejects.toThrow(RateBudgetExhaustedError);
+    });
+
+    it('caps Retry-After at retryMaxDelayMs and retries', async () => {
+      let callCount = 0;
+      const mock = makeMockFetch(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return makeMockResponse(429, {}, { headers: { 'retry-after': '100' } });
+        }
+        return makeMockResponse(200, { id: TEST_ADDRESS, balances: [{ asset_type: 'native', balance: '100' }] });
+      });
+
+      const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        fetchFn: mock,
+        maxRetries: 1,
+        retryMaxDelayMs: 2000,
+        cacheTtlMs: 0,
+      });
+
+      expect(result).toBeDefined();
+      expect(callCount).toBe(2);
+    });
+  });
+});
+
+describe('fetchClaimableBalanceCount', () => {
+  it('returns 0 on validation error', async () => {
+    const result = await fetchClaimableBalanceCount('http://169.254.169.254', 'G123', jest.fn() as any);
+    expect(result).toBe(0);
+  });
+
+  it('returns 0 on fetch error', async () => {
+    const fetchFn = jest.fn().mockRejectedValue(new Error('Network error'));
+    const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
+    expect(result).toBe(0);
+  });
+
+  it('returns 0 on non-ok response', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({ ok: false });
+    const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
+    expect(result).toBe(0);
+  });
+
+  it('returns 0 when the claimant endpoint responds with 404', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({ ok: false, status: 404 });
+    const result = await fetchClaimableBalanceCount(PRIMARY_HORIZON, TEST_ADDRESS, fetchFn as any);
+    expect(result).toBe(0);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns count when _embedded.records is populated', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ _embedded: { records: [1, 2, 3] } }),
+    });
+    const result = await fetchClaimableBalanceCount(PRIMARY_HORIZON, TEST_ADDRESS, fetchFn as any);
+    expect(result).toBe(3);
+    expect(fetchFn).toHaveBeenCalledWith(
+      `${PRIMARY_HORIZON}/claimable_balances?claimant=${encodeURIComponent(TEST_ADDRESS)}&limit=5`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('returns count when records is populated directly', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ records: [1] }),
+    });
+    const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
+    expect(result).toBe(1);
+  });
+
+  it('returns 0 when records is empty', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ records: [] }),
+    });
+    const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
+    expect(result).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-open propagation
+// ---------------------------------------------------------------------------
+
+describe('circuit-open propagation (Issue #434)', () => {
+  it('throws HorizonCircuitOpenError when the breaker blocks the request', async () => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1, recoveryTimeoutMs: 60_000 });
+    // Trip the breaker with one failure. The tripping call rethrows the
+    // original error; the *next* call is the fast-fail.
+    await expect(
+      breaker.execute(async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    // The next call is fast-failed without touching the network.
+    const fetchFn = jest.fn();
+    await expect(
+      fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        fetchFn: fetchFn as unknown as FetchLike,
+        cacheTtlMs: 0,
+        circuitBreaker: breaker,
+      }),
+    ).rejects.toThrow(HorizonCircuitOpenError);
+
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+
+  it('keeps HorizonCircuitOpenError a HorizonError so existing handlers still work', () => {
+    const err = new HorizonCircuitOpenError('blocked');
+    expect(err).toBeInstanceOf(HorizonError);
+    expect(err.statusCode).toBe(0);
+    expect(err.retryable).toBe(false);
+  });
+
+  it('detects circuit-open errors across both representations', () => {
+    expect(isCircuitOpenError(new HorizonCircuitOpenError('x'))).toBe(true);
+    expect(isCircuitOpenError(new CircuitOpenError('x'))).toBe(true);
+    expect(isCircuitOpenError(new HorizonError('x', 500))).toBe(false);
+    expect(isCircuitOpenError(new Error('x'))).toBe(false);
+    expect(isCircuitOpenError(undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #694 — paginate applyWalletLabels beyond the 100-label-per-page cap
+// ---------------------------------------------------------------------------
+
+/** Build an octokit mock that serves `listLabelsOnIssue` page by page. */
+function makeLabelOctokit(pages: Array<Array<{ name: string }>>) {
+  const listLabelsOnIssue = jest.fn((params: { page?: number }) => {
+    const page = params.page ?? 1;
+    return Promise.resolve({ data: pages[page - 1] ?? [] });
+  });
+  const addLabels = jest.fn().mockResolvedValue({});
+  const removeLabel = jest.fn().mockResolvedValue({});
+  return {
+    octokit: { rest: { issues: { listLabelsOnIssue, addLabels, removeLabel } } },
+    listLabelsOnIssue,
+    addLabels,
+    removeLabel,
+  };
+}
+
+/** Build a paginated label fixture of `total` labels, overriding given slots. */
+function buildPagedLabels(
+  total: number,
+  overrides: Array<{ slot: number; name: string }>,
+  perPage = 100,
+): Array<Array<{ name: string }>> {
+  const names = Array.from({ length: total }, (_, i) => `label: ${i + 1}`);
+  for (const { slot, name } of overrides) {
+    names[slot] = name;
+  }
+  const pages: Array<Array<{ name: string }>> = [];
+  for (let i = 0; i < names.length; i += perPage) {
+    pages.push(names.slice(i, i + perPage).map((name) => ({ name })));
+  }
+  return pages;
+}
+
+describe('applyWalletLabels pagination (Issue #694)', () => {
+  const OWNER = 'trustbridge';
+  const REPO = 'wallet-repo';
+  const ISSUE = 1337;
+
+  it('applies the wallet label when it only exists on page 2 of a >100-label issue', async () => {
+    // 250 labels: pages [100, 100, 50]. Target label sits on page 2.
+    const pages = buildPagedLabels(250, [{ slot: 150, name: 'wallet: funded' }]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result).toEqual({ applied: 'wallet: funded', removed: [] });
+    // The loop walked pages 1, 2 and stopped on the short page 3.
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+    expect(listLabelsOnIssue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 3, per_page: 100 }),
+    );
+    // Label already present → no duplicate create attempt.
+    expect(addLabels).not.toHaveBeenCalled();
+    expect(removeLabel).not.toHaveBeenCalled();
+  });
+
+  it('removes a stale wallet label found on page 3 and adds the missing target', async () => {
+    const pages = buildPagedLabels(250, [{ slot: 220, name: 'wallet: unfunded' }]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result).toEqual({
+      applied: 'wallet: funded',
+      removed: ['wallet: unfunded'],
+    });
+    expect(removeLabel).toHaveBeenCalledTimes(1);
+    expect(removeLabel).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      name: 'wallet: unfunded',
+    });
+    // Target not present anywhere → added exactly once.
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(addLabels).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      labels: ['wallet: funded'],
+    });
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not re-add the target when removeStale=false and the target is on page 2', async () => {
+    const pages = buildPagedLabels(250, [
+      { slot: 150, name: 'wallet: trustline-missing' },
+    ]);
+    const { octokit, addLabels, removeLabel } = makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(
+      octokit as any,
+      OWNER,
+      REPO,
+      ISSUE,
+      { accountFunded: true, trustlineExists: false, xlmReserveMet: false },
+      { removeStale: false },
+    );
+
+    expect(result).toEqual({ applied: 'wallet: trustline-missing', removed: [] });
+    expect(addLabels).not.toHaveBeenCalled();
+    expect(removeLabel).not.toHaveBeenCalled();
+  });
+
+  it('terminates the loop with one empty page when the label count is an exact multiple of 100', async () => {
+    // 300 labels = three full 100-label pages; page 4 is empty and ends the loop.
+    const pages = buildPagedLabels(300, []);
+    const { octokit, listLabelsOnIssue, addLabels } = makeLabelOctokit(pages);
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(4);
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(addLabels).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      issue_number: ISSUE,
+      labels: ['wallet: funded'],
+    });
+    expect(result.applied).toBe('wallet: funded');
+  });
+
+  it('attempts to add a missing label and surfaces add failures as an error', async () => {
+    const pages = buildPagedLabels(250, []);
+    const { octokit, addLabels, removeLabel } = makeLabelOctokit(pages);
+    addLabels.mockRejectedValue(new Error('add label failed'));
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(addLabels).toHaveBeenCalledTimes(1);
+    expect(removeLabel).not.toHaveBeenCalled();
+    expect(result.applied).toBe('wallet: funded');
+    expect(result.removed).toEqual([]);
+    expect(result.error).toContain('add label failed');
+  });
+
+  it('surfaces listing errors instead of swallowing them', async () => {
+    const { octokit, addLabels, listLabelsOnIssue } = makeLabelOctokit([]);
+    listLabelsOnIssue.mockRejectedValue(new Error('list labels failed'));
+
+    const result = await applyWalletLabels(octokit as any, OWNER, REPO, ISSUE, {
+      accountFunded: true,
+      trustlineExists: true,
+      xlmReserveMet: true,
+    });
+
+    expect(result.applied).toBe('wallet: funded');
+    expect(result.error).toContain('list labels failed');
+    expect(addLabels).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyReadyLabels pagination (Issue #694)', () => {
+  it('sees stale labels on later pages and does not duplicate the target', async () => {
+    const pages = buildPagedLabels(250, [
+      { slot: 120, name: 'trustbridge: fail' },
+      { slot: 125, name: 'trustbridge: pass' },
+    ]);
+    const { octokit, listLabelsOnIssue, addLabels, removeLabel } =
+      makeLabelOctokit(pages);
+
+    const result = await applyReadyLabels(octokit as any, 'owner', 'repo', 42, {
+      ready: true,
+      passLabel: 'trustbridge: pass',
+      failLabel: 'trustbridge: fail',
+    });
+
+    expect(result).toEqual({
+      applied: 'trustbridge: pass',
+      removed: ['trustbridge: fail'],
+    });
+    expect(listLabelsOnIssue).toHaveBeenCalledTimes(3);
+    expect(removeLabel).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      issue_number: 42,
+      name: 'trustbridge: fail',
+    });
+    // Target already on page 2 → no duplicate add attempt.
+    expect(addLabels).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #558 — Hardened Horizon mock fixtures: clawback and auth_required
+// ---------------------------------------------------------------------------
+describe('HorizonBalanceCredit: clawback and auth_required fixture assertions', () => {
+  it('accepts a credit balance with is_clawback_enabled=true', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_clawback_enabled: true,
+    };
+    expect(balance.is_clawback_enabled).toBe(true);
+    expect(isCreditBalance(balance)).toBe(true);
+  });
+
+  it('accepts a credit balance with is_clawback_enabled=false (issuer opted out)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_clawback_enabled: false,
+    };
+    expect(balance.is_clawback_enabled).toBe(false);
+  });
+
+  it('accepts a credit balance with is_authorized=true (issuer has AUTH_REQUIRED)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: true,
+      is_authorized_to_maintain_liabilities: true,
+    };
+    expect(balance.is_authorized).toBe(true);
+    expect(balance.is_authorized_to_maintain_liabilities).toBe(true);
+  });
+
+  it('accepts a credit balance with is_authorized=false (frozen / not yet authorized)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '0.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: false,
+      is_authorized_to_maintain_liabilities: false,
+    };
+    expect(balance.is_authorized).toBe(false);
+  });
+
+  it('accepts a credit balance with both clawback and auth flags set', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '1.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      is_authorized: true,
+      is_authorized_to_maintain_liabilities: true,
+      is_clawback_enabled: true,
+    };
+    expect(balance.is_authorized).toBe(true);
+    expect(balance.is_clawback_enabled).toBe(true);
+  });
+
+  it('omits optional auth/clawback fields gracefully (backward-compatible fixture)', () => {
+    const balance: import('../src/horizon').HorizonBalanceCredit = {
+      balance: '5.0000000',
+      asset_type: 'credit_alphanum4',
+      asset_code: 'USDC',
+      asset_issuer: TEST_ADDRESS_2,
+      buying_liabilities: '0.0000000',
+      selling_liabilities: '0.0000000',
+      // is_authorized, is_clawback_enabled intentionally absent
+    };
+    expect(balance.is_authorized).toBeUndefined();
+    expect(balance.is_clawback_enabled).toBeUndefined();
+    expect(isCreditBalance(balance)).toBe(true);
+  });
+});
+
+describe('HorizonAccount: account-level flags fixture assertions', () => {
+  it('accepts an account with auth_required=true in flags', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_immutable: false,
+        auth_clawback_enabled: false,
+      },
+    };
+    expect(account.flags?.auth_required).toBe(true);
+    expect(account.flags?.auth_revocable).toBe(true);
+    expect(account.flags?.auth_immutable).toBe(false);
+    expect(account.flags?.auth_clawback_enabled).toBe(false);
+  });
+
+  it('accepts an account with auth_clawback_enabled=true in flags', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: true,
+      },
+    };
+    expect(account.flags?.auth_clawback_enabled).toBe(true);
+  });
+
+  it('accepts an account without flags field (older Horizon snapshot)', () => {
+    const account = makeAccount();
+    expect(account.flags).toBeUndefined();
+    // hasTrustline should still work regardless
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
+  });
+
+  it('hasTrustline returns true even when trustline has is_clawback_enabled set', () => {
+    const account: import('../src/horizon').HorizonAccount = {
+      ...makeAccount(),
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '5.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: TEST_ADDRESS_2,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+          is_clawback_enabled: true,
+          is_authorized: true,
+          is_authorized_to_maintain_liabilities: true,
+        },
+      ],
+    };
+    expect(hasTrustline(account, 'USDC', TEST_ADDRESS_2)).toBe(true);
+  });
+
+  it('fetchAccount round-trips a fixture containing clawback and auth flags', async () => {
+    const accountWithFlags: import('../src/horizon').HorizonAccount = {
+      id: TEST_ADDRESS,
+      account_id: TEST_ADDRESS,
+      sequence: '1',
+      subentry_count: 2,
+      num_sponsoring: 0,
+      num_sponsored: 0,
+      flags: {
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: true,
+      },
+      balances: [
+        {
+          balance: '10.0000000',
+          asset_type: 'native',
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+        },
+        {
+          balance: '5.0000000',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: TEST_ADDRESS_2,
+          buying_liabilities: '0.0000000',
+          selling_liabilities: '0.0000000',
+          is_authorized: true,
+          is_authorized_to_maintain_liabilities: true,
+          is_clawback_enabled: true,
+        },
+      ],
+    };
+    const mock = makeMockFetch(async () => makeMockResponse(200, accountWithFlags));
+
+    const result = await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+      maxRetries: 0,
+      cacheTtlMs: 0,
+      fetchFn: mock,
+    });
+
+    expect(result.flags?.auth_required).toBe(true);
+    expect(result.flags?.auth_clawback_enabled).toBe(true);
+    const usdcBalance = result.balances.find(
+      (b) => isCreditBalance(b) && b.asset_code === 'USDC',
+    ) as import('../src/horizon').HorizonBalanceCredit | undefined;
+    expect(usdcBalance).toBeDefined();
+    expect(usdcBalance?.is_clawback_enabled).toBe(true);
+    expect(usdcBalance?.is_authorized).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #697 — structured Horizon retry log levels without address leakage
+// ---------------------------------------------------------------------------
+describe('Horizon structured retry logging (Issue #697)', () => {
+  const MUXED_ADDRESS = 'M' + 'A'.repeat(68);
+  const CONTRACT_ADDRESS = 'C' + 'A'.repeat(55);
+
+  type LevelCall = { level: 'debug' | 'info' | 'warn'; message: string; context: loggerModule.LogContext | undefined };
+
+  function captureAllLevels(): { calls: LevelCall[]; restore: () => void } {
+    const calls: LevelCall[] = [];
+    const spies = (['debug', 'info', 'warn'] as const).map((level) =>
+      jest.spyOn(loggerModule.logger, level).mockImplementation((message, context) => {
+        calls.push({
+          level,
+          message: loggerModule.redactString(message),
+          context: loggerModule.redactContext(context),
+        });
+      }),
+    );
+    return { calls, restore: () => spies.forEach((s) => s.mockRestore()) };
+  }
+
+  function serialize(call: LevelCall): string {
+    return `${call.message} ${JSON.stringify(call.context ?? {})}`;
+  }
+
+  let origSetTimeout: typeof setTimeout;
+  beforeEach(() => {
+    origSetTimeout = global.setTimeout;
+    global.setTimeout = ((callback: Parameters<typeof setTimeout>[0]) =>
+      origSetTimeout(callback, 0)) as typeof setTimeout;
+    loggerModule.logger.setDebugMode(true);
+  });
+  afterEach(() => {
+    global.setTimeout = origSetTimeout;
+    loggerModule.logger.setDebugMode(false);
+    jest.restoreAllMocks();
+  });
+
+  it('logs each scheduled retry at debug with attempt index and delay', async () => {
+    const { calls, restore } = captureAllLevels();
+    let callCount = 0;
+    const mock = makeMockFetch(async () => {
+      callCount += 1;
+      if (callCount < 3) {
+        return makeMockResponse(503, { detail: `Account ${TEST_ADDRESS} unavailable` });
+      }
+      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+    });
+
+    try {
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 3,
+        cacheTtlMs: 0,
+        retryBaseDelayMs: 10,
+        retryMaxDelayMs: 1000,
+        fetchFn: mock,
+      });
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries).toHaveLength(2);
+      expect(retries.every((c) => c.level === 'debug')).toBe(true);
+      expect(retries.map((c) => c.context?.attempt)).toEqual([0, 1]);
+      expect(retries.map((c) => c.context?.delayMs)).toEqual([10, 20]);
+      expect(retries.map((c) => c.context?.status)).toEqual([503, 503]);
+      expect(retries.every((c) => c.context?.capped === false)).toBe(true);
+      expect(retries.every((c) => c.context?.reasonCode === 'HORIZON_RETRY_SCHEDULED')).toBe(true);
+      expect(calls.some((c) => c.level === 'warn')).toBe(false);
+      for (const call of calls) {
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs final exhaustion at warning with a reason_code-friendly summary', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () =>
+      makeMockResponse(429, { detail: `Rate limit for ${TEST_ADDRESS}` }, { headers: { 'retry-after': '0' } }),
+    );
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 1,
+        cacheTtlMs: 0,
+        fetchFn: mock,
+      })).rejects.toMatchObject({ statusCode: 429 });
+
+      const warnings = calls.filter((c) => c.level === 'warn');
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].message).toContain('HORIZON_RETRIES_EXHAUSTED');
+      expect(warnings[0].message).toContain('HTTP 429');
+      expect(warnings[0].context?.phase).toBe('exhausted');
+      expect(warnings[0].context?.attempt).toBe(1);
+      expect(warnings[0].context?.maxAttempts).toBe(2);
+      expect(warnings[0].context?.stellarAddress).toBe(redactForAddress(TEST_ADDRESS));
+      // No response body fields leak into the retry event.
+      expect(serialize(warnings[0])).not.toContain('Rate limit for');
+      for (const call of calls) {
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('records a capped Retry-After delay accurately, including very short values', async () => {
+    const { calls, restore } = captureAllLevels();
+    let callCount = 0;
+    const mock = makeMockFetch(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return makeMockResponse(429, {}, { headers: { 'retry-after': '120' } });
+      }
+      if (callCount === 2) {
+        return makeMockResponse(429, {}, { headers: { 'retry-after': '0' } });
+      }
+      return makeMockResponse(200, makeAccount(TEST_ADDRESS));
+    });
+
+    try {
+      await fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 3,
+        cacheTtlMs: 0,
+        retryMaxDelayMs: 5000,
+        fetchFn: mock,
+      });
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries).toHaveLength(2);
+      expect(retries[0].context?.delayMs).toBe(5000);
+      expect(retries[0].context?.capped).toBe(true);
+      expect(retries[0].context?.retryAfterFromHeader).toBe(true);
+      expect(retries[1].context?.delayMs).toBe(0);
+      expect(retries[1].context?.capped).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('tags the fallback base URL without leaking query params', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () => makeMockResponse(503, {}));
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 0,
+        cacheTtlMs: 0,
+        horizonUrlFallback: `${FALLBACK_HORIZON}?api_key=supersecret&account=${TEST_ADDRESS}`,
+        fetchFn: mock,
+      })).rejects.toBeDefined();
+
+      const exhausted = calls.filter((c) => c.context?.event === 'horizon_retry' && c.context?.phase === 'exhausted');
+      const endpointKinds = exhausted.map((c) => c.context?.endpointKind);
+      expect(endpointKinds).toContain('primary');
+      const fallbackEvent = exhausted.find((c) => c.context?.endpointKind === 'fallback');
+      if (fallbackEvent) {
+        expect(fallbackEvent.context?.horizonUrl).not.toContain('?');
+        expect(fallbackEvent.context?.horizonUrl).toContain('horizon-fallback.stellar.org');
+      }
+      for (const call of calls.filter((c) => c.context?.event === 'horizon_retry')) {
+        expect(serialize(call)).not.toContain('supersecret');
+        expect(serialize(call)).not.toContain(TEST_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('never leaks G, C, or M addresses on transport retries', async () => {
+    const { calls, restore } = captureAllLevels();
+    const mock = makeMockFetch(async () => {
+      throw new Error(`connect ECONNRESET ${TEST_ADDRESS} ${CONTRACT_ADDRESS} ${MUXED_ADDRESS}`);
+    });
+
+    try {
+      await expect(fetchAccount(PRIMARY_HORIZON, TEST_ADDRESS, {
+        maxRetries: 1,
+        cacheTtlMs: 0,
+        retryBaseDelayMs: 1,
+        fetchFn: mock,
+      })).rejects.toBeDefined();
+
+      const retries = calls.filter((c) => c.context?.event === 'horizon_retry');
+      expect(retries.map((c) => c.context?.phase)).toEqual(['scheduled', 'exhausted']);
+      expect(retries[0].level).toBe('debug');
+      expect(retries[0].message).toBe('Horizon transport retry scheduled');
+      expect(retries[1].level).toBe('warn');
+      for (const call of calls) {
+        const text = serialize(call);
+        expect(text).not.toContain(TEST_ADDRESS);
+        expect(text).not.toContain(CONTRACT_ADDRESS);
+        expect(text).not.toContain(MUXED_ADDRESS);
+      }
+    } finally {
+      restore();
+    }
   });
 });

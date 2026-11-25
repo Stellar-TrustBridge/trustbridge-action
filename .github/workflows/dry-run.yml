@@ -1,0 +1,122 @@
+name: TrustBridge End-to-end Dry Run
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/dry-run.yml'
+      - 'src/**'
+      - 'action.yml'
+      - 'mock/horizon/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    env:
+      WEBHOOK_SECRET: trustbridge-dry-run-secret
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build action bundle
+        run: npm run build
+
+      - name: Start mock Horizon
+        run: npm run mock:start
+
+      - name: Start HMAC-verifying webhook receiver
+        shell: bash
+        run: |
+          node <<'NODE' > webhook-receiver.log 2>&1 &
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const http = require('http');
+          const secret = process.env.WEBHOOK_SECRET;
+
+          const server = http.createServer((request, response) => {
+            if (request.method !== 'POST') {
+              response.writeHead(204);
+              response.end();
+              return;
+            }
+
+            const chunks = [];
+            request.on('data', (chunk) => chunks.push(chunk));
+            request.on('end', () => {
+              const body = Buffer.concat(chunks);
+              const received = Buffer.from(request.headers['x-trustbridge-signature'] || '', 'utf8');
+              const expected = Buffer.from(
+                `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`,
+                'utf8',
+              );
+              const validSignature = received.length === expected.length &&
+                crypto.timingSafeEqual(received, expected);
+
+              let payload;
+              try {
+                payload = JSON.parse(body.toString('utf8'));
+              } catch {
+                payload = undefined;
+              }
+
+              const validPayload = payload?.schema_version === '1' &&
+                payload?.event === 'validation_complete' &&
+                !body.toString('utf8').includes(secret);
+              const result = validSignature && validPayload ? 'ok' : 'failed';
+              fs.writeFileSync('webhook-result.txt', result);
+              response.writeHead(result === 'ok' ? 204 : 400);
+              response.end();
+            });
+          });
+
+          server.listen(8787, '127.0.0.1');
+          NODE
+          echo $! > webhook-receiver.pid
+          for attempt in {1..20}; do
+            if curl --silent --fail http://127.0.0.1:8787/ >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+      - name: Run action against Horizon and webhook mocks
+        uses: ./
+        with:
+          stellar_address_input: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+          github_token: ${{ github.token }}
+          horizon_url: http://127.0.0.1:8089
+          posting_mode: dry-run
+          fail_on_missing: true
+          webhook_url: http://127.0.0.1:8787/webhook
+          webhook_secret: ${{ env.WEBHOOK_SECRET }}
+
+      - name: Assert HMAC receiver accepted the payload
+        shell: bash
+        run: |
+          test "$(cat webhook-result.txt)" = ok
+          ! grep -F "$WEBHOOK_SECRET" webhook-receiver.log
+
+      - name: Stop mock servers
+        if: always()
+        shell: bash
+        run: |
+          if test -f webhook-receiver.pid; then kill "$(cat webhook-receiver.pid)" || true; fi
+          npm run mock:stop

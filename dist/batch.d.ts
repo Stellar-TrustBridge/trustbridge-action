@@ -1,0 +1,245 @@
+/**
+ * Batch multi-address validation (Issue #105).
+ *
+ * Validates a list of Stellar addresses sequentially, collecting per-address
+ * results and aggregate metrics. Sequential execution keeps request pressure
+ * on Horizon predictable and avoids triggering rate limits.
+ */
+import { CheckConfig, HomeDomainOutcome } from './checks';
+import { HorizonAccount } from './horizon';
+import { FetchAccountOptions } from './horizon';
+import { AssetConfigInput } from './assets';
+import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
+export { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING };
+/** Stable reason code carried by {@link BatchAddressLimitError}. */
+export declare const BATCH_ADDRESS_LIMIT_REASON_CODE = "BATCH_ADDRESS_LIMIT_EXCEEDED";
+/**
+ * Thrown when a batch run is asked to validate more unique addresses than
+ * `batch_max_addresses` allows. Always raised **before** any Horizon request
+ * so an oversized matrix never spends rate budget or runner memory.
+ */
+export declare class BatchAddressLimitError extends Error {
+    readonly reasonCode = "BATCH_ADDRESS_LIMIT_EXCEEDED";
+    /** Number of unique addresses requested. */
+    readonly count: number;
+    /** Effective per-run limit. */
+    readonly limit: number;
+    /** Minimum number of matrix legs needed to stay within `limit`. */
+    readonly suggestedJobs: number;
+    constructor(count: number, limit: number);
+}
+/**
+ * Enforce the per-run address cap (Issue #911).
+ *
+ * @throws {BatchAddressLimitError} When `addresses` exceeds the limit.
+ */
+export declare function enforceBatchAddressLimit(addresses: readonly string[], maxAddresses?: number): void;
+/**
+ * `reason_code` emitted for a batch row (or asset) blocked by
+ * `clawback_strict_mode: true`. Mirrors the SARIF rule `TB005` used by the
+ * single-address path.
+ */
+export declare const CLAWBACK_STRICT_REASON_CODE = "CLAWBACK_STRICT_MODE";
+/** Machine-readable `reason_code` carried by every `batch_summary_json` row. */
+export declare const BATCH_REASON_CODES: {
+    readonly success: "SUCCESS";
+    readonly trustlineMissing: "TRUSTLINE_MISSING";
+    readonly reserveTooLow: "RESERVE_TOO_LOW";
+    readonly accountNotFunded: "ACCOUNT_NOT_FUNDED";
+    readonly horizonError: "HORIZON_ERROR";
+    readonly invalidAddress: "INVALID_ADDRESS";
+    readonly rateBudgetExhausted: "RATE_BUDGET_EXHAUSTED";
+    readonly fatalAuth: "FATAL_AUTH";
+    readonly fatalConfig: "FATAL_CONFIG";
+    readonly fatalCancellation: "FATAL_CANCELLED";
+    readonly clawbackStrict: "CLAWBACK_STRICT_MODE";
+    /**
+     * Row never dispatched to Horizon because `options.signal` was aborted
+     * before this address's turn came up in the concurrency-limited queue
+     * (Issue #852). Distinct from `RATE_BUDGET_EXHAUSTED`: no budget was
+     * spent, the run was cancelled by the caller.
+     */
+    readonly cancelled: "CANCELLED";
+    /**
+     * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+     * fails; remaining addresses keep being validated.
+     */
+    readonly addressTimeout: "ADDRESS_TIMEOUT";
+};
+/** A single asset that hit `clawback_strict_mode` for one address. */
+export interface BatchAssetFailure {
+    /** Asset code, e.g. `USDC`. */
+    assetCode: string;
+    /** Issuer account (G… public key or C… contract ID). */
+    assetIssuer: string;
+    /** Always {@link CLAWBACK_STRICT_REASON_CODE} today; kept explicit for JSON consumers. */
+    reasonCode: string;
+    /** Human-readable per-asset detail rendered in the batch comment. */
+    detail: string;
+}
+/** Result for a single address in a batch run. */
+export interface BatchAddressResult {
+    address: string;
+    valid: boolean;
+    accountFunded: boolean;
+    trustlineExists: boolean;
+    xlmBalance: string;
+    xlmReserveMet: boolean;
+    /** Human-readable failure reason, or null when all checks pass. */
+    failureReason: string | null;
+    /**
+     * Machine-readable failure classification (Issue #725). Always populated by
+     * `runBatchValidation`; optional on hand-constructed fixtures so existing
+     * callers keep compiling.
+     */
+    reasonCode?: string;
+    /**
+     * True when at least one asset (primary or `assets_json`) is blocked by
+     * `clawback_strict_mode` for this address (Issue #725).
+     */
+    clawbackStrictFailure?: boolean;
+    /**
+     * Per-asset clawback strict attribution for this address (Issue #725).
+     * Same asset code with different issuers is evaluated independently.
+     */
+    clawbackStrictAssets?: BatchAssetFailure[];
+    /**
+     * SEP-0001 home domain outcome for this row's asset issuer (Issue #708).
+     * Only set when `home_domain_check_enabled` is true.
+     */
+    homeDomainOutcome?: HomeDomainOutcome;
+}
+/** Aggregate summary across all addresses in a batch run. */
+export interface BatchSummary {
+    total: number;
+    passed: number;
+    failed: number;
+    /** Addresses that failed, with their reasons and machine-readable codes. */
+    failures: Array<{
+        address: string;
+        reason: string;
+        reasonCode: string;
+        /** True when this row failed because of `clawback_strict_mode` (Issue #725). */
+        clawbackStrict: boolean;
+    }>;
+    /** Taxonomy of failure reasons across the batch. */
+    failureTaxonomy: {
+        accountNotFunded: number;
+        trustlineMissing: number;
+        reserveInsufficient: number;
+        horizonError: number;
+        invalidAddress: number;
+        /** Rows blocked by `clawback_strict_mode` (Issue #725). */
+        clawbackStrict: number;
+    };
+    /**
+     * Number of addresses blocked by `clawback_strict_mode`, counted separately
+     * from the warn-mode clawback path (Issue #725).
+     */
+    clawbackStrictFailures: number;
+    /**
+     * Whether the run evaluated assets with `clawback_strict_mode` enabled.
+     * `false` means a clawback-enabled trustline can only ever warn, so a
+     * clawback row is impossible for this run.
+     */
+    clawbackStrictMode: boolean;
+    /** True when at least one fatal config/auth/cancellation failure occurred. */
+    fatal?: boolean;
+    /** Stable fatal reason codes for job-level gating. */
+    fatalReasonCodes?: string[];
+}
+export interface BatchRunOptions {
+    /** Delay in milliseconds between individual address requests (default: 200 ms). */
+    requestDelayMs?: number;
+    /** Horizon fetch options forwarded to each fetchAccount call. */
+    fetchOptions?: FetchAccountOptions;
+    /**
+     * Additional assets (typically from the `assets_json` input) whose clawback
+     * flag is evaluated per address under `clawback_strict_mode` (Issue #725).
+     * Same asset code with a different issuer is evaluated independently.
+     */
+    extraAssets?: AssetConfigInput[];
+    /**
+     * Asset issuer account for the SEP-0001 home domain check (Issue #708).
+     * When omitted and `config.homeDomainCheckEnabled` is true, the issuer is
+     * fetched once per batch. `null` means the issuer is unavailable.
+     */
+    issuerAccount?: HorizonAccount | null;
+    /**
+     * Maximum number of addresses validated concurrently against Horizon
+     * (Issue #852). Clamped to `[MIN_BATCH_CONCURRENCY, MAX_BATCH_CONCURRENCY]`.
+     * Defaults to `1`, i.e. the original fully-sequential behavior — every
+     * existing caller that does not set this option is unaffected. Each
+     * concurrent worker still honors `requestDelayMs` between its own
+     * successive requests, so `maxConcurrency` bounds *parallel* Horizon
+     * pressure without defeating the per-worker pacing.
+     */
+    maxConcurrency?: number;
+    /**
+     * Optional cancellation signal (Issue #852). When aborted, no new
+     * addresses are dispatched to Horizon — any not yet started are returned
+     * as `CANCELLED` rows instead of being fetched — and (unless the caller's
+     * own `fetchOptions.signal` is already set) the same signal is threaded
+     * into `fetchAccount` so in-flight requests are aborted too. The function
+     * always resolves with one row per input address; nothing is left
+     * orphaned.
+     */
+    signal?: AbortSignal;
+    /**
+     * Hard cap on addresses per run (Issue #911, `batch_max_addresses`).
+     * Defaults to {@link DEFAULT_BATCH_MAX_ADDRESSES}. Exceeding it throws a
+     * {@link BatchAddressLimitError} before any Horizon request or metric.
+     */
+    maxAddresses?: number;
+    /**
+     * Per-address deadline in milliseconds (Issue #928), independent of the
+     * global `signal`. When one address takes longer, its in-flight requests
+     * are aborted and the row is reported as `ADDRESS_TIMEOUT`; the batch moves
+     * on. Global cancellation (`signal`) always takes precedence. Unset, `0`,
+     * or non-finite disables the deadline (previous behavior).
+     */
+    perAddressTimeoutMs?: number;
+}
+/** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
+export declare const MIN_BATCH_CONCURRENCY = 1;
+/** Upper bound for {@link BatchRunOptions.maxConcurrency}. */
+export declare const MAX_BATCH_CONCURRENCY = 20;
+/**
+ * Parse the `stellar_addresses` input into a deduplicated list of addresses.
+ *
+ * Accepts:
+ * - Newline-separated list: one address per line (blank lines ignored)
+ * - JSON array: `["GABC...", "GDEF..."]`
+ *
+ * Throws if the resulting list is empty, or (Issue #911) a
+ * {@link BatchAddressLimitError} when the deduplicated list exceeds
+ * `options.maxAddresses` (default {@link DEFAULT_BATCH_MAX_ADDRESSES}).
+ */
+export declare function parseBatchAddresses(raw: string, options?: {
+    maxAddresses?: number;
+}): string[];
+export declare function runBatchValidation(addresses: string[], config: CheckConfig, horizonUrl: string, options?: BatchRunOptions): Promise<BatchAddressResult[]>;
+/**
+ * Compute aggregate summary metrics from batch results.
+ *
+ * @param results Per-address results from {@link runBatchValidation}.
+ * @param options `clawbackStrictMode` records the *policy* that was evaluated
+ *                (Issue #725). When omitted it is inferred from the results,
+ *                which is correct for every path that already observed a
+ *                clawback strict failure.
+ */
+export declare function buildBatchSummary(results: BatchAddressResult[], options?: {
+    clawbackStrictMode?: boolean;
+}): BatchSummary;
+/**
+ * Render a compact Markdown summary table for the batch results.
+ * Suitable for posting as a single issue comment in batch mode.
+ *
+ * When at least one row failed because of `clawback_strict_mode` (Issue #725)
+ * the table grows a `Clawback` column so the blocking policy is visible at a
+ * glance, the clawback taxonomy line is emitted separately from the other
+ * buckets, and every clawback row carries its machine-readable
+ * `CLAWBACK_STRICT_MODE` reason code. Without a clawback strict failure the
+ * rendered markdown is byte-identical to previous versions.
+ */
+export declare function formatBatchSummaryMarkdown(summary: BatchSummary, assetCode: string): string;

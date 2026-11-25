@@ -1,0 +1,43 @@
+name: Refresh dist
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dist on Linux
+        run: npm run build
+
+      - name: Verify source-map quality
+        run: npm run test:map-paths
+
+      - name: Refresh dist manifest
+        run: node scripts/generate-dist-manifest.js
+
+      - name: Verify dist manifest
+        run: npm run verify:dist
+
+      - name: Commit refreshed dist
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add dist
+          git diff --cached --quiet || git commit -m "chore: refresh dist"
+          git push

@@ -1,0 +1,160 @@
+# Soroban Contract Fixtures
+
+This document explains the checked-in fixtures for Soroban contract compatibility tests:
+
+- `__tests__/fixtures/soroban/get_address_simulate_result.json` — registry lookup, introduced in issue #294.
+- `__tests__/fixtures/soroban/sac_contract_metadata.json` — SAC (C-address) issuer metadata, introduced in issue #730.
+- `SOROBAN_CONTRACT_FIXTURES` in `src/soroban.ts` — canonical C-address and SAC examples shared by docs and tests, introduced in issue #767.
+
+---
+
+## Canonical fixtures (`SOROBAN_CONTRACT_FIXTURES`, issue #767)
+
+Contributors must not invent C-addresses or SAC examples. `src/soroban.ts` exports a
+frozen `SOROBAN_CONTRACT_FIXTURES` object that is the single source of truth for the
+canonical examples used by both this document and `__tests__/soroban.test.ts`.
+
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `validContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM` | Canonical valid C-address (all-zero payload, valid checksum) |
+| `validContractIdAlt` | `CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE` | Second valid C-address for alt-path tests |
+| `sacAssetCode` | `USDC` | Asset code reported by the canonical SAC |
+| `sacSymbol` | `USDC` | `symbol()` reported by the canonical SAC |
+| `sacDecimals` | `7` | `decimals()` reported by the canonical SAC |
+| `sacContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM` | C-address of the canonical SAC |
+| `malformedContractId` | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2K` | Truncated C-address — must fail validation with a stable error |
+| `invalidContractId` | `GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF` | Valid G-address, not a C-address — must be rejected |
+
+`isValidContractId` in `src/soroban.ts` validates C-addresses against these fixtures.
+Malformed or non-C-address inputs fail with the stable error
+`Invalid Soroban contract ID: expected a C-address`.
+
+---
+
+## What the fixture is
+
+`get_address_simulate_result.json` is a versioned golden snapshot of the JSON-RPC
+`simulateTransaction` response shapes produced by the `trustbridge-contract` on-chain
+registry when its `get_address(github_username)` function is invoked.
+
+The fixture covers seven scenarios:
+
+| Scenario | Description |
+|----------|-------------|
+| `found` | Username registered — returns a Stellar G-address |
+| `found_alt_address` | Second registered address (exercises a different valid G-address) |
+| `not_found` | Username not registered — returns `void` ScVal (Option::None) |
+| `null_retval` | Malformed/legacy response where `retval` is `null` |
+| `missing_retval` | Response with no `retval` key in `result` |
+| `missing_result` | RPC error response (no `result` field at top level) |
+| `invalid_address_in_retval` | `retval.type` is `"address"` but value is not a valid G-address |
+
+The parser (`parseAddressFromSimulateResult` in `src/soroban.ts`) is tested against
+every scenario in the CI step `Soroban contract compatibility tests`.
+
+---
+
+## `sac_contract_metadata.json` (issue #730)
+
+A Stellar Asset Contract issues an asset from a **C-address**, and its balance is never
+exposed as a classic Horizon trustline. This fixture is a versioned golden snapshot of the
+response shapes TrustBridge reads from `GET {horizon_url}/contracts/{contract_id}` to obtain
+the SAC reporting fields (`name()`, `symbol()`, `decimals()`).
+
+| Scenario | Description |
+|----------|-------------|
+| `sac_with_reporting_fields` | Node reports the SAC fields inline and under a nested `sac` object; `symbol()` = `USDC` |
+| `sac_reporting_fields_string_decimals` | `decimals` reported as a string (`"7"`), no nested `sac` object — exercises the coercion path |
+| `sac_without_reporting_fields` | Older node exposes contract code but no SAC fields — `exists: true`, `symbolVerified: false`, asset-code check inconclusive |
+| `sac_symbol_mismatch` | The contract reports `TST` while `asset_code` is `USDC` — a real misconfiguration that must fail the asset-code check |
+| `not_found` | HTTP 404 problem document from a node without the Soroban contracts endpoint |
+| `error_envelope` | JSON-RPC error envelope — resolves to `exists: false`, never throws |
+| `malformed_contract_id` | Not a valid C-address — the fetch is refused before any network call |
+
+Consumers in `src/soroban.ts`: `parseSacContractMetadata`, `verifySacIssuerAssetCode` and
+`fetchSacContractMetadata`. Every scenario is exercised in `__tests__/soroban.test.ts` under
+`Issue #730`.
+
+Fixture versioning follows the same rules as the registry fixture: new scenario bumps
+`_fixture_version` minor, an ABI/node shape change bumps it major, and a comment or
+description fix bumps it patch.
+
+---
+
+## Fixture versioning
+
+The fixture uses semver in the `_fixture_version` field:
+
+| Change | Bump |
+|--------|------|
+| New scenario added | `minor` (e.g. `1.0.0` → `1.1.0`) |
+| Existing scenario shape changed (ABI update) | `major` (e.g. `1.x.x` → `2.0.0`) |
+| Typo / comment / description fix | `patch` (e.g. `1.0.0` → `1.0.1`) |
+
+Always bump the version and describe the change in the version history section of
+`scripts/regen-soroban-fixture.sh` when updating the fixture.
+
+---
+
+## How to regenerate the fixture from the contract
+
+Run `scripts/regen-soroban-fixture.sh` and follow the inline step-by-step instructions.
+The script documents the exact `curl` / `stellar` CLI commands needed to capture live
+`simulateTransaction` responses from the testnet Soroban RPC endpoint.
+
+**Quick summary:**
+
+1. Identify the deployed testnet contract ID from the `trustbridge-contract` repo.
+2. Capture a `simulateTransaction` response for a **registered** username (found).
+3. Capture a response for an **unregistered** username (not_found / void retval).
+4. Merge into the fixture JSON, redacting real addresses (use `SOROBAN_CONTRACT_FIXTURES.validContractId`).
+5. Bump `_fixture_version`.
+6. Run `npm test -- --testPathPattern 'soroban' --no-coverage` to verify.
+7. Commit the updated fixture alongside any `parseAddressFromSimulateResult` changes.
+
+---
+
+## CI integration
+
+The `.github/workflows/ci.yml` `build-and-test` job includes a dedicated step:
+
+```yaml
+- name: Soroban contract compatibility tests
+  run: npm test -- --testPathPattern 'soroban' --no-coverage
+```
+
+This step runs on every push and pull request. A change to the contract ABI that
+breaks the parser will fail this step before any release tag is created.
+
+---
+
+## Relationship to `src/soroban.ts`
+
+`parseAddressFromSimulateResult` in `src/soroban.ts` is the only consumer of these
+fixture shapes. When the `trustbridge-contract` changes its ABI:
+
+1. Update the contract client code in `src/soroban.ts`.
+2. Update the fixture with the new response shape.
+3. Confirm all fixture compatibility tests pass.
+
+The fixture is intentionally separate from self-made test objects in
+`__tests__/soroban.test.ts` so that contract-representative payloads are clearly
+distinguished from synthetic test data. Canonical C-address and SAC examples come from
+`SOROBAN_CONTRACT_FIXTURES` so docs and tests never drift.
+
+---
+
+## Network passphrase verification (Issue #925)
+
+When `ContractConfig.networkPassphrase` is set (built from the `network_passphrase` input by `buildSorobanContractConfig` in `src/inputs.ts`), `src/soroban.ts` calls the RPC's `getNetwork` method before the first `simulateTransaction` / `getContractCode` call. If the reported `passphrase` differs from the configured one:
+
+- `NetworkPassphraseMismatchError` (a non-retryable `ContractLookupError`) is thrown with `reasonCode: "SOROBAN_NETWORK_MISMATCH"`;
+- no contract call is made, so another network's balances or registry state are never interpreted as this network's.
+
+A `getNetwork` response with no passphrase, invalid JSON, or a non-2xx status also fails before any contract call (`429/502/503/504` are retryable). A successful check is cached per (RPC URL, passphrase) for the rest of the process, so repeated lookups cost one extra RPC call per run. If no passphrase is configured, the check is skipped (previous behavior).
+
+Sample `getNetwork` fixture:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "result": { "passphrase": "Test SDF Network ; September 2015", "protocolVersion": 22 } }
+```

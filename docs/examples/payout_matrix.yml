@@ -1,0 +1,119 @@
+################################################################################
+# docs/examples/payout_matrix.yml
+#
+# #147 — Payout job using TRUSTBRIDGE_* environment variables
+#
+# PURPOSE
+# -------
+# A matrix payout workflow that runs TrustBridge for multiple Stellar
+# accounts in parallel. Each matrix leg overrides asset configuration via
+# TRUSTBRIDGE_* environment variables so the workflow YAML stays clean and
+# the same action step can be reused across legs.
+#
+# WHY ENV VARS FOR PAYOUT JOBS?
+# -----------------------------
+# Payout bots often run in matrix jobs with per-leg asset configs. Duplicating
+# `with:` inputs for each matrix leg is verbose and error-prone. Setting
+# TRUSTBRIDGE_* env vars at the job or step level keeps configuration DRY and
+# centralised, while `with:` inputs (when present) always win.
+#
+# PRECEDENCE RULE
+# ---------------
+# with: input  >  TRUSTBRIDGE_* env var  >  action.yml default
+#
+# SECURITY NOTE
+# -------------
+# Never set TRUSTBRIDGE_GITHUB_TOKEN or any secret-bearing env var —
+# secrets must be passed via `with: github_token: ${{ secrets.GITHUB_TOKEN }}`.
+# The TRUSTBRIDGE_* env var map explicitly excludes github_token and
+# stellar_address_input to prevent accidental secret leakage into logs.
+#
+################################################################################
+
+name: Payout — validate Stellar accounts (matrix)
+
+on:
+  workflow_dispatch:
+    inputs:
+      contributor_addresses:
+        description: 'JSON array of Stellar G-addresses'
+        required: true
+        default: '["GABC...XYZ","GDEF...UVW"]'
+
+jobs:
+  validate-matrix:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # USDC on mainnet
+          - asset_code: USDC
+            asset_issuer: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
+            horizon_url: https://horizon.stellar.org
+            min_xlm_reserve: '1.5'
+            address_index: 0
+
+          # EURC on mainnet
+          - asset_code: EURC
+            asset_issuer: GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP
+            horizon_url: https://horizon.stellar.org
+            min_xlm_reserve: '2.0'
+            address_index: 1
+
+    env:
+      # Per-leg asset configuration via TRUSTBRIDGE_* env vars.
+      # These are picked up by resolveInput() in src/inputs.ts when the
+      # corresponding with: input is empty.
+      TRUSTBRIDGE_HORIZON_URL: ${{ matrix.horizon_url }}
+      TRUSTBRIDGE_ASSET_CODE: ${{ matrix.asset_code }}
+      TRUSTBRIDGE_ASSET_ISSUER: ${{ matrix.asset_issuer }}
+      TRUSTBRIDGE_MIN_XLM_RESERVE: ${{ matrix.min_xlm_reserve }}
+      # Fail the step when checks are missing (payout gate)
+      TRUSTBRIDGE_FAIL_ON_MISSING: 'true'
+
+    steps:
+      - name: Parse contributor address
+        id: addr
+        # contributor_addresses is a workflow_dispatch input, so it's
+        # passed through env: rather than interpolated directly into the
+        # shell string below. A raw ${{ }} substitution happens before the
+        # shell runs, so a value containing a single quote could break out
+        # of the 'ADDRESSES=...' literal and inject arbitrary commands;
+        # env: keeps it as an inert string regardless of its contents.
+        env:
+          CONTRIBUTOR_ADDRESSES: ${{ github.event.inputs.contributor_addresses }}
+        run: |
+          ADDRESSES="${CONTRIBUTOR_ADDRESSES}"
+          IDX=${{ matrix.address_index }}
+          ADDRESS=$(echo "$ADDRESSES" | jq -r ".[$IDX]")
+          if [ -z "$ADDRESS" ] || [ "$ADDRESS" = "null" ]; then
+            echo "No address at index $IDX" >&2
+            exit 1
+          fi
+          echo "value=$ADDRESS" >> "$GITHUB_OUTPUT"
+
+      - name: TrustBridge check (${{ matrix.asset_code }})
+        id: trustbridge
+        uses: Stellar-TrustBridge/trustbridge-action@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note in trustbridge-label-gate.yml
+        with:
+          # Required: stellar_address_input must always be explicit
+          stellar_address_input: ${{ steps.addr.outputs.value }}
+          # Required: github_token must never come from an env var
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # asset_code, asset_issuer, min_xlm_reserve, horizon_url are
+          # resolved from TRUSTBRIDGE_* env vars set above when these
+          # with: inputs are left empty.
+
+      - name: Payout gate
+        if: steps.trustbridge.outputs.account_funded == 'true' &&
+            steps.trustbridge.outputs.trustline_exists == 'true'
+        run: |
+          echo "✅ Account ready for ${{ matrix.asset_code }} payout"
+          echo "  address : ${{ steps.addr.outputs.value }}"
+          echo "  balance : ${{ steps.trustbridge.outputs.xlm_balance }} XLM"
+          echo "  comment : ${{ steps.trustbridge.outputs.comment_url }}"

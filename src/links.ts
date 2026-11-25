@@ -1,19 +1,900 @@
+import { assertValidAssetCode, assertValidAssetIssuer, normalizeAssetCode } from './assets';
+
+/**
+ * Stellar Laboratory and wallet deep-link helpers.
+ *
+ * ## SEP-0007 wallet deep links
+ *
+ * SEP-0007 defines a URI scheme (`web+stellar:`) that allows web pages and
+ * CI workflows to deep-link into compatible wallets (LOBSTR, Solar, Albedo,
+ * etc.) with a pre-built transaction or operation payload.
+ *
+ * TrustBridge uses SEP-0007 `tx` URIs so that contributors can open a
+ * one-click "add trustline" link directly from the issue comment, without
+ * having to manually construct a Change Trust operation in Stellar Lab.
+ *
+ * Reference: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md
+ *
+ * ## FAQ anchor deep links (Issue #104)
+ *
+ * Each failing check maps to a specific anchor in `docs/FAQ.md` so
+ * contributors land on the exact fix rather than a generic docs page.
+ * Use `buildFaqLink` to generate a durable link from a check name,
+ * or `getFaqAnchorForCheck` to resolve the anchor directly.
+ *
+ * The base URL defaults to this repository's `docs/FAQ.md` but can be
+ * overridden with the `docs_base_url` action input for forks or mirrors.
+ * Invalid overrides fall back to the default silently so comment posting
+ * is never blocked by a bad URL input.
+ */
+
+// ---------------------------------------------------------------------------
+// FAQ anchor deep links (Issue #104)
+// ---------------------------------------------------------------------------
+
+/**
+ * The default base URL for the TrustBridge FAQ document.
+ * All anchor fragments are appended to this URL.
+ */
+export const DEFAULT_FAQ_BASE_URL =
+  'https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md';
+
+/**
+ * Stable FAQ anchor names. Each corresponds to a heading in `docs/FAQ.md`
+ * with an explicit `{#anchor-name}` fragment.
+ *
+ * Keep this enum in sync with the headings in `docs/FAQ.md`. The CI test
+ * `__tests__/faq-anchors.test.ts` verifies every anchor name resolves to
+ * a heading in the doc.
+ */
+export const FAQ_ANCHORS = {
+  ACCOUNT_NOT_FUNDED: 'account-not-funded',
+  TRUSTLINE_MISSING: 'trustline-missing',
+  XLM_RESERVE_TOO_LOW: 'xlm-reserve-too-low',
+  TESTING_ON_TESTNET: 'testing-on-testnet',
+  HORIZON_ERROR: 'horizon-error',
+  DEBUG_MODE: 'debug-mode',
+  WEBHOOK_NOT_RECEIVED: 'webhook-not-received',
+  CLAIMABLE_BALANCE: 'claimable-balance',
+  UNAUTHORIZED_TRUSTLINE: 'unauthorized-trustline',
+} as const;
+
+export type FaqAnchor = (typeof FAQ_ANCHORS)[keyof typeof FAQ_ANCHORS];
+
+/**
+ * Map from check label keywords to FAQ anchor names.
+ * Matching is case-insensitive on the label.
+ */
+const CHECK_TO_ANCHOR_MAP: Array<{ keyword: string; anchor: FaqAnchor }> = [
+  { keyword: 'funded', anchor: FAQ_ANCHORS.ACCOUNT_NOT_FUNDED },
+  // 'unauthorized' must come before 'trustline' so the more specific match wins
+  { keyword: 'unauthorized', anchor: FAQ_ANCHORS.UNAUTHORIZED_TRUSTLINE },
+  { keyword: 'trustline', anchor: FAQ_ANCHORS.TRUSTLINE_MISSING },
+  { keyword: 'reserve', anchor: FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
+  { keyword: 'xlm', anchor: FAQ_ANCHORS.XLM_RESERVE_TOO_LOW },
+  { keyword: 'horizon', anchor: FAQ_ANCHORS.HORIZON_ERROR },
+  { keyword: 'claimable', anchor: FAQ_ANCHORS.CLAIMABLE_BALANCE },
+];
+
+/**
+ * Resolve the FAQ anchor most relevant to a check label.
+ *
+ * Returns `undefined` when no mapping is found so callers can omit the
+ * FAQ link gracefully.
+ *
+ * @param checkLabel  The human-readable check label from the `ValidationResult`.
+ */
+export function getFaqAnchorForCheck(checkLabel: string): FaqAnchor | undefined {
+  const lower = checkLabel.toLowerCase();
+  for (const { keyword, anchor } of CHECK_TO_ANCHOR_MAP) {
+    if (lower.includes(keyword)) {
+      return anchor;
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Link safety (Issue #853) — shared guard for every URL this module renders
+// as a clickable Markdown link.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hosts rejected for any externally-rendered link regardless of scheme:
+ * private/loopback/link-local address ranges and cloud metadata endpoints.
+ * Mirrors the SSRF blocklist already enforced for live Horizon requests —
+ * a link a human clicks should not be able to target internal
+ * infrastructure any more than a request this Action makes itself.
+ */
+const BLOCKED_LINK_HOSTS: RegExp[] = [
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^169\.254\./,
+  /^0\.0\.0\.0$/,
+  /^localhost$/i,
+  /^\[?::1\]?$/,
+];
+
+const BLOCKED_LINK_EXACT_HOSTS = new Set(['metadata.google.internal']);
+
+/**
+ * Validate that `url` is safe to render as a clickable link in a GitHub
+ * comment (Issue #853): deep links into Horizon explorers, docs mirrors,
+ * dashboards, and wallet callbacks all funnel through this check before
+ * being embedded in Markdown.
+ *
+ * Rejects:
+ * - anything that does not parse as an absolute URL
+ * - any scheme other than `https:` — `javascript:`, `data:`, `vbscript:`,
+ *   plain `http:`, and bare/relative strings are all rejected outright, so
+ *   a crafted value can never execute script or escape to a local file
+ * - embedded credentials (`https://user:pass@host/...`)
+ * - private, loopback, link-local, or cloud-metadata hosts (open-redirect-
+ *   to-internal-service guard, same list as the Horizon SSRF policy)
+ *
+ * This check only validates the URL as a whole; it does not percent-encode
+ * anything. Callers that interpolate dynamic path or query segments must
+ * still build them with `URLSearchParams` (as every builder in this file
+ * does), because an unescaped `)` in a raw string would terminate a
+ * Markdown `[text](url)` link early and let the rest of the string inject
+ * arbitrary Markdown.
+ */
+export function isSafeExternalLink(url: string, policy?: LinkHostPolicy): boolean {
+  return explainLinkRejection(url, policy) === null;
+}
+
+// ---------------------------------------------------------------------------
+// Confusable-host hardening (Issue #963)
+//
+// Explorer / docs / dashboard bases can be overridden by workflow authors (and
+// by values copied from issue comments). A look-alike host such as
+// `https://exаmple.org` (Cyrillic "а") or its punycode form
+// `https://xn--exmple-4nf.org` renders as a normal-looking link in a comment
+// but points somewhere else, phishing Wave assignees. Any internationalized
+// host is therefore rejected unless the operator explicitly allowlists it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable, documented reasons a link is rejected (docs/USAGE.md#link-host-safety).
+ */
+export type LinkRejectionReason =
+  | 'invalid_url'
+  | 'not_https'
+  | 'embedded_credentials'
+  | 'blocked_host'
+  | 'unsafe_characters'
+  | 'invisible_characters'
+  | 'non_ascii_host'
+  | 'punycode_host';
+
+export interface LinkHostPolicy {
+  /**
+   * Exact hosts (punycode/ASCII form, lowercase) permitted to be
+   * internationalized. Build with {@link parseIdnHostAllowlist}. Empty or
+   * omitted means every non-ASCII or punycode host is rejected.
+   */
+  allowedIdnHosts?: readonly string[];
+}
+
+export class LinkAllowlistError extends Error {
+  constructor(
+    public readonly code: 'INVALID_ALLOWLIST_ENTRY' | 'ALLOWLIST_TOO_LARGE',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'LinkAllowlistError';
+  }
+}
+
+export const MAX_IDN_HOST_ALLOWLIST_ENTRIES = 50;
+
+/**
+ * Parse the `idn_host_allowlist` input (comma or newline separated hosts).
+ * Each entry may be written in Unicode or punycode; it is stored in the
+ * normalized ASCII (punycode) form that {@link explainLinkRejection} compares
+ * against. Schemes, paths, ports, credentials and wildcards are rejected so an
+ * entry can never be broader than one exact host.
+ *
+ * @throws {LinkAllowlistError} for malformed entries or more than
+ *         {@link MAX_IDN_HOST_ALLOWLIST_ENTRIES} entries.
+ */
+export function parseIdnHostAllowlist(input: string | readonly string[] | undefined): string[] {
+  const raw = typeof input === 'string' ? input.split(/[\r\n,]+/) : Array.isArray(input) ? [...input] : [];
+  const hosts: string[] = [];
+  for (const entry of raw) {
+    const value = String(entry).trim();
+    if (!value || value.startsWith('#')) continue;
+    if (/[/:@?#*\s\\]/.test(value)) {
+      throw new LinkAllowlistError(
+        'INVALID_ALLOWLIST_ENTRY',
+        `Allowlist entries must be bare host names (no scheme, port, path, credentials, or wildcard): ${JSON.stringify(value)}`,
+      );
+    }
+    let hostname: string;
+    try {
+      hostname = new URL(`https://${value}`).hostname.toLowerCase();
+    } catch {
+      throw new LinkAllowlistError('INVALID_ALLOWLIST_ENTRY', `Allowlist entry is not a valid host name: ${JSON.stringify(value)}`);
+    }
+    if (!hostname || hostname !== hostname.replace(/[^a-z0-9.-]/g, '')) {
+      throw new LinkAllowlistError('INVALID_ALLOWLIST_ENTRY', `Allowlist entry is not a valid host name: ${JSON.stringify(value)}`);
+    }
+    if (!hosts.includes(hostname)) hosts.push(hostname);
+    if (hosts.length > MAX_IDN_HOST_ALLOWLIST_ENTRIES) {
+      throw new LinkAllowlistError('ALLOWLIST_TOO_LARGE', `At most ${MAX_IDN_HOST_ALLOWLIST_ENTRIES} allowlisted hosts are supported.`);
+    }
+  }
+  return hosts;
+}
+
+/** Zero-width, bidi-control, soft-hyphen, and C0/C1 control characters. */
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202F\u205F-\u206F\u3000\uFEFF]/;
+
+/** Host portion of the raw (unparsed) URL, so Unicode that the URL parser would silently fold stays visible. */
+function rawHostOf(url: string): string {
+  const match = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(url);
+  if (!match) return '';
+  const authority = match[1];
+  const host = authority.slice(authority.lastIndexOf('@') + 1);
+  return host.startsWith('[') ? host : host.replace(/:\d*$/, '');
+}
+
+/**
+ * Why `url` may not be rendered as a clickable link, or `null` when it is
+ * safe. {@link isSafeExternalLink} is `explainLinkRejection(...) === null`.
+ */
+export function explainLinkRejection(url: string, policy?: LinkHostPolicy): LinkRejectionReason | null {
+  if (typeof url !== 'string' || url.length === 0) return 'invalid_url';
+  // Checked on the raw string: the URL parser silently strips tabs/newlines,
+  // so a hidden character would otherwise vanish before any later check.
+  if (INVISIBLE_CHARS.test(url)) return 'invisible_characters';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'invalid_url';
+  }
+  if (parsed.protocol !== 'https:') return 'not_https';
+  if (parsed.username || parsed.password) return 'embedded_credentials';
+  const host = parsed.hostname.toLowerCase();
+  if (BLOCKED_LINK_EXACT_HOSTS.has(host)) return 'blocked_host';
+  for (const pattern of BLOCKED_LINK_HOSTS) {
+    if (pattern.test(host)) return 'blocked_host';
+  }
+  // Issue #853: every caller in this codebase embeds the URL this check
+  // approves directly as raw `[text](url)` Markdown (buildFaqLink, the
+  // SEP-0010 dashboard proof link, buildAssetChecklist's `deepLink`). An
+  // unescaped `)` ends that link early and lets the remainder of the
+  // string inject arbitrary Markdown; raw whitespace, backticks, angle
+  // brackets, and quotes are rejected too since a well-formed URL never
+  // needs them unencoded — a legitimate URL that needs one of these
+  // characters should percent-encode it (`)` -> `%29`, etc).
+  if (/[()\s`<>"']/.test(url)) return 'unsafe_characters';
+
+  // Issue #963: internationalized / confusable hosts.
+  const rawHost = rawHostOf(url);
+  const allowed = new Set((policy?.allowedIdnHosts ?? []).map((h) => h.toLowerCase()));
+  const allowlisted = allowed.has(host);
+  if (/[^\x00-\x7F]/.test(rawHost) || rawHost.includes('%')) {
+    if (!allowlisted) return 'non_ascii_host';
+  }
+  if (host.split('.').some((label) => label.startsWith('xn--'))) {
+    if (!allowlisted) return 'punycode_host';
+  }
+  return null;
+}
+
+/** One-line, actionable explanation of a {@link LinkRejectionReason} for logs. */
+export function describeLinkRejection(reason: LinkRejectionReason): string {
+  switch (reason) {
+    case 'invalid_url':
+      return 'is not a valid absolute URL';
+    case 'not_https':
+      return 'must use https://';
+    case 'embedded_credentials':
+      return 'must not contain embedded credentials';
+    case 'blocked_host':
+      return 'points at a private, loopback, link-local, or metadata host';
+    case 'unsafe_characters':
+      return 'contains characters that are unsafe in a Markdown link (percent-encode them)';
+    case 'invisible_characters':
+      return 'contains invisible, control, or bidirectional-override characters';
+    case 'non_ascii_host':
+      return 'has a non-ASCII host that could be a look-alike of another site; add the exact host to idn_host_allowlist if it is intentional';
+    case 'punycode_host':
+      return 'has a punycode (xn--) host that could be a look-alike of another site; add the exact host to idn_host_allowlist if it is intentional';
+  }
+}
+
+/**
+ * Build a full FAQ deep link URL for a given anchor.
+ *
+ * @param anchor   A value from `FAQ_ANCHORS`.
+ * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
+ *                 mirror). When the value fails {@link isSafeExternalLink}
+ *                 (wrong scheme, credentials, private/metadata host, or
+ *                 simply not a valid URL), the default base URL is used
+ *                 silently so comment posting is never blocked by an
+ *                 invalid or malicious override.
+ */
+export function buildFaqLink(anchor: FaqAnchor, baseUrl?: string, policy?: LinkHostPolicy): string {
+  let base = DEFAULT_FAQ_BASE_URL;
+  if (baseUrl && isSafeExternalLink(baseUrl, policy)) {
+    base = baseUrl.replace(/\/$/, '');
+  }
+  return `${base}#${anchor}`;
+}
+
+/**
+ * Build a FAQ deep link for a check label, resolving the anchor automatically.
+ *
+ * Returns `undefined` when no FAQ anchor is mapped for the given label, so
+ * callers can skip rendering the link.
+ *
+ * @param checkLabel  The human-readable check label from the ValidationResult.
+ * @param baseUrl     Optional FAQ base URL override.
+ * @param policy      Optional host policy (IDN allowlist, Issue #963).
+ */
+export function buildFaqLinkForCheck(
+  checkLabel: string,
+  baseUrl?: string,
+  policy?: LinkHostPolicy,
+): string | undefined {
+  const anchor = getFaqAnchorForCheck(checkLabel);
+  if (!anchor) return undefined;
+  return buildFaqLink(anchor, baseUrl, policy);
+}
+
 export type StellarNetwork = 'public' | 'testnet';
 
 export function inferStellarNetwork(horizonUrl: string): StellarNetwork {
-  return horizonUrl.toLowerCase().includes('testnet') ? 'testnet' : 'public';
+  const lower = horizonUrl.toLowerCase();
+  // 'testnet' substring covers Horizon URLs; the standalone word 'test'
+  // covers network passphrases ('Test SDF Network ; ...') without matching
+  // words like 'latest' or 'protest'.
+  if (lower.includes('testnet') || /\btest\b/.test(lower)) return 'testnet';
+  return 'public';
 }
 
-export function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork): string {
+/**
+ * Official Stellar network presets (Issue #707). `StellarNetwork` stays
+ * `public | testnet` for link builders; this wider union adds futurenet so
+ * passphrase inference and failover network binding can tell it apart.
+ */
+export type StellarNetworkPreset = StellarNetwork | 'futurenet';
+
+export interface StellarNetworkPresetDefaults {
+  /** Official SDF Horizon base URL. */
+  horizonUrl: string;
+  /** Network passphrase reported by that Horizon's root endpoint. */
+  networkPassphrase: string;
+  /** Official Friendbot URL, or null when the network has no Friendbot. */
+  friendbotUrl: string | null;
+}
+
+/**
+ * Default Horizon host, passphrase and Friendbot per network. Documented in
+ * docs/USAGE.md#network-presets — keep both in sync.
+ */
+export const STELLAR_NETWORK_PRESETS: Record<StellarNetworkPreset, StellarNetworkPresetDefaults> = {
+  public: {
+    horizonUrl: 'https://horizon.stellar.org',
+    networkPassphrase: 'Public Global Stellar Network ; September 2015',
+    friendbotUrl: null,
+  },
+  testnet: {
+    horizonUrl: 'https://horizon-testnet.stellar.org',
+    networkPassphrase: 'Test SDF Network ; September 2015',
+    friendbotUrl: 'https://friendbot.stellar.org',
+  },
+  futurenet: {
+    horizonUrl: 'https://horizon-futurenet.stellar.org',
+    networkPassphrase: 'Test SDF Future Network ; October 2022',
+    friendbotUrl: 'https://friendbot-futurenet.stellar.org',
+  },
+};
+
+/**
+ * Like {@link inferStellarNetwork}, but recognises futurenet hosts instead of
+ * folding them into `public`.
+ */
+export function inferStellarNetworkPreset(horizonUrl: string): StellarNetworkPreset {
+  if (horizonUrl.toLowerCase().includes('futurenet')) return 'futurenet';
+  return inferStellarNetwork(horizonUrl);
+}
+
+/**
+ * Known Horizon presets and the network they belong to. Used by cross-network
+ * detection to identify which network an address was most recently active on.
+ */
+export const KNOWN_HORIZON_NETWORKS: Record<string, StellarNetwork> = {
+  'https://horizon.stellar.org': 'public',
+  'https://horizon-testnet.stellar.org': 'testnet',
+};
+
+/**
+ * Returns the "opposite" Stellar network (for cross-network mismatch error
+ * messages that suggest switching to the correct Horizon URL).
+ */
+export function oppositeNetwork(network: StellarNetwork): StellarNetwork {
+  return network === 'public' ? 'testnet' : 'public';
+}
+
+/**
+ * Returns the canonical Horizon base URL for a given network.
+ * Useful when suggesting "switch to the correct Horizon" in error messages.
+ */
+export function canonicalHorizonUrl(network: StellarNetwork): string {
+  return network === 'public'
+    ? 'https://horizon.stellar.org'
+    : 'https://horizon-testnet.stellar.org';
+}
+
+// ---------------------------------------------------------------------------
+// Explorer base URL overrides (Issue #910)
+// ---------------------------------------------------------------------------
+
+/**
+ * Safe default explorer base URL per network. Account links are built as
+ * `<base>/account/<G-address>`. Documented in
+ * docs/USAGE.md#explorer-url-overrides — keep both in sync.
+ */
+export const DEFAULT_EXPLORER_BASE_URLS: Record<StellarNetwork, string> = {
+  public: 'https://stellar.expert/explorer/public',
+  testnet: 'https://stellar.expert/explorer/testnet',
+};
+
+/**
+ * Hosts an explorer override may point at, per network. Matching is exact on
+ * the lowercased hostname — subdomains are **not** implied, so
+ * `stellar.expert.attacker.example` and `evil-stellar.expert` never match.
+ */
+export const EXPLORER_HOST_ALLOWLIST: Record<StellarNetwork, readonly string[]> = {
+  public: ['stellar.expert', 'stellarchain.io', 'laboratory.stellar.org'],
+  testnet: ['stellar.expert', 'testnet.stellarchain.io', 'laboratory.stellar.org'],
+};
+
+/** Longest accepted explorer override, in characters. */
+export const MAX_EXPLORER_URL_LENGTH = 2048;
+
+/** Stable reason codes for a rejected explorer override. */
+export type ExplorerUrlRejectionCode =
+  | 'EXPLORER_URL_EMPTY'
+  | 'EXPLORER_URL_TOO_LONG'
+  | 'EXPLORER_URL_MALFORMED'
+  | 'EXPLORER_URL_INSECURE_SCHEME'
+  | 'EXPLORER_URL_CREDENTIALS'
+  | 'EXPLORER_URL_HOST_NOT_ALLOWED'
+  | 'EXPLORER_URL_UNSAFE';
+
+export type ExplorerUrlValidation =
+  | { ok: true; baseUrl: string }
+  | { ok: false; code: ExplorerUrlRejectionCode; message: string };
+
+/**
+ * Validate an explorer base URL override for `network` (Issue #910).
+ *
+ * Rules, in order:
+ * 1. Must be non-empty and at most {@link MAX_EXPLORER_URL_LENGTH} chars.
+ * 2. Must parse as an absolute URL.
+ * 3. Scheme: `https:` everywhere. `http:` is rejected on `public` (pubnet)
+ *    and tolerated on `testnet` only for an allowlisted host; any other
+ *    scheme (`javascript:`, `data:`, …) is rejected on every network.
+ * 4. No embedded credentials.
+ * 5. Host must be on {@link EXPLORER_HOST_ALLOWLIST} for that network.
+ * 6. Must pass the same Markdown/SSRF link guard as every other rendered
+ *    link ({@link isSafeExternalLink}, with `http:` testnet exception).
+ *
+ * The rejection message names the network and the host only — never the
+ * full override — so a crafted value cannot smuggle text into logs.
+ * Query strings and fragments are stripped from the accepted base.
+ */
+export function validateExplorerBaseUrl(
+  url: string,
+  network: StellarNetwork,
+): ExplorerUrlValidation {
+  const trimmed = (url ?? '').trim();
+  if (!trimmed) {
+    return { ok: false, code: 'EXPLORER_URL_EMPTY', message: 'Explorer URL override is empty.' };
+  }
+  if (trimmed.length > MAX_EXPLORER_URL_LENGTH) {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_TOO_LONG',
+      message: `Explorer URL override exceeds ${MAX_EXPLORER_URL_LENGTH} characters.`,
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_MALFORMED',
+      message: 'Explorer URL override is not an absolute URL.',
+    };
+  }
+
+  const isHttp = parsed.protocol === 'http:';
+  if (parsed.protocol !== 'https:' && !(isHttp && network === 'testnet')) {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_INSECURE_SCHEME',
+      message: isHttp
+        ? `Explorer URL override must use https:// on ${network}; http:// is only tolerated on testnet.`
+        : `Explorer URL override must use https:// (got "${parsed.protocol}").`,
+    };
+  }
+
+  if (parsed.username || parsed.password) {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_CREDENTIALS',
+      message: 'Explorer URL override must not embed credentials.',
+    };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (!EXPLORER_HOST_ALLOWLIST[network].includes(host)) {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_HOST_NOT_ALLOWED',
+      message:
+        `Explorer host "${host}" is not allowed on ${network}. ` +
+        `Allowed hosts: ${EXPLORER_HOST_ALLOWLIST[network].join(', ')}.`,
+    };
+  }
+
+  // Reuse the shared link guard (Markdown-breaking characters, blocked
+  // hosts). For a tolerated testnet http URL, check its https equivalent.
+  const guardCandidate = isHttp ? `https://${trimmed.slice('http://'.length)}` : trimmed;
+  if (!isSafeExternalLink(guardCandidate)) {
+    return {
+      ok: false,
+      code: 'EXPLORER_URL_UNSAFE',
+      message: 'Explorer URL override contains characters that are unsafe in a Markdown link.',
+    };
+  }
+
+  const baseUrl = `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+  return { ok: true, baseUrl };
+}
+
+/**
+ * Resolve the explorer base URL for `network`: the validated override when
+ * one is supplied and accepted, otherwise {@link DEFAULT_EXPLORER_BASE_URLS}.
+ *
+ * Like {@link buildFaqLink}, an invalid override falls back to the safe
+ * default so comment rendering is never blocked; callers that want to fail
+ * fast should call {@link validateExplorerBaseUrl} (or the input parser in
+ * src/inputs.ts) at input time.
+ */
+export function resolveExplorerBaseUrl(network: StellarNetwork, override?: string): string {
+  if (override && override.trim()) {
+    const result = validateExplorerBaseUrl(override, network);
+    if (result.ok) return result.baseUrl;
+  }
+  return DEFAULT_EXPLORER_BASE_URLS[network];
+}
+
+/**
+ * Build an explorer account link (`<base>/account/<address>`) for `network`,
+ * honoring a validated override.
+ */
+export function buildExplorerAccountLink(
+  stellarAddress: string,
+  network: StellarNetwork,
+  explorerBaseUrl?: string,
+): string {
+  const base = resolveExplorerBaseUrl(network, explorerBaseUrl);
+  return `${base}/account/${encodeURIComponent(stellarAddress.trim())}`;
+}
+
+export function buildAccountViewerLink(
+  stellarAddress: string,
+  network: StellarNetwork,
+  dashboardUrl?: string,
+  policy?: LinkHostPolicy,
+): string {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl, policy)) {
+    throw new Error('Invalid dashboard URL');
+  }
   const params = new URLSearchParams({ network, account: stellarAddress });
   return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
 }
 
-export function buildChangeTrustLink(network: StellarNetwork): string {
+export function buildChangeTrustLink(
+  network: StellarNetwork,
+  dashboardUrl?: string,
+  policy?: LinkHostPolicy,
+): string {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl, policy)) {
+    throw new Error('Invalid dashboard URL');
+  }
   const params = new URLSearchParams({ network });
   return `https://laboratory.stellar.org/#txbuilder?${params.toString()}`;
 }
 
 export function buildLobstrLink(): string {
   return 'https://lobstr.co/';
+}
+
+// ---------------------------------------------------------------------------
+// SEP-0007 deep-link helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for building a SEP-0007 `tx` deep link.
+ */
+export interface Sep0007TxOptions {
+  /**
+   * Base64-encoded, signed or unsigned XDR `TransactionEnvelope`.
+   * When the transaction is unsigned, compatible wallets will sign it before
+   * submitting. Pass an unsigned envelope here so TrustBridge never holds a
+   * signing key.
+   */
+  xdr: string;
+  /** Optional callback URL the wallet should POST the signed XDR to. */
+  callback?: string;
+  /** Optional human-readable description shown in the wallet UI. */
+  msg?: string;
+  /** `public` or `testnet`. Defaults to `public`. */
+  network?: StellarNetwork;
+  /**
+   * Optional network passphrase override. When omitted, the standard
+   * passphrase for `network` is used. Set this for custom/private networks.
+   */
+  networkPassphrase?: string;
+  /** Optional origin domain for wallet validation (SEP-0007 §3.4). */
+  originDomain?: string;
+}
+
+/**
+ * Build a SEP-0007 `tx` deep link.
+ *
+ * The returned URI (`web+stellar:tx?...`) can be used as an `href` in
+ * Markdown or HTML so contributors can open it in a SEP-0007-compatible
+ * wallet (LOBSTR, Solar, Albedo, etc.) with the transaction pre-loaded.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007TxLink({
+ *   xdr: 'AAAAAQ...',          // base64 XDR
+ *   msg: 'Add USDC trustline',
+ *   network: 'public',
+ * });
+ * // => "web+stellar:tx?xdr=AAAAAQ...&msg=Add+USDC+trustline&network_passphrase=Public+Global+..."
+ * ```
+ */
+export function buildSep0007TxLink(options: Sep0007TxOptions): string {
+  const network = options.network ?? 'public';
+  const passphrase =
+    options.networkPassphrase ??
+    (network === 'testnet'
+      ? 'Test SDF Network ; September 2015'
+      : 'Public Global Stellar Network ; September 2015');
+
+  const params = new URLSearchParams({ xdr: options.xdr });
+
+  params.set('network_passphrase', passphrase);
+
+  if (options.msg) {
+    params.set('msg', options.msg);
+  }
+  // Issue #853: `callback` is where a compatible wallet POSTs the signed
+  // XDR. An unvalidated value here is a direct exfiltration vector for a
+  // signed transaction, so a callback that fails isSafeExternalLink (wrong
+  // scheme, credentials, or a private/metadata host) is dropped rather than
+  // included — same silent fail-closed-by-omission pattern as buildFaqLink.
+  if (options.callback && isSafeExternalLink(options.callback)) {
+    params.set('callback', options.callback);
+  }
+  if (options.originDomain) {
+    params.set('origin_domain', options.originDomain);
+  }
+
+  return `web+stellar:tx?${params.toString()}`;
+}
+
+function validateSep0007PayLinkOptions(options: Sep0007PayOptions): void {
+  const assetCode = options.assetCode?.trim();
+  const assetIssuer = options.assetIssuer?.trim();
+
+  if (assetCode || assetIssuer) {
+    if (!assetCode) {
+      throw new Error('asset_code is required when asset_issuer is provided.');
+    }
+    if (!assetIssuer) {
+      throw new Error('asset_issuer is required when assetCode is provided.');
+    }
+    assertValidAssetCode(assetCode);
+    assertValidAssetIssuer(assetIssuer);
+  }
+
+  if (options.networkPassphrase !== undefined && !options.networkPassphrase.trim()) {
+    throw new Error('network passphrase must be a non-empty string when provided.');
+  }
+}
+
+/**
+ * Options for building a SEP-0007 `pay` deep link.
+ */
+export interface Sep0007PayOptions {
+  /** Destination Stellar G-address. */
+  destination: string;
+  /** Optional payment amount (string to avoid floating-point issues). */
+  amount?: string;
+  /** Optional asset code (omit for native XLM). */
+  assetCode?: string;
+  /** Optional asset issuer (required when `assetCode` is non-native). */
+  assetIssuer?: string;
+  /** Optional human-readable memo. */
+  memo?: string;
+  /** Memo type: `text` | `id` | `hash` | `return`. Defaults to `text`. */
+  memoType?: 'text' | 'id' | 'hash' | 'return';
+  /** Optional human-readable description shown in the wallet UI. */
+  msg?: string;
+  /** `public` or `testnet`. Defaults to `public`. */
+  network?: StellarNetwork;
+  /** Optional network passphrase override. */
+  networkPassphrase?: string;
+  /** Optional origin domain for wallet validation (SEP-0007 §3.4). */
+  originDomain?: string;
+}
+
+/**
+ * Build a SEP-0007 `pay` deep link.
+ *
+ * Suitable for linking a contributor to a pre-filled payment screen (e.g.
+ * "send 1 XLM to activate your account") inside the TrustBridge issue
+ * comment.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007PayLink({
+ *   destination: 'GABC...XYZ',
+ *   amount: '1',
+ *   msg: 'Activate Stellar account',
+ * });
+ * // => "web+stellar:pay?destination=GABC...&amount=1&msg=Activate+..."
+ * ```
+ */
+export function buildSep0007PayLink(options: Sep0007PayOptions): string {
+  validateSep0007PayLinkOptions(options);
+
+  const network = options.network ?? 'public';
+  const passphrase =
+    options.networkPassphrase ??
+    (network === 'testnet'
+      ? 'Test SDF Network ; September 2015'
+      : 'Public Global Stellar Network ; September 2015');
+
+  const params = new URLSearchParams({ destination: options.destination });
+
+  params.set('network_passphrase', passphrase);
+
+  if (options.amount) {
+    params.set('amount', options.amount);
+  }
+  if (options.assetCode) {
+    params.set('asset_code', normalizeAssetCode(options.assetCode));
+    if (options.assetIssuer) {
+      params.set('asset_issuer', options.assetIssuer.trim());
+    }
+  }
+  if (options.memo) {
+    params.set('memo', options.memo);
+    params.set('memo_type', options.memoType ?? 'text');
+  }
+  if (options.msg) {
+    params.set('msg', options.msg);
+  }
+  if (options.originDomain) {
+    params.set('origin_domain', options.originDomain);
+  }
+
+  return `web+stellar:pay?${params.toString()}`;
+}
+
+// ---------------------------------------------------------------------------
+// SEP-0010 challenge snippet helpers (Issue #252)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for building a SEP-0010 challenge verification snippet.
+ *
+ * SEP-0010 defines a challenge transaction that a wallet signs to prove
+ * control of a Stellar account. TrustBridge does not verify the signature
+ * inside the action — that is out of scope — but it can surface an
+ * optional challenge snippet or dashboard Freighter proof link in the
+ * remediation comment so reviewers know the contributor proved wallet control.
+ *
+ * Prefer `dashboardUrl` (link to a dashboard where Freighter signage is
+ * verified) over raw `challengeXdr` to avoid leaking nonces in public issues.
+ * When a raw challenge XDR is supplied it is truncated in logs and should
+ * not be reused.
+ */
+export interface Sep0010ChallengeOptions {
+  /** Base64 XDR of the SEP-0010 challenge transaction (optional). */
+  challengeXdr?: string;
+  /** Dashboard URL where Freighter proof can be verified (optional, preferred). */
+  dashboardUrl?: string;
+  /** Stellar network for context (affects messaging). Defaults to public. */
+  network?: StellarNetwork;
+  /** Stellar G-address being verified (for link text). */
+  stellarAddress?: string;
+  /** Host policy for the dashboard URL (IDN allowlist, Issue #963). */
+  linkHostPolicy?: LinkHostPolicy;
+}
+
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ *
+ * Additionally, `dashboard.stellar.org` is explicitly rejected: it is not a
+ * recognized Stellar dashboard endpoint, and SEP-0010 proofs must reference
+ * either the Stellar Laboratory builders or an explicitly trusted dashboard
+ * host — never a plausible-looking but unrecognized one.
+ */
+export function isValidDashboardUrl(url: string, policy?: LinkHostPolicy): boolean {
+  if (!isSafeExternalLink(url, policy)) return false;
+  try {
+    const parsed = new URL(url);
+    // `dashboard.stellar.org` is not a recognized Stellar dashboard
+    // endpoint — see the docstring above for why it is explicitly rejected
+    // rather than just "not allowlisted".
+    if (parsed.hostname.toLowerCase() === 'dashboard.stellar.org') return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+export function buildSep0010ChallengeSnippet(options: Sep0010ChallengeOptions): string | undefined {
+  const network = options.network ?? 'public';
+  const hasDashboard = !!options.dashboardUrl && options.dashboardUrl.trim().length > 0;
+  const hasChallenge = !!options.challengeXdr && options.challengeXdr.trim().length > 0;
+
+  if (!hasDashboard && !hasChallenge) {
+    return undefined;
+  }
+
+  if (hasDashboard && isValidDashboardUrl(options.dashboardUrl!, options.linkHostPolicy)) {
+    const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
+    return (
+      `**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +
+      `[Open dashboard proof](${options.dashboardUrl}) — network **${network}**. ` +
+      `_Challenge verification happens off-action; this link is informational and does not block \`ready\`._`
+    );
+  }
+
+  if (hasChallenge) {
+    const xdr = options.challengeXdr!.trim();
+    // Truncate XDR for display to avoid leaking full nonce and to keep comment size small
+    const display = xdr.length > 32 ? `${xdr.slice(0, 24)}…${xdr.slice(-8)}` : xdr;
+    const networkNote = network === 'testnet' ? ' (testnet)' : '';
+    return (
+      `**SEP-0010 challenge${networkNote}:** prove wallet control by signing this challenge with Freighter and posting the signed XDR to your dashboard. ` +
+      `Challenge (truncated, do not reuse nonce): \`${display}\` ` +
+      `— [How to sign](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md). ` +
+      `_This snippet is informational and does not block \`ready\` unless documented._`
+    );
+  }
+
+  // Dashboard URL invalid => fall back to no snippet to avoid posting a broken link
+  return undefined;
 }

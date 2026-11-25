@@ -1,5 +1,340 @@
+/**
+ * Stellar Laboratory and wallet deep-link helpers.
+ *
+ * ## SEP-0007 wallet deep links
+ *
+ * SEP-0007 defines a URI scheme (`web+stellar:`) that allows web pages and
+ * CI workflows to deep-link into compatible wallets (LOBSTR, Solar, Albedo,
+ * etc.) with a pre-built transaction or operation payload.
+ *
+ * TrustBridge uses SEP-0007 `tx` URIs so that contributors can open a
+ * one-click "add trustline" link directly from the issue comment, without
+ * having to manually construct a Change Trust operation in Stellar Lab.
+ *
+ * Reference: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md
+ *
+ * ## FAQ anchor deep links (Issue #104)
+ *
+ * Each failing check maps to a specific anchor in `docs/FAQ.md` so
+ * contributors land on the exact fix rather than a generic docs page.
+ * Use `buildFaqLink` to generate a durable link from a check name,
+ * or `getFaqAnchorForCheck` to resolve the anchor directly.
+ *
+ * The base URL defaults to this repository's `docs/FAQ.md` but can be
+ * overridden with the `docs_base_url` action input for forks or mirrors.
+ * Invalid overrides fall back to the default silently so comment posting
+ * is never blocked by a bad URL input.
+ */
+/**
+ * The default base URL for the TrustBridge FAQ document.
+ * All anchor fragments are appended to this URL.
+ */
+export declare const DEFAULT_FAQ_BASE_URL = "https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md";
+/**
+ * Stable FAQ anchor names. Each corresponds to a heading in `docs/FAQ.md`
+ * with an explicit `{#anchor-name}` fragment.
+ *
+ * Keep this enum in sync with the headings in `docs/FAQ.md`. The CI test
+ * `__tests__/faq-anchors.test.ts` verifies every anchor name resolves to
+ * a heading in the doc.
+ */
+export declare const FAQ_ANCHORS: {
+    readonly ACCOUNT_NOT_FUNDED: "account-not-funded";
+    readonly TRUSTLINE_MISSING: "trustline-missing";
+    readonly XLM_RESERVE_TOO_LOW: "xlm-reserve-too-low";
+    readonly TESTING_ON_TESTNET: "testing-on-testnet";
+    readonly HORIZON_ERROR: "horizon-error";
+    readonly DEBUG_MODE: "debug-mode";
+    readonly WEBHOOK_NOT_RECEIVED: "webhook-not-received";
+    readonly CLAIMABLE_BALANCE: "claimable-balance";
+    readonly UNAUTHORIZED_TRUSTLINE: "unauthorized-trustline";
+};
+export type FaqAnchor = (typeof FAQ_ANCHORS)[keyof typeof FAQ_ANCHORS];
+/**
+ * Resolve the FAQ anchor most relevant to a check label.
+ *
+ * Returns `undefined` when no mapping is found so callers can omit the
+ * FAQ link gracefully.
+ *
+ * @param checkLabel  The human-readable check label from the `ValidationResult`.
+ */
+export declare function getFaqAnchorForCheck(checkLabel: string): FaqAnchor | undefined;
+/**
+ * Validate that `url` is safe to render as a clickable link in a GitHub
+ * comment (Issue #853): deep links into Horizon explorers, docs mirrors,
+ * dashboards, and wallet callbacks all funnel through this check before
+ * being embedded in Markdown.
+ *
+ * Rejects:
+ * - anything that does not parse as an absolute URL
+ * - any scheme other than `https:` — `javascript:`, `data:`, `vbscript:`,
+ *   plain `http:`, and bare/relative strings are all rejected outright, so
+ *   a crafted value can never execute script or escape to a local file
+ * - embedded credentials (`https://user:pass@host/...`)
+ * - private, loopback, link-local, or cloud-metadata hosts (open-redirect-
+ *   to-internal-service guard, same list as the Horizon SSRF policy)
+ *
+ * This check only validates the URL as a whole; it does not percent-encode
+ * anything. Callers that interpolate dynamic path or query segments must
+ * still build them with `URLSearchParams` (as every builder in this file
+ * does), because an unescaped `)` in a raw string would terminate a
+ * Markdown `[text](url)` link early and let the rest of the string inject
+ * arbitrary Markdown.
+ */
+export declare function isSafeExternalLink(url: string): boolean;
+/**
+ * Build a full FAQ deep link URL for a given anchor.
+ *
+ * @param anchor   A value from `FAQ_ANCHORS`.
+ * @param baseUrl  Optional override for the FAQ base URL (e.g. a fork's
+ *                 mirror). When the value fails {@link isSafeExternalLink}
+ *                 (wrong scheme, credentials, private/metadata host, or
+ *                 simply not a valid URL), the default base URL is used
+ *                 silently so comment posting is never blocked by an
+ *                 invalid or malicious override.
+ */
+export declare function buildFaqLink(anchor: FaqAnchor, baseUrl?: string): string;
+/**
+ * Build a FAQ deep link for a check label, resolving the anchor automatically.
+ *
+ * Returns `undefined` when no FAQ anchor is mapped for the given label, so
+ * callers can skip rendering the link.
+ *
+ * @param checkLabel  The human-readable check label from the ValidationResult.
+ * @param baseUrl     Optional FAQ base URL override.
+ */
+export declare function buildFaqLinkForCheck(checkLabel: string, baseUrl?: string): string | undefined;
 export type StellarNetwork = 'public' | 'testnet';
 export declare function inferStellarNetwork(horizonUrl: string): StellarNetwork;
-export declare function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork): string;
-export declare function buildChangeTrustLink(network: StellarNetwork): string;
+/**
+ * Official Stellar network presets (Issue #707). `StellarNetwork` stays
+ * `public | testnet` for link builders; this wider union adds futurenet so
+ * passphrase inference and failover network binding can tell it apart.
+ */
+export type StellarNetworkPreset = StellarNetwork | 'futurenet';
+export interface StellarNetworkPresetDefaults {
+    /** Official SDF Horizon base URL. */
+    horizonUrl: string;
+    /** Network passphrase reported by that Horizon's root endpoint. */
+    networkPassphrase: string;
+    /** Official Friendbot URL, or null when the network has no Friendbot. */
+    friendbotUrl: string | null;
+}
+/**
+ * Default Horizon host, passphrase and Friendbot per network. Documented in
+ * docs/USAGE.md#network-presets — keep both in sync.
+ */
+export declare const STELLAR_NETWORK_PRESETS: Record<StellarNetworkPreset, StellarNetworkPresetDefaults>;
+/**
+ * Like {@link inferStellarNetwork}, but recognises futurenet hosts instead of
+ * folding them into `public`.
+ */
+export declare function inferStellarNetworkPreset(horizonUrl: string): StellarNetworkPreset;
+/**
+ * Known Horizon presets and the network they belong to. Used by cross-network
+ * detection to identify which network an address was most recently active on.
+ */
+export declare const KNOWN_HORIZON_NETWORKS: Record<string, StellarNetwork>;
+/**
+ * Returns the "opposite" Stellar network (for cross-network mismatch error
+ * messages that suggest switching to the correct Horizon URL).
+ */
+export declare function oppositeNetwork(network: StellarNetwork): StellarNetwork;
+/**
+ * Returns the canonical Horizon base URL for a given network.
+ * Useful when suggesting "switch to the correct Horizon" in error messages.
+ */
+export declare function canonicalHorizonUrl(network: StellarNetwork): string;
+/**
+ * Safe default explorer base URL per network. Account links are built as
+ * `<base>/account/<G-address>`. Documented in
+ * docs/USAGE.md#explorer-url-overrides — keep both in sync.
+ */
+export declare const DEFAULT_EXPLORER_BASE_URLS: Record<StellarNetwork, string>;
+/**
+ * Hosts an explorer override may point at, per network. Matching is exact on
+ * the lowercased hostname — subdomains are **not** implied, so
+ * `stellar.expert.attacker.example` and `evil-stellar.expert` never match.
+ */
+export declare const EXPLORER_HOST_ALLOWLIST: Record<StellarNetwork, readonly string[]>;
+/** Longest accepted explorer override, in characters. */
+export declare const MAX_EXPLORER_URL_LENGTH = 2048;
+/** Stable reason codes for a rejected explorer override. */
+export type ExplorerUrlRejectionCode = 'EXPLORER_URL_EMPTY' | 'EXPLORER_URL_TOO_LONG' | 'EXPLORER_URL_MALFORMED' | 'EXPLORER_URL_INSECURE_SCHEME' | 'EXPLORER_URL_CREDENTIALS' | 'EXPLORER_URL_HOST_NOT_ALLOWED' | 'EXPLORER_URL_UNSAFE';
+export type ExplorerUrlValidation = {
+    ok: true;
+    baseUrl: string;
+} | {
+    ok: false;
+    code: ExplorerUrlRejectionCode;
+    message: string;
+};
+/**
+ * Validate an explorer base URL override for `network` (Issue #910).
+ *
+ * Rules, in order:
+ * 1. Must be non-empty and at most {@link MAX_EXPLORER_URL_LENGTH} chars.
+ * 2. Must parse as an absolute URL.
+ * 3. Scheme: `https:` everywhere. `http:` is rejected on `public` (pubnet)
+ *    and tolerated on `testnet` only for an allowlisted host; any other
+ *    scheme (`javascript:`, `data:`, …) is rejected on every network.
+ * 4. No embedded credentials.
+ * 5. Host must be on {@link EXPLORER_HOST_ALLOWLIST} for that network.
+ * 6. Must pass the same Markdown/SSRF link guard as every other rendered
+ *    link ({@link isSafeExternalLink}, with `http:` testnet exception).
+ *
+ * The rejection message names the network and the host only — never the
+ * full override — so a crafted value cannot smuggle text into logs.
+ * Query strings and fragments are stripped from the accepted base.
+ */
+export declare function validateExplorerBaseUrl(url: string, network: StellarNetwork): ExplorerUrlValidation;
+/**
+ * Resolve the explorer base URL for `network`: the validated override when
+ * one is supplied and accepted, otherwise {@link DEFAULT_EXPLORER_BASE_URLS}.
+ *
+ * Like {@link buildFaqLink}, an invalid override falls back to the safe
+ * default so comment rendering is never blocked; callers that want to fail
+ * fast should call {@link validateExplorerBaseUrl} (or the input parser in
+ * src/inputs.ts) at input time.
+ */
+export declare function resolveExplorerBaseUrl(network: StellarNetwork, override?: string): string;
+/**
+ * Build an explorer account link (`<base>/account/<address>`) for `network`,
+ * honoring a validated override.
+ */
+export declare function buildExplorerAccountLink(stellarAddress: string, network: StellarNetwork, explorerBaseUrl?: string): string;
+export declare function buildAccountViewerLink(stellarAddress: string, network: StellarNetwork, dashboardUrl?: string): string;
+export declare function buildChangeTrustLink(network: StellarNetwork, dashboardUrl?: string): string;
 export declare function buildLobstrLink(): string;
+/**
+ * Options for building a SEP-0007 `tx` deep link.
+ */
+export interface Sep0007TxOptions {
+    /**
+     * Base64-encoded, signed or unsigned XDR `TransactionEnvelope`.
+     * When the transaction is unsigned, compatible wallets will sign it before
+     * submitting. Pass an unsigned envelope here so TrustBridge never holds a
+     * signing key.
+     */
+    xdr: string;
+    /** Optional callback URL the wallet should POST the signed XDR to. */
+    callback?: string;
+    /** Optional human-readable description shown in the wallet UI. */
+    msg?: string;
+    /** `public` or `testnet`. Defaults to `public`. */
+    network?: StellarNetwork;
+    /**
+     * Optional network passphrase override. When omitted, the standard
+     * passphrase for `network` is used. Set this for custom/private networks.
+     */
+    networkPassphrase?: string;
+    /** Optional origin domain for wallet validation (SEP-0007 §3.4). */
+    originDomain?: string;
+}
+/**
+ * Build a SEP-0007 `tx` deep link.
+ *
+ * The returned URI (`web+stellar:tx?...`) can be used as an `href` in
+ * Markdown or HTML so contributors can open it in a SEP-0007-compatible
+ * wallet (LOBSTR, Solar, Albedo, etc.) with the transaction pre-loaded.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007TxLink({
+ *   xdr: 'AAAAAQ...',          // base64 XDR
+ *   msg: 'Add USDC trustline',
+ *   network: 'public',
+ * });
+ * // => "web+stellar:tx?xdr=AAAAAQ...&msg=Add+USDC+trustline&network_passphrase=Public+Global+..."
+ * ```
+ */
+export declare function buildSep0007TxLink(options: Sep0007TxOptions): string;
+/**
+ * Options for building a SEP-0007 `pay` deep link.
+ */
+export interface Sep0007PayOptions {
+    /** Destination Stellar G-address. */
+    destination: string;
+    /** Optional payment amount (string to avoid floating-point issues). */
+    amount?: string;
+    /** Optional asset code (omit for native XLM). */
+    assetCode?: string;
+    /** Optional asset issuer (required when `assetCode` is non-native). */
+    assetIssuer?: string;
+    /** Optional human-readable memo. */
+    memo?: string;
+    /** Memo type: `text` | `id` | `hash` | `return`. Defaults to `text`. */
+    memoType?: 'text' | 'id' | 'hash' | 'return';
+    /** Optional human-readable description shown in the wallet UI. */
+    msg?: string;
+    /** `public` or `testnet`. Defaults to `public`. */
+    network?: StellarNetwork;
+    /** Optional network passphrase override. */
+    networkPassphrase?: string;
+    /** Optional origin domain for wallet validation (SEP-0007 §3.4). */
+    originDomain?: string;
+}
+/**
+ * Build a SEP-0007 `pay` deep link.
+ *
+ * Suitable for linking a contributor to a pre-filled payment screen (e.g.
+ * "send 1 XLM to activate your account") inside the TrustBridge issue
+ * comment.
+ *
+ * @example
+ * ```ts
+ * const uri = buildSep0007PayLink({
+ *   destination: 'GABC...XYZ',
+ *   amount: '1',
+ *   msg: 'Activate Stellar account',
+ * });
+ * // => "web+stellar:pay?destination=GABC...&amount=1&msg=Activate+..."
+ * ```
+ */
+export declare function buildSep0007PayLink(options: Sep0007PayOptions): string;
+/**
+ * Options for building a SEP-0010 challenge verification snippet.
+ *
+ * SEP-0010 defines a challenge transaction that a wallet signs to prove
+ * control of a Stellar account. TrustBridge does not verify the signature
+ * inside the action — that is out of scope — but it can surface an
+ * optional challenge snippet or dashboard Freighter proof link in the
+ * remediation comment so reviewers know the contributor proved wallet control.
+ *
+ * Prefer `dashboardUrl` (link to a dashboard where Freighter signage is
+ * verified) over raw `challengeXdr` to avoid leaking nonces in public issues.
+ * When a raw challenge XDR is supplied it is truncated in logs and should
+ * not be reused.
+ */
+export interface Sep0010ChallengeOptions {
+    /** Base64 XDR of the SEP-0010 challenge transaction (optional). */
+    challengeXdr?: string;
+    /** Dashboard URL where Freighter proof can be verified (optional, preferred). */
+    dashboardUrl?: string;
+    /** Stellar network for context (affects messaging). Defaults to public. */
+    network?: StellarNetwork;
+    /** Stellar G-address being verified (for link text). */
+    stellarAddress?: string;
+}
+/**
+ * Validate a dashboard URL for SEP-0010 proof links. Must be https, no SSRF
+ * private targets, no credentials.
+ *
+ * Additionally, `dashboard.stellar.org` is explicitly rejected: it is not a
+ * recognized Stellar dashboard endpoint, and SEP-0010 proofs must reference
+ * either the Stellar Laboratory builders or an explicitly trusted dashboard
+ * host — never a plausible-looking but unrecognized one.
+ */
+export declare function isValidDashboardUrl(url: string): boolean;
+/**
+ * Build a markdown snippet for SEP-0010 proof of wallet control.
+ *
+ * Returns `undefined` when neither `challengeXdr` nor `dashboardUrl` is
+ * provided. When both are provided, the dashboard link is preferred and the
+ * XDR is not rendered (to avoid nonce leakage). The snippet is safe for
+ * public issue comments — XDR is truncated to first 24 chars … last 8.
+ *
+ * Does NOT affect `valid`/`ready` unless the caller explicitly gates on it;
+ * this is informational remediation only.
+ */
+export declare function buildSep0010ChallengeSnippet(options: Sep0010ChallengeOptions): string | undefined;

@@ -1,0 +1,158 @@
+/**
+ * GitHub Checks API integration for TrustBridge action results.
+ *
+ * Wave #26: When enabled via `use_check_runs: true`, this module creates a
+ * GitHub Check Run with individual validation checks as annotations and a
+ * conclusion (pass/fail) reflecting the overall validation result.
+ *
+ * Permissions required: `checks: write`
+ *
+ * Fail-open behavior: if Checks API returns a 403 (permission denied) or
+ * other error, the action logs a warning and continues — Check Run creation
+ * is never allowed to fail the validation itself. See docs/USAGE.md for
+ * GitHub App / token configuration guidance.
+ */
+import { ValidationResult } from './checks';
+/** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
+export declare const HOME_DOMAIN_CHECK_LABEL = "SEP-0001 home domain";
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+export declare const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+/** Share of requests since the last change that must be throttled to back off. */
+export declare const ADAPTIVE_THROTTLE_RATE = 0.2;
+/** Consecutive unthrottled successes needed to regain one slot. */
+export declare const ADAPTIVE_RECOVERY_SUCCESSES = 10;
+/**
+ * Concurrency limit for batch Horizon work (Issue #946): halves when the
+ * throttle rate reaches {@link ADAPTIVE_THROTTLE_RATE}, regains one slot per
+ * {@link ADAPTIVE_RECOVERY_SUCCESSES} successes. Always within `[1, max]`.
+ * Requests started before the last decrease are ignored, so one burst of
+ * 429s causes one decrease.
+ */
+export declare class AdaptiveConcurrency {
+    private readonly max;
+    private limitValue;
+    private active;
+    private epochValue;
+    private successes;
+    private streak;
+    private throttles;
+    private waiters;
+    constructor(max: number);
+    get limit(): number;
+    get epoch(): number;
+    tryAcquire(): boolean;
+    waitForRelease(): Promise<void>;
+    release(): void;
+    onThrottle(epoch: number): void;
+    onSuccess(epoch: number): void;
+    private resetWindow;
+    private record;
+    private wake;
+}
+export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
+/**
+ * Result of attempting to create a Check Run.
+ */
+export interface CheckRunResult {
+    /**
+     * True if the Check Run was successfully created.
+     */
+    success: boolean;
+    /**
+     * The Check Run ID if created, or null if creation failed or was skipped.
+     */
+    checkRunId?: number;
+    /**
+     * Human-readable message describing the outcome.
+     */
+    message: string;
+    /**
+     * Optional error message if creation failed.
+     */
+    error?: string;
+    /**
+     * True when the run was cancelled (via `options.signal`) before the Check
+     * Run was written. No Check Run exists in that case — never a partial one.
+     */
+    cancelled?: boolean;
+}
+/**
+ * Determine the Check Run conclusion from a ValidationResult.
+ *
+ * - `success`: All checks passed (result.valid === true)
+ * - `failure`: One or more checks failed (result.valid === false)
+ * - `neutral`: Result status is unclear or pending
+ */
+export declare function determineCheckConclusion(result: ValidationResult): CheckConclusion;
+/**
+ * Build annotation objects from individual checks in a ValidationResult.
+ *
+ * Each check becomes one annotation in the Check Run, allowing operators to
+ * see per-check results directly in the Actions UI without requiring debug logs.
+ */
+export declare function buildCheckAnnotations(result: ValidationResult, _options?: {
+    stellarAddress: string;
+}): Array<{
+    path: string;
+    start_line: number;
+    end_line: number;
+    annotation_level: 'notice' | 'warning' | 'failure';
+    title: string;
+    message: string;
+}>;
+/**
+ * Summary text for the Check Run. Failing runs include the `reason_code` so
+ * the Checks UI matches the action output (e.g. `HOME_DOMAIN_MISMATCH`).
+ */
+export declare function buildCheckRunSummary(result: ValidationResult): string;
+/**
+ * Create a GitHub Check Run for the validation result.
+ *
+ * Wraps the Octokit Checks API with:
+ *  - Error handling for permission denied (403) and other transient errors
+ *  - Structured logging for debugging
+ *  - Fail-open behavior so Check Run failures never block the validation
+ *
+ * @param result        The ValidationResult from running checks.
+ * @param token         GitHub API token (requires checks: write permission).
+ * @param options       Additional options (e.g. stellar address for annotation context).
+ *                      `signal` cancels the run: if it is aborted before or
+ *                      during the API call, no Check Run is written and the
+ *                      result has `cancelled: true` (Issue #783).
+ * @returns             CheckRunResult with success flag and details.
+ */
+export declare function createCheckRun(result: ValidationResult, token: string, options?: {
+    stellarAddress?: string;
+    signal?: AbortSignal;
+}): Promise<CheckRunResult>;
+/**
+ * Per-address deadline (Issue #928).
+ *
+ * Runs `task` with its own AbortSignal that fires after `deadlineMs`, so one
+ * hung address cannot consume the whole job budget. The per-address signal
+ * also follows `parentSignal` (the global/batch cancellation), giving this
+ * precedence:
+ *
+ *   1. `parentSignal` aborted (global timeout / cancel) → `{ status: 'cancelled' }`
+ *      — global cancellation always wins, even if the deadline also expired.
+ *   2. `deadlineMs` elapsed first → `{ status: 'timed_out' }`; only this
+ *      address is affected and the caller continues with the next one.
+ *   3. Otherwise → `{ status: 'completed', value }`.
+ *
+ * `deadlineMs` that is undefined, non-finite or `<= 0` disables the deadline
+ * (task runs exactly as before, still honoring `parentSignal`). The timer is
+ * always cleared, so nothing keeps the event loop alive after settling.
+ */
+export type DeadlineOutcome<T> = {
+    status: 'completed';
+    value: T;
+} | {
+    status: 'timed_out';
+    deadlineMs: number;
+} | {
+    status: 'cancelled';
+};
+export declare function runWithAddressDeadline<T>(task: (signal: AbortSignal) => Promise<T>, deadlineMs: number | undefined, parentSignal?: AbortSignal): Promise<DeadlineOutcome<T>>;

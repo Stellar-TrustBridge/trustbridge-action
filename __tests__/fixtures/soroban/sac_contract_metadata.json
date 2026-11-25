@@ -1,0 +1,79 @@
+{
+  "_fixture_version": "1.0.0",
+  "_generated_from": "Horizon GET /contracts/{contract_id} — Soroban Stellar Asset Contract (SAC) reporting fields",
+  "_description": "Golden fixtures for SAC contract metadata responses. A SAC is a Soroban contract that issues an asset, so its issuer is a C-address and its balances are never exposed as classic Horizon trustlines. TrustBridge reads the SAC name/symbol/decimals reporting fields so a C-address issuer can be validated contract-aware instead of being rejected as a malformed G-address. Regenerate with scripts/regen-soroban-fixture.sh when the node/ABI shape changes.",
+  "_contract_fn": "name() -> String, symbol() -> String, decimals() -> U32",
+  "_fixture_contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+  "scenarios": {
+    "sac_with_reporting_fields": {
+      "_description": "Node reports the SAC reporting fields inline (newer Horizon / Soroban RPC ledger-entry shape). symbol() must match asset_code USDC.",
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "code": "AAAAAG9zaKv0Bv2A...",
+        "creator": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        "created_at": "2026-01-15T10:04:12Z",
+        "last_modified": "2026-09-02T08:11:47Z",
+        "name": "USD Coin",
+        "symbol": "USDC",
+        "decimals": 7,
+        "sac": {
+          "name": "USD Coin",
+          "symbol": "USDC",
+          "decimals": 7
+        }
+      }
+    },
+    "sac_reporting_fields_string_decimals": {
+      "_description": "Some nodes report decimals as a string and omit the nested sac object — the parser must coerce and still verify the symbol.",
+      "id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+      "code": "AAAAAG9zaKv0Bv2A...",
+      "name": "USD Coin",
+      "symbol": "USDC",
+      "decimals": "7"
+    },
+    "sac_without_reporting_fields": {
+      "_description": "Older node exposes contract code but not the SAC reporting fields — exists is true, symbolVerified is false and the asset code check is inconclusive.",
+      "id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+      "code": "AAAAAG9zaKv0Bv2A...",
+      "creator": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "created_at": "2026-01-15T10:04:12Z"
+    },
+    "sac_symbol_mismatch": {
+      "_description": "The contract reports a different symbol than the configured asset_code — a real misconfiguration that must fail the asset-code check.",
+      "result": {
+        "id": "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB4X",
+        "address": "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB4X",
+        "code": "AAAAAG9zaKv0Bv2A...",
+        "name": "Test Token",
+        "symbol": "TST",
+        "decimals": 6
+      }
+    },
+    "not_found": {
+      "_description": "HTTP 404 body — older testnet nodes without the Soroban contracts endpoint answer with an empty problem document.",
+      "type": "https://stellar.org/horizon-errors/record-not-found",
+      "title": "Resource Missing",
+      "status": 404,
+      "detail": "The resource requested could not be found."
+    },
+    "error_envelope": {
+      "_description": "JSON-RPC error envelope — must resolve to exists=false, never throw.",
+      "jsonrpc": "2.0",
+      "id": 6,
+      "error": {
+        "code": -32603,
+        "message": "Internal error"
+      }
+    },
+    "malformed_contract_id": {
+      "_description": "Not a valid C-address (too short / wrong version prefix) — fetch is refused before any network call.",
+      "value": "CNOTACONTRACT",
+      "source": "invalid-contract-id"
+    }
+  }
+}

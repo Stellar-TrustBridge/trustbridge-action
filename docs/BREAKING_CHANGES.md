@@ -1,8 +1,20 @@
-# Breaking changes policy
+# Breaking Changes & Versioning Policy
 
-TrustBridge action releases use semantic versioning. Action major versions
-cover breaking changes to the public GitHub Action contract: inputs, outputs,
-defaults, supported events, permissions, and documented runtime behavior.
+This document is the canonical reference for how TrustBridge Action classifies input and output changes, manages deprecation, and governs immutable release tags for consumers.
+
+Related docs: [README](../README.md) · [CONTRIBUTING](../CONTRIBUTING.md) · [Release Checklist](RELEASE_CHECKLIST.md)
+
+---
+
+## Versioning contract
+
+TrustBridge Action follows **Semantic Versioning** ([semver.org](https://semver.org)):
+
+| Version segment | Incremented when |
+|-----------------|-----------------|
+| **MAJOR** (`v2.0.0`) | A breaking change is introduced — consumers must update their workflow files |
+| **MINOR** (`v1.1.0`) | New optional inputs, new outputs, or safe behaviour additions |
+| **PATCH** (`v1.0.1`) | Bug fixes, documentation corrections, dependency updates with no behaviour change |
 
 The plugin API has an independent semantic version. See
 [PLUGIN_ARCHITECTURE.md](PLUGIN_ARCHITECTURE.md) for compatibility ranges,
@@ -10,11 +22,431 @@ negotiation rules, and examples. An incompatible plugin API change must also
 ship in an action major because it changes an action-supported integration
 surface. Do not infer plugin API compatibility from the action major number.
 
-For a breaking release, record the change here with the affected versions,
-behavior, and migration steps. For a compatible additive release, document the
-new behavior in its feature guide without implying that consumers must upgrade
-their action major.
+### Immutable release tag contract
 
-## Recorded changes
+Consumers should pin either an immutable full SemVer tag or, for the strongest change control, a commit SHA:
 
-No breaking changes are recorded yet.
+```yaml
+# Immutable release — receives no changes unless the workflow reference is edited
+uses: Stellar-TrustBridge/trustbridge-action@v1.2.3
+
+# Maximum immutability — pin the reviewed commit SHA
+uses: Stellar-TrustBridge/trustbridge-action@0123456789abcdef0123456789abcdef01234567
+```
+
+Major aliases such as `@v1` are **not published or moved**. They silently change code for every consumer when reassigned, which conflicts with this repository's release-integrity policy.
+
+The release policy is:
+
+1. Release tags must match `vMAJOR.MINOR.PATCH` with numeric segments, for example `v1.2.3`.
+2. Once pushed, a release tag must never be moved, deleted, or reused—even when the release is faulty.
+3. Rollbacks are forward-only: restore the last known-good behavior in source and publish it under the next patch version.
+4. Never force-push `main` or any tag.
+5. If a legacy moving major tag is ever discovered, freeze it at its current commit, document the exception, and migrate consumers to a full version or commit SHA. Do not move it again.
+
+**Adoption status.** At the time this policy was adopted, the repository had no published Git tags or GitHub Releases. The previous documentation described moving `v1`, but that practice had not yet been established.
+
+### Enforcement and limitations
+
+The release workflow provides defense in depth:
+
+- It rejects tag pushes that are not full SemVer, including `v1` and `v1.2`.
+- It refuses to publish when a GitHub Release already exists for the same tag.
+- A manual `workflow_dispatch` run validates the build but does not publish release assets.
+
+A workflow starts after GitHub accepts a tag update, so it cannot by itself prevent a maintainer from moving or deleting a Git reference. Repository administrators should add a GitHub ruleset targeting `refs/tags/v*` that blocks tag updates and deletions and restricts tag creation to release maintainers. The workflow guard remains useful for clear failures and for preventing a reused tag from producing replacement release assets.
+
+### Rollback recipe
+
+Assume `v1.2.3` is faulty and `v1.2.2` is the last known-good release.
+
+1. **Contain the incident.** Keep `v1.2.3` unchanged. Tell affected consumers to pin `@v1.2.2` or its reviewed commit SHA while the correction is prepared.
+2. **Revert through a normal PR.** Create a branch from current `main`; do not rewrite `main`:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   git switch -c rollback/v1.2.3
+   git revert --no-commit <bad-commit-sha>
+   npm ci
+   npm run lint
+   npm test
+   npm run build
+   git add .
+   git commit -m "revert: restore behavior from v1.2.2"
+   git push -u origin rollback/v1.2.3
+   ```
+
+   Open and merge the rollback PR only after CI passes. If several commits caused the regression, revert each explicitly and review the combined diff.
+3. **Publish a new patch.** After the rollback PR merges, tag the reviewed `main` commit with the next unused version:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   NEW_TAG=v1.2.4
+   test -z "$(git ls-remote --tags origin "refs/tags/${NEW_TAG}")"
+   git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}: rollback v1.2.3"
+   git push origin "${NEW_TAG}"
+   ```
+
+   Never use `--force`, delete `v1.2.3`, or retarget it to the recovery commit.
+4. **Verify and communicate.** Confirm the release workflow passes, publish release notes identifying the superseded version, and direct consumers to `@v1.2.4` (or its commit SHA).
+
+---
+
+## Classification: breaking vs non-breaking changes
+
+### Breaking (MAJOR bump required)
+
+A change is **breaking** if a consumer workflow that worked correctly on the previous major version would fail, produce wrong outputs, or require a workflow-file edit after the upgrade.
+
+| Change type | Example |
+|-------------|---------|
+| Remove a required input | Removing `stellar_address_input` or `github_token` |
+| Remove an optional input | Removing `fail_on_missing` (consumers who set it explicitly break) |
+| Remove an output | Removing `account_funded`, `trustline_exists`, `xlm_balance`, or `comment_url` |
+| Rename an input | Renaming `fail_on_missing` → `on_failure` |
+| Rename an output | Renaming `account_funded` → `is_funded` |
+| Change the **type** or **unit** of an input/output | Changing `xlm_balance` from a decimal string (`"1.5"`) to an integer stroops value |
+| Change the **default** of an input in a way that alters behaviour | Changing `fail_on_missing` default from `"true"` to `"false"` |
+| Change the **default** of `horizon_url` to a different network | Switching the default from mainnet to testnet |
+| Raise the minimum Node.js runtime | Moving `runs.using` from `node20` to a version not available on older GitHub-hosted runners |
+| Remove the ability to pass `.trustbridge.yml` config | Removing `trustbridge_config_path` or the config-file feature entirely |
+| Tighten validation so previously accepted values are now rejected | Making `min_xlm_reserve` reject `"0"` when it previously accepted it |
+
+### Non-breaking / safe (MINOR or PATCH)
+
+A change is **safe** if consumers who do not adopt it see no change in behaviour, and those who do adopt it gain new capability without breaking existing workflow files.
+
+| Change type | Example |
+|-------------|---------|
+| Add a new **optional** input with a safe default | Adding `horizon_cache_ttl_ms` with default `"60000"` (existing runs behave identically) |
+| Add a new **output** | Adding `comment_url` output — consumers who don't use it are unaffected |
+| Widen accepted input values | Accepting `"0"` for `min_xlm_reserve` where it was previously rejected |
+| Change a default in a **backwards-compatible** direction | Increasing `horizon_timeout_ms` default from `15000` to `20000` (consumers who pinned it see no change) |
+| Improve comment formatting or remediation text | Updating the Markdown layout of the issue comment — `fail_on_missing` behaviour is unchanged |
+| Add or relax a non-required validation | Accepting `C…` contract addresses in `asset_issuer` when only `G…` was accepted before |
+| Performance improvements | Reducing unnecessary Horizon round-trips via `use_cache` without changing output values |
+| Bug fixes that restore documented behaviour | Fixing `wait_until_funded` to honour `wait_until_funded_timeout_ms` correctly |
+| Dependency version bumps with no API surface change | Updating `@actions/core` or `@octokit/rest` patch versions |
+| Documentation-only changes | Correcting a typo in `README.md` or adding a workflow recipe to `docs/USAGE.md` |
+
+---
+
+## Output stability contract
+
+TrustBridge treats action outputs as a compatibility contract for downstream composite actions and reusable workflows. Any output change is governed by the same breakage policy as inputs: removing or renaming an existing output is a **breaking change** and requires a major-version bump and migration notes.
+
+To prevent silent drift, the repository maintains a golden manifest in `__tests__/action-output-golden.json`. CI validates three things:
+
+1. Every output declared in `action.yml` is present in the approved golden list.
+2. Every output still produced by `src/outputs.ts` (`toActionOutputs`) matches the declared `action.yml` contract.
+3. Any output removal from the golden list fails the test unless the removal is intentionally approved via a major-version change and accompanying documentation in this file.
+
+### Required update process for output changes
+
+When an output is intentionally added, renamed, or removed:
+
+1. Update `action.yml` to declare the new output names and remove deprecated names only in a major-version change.
+2. Update `src/outputs.ts` and any runtime setOutput calls so the emitted keys match the declared contract.
+3. Update `__tests__/action-output-golden.json` to reflect the new approved manifest.
+4. Add a brief note to the [Change history](#change-history) section describing the breaking or additive change.
+5. If the change is breaking, bump the major version and update the migration guidance for downstream consumers.
+
+This guard is intentionally strict for removals: it blocks accidental deletions of output names even when the project still builds. Additive output additions are allowed only when the approved manifest is updated in the same PR.
+
+---
+
+## Deprecation process
+
+TrustBridge follows a **warn → remove** lifecycle spanning at least one full major version:
+
+### Step 1 — Warn (in the current major)
+
+When an input or output is scheduled for removal:
+
+1. Annotate `action.yml` with a `# DEPRECATED` comment on the input and update its `description` to state the replacement and the target removal version:
+   ```yaml
+   use_cache:
+     # DEPRECATED — use horizon_cache_ttl_ms instead. Will be removed in v2.
+     description: >-
+       [DEPRECATED: use horizon_cache_ttl_ms instead. Will be removed in v2.]
+       Cache successful Horizon account responses in job memory to minimize redundant calls.
+     required: false
+     default: 'false'
+   ```
+2. Emit a `core.warning` at runtime whenever the deprecated input is set to a non-default value:
+   ```
+   [TrustBridge] WARNING: input "use_cache" is deprecated and will be removed in v2.
+   Use "horizon_cache_ttl_ms" instead (set to 0 to disable caching).
+   ```
+3. Update `README.md` to mark the input with a **⚠️ Deprecated** badge in the inputs table.
+4. Add an entry to the [Deprecation history](#deprecation-history) section of this document.
+
+### Step 2 — Remove (in the next major)
+
+When the major version is bumped:
+
+1. Delete the deprecated input/output from `action.yml`.
+2. Remove runtime handling from `src/`.
+3. Update `README.md` and `docs/USAGE.md` to remove references.
+4. Record the removal in the [Change history](#change-history) section below.
+
+### Minimum deprecation window
+
+An input or output **must** remain in the warn state for **at least one full major release** before it can be removed. For example, a deprecation announced in `v1.x` may only be removed in `v2.0` or later.
+
+---
+
+## Checklist for maintainers (before every PR that touches inputs or outputs)
+
+- [ ] Identify whether the change is breaking or non-breaking using the table above
+- [ ] If **breaking** — bump MAJOR in the release, add a `## v(N) → v(N+1)` entry to [Change history](#change-history)
+- [ ] If **deprecating** — add `# DEPRECATED` to `action.yml`, add `core.warning`, mark README table, add to [Deprecation history](#deprecation-history)
+- [ ] If changing outputs — update `action.yml`, `src/outputs.ts`, and `__tests__/action-output-golden.json` together; removing any output is a breaking change
+- [ ] Update `README.md` inputs/outputs table
+- [ ] Confirm `action.yml` descriptions stay aligned with README (see [docs/RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md))
+
+---
+
+## Deprecation history
+
+> This table is updated whenever an input or output enters the warn state.
+
+| Input / Output | Deprecated in | Replacement | Planned removal |
+|----------------|--------------|-------------|-----------------|
+| `skip_if_maintainer` | v1.x (Issue #448) | `skip_for_maintainers` | v2.0.0 |
+
+### `skip_if_maintainer` → `skip_for_maintainers` (Issue #448)
+
+`skip_if_maintainer` was introduced alongside `skip_for_maintainers` as a
+naming variant. Two names for one behaviour invited a precedence question that
+was never documented, and the original `a || b` read was misleading: because
+`action.yml` gives `skip_for_maintainers` a `false` default, the truthy string
+`"false"` short-circuited the fallback and the alias was effectively
+unreachable.
+
+**Resolved precedence** (canonical always wins):
+
+1. `skip_for_maintainers` set to an explicit boolean → that value is used. The
+   alias is ignored, even if it says the opposite.
+2. Otherwise `skip_if_maintainer` set to an explicit boolean → that value is
+   used, plus a deprecation warning.
+3. Neither set → `false`.
+
+Conflicting values resolve in favour of the canonical input and emit an
+explicit warning; no value is silently chosen.
+
+**Risk of the deprecated alias.** The alias enables exactly the same opt-out as
+the canonical input, so it carries the identical security consideration:
+enabling either on contributor-facing workflows lets a maintainer actor bypass
+validation. The alias is deprecated for clarity and future removal, **not**
+because it is less safe. Migration is behaviour-preserving and needs no
+security review.
+
+| Change | Classification |
+| --- | --- |
+| `skip_if_maintainer` marked deprecated in `action.yml` + docs | Non-breaking (MINOR) |
+| Runtime deprecation warning when the alias is used | Non-breaking (MINOR) |
+| Runtime conflict warning when both inputs disagree | Non-breaking (MINOR) |
+| Documented canonical-wins precedence | Non-breaking (MINOR) — restores the alias to its documented contract |
+| Removal of `skip_if_maintainer` in v2 | **Breaking (MAJOR)** — covered by the warn → remove lifecycle above |
+
+---
+
+## Reason-code rename calendar (Issue #945)
+
+Add renames to `REASON_CODE_ALIASES` (`src/reasonCodes.ts`) and to this table.
+From `Deprecated on` through `Remove after` (UTC, inclusive), webhook
+`assets[]` entries carry the old name in `deprecated_reason_codes`, next to the
+canonical `reason_code`. After that date CI fails until the alias is removed.
+Scalar `reason_code` outputs carry only the canonical code.
+
+| Deprecated code | Canonical code | Deprecated on | Remove after |
+|---|---|---|---|
+| _none_ | | | |
+
+---
+
+## Change history
+
+> Record breaking changes here when a new major version is released. Minor/patch changes are covered by GitHub Release notes.
+
+### v1 (current)
+
+Initial public release. No breaking changes from a prior major.
+
+**Inputs (v1):** `stellar_address_input` (required), `github_token` (required), `horizon_url`, `asset_code`, `asset_issuer`, `min_xlm_reserve`, `fail_on_missing`, `debug_mode`, `horizon_timeout_ms`, `sticky_comment`, `wait_until_funded`, `wait_until_funded_timeout_ms`, `wait_until_funded_interval_ms`, `horizon_url_fallback`, `horizon_cache_ttl_ms`, `rpc_fallback_url`, `use_cache`, `log_inputs`, `trustbridge_config_path`, `max_retries`, `retry_base_delay_ms`, `sep0007_deep_links`, `sep0007_origin_domain`.
+
+**Outputs (v1):** `trustline_exists`, `xlm_balance`, `account_funded`, `comment_url`.
+
+**Outputs added additively in v1.x (MINOR, non-breaking):** `full_report_path`; the audit outputs `ready`, `validated_at`, `horizon_url`, `asset_code`, `asset_issuer`, `reason_code`, `checks_json`; `badge_markdown` and `badge_url`; `asset_balance` and `native_balance`; the timing outputs `timings_json` and `timing_*_ms`; `num_sponsoring` and `num_sponsored`; the network passphrase outputs; `assignee_results_json` and `matrix_ready_map`; the `friendbot_*` outputs; `check_run_id` and `check_run_conclusion`; `conflict_report` and `has_conflicts`; `assets_trustline_status` and `trustlines_summary`; and the `batch_*` outputs. The full typed list is in the [README Outputs section](../README.md#outputs) and must stay in sync with `action.yml` and `__tests__/action-output-golden.json`.
+
+**Documentation-only correction:** `check_account_funded`, `check_trustline`, `check_xlm_reserve` and `asset_balance_met` were listed in the README outputs table but were never declared in `action.yml` or emitted by the action. Removing those rows does not remove a shipped output, so it is not a breaking change. The README lists their replacements.
+
+### v1 → v2 (placeholder)
+
+> _These breaking changes will take effect in the upcoming v2 release._
+- **Removed Export**: Removed deprecated `TROUBLESHOOTING_FAQ_BASE` from `src/markdown.ts`. Use `DEFAULT_FAQ_BASE_URL` from `src/links.ts` directly.
+
+---
+
+## Cache backend fallback behavior (Issue #462)
+
+When a `selectedBackend` value is provided to `SimpleCache` that is not one of the supported values (`"memory"`, `"github-actions"`), the cache **silently falls back to in-memory mode** and emits a `core.warning`. This is a non-breaking, non-fatal behavior: workflows continue to execute correctly using the in-memory cache.
+
+### Supported named backends
+
+| Value | Behavior |
+|-------|----------|
+| `"memory"` (default) | In-process heap cache only; no persistence across steps, jobs, or runs |
+| `"github-actions"` | Backed by `GitHubActionsCacheBackend`; equivalent to `useActionsCacheBackend: true` |
+
+Any other value is **unsupported**. A `core.warning` is emitted immediately with:
+- The unsupported value that was requested.
+- The list of supported values.
+- A message that in-memory fallback is active.
+
+This warning is visible in the GitHub Actions log without requiring `debug_mode: true`.
+
+### Change classification
+
+Adding this warning is a **non-breaking change** (new warning, same runtime behavior). No workflow file update is required. If you intentionally pass an unsupported `selectedBackend` value via a programmatic `SimpleCache` constructor (e.g. in a plugin), update it to one of the supported values to suppress the warning.
+
+---
+
+The signed webhook payload emitted by `src/webhook.ts` is a **public API surface** — dashboard receivers and downstream automation switch on its field names and types. Renames and removals are breaking changes even when the action's workflow-level inputs/outputs are otherwise untouched.
+
+### v1 schema is frozen
+
+The fields listed in `schemas/webhook-payload.schema.json` under `schema_version: "1"` are **immutable**:
+
+| Field | Frozen since | Notes |
+|-------|-------------|-------|
+| `schema_version` | v1 | Always the string `"1"` for v1 payloads |
+| `event` | v1 | Always `"validation_complete"` |
+| `timestamp` | v1 | ISO-8601 UTC string |
+| `repository` | v1 | `"owner/repo"` format |
+| `issue_number` | v1 | Integer ≥ 1 or `null` |
+| `stellar_address` | v1 | Redacted first-4…last-4 |
+| `result.valid` | v1 | Boolean |
+| `result.account_funded` | v1 | Boolean |
+| `result.trustline_exists` | v1 | Boolean |
+| `result.xlm_balance` | v1 | 7-decimal string |
+| `result.checks[].label` | v1 | String |
+| `result.checks[].passed` | v1 | Boolean |
+
+**No field in this table may be renamed, removed, or have its type changed in any v1.x release.**
+
+### What is allowed in v1.x (additive changes)
+
+- Adding new **optional** top-level fields to the payload (e.g. `run_id`, `reason_code`).
+- Adding new items to `result.checks[]` — the array length is not contractually fixed.
+- Adding new **optional** fields to each `result.checks[]` item.
+- Adding new allowed values to `schema_version` (handled by upgrading to a new schema version alongside the old).
+- Adding new **optional** fields to each `assets[]` item.
+- Adding new values to a closed set — a new `assets[].reason_code`, a new `dropped_fields` entry, or a new code in `schemas/reason-codes.json` (with `since`; the catalog `version` does not change).
+
+Dashboard receivers MUST tolerate unknown fields gracefully (do not use `additionalProperties: false` validation on the receiver side against the v1 schema — use it only as a minimum-field check). Unknown reason codes MUST be ignored rather than rejected; gate on `result.valid`.
+
+The full field classification, the reason-code versioning rules, worked
+examples, and the reference receiver `readWebhookPayloadForConsumer`
+(`src/webhook.ts`, stable error codes `WEBHOOK_PAYLOAD_MALFORMED`,
+`WEBHOOK_PAYLOAD_TOO_LARGE`, `WEBHOOK_SCHEMA_VERSION_UNSUPPORTED`) are in
+[`docs/SCHEMA.md`](SCHEMA.md#webhook-payload-versioning-policy-issue-917) (Issue #917).
+
+### Webhook body size cap and truncation markers (Issue #894)
+
+`src/webhook.ts` now enforces a hard 900 000-byte cap on the serialized outbound
+body. Oversized payloads are truncated deterministically (trailing `assets[]`
+entries first, then trailing `result.checks[]` entries) and marked with two new
+**optional, additive** top-level fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `truncated` | boolean | Set to `true` only on a truncated body; absent otherwise. |
+| `dropped_fields` | array of strings | Fields whose trailing entries were dropped, in drop order: `["assets"]` or `["assets", "result.checks"]`. |
+
+This is a **non-breaking change**: `schema_version` stays `"1"`, no frozen field
+is renamed, removed, or retyped, and an under-cap payload is byte-for-byte
+identical to before (the marker keys are absent). Receivers tolerate the two
+unknown keys as with any additive field — see
+[`docs/USAGE.md`](USAGE.md#body-size-cap-and-truncation-markers-issue-894). Two
+delivery-result reason codes are added: `WEBHOOK_PAYLOAD_TRUNCATED` (a truncated
+body was delivered) and `WEBHOOK_SIZE_LIMIT_EXCEEDED` (nothing was sent).
+
+### What requires a MAJOR version bump (v2+)
+
+| Change | Reason |
+|--------|--------|
+| Removing any field from the frozen list above | Breaks receivers that read it |
+| Renaming any field (e.g. `result.valid` → `result.is_valid`) | Breaks receivers |
+| Changing `result.valid` from boolean to string | Type mismatch breaks typed receivers |
+| Changing `stellar_address` format (e.g. full address instead of redacted) | PII leak + format change |
+| Changing the HMAC header name from `X-TrustBridge-Signature` | Breaks receiver signature verification |
+| Changing the HMAC algorithm from SHA-256 | Breaks receiver verification |
+| Making a required field optional or nullable | Receivers that read it unconditionally break |
+| Changing the meaning of an existing reason code or closed-set value | Silently flips receiver decisions |
+| Removing or renaming a reason code | Also bumps the `schemas/reason-codes.json` catalog `version` |
+
+When introducing a breaking payload change, increment `schema_version` in the payload **and** publish the new JSON Schema as `schemas/webhook-payload-v2.schema.json`. Run both schemas simultaneously for a deprecation window before removing v1 support.
+
+Reason codes follow the same policy: see the versioning table in
+[`docs/SCHEMA.md`](SCHEMA.md#webhook-and-reason-code-versioning-policy).
+
+### Header versioning
+
+The HTTP header `X-TrustBridge-Schema-Version: 1` is sent with every webhook delivery alongside `X-TrustBridge-Signature`. Dashboard receivers can use this header for version routing without parsing the body first:
+
+```
+POST /webhook HTTP/1.1
+Content-Type: application/json
+X-TrustBridge-Signature: sha256=<hex>
+X-TrustBridge-Schema-Version: 1
+User-Agent: trustbridge-action/1
+```
+
+### Checklist for maintainers touching webhook.ts
+
+- [ ] Is the change additive only? If yes — no schema version bump needed.
+- [ ] Does the change rename or remove a frozen field? If yes — this is a MAJOR bump.
+- [ ] Is a new optional field added? Update `schemas/webhook-payload.schema.json` (mark as not-required).
+- [ ] Is a new optional field added? Also add it to `WEBHOOK_PAYLOAD_OPTIONAL_FIELDS` in `src/webhook.ts`, the field-classes table in `docs/SCHEMA.md`, and the payload reference in `docs/USAGE.md` (Issue #917).
+- [ ] Is a new closed-set value added (asset `reason_code`, `dropped_fields`)? It is additive; receivers report it via `unknownReasonCodes` until they upgrade.
+- [ ] Does the change touch the size cap or truncation order? Keep `WEBHOOK_MAX_BODY_BYTES` / `WEBHOOK_TRUNCATABLE_FIELDS` and the `docs/USAGE.md` truncation section in sync, and cover the boundary + multibyte paths in `__tests__/webhook-size-cap.test.ts`.
+- [ ] Run `npm test -- --testPathPattern 'webhook'` — the contract tests must pass.
+- [ ] If introducing a new `schema_version`, add a new frozen-fields table above and update `buildWebhookPayload` to emit the new version for new consumers while keeping backward compatibility.
+
+---
+
+## Action Inputs: `posting_mode` vs `comment_mode` (Issue #418)
+
+### Summary of Change
+In previous versions, `comment_mode` had conflicting declarations across action specifications:
+1. Controlling GitHub comment posting behavior (`post`, `dry-run`, `off`).
+2. Controlling comment threading strategy (`sticky`, `new`, `reply`).
+
+### Resolution & Inputs
+- **`posting_mode`**: Dedicated input for comment posting policy. Allowed values: `'post'` (default), `'dry-run'`, `'off'`.
+- **`comment_mode`**: Dedicated input for comment threading strategy. Allowed values: `'sticky'` (default), `'new'`, `'reply'`.
+
+### Backward Compatibility
+To avoid breaking existing workflows that configured `comment_mode: dry-run` or `comment_mode: off`, `src/index.ts` automatically falls back to using `comment_mode` as `posting_mode` when `posting_mode` is omitted and `comment_mode` is set to `post`, `dry-run`, or `off`.
+
+---
+
+[← Back to README](../README.md)
+
+## Legacy alias warnings (Issue #862)
+
+Legacy aliases are accepted for one deprecation window but are no longer silent. When `skip_if_maintainer`, `ready_pass_label`, `ready_label_pass`, `ready_fail_label`, or `ready_label_fail` is explicitly set, the action emits one consolidated warning per run. Canonical names always win when both forms are supplied:
+
+- `skip_if_maintainer` → `skip_for_maintainers`
+- `ready_pass_label` / `ready_label_pass` → `pass_label`
+- `ready_fail_label` / `ready_label_fail` → `fail_label`
+
+No output, permission, pause/freeze, or dry-run semantics change. Consumers should migrate before the next major release.
+
+## Job Summary size policy (Issue #861)
+
+Job Summary markdown is limited to 1 MiB of UTF-8 data. TrustBridge keeps the compact overview ahead of the verbose JSON artifact, removes lower-priority detail first, and then applies a visible line-safe soft-fail truncation notice. This does not change the action conclusion or validation outputs.

@@ -1,10 +1,29 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as github from '@actions/github';
 import {
   STICKY_COMMENT_MARKER,
+  STICKY_COMMENT_MARKER_LEGACY,
   TRUSTBRIDGE_FOOTER,
+  MAX_STICKY_COMMENT_SEARCH_PAGES,
+  MAX_COMMENT_LENGTH,
+  COMMENT_SIZE_LIMIT_BYTES,
+  COMMENT_TRUNCATION_NOTICE_BYTES,
+  COMMENT_TRUNCATED_MARKER,
   findStickyComment,
+  findFirstTrustBridgeComment,
   formatCommentBody,
+  isTrustBridgeComment,
   postIssueComment,
+  upsertIssueComment,
+  resolvePostingMode,
+  resolveIssueOrPullRequestNumber,
+  resolveDiscussionNodeId,
+  findStickyDiscussionComment,
+  postDiscussionComment,
+  buildTruncatedCommentBody,
+  writeFullReport,
 } from '../src/comment';
 import { ValidationResult } from '../src/checks';
 
@@ -12,8 +31,19 @@ jest.mock('@actions/github', () => ({
   context: {
     payload: {},
     repo: { owner: 'test-owner', repo: 'test-repo' },
+    apiUrl: 'https://api.github.com',
   },
   getOctokit: jest.fn(),
+}));
+
+jest.mock('@actions/core', () => ({
+  info: jest.fn(),
+  warning: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+  setOutput: jest.fn(),
+  setFailed: jest.fn(),
+  getInput: jest.fn(),
 }));
 
 const validationResult: ValidationResult = {
@@ -22,6 +52,8 @@ const validationResult: ValidationResult = {
   trustlineExists: false,
   xlmBalance: '0',
   xlmReserveMet: false,
+  assetBalance: '0',
+  assetBalanceMet: false,
   checks: [
     {
       passed: false,
@@ -45,6 +77,15 @@ describe('TRUSTBRIDGE_FOOTER', () => {
 });
 
 describe('formatCommentBody golden snapshots', () => {
+  beforeAll(() => {
+    // Mock Date.now() to return a fixed timestamp for snapshot consistency
+    jest.spyOn(Date, 'now').mockReturnValue(1000000000000);
+  });
+
+  afterAll(() => {
+    jest.restoreAllMocks();
+  });
+
   it('matches golden snapshot for successful validation result', () => {
     const successResult: ValidationResult = {
       valid: true,
@@ -52,6 +93,8 @@ describe('formatCommentBody golden snapshots', () => {
       trustlineExists: true,
       xlmBalance: '10.5000000',
       xlmReserveMet: true,
+      assetBalance: '50.0',
+      assetBalanceMet: true,
       checks: [
         { passed: true, label: 'Account funded', detail: 'Account exists on Horizon.' },
         { passed: true, label: 'USDC trustline', detail: 'Trustline exists with balance 50.0.' },
@@ -74,6 +117,8 @@ describe('formatCommentBody golden snapshots', () => {
       trustlineExists: false,
       xlmBalance: '0',
       xlmReserveMet: false,
+      assetBalance: '0',
+      assetBalanceMet: false,
       checks: [
         { passed: false, label: 'Account funded', detail: 'Account was not found on Horizon (404).' },
         { passed: false, label: 'USDC trustline', detail: 'Cannot check trustline without an active account.' },
@@ -97,6 +142,8 @@ describe('formatCommentBody golden snapshots', () => {
       trustlineExists: false,
       xlmBalance: '5.0000000',
       xlmReserveMet: true,
+      assetBalance: '0',
+      assetBalanceMet: false,
       checks: [
         { passed: true, label: 'Account funded', detail: 'Account exists on Horizon.' },
         { passed: false, label: 'USDC trustline', detail: 'Account does not hold a trustline for USDC.' },
@@ -155,16 +202,316 @@ describe('formatCommentBody', () => {
     expect(body).toContain('Passed checks: 0/1');
     expect(body).toContain('Failed checks: 1');
   });
+
+  it('includes onboarding checklist by default with unchecked boxes for failures', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+
+    expect(body).toContain('### Onboarding checklist');
+    expect(body).toContain('- [ ] **Fund account**');
+    expect(body).toContain('- [ ] **Add USDC trustline**');
+    expect(body).toContain('- [ ] **Verify XLM balance**');
+    expect(body).toContain('onboarding_checklist');
+  });
+
+  it('shortens oversized remediation while preserving the earlier checklist', () => {
+    const resultWithLongRemediation: ValidationResult = {
+      ...validationResult,
+      remediation: '🚀'.repeat(40000),
+    };
+
+    const body = formatCommentBody(resultWithLongRemediation, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(body.indexOf('### Onboarding checklist')).toBeLessThan(
+      body.indexOf('### Remediation'),
+    );
+    expect(body).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(body).toContain('🚀');
+    expect(body).not.toContain('🚀'.repeat(40000));
+    expect(
+      body.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
+  it('truncates oversized diagnostics safely when remediation is empty', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      debugMode: true,
+      diagnosticsConfig: {
+        inputs: {
+          horizonUrl: 'https://horizon.stellar.org',
+          assetCode: 'USDC',
+          assetIssuer: baseConfig.assetIssuer,
+          minXlmReserve: 1.5,
+          horizonTimeoutMs: 15000,
+          useCache: false,
+          allowCrossNetworkFallback: false,
+          debugMode: true,
+          diagnosticJson: JSON.stringify({ detail: '🚀'.repeat(40000) }),
+        },
+      },
+    });
+
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(body).toContain('### Onboarding checklist');
+    expect(body).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      body.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
+  it('omits onboarding checklist when disabled', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      onboardingChecklist: false,
+    });
+
+    expect(body).not.toContain('### Onboarding checklist');
+    expect(body).toContain('### Results');
+    expect(body).toContain('### Validation gate');
+  });
+
+  it('checks onboarding boxes from live ValidationResult state', () => {
+    const partial: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: false,
+      xlmBalance: '5.0000000',
+      xlmReserveMet: true,
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: false, label: 'USDC trustline', detail: 'missing' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+      ],
+    };
+
+    const body = formatCommentBody(partial, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      onboardingChecklist: true,
+    });
+
+    expect(body).toContain('- [x] **Fund account**');
+    expect(body).toContain('- [ ] **Add USDC trustline**');
+    expect(body).toContain('- [x] **Verify XLM balance**');
+  });
+
+  it('includes SEP-0010 dashboard link when sep0010DashboardUrl is set (prefers dashboard over XDR)', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        checks: [{ passed: false, label: 'Account funded', detail: 'not found' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0010DashboardUrl: 'https://dashboard.example/verify?address=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        sep0010ChallengeXdr: 'AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', // should be ignored when dashboard set
+      },
+    );
+    expect(body).toContain('Proof of wallet control (SEP-0010)');
+    expect(body).toContain('dashboard.example');
+    expect(body).not.toContain('AAAAAQ'); // raw XDR not rendered when dashboard wins
+    // Does not block ready gate (still shows blocked by Account funded)
+    expect(body).toContain('Blocked by');
+  });
+
+  it('includes truncated SEP-0010 XDR snippet when only challengeXdr is set (no nonce leak)', () => {
+    const longXdr = 'AAAAAQ' + 'B'.repeat(100) + 'CCCC';
+    const body = formatCommentBody(
+      {
+        valid: true,
+        accountFunded: true,
+        trustlineExists: true,
+        xlmBalance: '10.0000000',
+        xlmReserveMet: true,
+        checks: [{ passed: true, label: 'Account funded', detail: 'ok' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0010ChallengeXdr: longXdr,
+      },
+    );
+    expect(body).toContain('Proof of wallet control (SEP-0010)');
+    expect(body).toContain('…'); // truncated
+    expect(body).not.toContain(longXdr); // full XDR not leaked
+  });
+
+  it('does not include SEP-0010 section when neither dashboard nor XDR set', () => {
+    const body = formatCommentBody(
+      {
+        valid: true,
+        accountFunded: true,
+        trustlineExists: true,
+        xlmBalance: '10.0000000',
+        xlmReserveMet: true,
+        checks: [{ passed: true, label: 'Account funded', detail: 'ok' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+      },
+    );
+    expect(body).not.toContain('Proof of wallet control');
+  });
+
+  it('splits native XLM vs trustline balance (Issue #246) — has USDC but low XLM vs inverse', () => {
+    const hasUsdcButLowXlm: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: true,
+      xlmBalance: '0.5000000',
+      xlmReserveMet: false,
+      assetBalance: '100.0000000',
+      assetBalanceMet: true,
+      trustlineLimit: '1000.0000000',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: true, label: 'USDC trustline', detail: 'ok' },
+        { passed: false, label: 'XLM reserve', detail: 'low' },
+      ],
+    };
+    const body1 = formatCommentBody(hasUsdcButLowXlm, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body1).toContain('**Native XLM balance:** `0.5000000 XLM`');
+    expect(body1).toContain('**USDC trustline balance:** `100.0000000 USDC`');
+
+    const hasXlmButNoTrustline: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: false,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: false, label: 'USDC trustline', detail: 'missing' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+      ],
+    };
+    const body2 = formatCommentBody(hasXlmButNoTrustline, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body2).toContain('**Native XLM balance:** `10.0000000 XLM`');
+    expect(body2).toContain('**USDC trustline balance:** `0 USDC` — no trustline');
+  });
+
+  it('handles 0 balance trustline vs missing trustline distinctly (7 decimals)', () => {
+    const zeroBalance: ValidationResult = {
+      valid: false,
+      accountFunded: true,
+      trustlineExists: true,
+      xlmBalance: '10.0000000',
+      xlmReserveMet: true,
+      assetBalance: '0.0000000',
+      trustlineLimit: '500.0000000',
+      checks: [
+        { passed: true, label: 'Account funded', detail: 'ok' },
+        { passed: true, label: 'USDC trustline', detail: 'ok' },
+        { passed: true, label: 'XLM reserve', detail: 'ok' },
+      ],
+    };
+    const body = formatCommentBody(zeroBalance, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body).toContain('`0.0000000 USDC`');
+  });
+
+  describe('per-asset trustline table from assets_json (Issue #552)', () => {
+    const usdcIssuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    const eurcIssuer = 'GCQT3YKVGZBWV2VE3TTV6LSUYOUJxLNJILDKEH2Y7RK3QUIYFJWKKRR2';
+
+    it('renders a per-asset table when config.assets is provided', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'EURC', assetIssuer: eurcIssuer, trustlineExists: true, balance: '12.5000000' },
+          { assetCode: 'FOO', assetIssuer: usdcIssuer, trustlineExists: false, balance: '0' },
+        ],
+      });
+
+      expect(body).toContain('### Asset trustlines');
+      expect(body).toContain('| Asset | Trustline | Balance | Issuer |');
+      expect(body).toContain('| EURC | ✅ exists | `12.5000000` |');
+      expect(body).toContain('| FOO | ❌ missing | `0` — no trustline |');
+      // Issuer is shortened but recognisable.
+      expect(body).toContain(`${eurcIssuer.slice(0, 4)}…${eurcIssuer.slice(-4)}`);
+    });
+
+    it('omits the section when no assets are configured (single-asset runs unchanged)', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+      });
+
+      expect(body).not.toContain('### Asset trustlines');
+      // Golden-path content is untouched.
+      expect(body).toContain('### Balances');
+    });
+
+    it('escapes markdown-sensitive asset codes (injection guard)', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'A_B[C](D)', assetIssuer: usdcIssuer, trustlineExists: true, balance: '1.0000000' },
+        ],
+      });
+
+      // The raw code must not appear unescaped anywhere in the body.
+      const esc = String.fromCharCode(92);
+      expect(body).toContain(`A${esc}_B${esc}[C${esc}]${esc}(D${esc})`);
+    });
+
+    it('renders unknown balance as informational placeholder', () => {
+      const body = formatCommentBody(validationResult, {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        assets: [
+          { assetCode: 'EURC', assetIssuer: eurcIssuer, trustlineExists: true, balance: 'unknown' },
+        ],
+      });
+
+      expect(body).toContain('| EURC | ✅ exists | _unknown_ |');
+    });
+  });
 });
 
 function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
   return {
     paginate: jest.fn(),
+    graphql: jest.fn(),
     rest: {
       issues: {
         listComments: jest.fn(),
         createComment: jest.fn(),
         updateComment: jest.fn(),
+        getComment: jest.fn(),
+      },
+      reactions: {
+        listForIssueComment: jest.fn(),
       },
     },
     ...overrides,
@@ -172,9 +519,97 @@ function makeOctokit(overrides: Record<string, jest.Mock> = {}) {
 }
 
 
+/**
+ * Shape a GraphQL issue-comments response. Hoisted to module scope so both
+ * the `findStickyComment` and `findFirstTrustBridgeComment` suites can use
+ * it (previously defined inside one describe block but used by both, which
+ * broke compilation of this suite).
+ */
+function issueGraphqlResponse(
+  nodes: Array<{ id: string; databaseId: number; body: string }>,
+  pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
+    hasNextPage: false,
+    endCursor: null,
+  },
+) {
+  return {
+    repository: {
+      issue: {
+        comments: { nodes, pageInfo },
+      },
+    },
+  };
+}
+
 describe('findStickyComment', () => {
-  it('returns the id of the comment containing the marker', async () => {
+  it('returns the databaseId of the comment containing the marker via GraphQL pagination across multiple pages', async () => {
     const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_1', databaseId: 101, body: 'unrelated comment 1' },
+            { id: 'IC_2', databaseId: 102, body: 'unrelated comment 2' },
+          ],
+          { hasNextPage: true, endCursor: 'page-1-end' },
+        ),
+      )
+      .mockResolvedValueOnce(
+        issueGraphqlResponse(
+          [
+            { id: 'IC_3', databaseId: 103, body: 'unrelated comment 3' },
+            { id: 'IC_4', databaseId: 104, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(104);
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: null }),
+    );
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ owner: 'owner', repo: 'repo', issueNumber: 42, cursor: 'page-1-end' }),
+    );
+  });
+
+  it('honors maxPages cap in GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    // Simulate infinite pages
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse(
+        [{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }],
+        { hasNextPage: true, endCursor: 'next-page' },
+      ),
+    );
+
+    const id = await findStickyComment(
+      octokit as unknown as Parameters<typeof findStickyComment>[0],
+      'owner',
+      'repo',
+      42,
+      { maxPages: 3 },
+    );
+
+    expect(id).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to REST pagination if GraphQL fails', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
     octokit.paginate.mockResolvedValue([
       { id: 1, body: 'unrelated comment' },
       { id: 2, body: `${STICKY_COMMENT_MARKER}\nprevious TrustBridge result` },
@@ -194,8 +629,9 @@ describe('findStickyComment', () => {
     );
   });
 
-  it('returns undefined when no comment has the marker', async () => {
+  it('returns undefined when no comment has the marker via REST fallback', async () => {
     const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL error'));
     octokit.paginate.mockResolvedValue([{ id: 1, body: 'unrelated comment' }]);
 
     const id = await findStickyComment(
@@ -209,14 +645,78 @@ describe('findStickyComment', () => {
   });
 });
 
+describe('findFirstTrustBridgeComment (Issue #419)', () => {
+  it('finds the first matching comment via GraphQL when multiple comments exist', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([
+        { id: 'IC_1', databaseId: 101, body: 'unrelated comment' },
+        { id: 'IC_2', databaseId: 102, body: `${STICKY_COMMENT_MARKER}\nfirst TrustBridge result` },
+        { id: 'IC_3', databaseId: 103, body: `${STICKY_COMMENT_MARKER}\nsecond TrustBridge result` },
+      ]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(102);
+  });
+
+  it('falls back to REST pagination if GraphQL fails and finds the first match', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockRejectedValue(new Error('GraphQL API unavailable'));
+    octokit.paginate.mockResolvedValue([
+      { id: 1, body: 'unrelated comment' },
+      { id: 2, body: `${STICKY_COMMENT_MARKER}\nfirst match` },
+      { id: 3, body: `${STICKY_COMMENT_MARKER}\nsecond match` },
+    ]);
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBe(2);
+  });
+
+  it('returns undefined when no comment has the marker', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      issueGraphqlResponse([{ id: 'IC_1', databaseId: 101, body: 'unrelated comment' }]),
+    );
+
+    const id = await findFirstTrustBridgeComment(
+      octokit as unknown as Parameters<typeof findFirstTrustBridgeComment>[0],
+      'owner',
+      'repo',
+      42,
+    );
+
+    expect(id).toBeUndefined();
+  });
+});
+
 describe('postIssueComment', () => {
   const mockedGithub = github as unknown as {
-    context: { payload: { issue?: { number: number } }; repo: { owner: string; repo: string } };
+    context: {
+      eventName: string;
+      payload: { issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
     getOctokit: jest.Mock;
   };
 
   beforeEach(() => {
+    mockedGithub.context.eventName = 'issues';
     mockedGithub.context.payload = { issue: { number: 7 } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
   });
 
   it('returns undefined and warns when there is no issue context', async () => {
@@ -232,6 +732,10 @@ describe('postIssueComment', () => {
 
   it('creates a new comment when sticky and no prior comment exists', async () => {
     const octokit = makeOctokit();
+    // GraphQL-first lookup (Issue #579): empty comment nodes, no match.
+    octokit.graphql.mockResolvedValue({
+      repository: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    });
     octokit.paginate.mockResolvedValue([]);
     octokit.rest.issues.createComment.mockResolvedValue({
       data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
@@ -244,7 +748,35 @@ describe('postIssueComment', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ issue_number: 7, body: 'new body' }),
     );
+    expect(octokit.graphql).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(mockedGithub.getOctokit).toHaveBeenCalledWith('token', {
+      baseUrl: 'https://api.github.com',
+    });
+  });
+
+  it('truncates oversized issue bodies before the REST request', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postIssueComment('token', '🚀'.repeat(COMMENT_SIZE_LIMIT_BYTES), {
+      sticky: false,
+    });
+
+    const postedBody = octokit.rest.issues.createComment.mock.calls[0][0]
+      .body as string;
+    expect(Buffer.byteLength(postedBody, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(postedBody).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      postedBody.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
   });
 
   it('updates the existing sticky comment instead of creating a new one', async () => {
@@ -293,5 +825,1335 @@ describe('postIssueComment', () => {
     expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-3');
     expect(octokit.rest.issues.createComment).toHaveBeenCalled();
     expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('posts a threaded reply referencing the first TrustBridge comment when commentMode is reply', async () => {
+    const octokit = makeOctokit();
+    // Simulate first TrustBridge comment at id 42, later comment at id 99
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nsecond comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'reply check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-100');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: expect.stringContaining('> _Reply to [TrustBridge check #42](https://github.com/test-owner/test-repo/issues/7#issuecomment-42)_'),
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to creating a normal top-level comment when commentMode is reply and no prior comment exists', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'first check result', {
+      commentMode: 'reply',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-1');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'first check result',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('creates a fresh top-level comment without reply header when commentMode is new', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-2' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'new mode body', {
+      commentMode: 'new',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-2');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 7,
+        body: 'new mode body',
+      }),
+    );
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('updates existing comment in place when commentMode is sticky', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 88, body: `${STICKY_COMMENT_MARKER}\nsticky body` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-88' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'updated sticky body', {
+      commentMode: 'sticky',
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-88');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment_id: 88,
+        body: 'updated sticky body',
+      }),
+    );
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('suppresses comment update when maintainer added :zzz: reaction within snooze window', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({
+      data: [
+        {
+          content: ':zzz:',
+          created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          user: { login: 'maintainer', type: 'User' },
+        },
+      ],
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(url).toBe('https://github.com/test-owner/test-repo/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('bypasses reaction snooze when forceComment is true', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold failure` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nnew failure`;
+    const url = await postIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+      forceComment: true,
+    });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-99');
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // snoozeExpired wiring (Issue #799)
+  // -------------------------------------------------------------------------
+
+  it('happy path: reports snoozeExpired: true when a marker-based window just lapsed', async () => {
+    const octokit = makeOctokit();
+    const oldTimestamp = Date.now() - 40 * 60 * 1000; // 40 minutes ago
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${oldTimestamp} -->\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${oldTimestamp} -->\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({ data: [] });
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nstill failing`;
+    const posted = await upsertIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000, // 30-minute window, 40 minutes have elapsed
+    });
+
+    expect(posted?.snoozeExpired).toBe(true);
+    expect(octokit.rest.issues.updateComment).toHaveBeenCalled();
+  });
+
+  it('failure path: reports snoozeExpired: false while still inside the window', async () => {
+    const octokit = makeOctokit();
+    const recentTimestamp = Date.now() - 5 * 60 * 1000; // 5 minutes ago
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${recentTimestamp} -->\nold failure` },
+    ]);
+    octokit.rest.issues.getComment.mockResolvedValue({
+      data: { body: `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${recentTimestamp} -->\nold failure` },
+    });
+    octokit.rest.reactions.listForIssueComment.mockResolvedValue({ data: [] });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const failingBody = `${STICKY_COMMENT_MARKER}\n<!-- trustbridge-action:snooze:status=fail,timestamp=${Date.now()} -->\nstill failing`;
+    const posted = await upsertIssueComment('token', failingBody, {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000, // 30-minute window, only 5 minutes have elapsed
+    });
+
+    // Still snoozed: no update call, and the returned state is not an expiry.
+    expect(posted?.snoozeExpired).toBe(false);
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it('failure path: reports snoozeExpired: false for an ordinary first-failure post', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 101, html_url: 'https://github.com/o/r/issues/7#issuecomment-101' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'first failure body', {
+      sticky: true,
+      snoozeWindowMs: 30 * 60 * 1000,
+    });
+
+    expect(posted?.snoozeExpired).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub Discussions comment path (Issue #221)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Issue #696 — upsertIssueComment exposes the numeric REST comment id
+// ---------------------------------------------------------------------------
+describe('upsertIssueComment (Issue #696)', () => {
+  const mockedGithub = github as unknown as {
+    context: {
+      eventName: string;
+      payload: { issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
+    getOctokit: jest.Mock;
+  };
+
+  beforeEach(() => {
+    mockedGithub.context.eventName = 'issues';
+    mockedGithub.context.payload = { issue: { number: 7 } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
+  });
+
+  it('returns the id from createComment on the create path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 1234, html_url: 'https://github.com/o/r/issues/7#issuecomment-1234' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted).toEqual({
+      url: 'https://github.com/o/r/issues/7#issuecomment-1234',
+      id: 1234,
+      snoozeExpired: false,
+    });
+  });
+
+  it('returns the id from updateComment on the sticky update path', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/o/r/issues/7#issuecomment-99' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'updated body', { sticky: true });
+
+    expect(posted?.id).toBe(99);
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('never returns the stale id when updateComment fails after a successful find', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 99, body: `${STICKY_COMMENT_MARKER}\nold result` },
+    ]);
+    octokit.rest.issues.updateComment.mockRejectedValue(new Error('403 Forbidden'));
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 555, html_url: 'https://github.com/o/r/issues/7#issuecomment-555' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { sticky: true });
+
+    expect(posted?.id).toBe(555);
+    expect(posted?.id).not.toBe(99);
+  });
+
+  it('returns the reply comment id in reply mode', async () => {
+    const octokit = makeOctokit();
+    octokit.paginate.mockResolvedValue([
+      { id: 42, body: `${STICKY_COMMENT_MARKER}\nfirst comment` },
+    ]);
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 100, html_url: 'https://github.com/o/r/issues/7#issuecomment-100' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const posted = await upsertIssueComment('token', 'body', { commentMode: 'reply' });
+
+    expect(posted?.id).toBe(100);
+  });
+
+  it('returns undefined when there is no issue or PR context', async () => {
+    mockedGithub.context.payload = {};
+    const octokit = makeOctokit();
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await expect(upsertIssueComment('token', 'body')).resolves.toBeUndefined();
+  });
+
+  it('postIssueComment still returns only the URL', async () => {
+    const octokit = makeOctokit();
+    octokit.rest.issues.createComment.mockResolvedValue({
+      data: { id: 7, html_url: 'https://github.com/o/r/issues/7#issuecomment-7' },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postIssueComment('token', 'body', { sticky: false });
+
+    expect(url).toBe('https://github.com/o/r/issues/7#issuecomment-7');
+  });
+});
+
+describe('resolvePostingMode (Issue #696)', () => {
+  it('defaults to post', () => {
+    expect(resolvePostingMode('', '')).toBe('post');
+    expect(resolvePostingMode(undefined, 'sticky')).toBe('post');
+  });
+
+  it('prefers posting_mode over legacy comment_mode values', () => {
+    expect(resolvePostingMode('dry-run', 'off')).toBe('dry-run');
+    expect(resolvePostingMode(' OFF ', 'post')).toBe('off');
+  });
+
+  it('honours legacy post/dry-run/off values in comment_mode when posting_mode is unset', () => {
+    expect(resolvePostingMode('', 'dry-run')).toBe('dry-run');
+    expect(resolvePostingMode('', 'off')).toBe('off');
+  });
+
+  it('falls back to post for an invalid posting_mode', () => {
+    expect(resolvePostingMode('maybe', '')).toBe('post');
+  });
+});
+
+describe('resolveDiscussionNodeId', () => {
+  it('extracts the node id from a discussion event payload', () => {
+    expect(
+      resolveDiscussionNodeId({ discussion: { node_id: 'DIC_kwDOABCD' } }),
+    ).toBe('DIC_kwDOABCD');
+  });
+
+  it('returns undefined for payloads without a discussion', () => {
+    expect(resolveDiscussionNodeId({})).toBeUndefined();
+    expect(resolveDiscussionNodeId({ issue: { number: 7 } })).toBeUndefined();
+    expect(resolveDiscussionNodeId(null)).toBeUndefined();
+    expect(resolveDiscussionNodeId('not-an-object')).toBeUndefined();
+  });
+
+  it('returns undefined for empty or non-string node ids', () => {
+    expect(resolveDiscussionNodeId({ discussion: { node_id: '' } })).toBeUndefined();
+    expect(resolveDiscussionNodeId({ discussion: { node_id: 123 } })).toBeUndefined();
+    expect(resolveDiscussionNodeId({ discussion: {} })).toBeUndefined();
+  });
+});
+
+describe('findStickyDiscussionComment', () => {
+  function discussionGraphqlResponse(
+    nodes: Array<{ id: string; body: string }>,
+    pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  ) {
+    return {
+      node: {
+        comments: { nodes, pageInfo },
+      },
+    };
+  }
+
+  it('returns the last TrustBridge comment across pages (pagination)', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce(
+        discussionGraphqlResponse(
+          [
+            { id: 'DC_1', body: 'unrelated' },
+            { id: 'DC_2', body: `${STICKY_COMMENT_MARKER}\nfirst` },
+          ],
+          { hasNextPage: true, endCursor: 'cursor-1' },
+        ),
+      )
+      .mockResolvedValueOnce(
+        discussionGraphqlResponse(
+          [
+            { id: 'DC_3', body: 'another unrelated' },
+            { id: 'DC_4', body: `${STICKY_COMMENT_MARKER}\nsecond` },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+    );
+
+    expect(result).toEqual({ id: 'DC_4', body: `${STICKY_COMMENT_MARKER}\nsecond` });
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ discussionId: 'DIC_kwDOABCD', cursor: null }),
+    );
+    expect(octokit.graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ cursor: 'cursor-1' }),
+    );
+  });
+
+  it('returns undefined when no comment carries the marker', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      discussionGraphqlResponse(
+        [{ id: 'DC_1', body: 'unrelated' }],
+        { hasNextPage: false, endCursor: null },
+      ),
+    );
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it('stops paginating when the discussion node is null (deleted/inaccessible)', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue({ node: null });
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+    );
+
+    expect(result).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors maxPages cap in discussion GraphQL pagination', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(
+      discussionGraphqlResponse(
+        [{ id: 'DC_1', body: 'unrelated' }],
+        { hasNextPage: true, endCursor: 'next-cursor' },
+      ),
+    );
+
+    const result = await findStickyDiscussionComment(
+      octokit as unknown as Parameters<typeof findStickyDiscussionComment>[0],
+      'DIC_kwDOABCD',
+      { maxPages: 2 },
+    );
+
+    expect(result).toBeUndefined();
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('postDiscussionComment', () => {
+  const mockedGithub = github as unknown as {
+    context: {
+      eventName: string;
+      payload: { discussion?: { node_id?: string }; issue?: { number: number } };
+      repo: { owner: string; repo: string };
+      apiUrl: string;
+    };
+    getOctokit: jest.Mock;
+  };
+
+  const DISCUSSION_NODE_ID = 'DIC_kwDOABCD';
+
+  beforeEach(() => {
+    mockedGithub.context.eventName = 'discussion';
+    mockedGithub.context.payload = { discussion: { node_id: DISCUSSION_NODE_ID } };
+    mockedGithub.context.apiUrl = 'https://api.github.com';
+  });
+
+  it('returns undefined and warns when there is no discussion context', async () => {
+    mockedGithub.context.payload = {};
+    const octokit = makeOctokit();
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const result = await postDiscussionComment('token', 'body');
+
+    expect(result).toBeUndefined();
+    expect(octokit.graphql).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it('creates a new discussion comment via GraphQL when no prior TrustBridge comment exists', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce({ node: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } })
+      .mockResolvedValueOnce({
+        addDiscussionComment: {
+          comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-100' },
+        },
+      });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postDiscussionComment('token', 'new body', { sticky: true });
+
+    expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-100');
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    const createCall = octokit.graphql.mock.calls[1];
+    expect(createCall[1]).toEqual(
+      expect.objectContaining({ discussionId: DISCUSSION_NODE_ID, body: 'new body' }),
+    );
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(mockedGithub.getOctokit).toHaveBeenCalledWith('token', {
+      baseUrl: 'https://api.github.com',
+    });
+  });
+
+  it('truncates oversized discussion bodies before the GraphQL mutation', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue({
+      addDiscussionComment: {
+        comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-101' },
+      },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postDiscussionComment(
+      'token',
+      '🚀'.repeat(COMMENT_SIZE_LIMIT_BYTES),
+      { sticky: false },
+    );
+
+    const mutationBody = octokit.graphql.mock.calls[0][1].body as string;
+    expect(Buffer.byteLength(mutationBody, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(mutationBody).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(
+      mutationBody.endsWith(
+        '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_',
+      ),
+    ).toBe(true);
+  });
+
+  it('updates the existing sticky discussion comment via GraphQL instead of creating a new one', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce({
+        node: {
+          comments: {
+            nodes: [{ id: 'DC_99', body: `${STICKY_COMMENT_MARKER}\nold result` }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        updateDiscussionComment: {
+          comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-99' },
+        },
+      });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postDiscussionComment('token', 'updated body', { commentMode: 'sticky' });
+
+    expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-99');
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    const updateCall = octokit.graphql.mock.calls[1];
+    expect(updateCall[1]).toEqual(
+      expect.objectContaining({ commentId: 'DC_99', body: 'updated body' }),
+    );
+  });
+
+  it('always creates a new comment when sticky is disabled', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValueOnce({
+      addDiscussionComment: {
+        comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-101' },
+      },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postDiscussionComment('token', 'body', { sticky: false });
+
+    expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-101');
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+    expect(octokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining('addDiscussionComment'),
+      expect.objectContaining({ discussionId: DISCUSSION_NODE_ID }),
+    );
+  });
+
+  it('falls back to creating a new comment when the sticky lookup fails', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql
+      .mockRejectedValueOnce(new Error('GraphQL rate limit exceeded'))
+      .mockResolvedValueOnce({
+        addDiscussionComment: {
+          comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-102' },
+        },
+      });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postDiscussionComment('token', 'body', { sticky: true });
+
+    expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-102');
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+  });
+
+  it('honours an explicit discussionId option over the event payload', async () => {
+    mockedGithub.context.payload = { discussion: { node_id: 'DIC_FROM_EVENT' } };
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValueOnce({
+      addDiscussionComment: {
+        comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-103' },
+      },
+    });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    const url = await postDiscussionComment('token', 'body', {
+      sticky: false,
+      discussionId: 'DIC_EXPLICIT',
+    });
+
+    expect(url).toBe('https://github.com/o/r/discussions/12#discussioncomment-103');
+    expect(octokit.graphql).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ discussionId: 'DIC_EXPLICIT' }),
+    );
+  });
+
+  it('never calls the REST issues API when posting a discussion comment', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql
+      .mockResolvedValueOnce({ node: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } })
+      .mockResolvedValueOnce({
+        addDiscussionComment: {
+          comment: { url: 'https://github.com/o/r/discussions/12#discussioncomment-104' },
+        },
+      });
+    mockedGithub.getOctokit.mockReturnValue(octokit);
+
+    await postDiscussionComment('token', 'body', { sticky: true });
+
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.listComments).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Oversize comment truncation
+// ---------------------------------------------------------------------------
+
+describe('COMMENT_SIZE_LIMIT_BYTES', () => {
+  it('is 65536 (GitHub comment size limit)', () => {
+    expect(COMMENT_SIZE_LIMIT_BYTES).toBe(65536);
+  });
+
+  it('leaves enough room for the truncation notice', () => {
+    expect(COMMENT_SIZE_LIMIT_BYTES).toBeGreaterThan(COMMENT_TRUNCATION_NOTICE_BYTES);
+  });
+});
+
+describe('buildTruncatedCommentBody', () => {
+  const reportPath = 'trustbridge-report.md';
+  const stableNotice =
+    '\n\n_... [Truncated due to GitHub length limits. See workflow logs for full details.]_';
+
+  it('returns a body within COMMENT_SIZE_LIMIT_BYTES when given an oversized input', () => {
+    const oversizedBody = 'x'.repeat(COMMENT_SIZE_LIMIT_BYTES + 10000);
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+    expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(COMMENT_SIZE_LIMIT_BYTES);
+  });
+
+  it('includes the truncation notice', () => {
+    const oversizedBody = 'A'.repeat(COMMENT_SIZE_LIMIT_BYTES + 1000);
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+    expect(truncated).toContain('⚠️ Report truncated');
+    expect(truncated).toContain(reportPath);
+  });
+
+  it('truncates emoji-heavy JSON safely and marks the shortened comment', () => {
+    const diagnostics = `### Expert diagnostics\n\n\`\`\`json\n${JSON.stringify({
+      detail: '🚀'.repeat(40000),
+    })}\n\`\`\``;
+    const oversizedBody = `## Report\n\n### Onboarding checklist\n\n- [ ] Fund account\n\n${diagnostics}`;
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+
+    expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(
+      COMMENT_SIZE_LIMIT_BYTES,
+    );
+    expect(Buffer.from(truncated, 'utf8').toString('utf8')).toBe(truncated);
+    expect(truncated).toContain('### Onboarding checklist');
+    expect(truncated).toContain(COMMENT_TRUNCATED_MARKER);
+    expect(truncated.endsWith(stableNotice)).toBe(true);
+  });
+
+  it('includes a link to USAGE.md in the truncation notice', () => {
+    const oversizedBody = 'B'.repeat(COMMENT_SIZE_LIMIT_BYTES + 500);
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+    expect(truncated).toContain('USAGE.md');
+  });
+
+  it('preserves the TrustBridge footer so the sticky marker is present', () => {
+    const oversizedBody = 'C'.repeat(COMMENT_SIZE_LIMIT_BYTES + 500);
+    const truncated = buildTruncatedCommentBody(oversizedBody, reportPath);
+    expect(truncated).toContain('trustbridge-action');
+  });
+
+  it('embeds the custom report path in the notice', () => {
+    const oversizedBody = 'D'.repeat(COMMENT_SIZE_LIMIT_BYTES + 500);
+    const customPath = 'artifacts/my-report.md';
+    const truncated = buildTruncatedCommentBody(oversizedBody, customPath);
+    expect(truncated).toContain(customPath);
+  });
+
+  it('cuts on a line boundary (no partial lines in truncated content)', () => {
+    const line = 'line content here\n';
+    const repeated = line.repeat(Math.ceil((COMMENT_SIZE_LIMIT_BYTES + 5000) / line.length));
+    const truncated = buildTruncatedCommentBody(repeated, reportPath);
+    const noticeSeparator = '---\n> **⚠️ Report truncated**';
+    const cutIndex = truncated.indexOf(noticeSeparator);
+    if (cutIndex > 0) {
+      const before = truncated.slice(0, cutIndex);
+      expect(before.endsWith('\n') || before.endsWith('\n\n')).toBe(true);
+    }
+  });
+
+  it('stays well under the limit for a body exactly at the boundary', () => {
+    const exactBody = 'E'.repeat(COMMENT_SIZE_LIMIT_BYTES);
+    const truncated = buildTruncatedCommentBody(exactBody, reportPath);
+    expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(COMMENT_SIZE_LIMIT_BYTES);
+  });
+
+  // ── GHES fixture: smaller comment cap ──────────────────────────────────
+  describe('GHES-like smaller comment cap', () => {
+    const GHES_SMALL_LIMIT = 32000;
+
+    it('truncates to a smaller GHES-style limit when sizeLimit is provided', () => {
+      const body = 'x'.repeat(GHES_SMALL_LIMIT + 5000);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(GHES_SMALL_LIMIT);
+    });
+
+    it('includes the truncation notice even with a smaller limit', () => {
+      const body = 'A'.repeat(GHES_SMALL_LIMIT + 1000);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(truncated).toContain('⚠️ Report truncated');
+      expect(truncated).toContain(reportPath);
+    });
+
+    it('preserves the sticky marker footer with a smaller limit', () => {
+      const body = 'B'.repeat(GHES_SMALL_LIMIT + 500);
+      const truncated = buildTruncatedCommentBody(body, reportPath, GHES_SMALL_LIMIT);
+      expect(truncated).toContain('trustbridge-action');
+    });
+
+    it('cuts on a line boundary with a smaller limit', () => {
+      const line = 'line content here\n';
+      const repeated = line.repeat(Math.ceil((GHES_SMALL_LIMIT + 3000) / line.length));
+      const truncated = buildTruncatedCommentBody(repeated, reportPath, GHES_SMALL_LIMIT);
+      const noticeSeparator = '---\n> **⚠️ Report truncated**';
+      const cutIndex = truncated.indexOf(noticeSeparator);
+      if (cutIndex > 0) {
+        const before = truncated.slice(0, cutIndex);
+        expect(before.endsWith('\n') || before.endsWith('\n\n')).toBe(true);
+      }
+    });
+  });
+});
+
+describe('writeFullReport', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('writes the full body to the specified path and returns the resolved path', () => {
+    const outputPath = path.join(tmpDir, 'report.md');
+    const body = '# Full Report\n\nThis is the full content.';
+
+    const result = writeFullReport(body, outputPath);
+
+    expect(result).toBe(outputPath);
+    expect(fs.existsSync(outputPath)).toBe(true);
+    expect(fs.readFileSync(outputPath, 'utf8')).toBe(body);
+  });
+
+  it('creates intermediate directories as needed', () => {
+    const nestedPath = path.join(tmpDir, 'nested', 'deep', 'report.md');
+    const body = 'nested report content';
+
+    const result = writeFullReport(body, nestedPath);
+
+    expect(result).toBe(nestedPath);
+    expect(fs.existsSync(nestedPath)).toBe(true);
+  });
+
+  it('returns undefined and warns when the path is not writable', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    // Use a path with a null byte to force a write error cross-platform
+    const badPath = path.join(tmpDir, '\0invalid');
+    const result = writeFullReport('body', badPath);
+
+    expect(result).toBeUndefined();
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to write full validation report'),
+    );
+  });
+
+  it('preserves the exact byte content of the full body', () => {
+    const body = '# Report\n\nUnicode: こんにちは 🌟\n\nEnd.';
+    const outputPath = path.join(tmpDir, 'unicode-report.md');
+
+    writeFullReport(body, outputPath);
+
+    const written = fs.readFileSync(outputPath, 'utf8');
+    expect(written).toBe(body);
+  });
+});
+
+// ── Custom comment template integration tests (#312) ─────────────────────────
+
+describe('formatCommentBody with custom_comment_template_path', () => {
+  let tmpDir: string;
+  let savedWorkspace: string | undefined;
+
+  beforeAll(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(1000000000000);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-comment-template-'));
+    // Set GITHUB_WORKSPACE so loadCommentTemplate treats tmpDir as workspace root
+    savedWorkspace = process.env['GITHUB_WORKSPACE'];
+    process.env['GITHUB_WORKSPACE'] = tmpDir;
+  });
+
+  afterAll(() => {
+    jest.restoreAllMocks();
+    // Restore GITHUB_WORKSPACE
+    if (savedWorkspace === undefined) {
+      delete process.env['GITHUB_WORKSPACE'];
+    } else {
+      process.env['GITHUB_WORKSPACE'] = savedWorkspace;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeResult = (valid: boolean) => ({
+    ...validationResult,
+    valid,
+    accountFunded: valid,
+    trustlineExists: valid,
+    xlmReserveMet: valid,
+    xlmBalance: valid ? '10.0000000' : '0',
+  });
+
+  it('injects template partial before the footer when path is valid', () => {
+    const templateFile = path.join(tmpDir, 'custom.md');
+    fs.writeFileSync(templateFile, '### Custom Wave Help\n\nContact: wave@example.com');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'custom.md',
+    });
+
+    // Partial appears before the footer
+    const partialIdx = body.indexOf('Custom Wave Help');
+    const footerIdx = body.indexOf('_Posted by [trustbridge-action]');
+    expect(partialIdx).toBeGreaterThan(0);
+    expect(partialIdx).toBeLessThan(footerIdx);
+  });
+
+  it('interpolates {{account}} and {{status}} in partial', () => {
+    const templateFile = path.join(tmpDir, 'interp.md');
+    fs.writeFileSync(templateFile, 'For {{account}}: {{status}}');
+
+    const body = formatCommentBody(makeResult(true), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'interp.md',
+    });
+
+    expect(body).toContain('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
+    expect(body).toContain('✅ ready');
+  });
+
+  it('does not break comment when customCommentTemplatePath is undefined', () => {
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+
+    expect(body).toContain('_Posted by [trustbridge-action]');
+    expect(body).not.toContain('Custom Wave Help');
+  });
+
+  it('emits a core.warning when the template file does not exist', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'does-not-exist.md',
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('was not found in the workspace'),
+    );
+  });
+
+  it('emits a core.warning and omits partial when template contains <script>', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const templateFile = path.join(tmpDir, 'evil.md');
+    fs.writeFileSync(templateFile, 'Hello <script>alert(1)</script>');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'evil.md',
+    });
+
+    expect(body).not.toContain('<script>');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    // Footer is still present — comment is never broken by template failure
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('emits a core.warning and omits partial on path traversal attempt', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: '../../../../etc/passwd',
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+
+  it('omits partial and warns on {{constructor}} in template', () => {
+    const { warning } = jest.requireMock('@actions/core') as { warning: jest.Mock };
+    warning.mockClear();
+
+    const templateFile = path.join(tmpDir, 'proto.md');
+    fs.writeFileSync(templateFile, 'Oops: {{constructor}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'proto.md',
+    });
+
+    expect(body).not.toContain('constructor');
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to load custom comment template'),
+    );
+  });
+
+  it('escapes Markdown injection in template variables from address', () => {
+    // Simulate a "malicious" address that contains link injection syntax.
+    // In production, addresses are validated G-addresses, but the template
+    // system must still escape whatever it receives.
+    const templateFile = path.join(tmpDir, 'injection.md');
+    fs.writeFileSync(templateFile, 'Account: {{account}}');
+
+    const body = formatCommentBody(makeResult(false), {
+      ...baseConfig,
+      stellarAddress: 'G][evil](https://steal.example)',
+      horizonUrl: 'https://horizon.stellar.org',
+      customCommentTemplatePath: 'injection.md',
+    });
+
+    // ] ( ) should be escaped in the template substitution, breaking any link
+    expect(body).toContain('\\]\\[evil\\]\\(https://steal.example\\)');
+    // Footer is still present — comment is never broken by escaped content
+    expect(body).toContain('_Posted by [trustbridge-action]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #450 — reason_code + ready in the validation-gate section
+// ---------------------------------------------------------------------------
+
+describe('Issue #450 — validation gate exposes reason_code and ready', () => {
+  const gateConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const passing: ValidationResult = {
+    valid: true,
+    accountFunded: true,
+    trustlineExists: true,
+    xlmBalance: '10.5000000',
+    xlmReserveMet: true,
+    checks: [
+      { passed: true, label: 'Account funded', detail: 'ok' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  const failing: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: '0',
+    xlmReserveMet: false,
+    checks: [
+      { passed: false, label: 'Account funded', detail: 'unfunded' },
+      { passed: true, label: 'USDC trustline', detail: 'ok' },
+    ],
+  };
+
+  it('shows reason_code and ready on the success path', () => {
+    const body = formatCommentBody(passing, gateConfig);
+    expect(body).toContain('### Validation gate');
+    expect(body).toContain('- Ready: `true`');
+    expect(body).toContain('- Reason code: `SUCCESS`');
+  });
+
+  it('shows reason_code and ready on a failure path', () => {
+    const body = formatCommentBody(failing, gateConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `FAILED`');
+  });
+
+  it('prefers an explicit reasonCode from the result', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+    expect(body).not.toContain('- Reason code: `FAILED`');
+  });
+
+  it('stays consistent with the reason_code action output on a known failure', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'TRUSTLINE_MISSING' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `TRUSTLINE_MISSING`');
+  });
+
+  it('localizes the reason_code and ready labels', () => {
+    const body = formatCommentBody(passing, { ...gateConfig, locale: 'es' });
+    expect(body).toContain('### Puerta de validación');
+    expect(body).toContain('- Listo: `true`');
+    expect(body).toContain('- Código de razón: `SUCCESS`');
+  });
+
+  it('neutralizes a backtick inside reason_code via the code span', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'BAD`CODE' },
+      gateConfig,
+    );
+    expect(body).toContain('- Reason code: `BAD\\`CODE`');
+  });
+
+  it('keeps snake_case reason codes literal and copy-pasteable', () => {
+    const body = formatCommentBody(
+      { ...failing, reasonCode: 'ACCOUNT_NOT_FUNDED' },
+      gateConfig,
+    );
+    // Inside a code span, underscores need no escaping — a machine-readable
+    // code must be copy-pasteable straight from the comment.
+    expect(body).toContain('- Reason code: `ACCOUNT_NOT_FUNDED`');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — circuit-breaker banner
+// ---------------------------------------------------------------------------
+
+describe('Issue #434 — circuit-breaker open comment section', () => {
+  const circuitConfig = {
+    ...baseConfig,
+    horizonUrl: 'https://horizon.stellar.org',
+  };
+
+  const circuitOpenResult: ValidationResult = {
+    valid: false,
+    accountFunded: false,
+    trustlineExists: false,
+    xlmBalance: 'unknown',
+    xlmReserveMet: false,
+    reasonCode: 'CIRCUIT_OPEN',
+    circuitOpen: true,
+    checks: [
+      {
+        passed: false,
+        label: 'Horizon availability',
+        detail: 'Circuit breaker is open.',
+      },
+    ],
+  };
+
+  it('renders a circuit-breaker banner when the circuit was open', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('**Circuit breaker open**');
+    expect(body).toContain('was **not** checked');
+    expect(body).toContain('Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('states that the account was not checked and offers a recovery hint', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('recovery window');
+    expect(body).toContain('re-run the workflow');
+  });
+
+  it('mirrors the CIRCUIT_OPEN reason code into the validation gate', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    expect(body).toContain('- Ready: `false`');
+    expect(body).toContain('- Reason code: `CIRCUIT_OPEN`');
+  });
+
+  it('omits the banner for a normal account failure', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        reasonCode: 'ACCOUNT_NOT_FUNDED',
+        checks: [{ passed: false, label: 'Account funded', detail: 'unfunded' }],
+      },
+      circuitConfig,
+    );
+    expect(body).not.toContain('Circuit breaker open');
+  });
+
+  it('localizes the circuit-breaker banner', () => {
+    const body = formatCommentBody(circuitOpenResult, {
+      ...circuitConfig,
+      locale: 'es',
+    });
+    expect(body).toContain('**Disyuntor abierto**');
+    expect(body).toContain('Código de razón: `CIRCUIT_OPEN`');
+  });
+
+  it('leaks no account data in the banner (PII-safe)', () => {
+    const body = formatCommentBody(circuitOpenResult, circuitConfig);
+    const bannerStart = body.indexOf('**Circuit breaker open**');
+    expect(bannerStart).toBeGreaterThan(-1);
+    const bannerBlock = body.slice(bannerStart).split('\n### ')[0] ?? '';
+    // The banner carries no address, issuer, or endpoint URL.
+    expect(bannerBlock).not.toContain(circuitConfig.stellarAddress);
+    expect(bannerBlock).not.toContain(circuitConfig.assetIssuer);
+    expect(bannerBlock).not.toContain(circuitConfig.horizonUrl);
+    // Balances stay "unknown" rather than leaking a stale figure.
+    expect(body).toContain('**Native XLM balance:** _unknown_');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #691 — Soroban C-address comment redaction parity with logs
+// ---------------------------------------------------------------------------
+
+describe('Issue #691 — privacy mode redacts C-addresses in comments', () => {
+  const gAddress = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+  const cAddress = 'CCXJ2GPAR7WR4IF7YK67VFEJEUPZJ3G7X52I4BN2PFN66Y35JSSXVP2P';
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  it('does not redact addresses when privacy mode is off (default)', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body).toContain(gAddress);
+    expect(body).toContain(issuer);
+  });
+
+  it('redacts G-address in comment body when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // Full address must not appear
+    expect(body).not.toContain(gAddress);
+    // Redacted form appears instead
+    expect(body).toContain(`${gAddress.slice(0, 4)}...${gAddress.slice(-4)}`);
+  });
+
+  it('redacts C-address in comment body when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(cAddress);
+    expect(body).toContain(`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`);
+  });
+
+  it('redacts the asset issuer when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(issuer);
+    expect(body).toContain(`${issuer.slice(0, 4)}...${issuer.slice(-4)}`);
+  });
+
+  it('omits SEP-0007 deep links when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      sep0007DeepLinks: true,
+      privacyMode: true,
+    });
+    expect(body).not.toContain('web+stellar:');
+    expect(body).not.toContain('sendXlmToActivate');
+  });
+
+  it('includes SEP-0007 deep links normally when privacy mode is off', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        checks: [{ passed: false, label: 'Account funded', detail: 'not found' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0007DeepLinks: true,
+      },
+    );
+    expect(body).toContain('web+stellar:');
+  });
+
+  it('redacts C-address in Stellar Laboratory account viewer link', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // The link URL must not contain the full C-address
+    expect(body).not.toContain(`account=${cAddress}`);
+    expect(body).toContain(`account=${`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`}`);
+  });
+
+  it('redacts address in custom comment template context when privacy mode is on', () => {
+    // The template gets the address via buildTemplateContext, which should
+    // receive the redacted address when privacy mode is on.
+    // We verify that the placeholder interpolation in the comment doesn't
+    // contain the full address by checking the body.
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(cAddress);
+    expect(body).toContain(`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`);
+  });
+
+  it('uses consistent redaction format between G and C addresses', () => {
+    // Both G and C addresses should use the first-4...last-4 format
+    const gBody = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    const cBody = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // Both should use the same redaction pattern — first 4 + ... + last 4
+    const gRedacted = `${gAddress.slice(0, 4)}...${gAddress.slice(-4)}`;
+    const cRedacted = `${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`;
+    expect(gBody).toContain(gRedacted);
+    expect(cBody).toContain(cRedacted);
+  });
+});
+
+describe('Issue #867: sticky comment selection safety metadata', () => {
+  it('does not select a human-authored marked comment when GraphQL identifies it', async () => {
+    const octokit = makeOctokit();
+    octokit.graphql.mockResolvedValue(issueGraphqlResponse([
+      {
+        id: 'IC_HUMAN', databaseId: 501,
+        body: `${STICKY_COMMENT_MARKER}\nmarked`,
+      } as never,
+    ]));
+    // The production query requests author/viewerCanUpdate; this response shape
+    // models a human comment with no update permission for the lookup contract.
+    octokit.graphql.mockResolvedValue({
+      repository: { issue: { comments: { nodes: [{
+        id: 'IC_HUMAN', databaseId: 501, body: `${STICKY_COMMENT_MARKER}\nmarked`,
+        author: { login: 'maintainer', __typename: 'User' }, viewerCanUpdate: false,
+      }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    });
+    await expect(findStickyComment(octokit as never, 'owner', 'repo', 42)).resolves.toBeUndefined();
   });
 });

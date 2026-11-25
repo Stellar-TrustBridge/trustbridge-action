@@ -1,6 +1,23 @@
-import { CONTRACT_ADDRESS_TAG_KEY, MetricsCollector } from '../src/metrics';
+import {
+  CONTRACT_ADDRESS_TAG_KEY,
+  MetricsCollector,
+  writeJobSummary,
+  JobSummaryReport,
+  HorizonLatencyHistogram,
+  LATENCY_BUCKETS_MS,
+  hashAddressForMetrics,
+} from '../src/metrics';
+import * as core from '@actions/core';
+
+jest.mock('@actions/core');
+
+const mockCore = core as jest.Mocked<typeof core>;
 
 const VALID_CONTRACT_ADDRESS = 'C' + 'A'.repeat(55);
+
+// ---------------------------------------------------------------------------
+// Existing MetricsCollector tests (unchanged)
+// ---------------------------------------------------------------------------
 
 describe('MetricsCollector.recordMetric', () => {
   it('records a metric without a contract address tag', () => {
@@ -12,31 +29,36 @@ describe('MetricsCollector.recordMetric', () => {
     expect(summary.metrics[0]).toMatchObject({ name: 'latency', value: 42, unit: 'ms' });
   });
 
-  it('records a metric with a valid contractAddress tag', () => {
+  // Issue #857: a raw address tag is an unbounded, PII-carrying Prometheus
+  // label. recordMetric() now refuses the contractAddress tag outright —
+  // callers must go through recordContractMetric(), which hashes it first.
+  it('rejects a raw contractAddress tag, even a structurally valid one', () => {
     const metrics = new MetricsCollector();
-    metrics.recordMetric('trustline_check', 1, 'count', {
-      [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS,
-    });
 
-    const summary = metrics.getSummary();
-    expect(summary.metrics[0].tags?.[CONTRACT_ADDRESS_TAG_KEY]).toBe(VALID_CONTRACT_ADDRESS);
+    expect(() =>
+      metrics.recordMetric('trustline_check', 1, 'count', {
+        [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS,
+      }),
+    ).toThrow(/must be set via recordContractMetric/);
+
+    expect(metrics.getSummary().totalMetrics).toBe(0);
   });
 
-  it('throws when the contractAddress tag fails the C-address policy', () => {
+  it('rejects a raw contractAddress tag that also fails the C-address policy', () => {
     const metrics = new MetricsCollector();
 
     expect(() =>
       metrics.recordMetric('trustline_check', 1, 'count', {
         [CONTRACT_ADDRESS_TAG_KEY]: 'not-a-contract-address',
       }),
-    ).toThrow(/Invalid contractAddress tag/);
+    ).toThrow(/must be set via recordContractMetric/);
 
     expect(metrics.getSummary().totalMetrics).toBe(0);
   });
 });
 
 describe('MetricsCollector.recordContractMetric', () => {
-  it('tags the metric with the given contract address', () => {
+  it('tags the metric with a bounded hash, never the raw contract address', () => {
     const metrics = new MetricsCollector();
     metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
 
@@ -44,8 +66,21 @@ describe('MetricsCollector.recordContractMetric', () => {
     expect(summary.metrics[0]).toMatchObject({
       name: 'asset_issuer_contract_validated',
       value: 1,
-      tags: { [CONTRACT_ADDRESS_TAG_KEY]: VALID_CONTRACT_ADDRESS },
+      tags: { [CONTRACT_ADDRESS_TAG_KEY]: hashAddressForMetrics(VALID_CONTRACT_ADDRESS) },
     });
+    const tagValue = summary.metrics[0].tags?.[CONTRACT_ADDRESS_TAG_KEY];
+    expect(tagValue).not.toBe(VALID_CONTRACT_ADDRESS);
+    expect(tagValue).not.toContain(VALID_CONTRACT_ADDRESS);
+    expect(JSON.stringify(summary)).not.toContain(VALID_CONTRACT_ADDRESS);
+  });
+
+  it('hashes deterministically so repeated calls for the same address correlate', () => {
+    const metrics = new MetricsCollector();
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+
+    const [first, second] = metrics.getSummary().metrics;
+    expect(first.tags?.[CONTRACT_ADDRESS_TAG_KEY]).toBe(second.tags?.[CONTRACT_ADDRESS_TAG_KEY]);
   });
 
   it('rejects an invalid contract address without recording a metric', () => {
@@ -92,5 +127,368 @@ describe('MetricsCollector counters, timers, and export', () => {
     metrics.reset();
     expect(metrics.getSummary().totalMetrics).toBe(0);
     expect(metrics.getCounter('runs')).toBe(0);
+  });
+
+  // Issue #857: toJSON()/buildJobSummary() feed the GITHUB Actions debug log
+  // and Job Summary; neither may ever contain a raw Stellar address even
+  // after a contract-tagged metric is recorded.
+  it('neither toJSON() nor buildJobSummary().jsonArtifact contain a raw contract address', () => {
+    const metrics = new MetricsCollector();
+    metrics.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+    metrics.incrementCounter('runs');
+
+    expect(metrics.toJSON()).not.toContain(VALID_CONTRACT_ADDRESS);
+    expect(metrics.buildJobSummary().jsonArtifact).not.toContain(VALID_CONTRACT_ADDRESS);
+  });
+
+  it('records campaign preset metrics and counter', () => {
+    const metrics = new MetricsCollector();
+    metrics.recordPresetMetric('testnet', 'testnet');
+
+    const summary = metrics.getSummary();
+    expect(summary.totalMetrics).toBe(1);
+    expect(summary.metrics[0]).toMatchObject({
+      name: 'campaign_preset_applied',
+      value: 1,
+      unit: 'count',
+      tags: { preset: 'testnet', network: 'testnet' },
+    });
+    expect(metrics.getCounter('preset_testnet_applied')).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave #27: buildJobSummary
+// ---------------------------------------------------------------------------
+
+describe('MetricsCollector.buildJobSummary (Wave #27)', () => {
+  it('returns null latencyMs when no duration metrics recorded', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    expect(report.latencyMs).toBeNull();
+  });
+
+  it('computes average latency across duration metrics', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('horizon_fetch_duration', 100, 'ms');
+    m.recordMetric('horizon_fetch_duration', 200, 'ms');
+    const report = m.buildJobSummary();
+    expect(report.latencyMs).toBe(150);
+  });
+
+  it('only considers *_duration metrics for latency (not other metrics)', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('check_count', 5, 'count');
+    m.recordMetric('horizon_fetch_duration', 80, 'ms');
+    const report = m.buildJobSummary();
+    expect(report.latencyMs).toBe(80);
+  });
+
+  it('captures unique HTTP failure codes from horizon_error metrics', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('horizon_error', 429, 'http_status');
+    m.recordMetric('horizon_error', 503, 'http_status');
+    m.recordMetric('horizon_error', 429, 'http_status'); // duplicate
+    const report = m.buildJobSummary();
+    expect(report.failureCodes).toEqual([429, 503]);
+  });
+
+  it('returns empty failureCodes when no horizon_error metrics recorded', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    expect(report.failureCodes).toEqual([]);
+  });
+
+  it('ignores non-http_status unit metrics named horizon_error', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('horizon_error', 42, 'count'); // wrong unit
+    const report = m.buildJobSummary();
+    expect(report.failureCodes).toEqual([]);
+  });
+
+  it('reports totalRuns from the runs counter', () => {
+    const m = new MetricsCollector();
+    m.incrementCounter('runs', 3);
+    const report = m.buildJobSummary();
+    expect(report.totalRuns).toBe(3);
+  });
+
+  it('reports totalErrors from the errors counter', () => {
+    const m = new MetricsCollector();
+    m.incrementCounter('errors', 2);
+    const report = m.buildJobSummary();
+    expect(report.totalErrors).toBe(2);
+  });
+
+  it('defaults totalRuns and totalErrors to 0', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    expect(report.totalRuns).toBe(0);
+    expect(report.totalErrors).toBe(0);
+  });
+
+  it('produces valid JSON in jsonArtifact', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('latency', 50, 'ms');
+    m.incrementCounter('runs');
+    const report = m.buildJobSummary();
+    expect(() => JSON.parse(report.jsonArtifact)).not.toThrow();
+  });
+
+  it('strips tags from jsonArtifact (no contract addresses)', () => {
+    const m = new MetricsCollector();
+    m.recordContractMetric('asset_issuer_contract_validated', 1, VALID_CONTRACT_ADDRESS);
+    const report = m.buildJobSummary();
+    expect(report.jsonArtifact).not.toContain(VALID_CONTRACT_ADDRESS);
+    const obj = JSON.parse(report.jsonArtifact);
+    expect(obj.metrics[0].tags).toBeUndefined();
+  });
+
+  it('jsonArtifact contains totalMetrics, counters, and metrics array', () => {
+    const m = new MetricsCollector();
+    m.recordMetric('check_run', 1, 'count');
+    m.incrementCounter('runs', 1);
+    const report = m.buildJobSummary();
+    const obj = JSON.parse(report.jsonArtifact);
+    expect(obj.totalMetrics).toBe(1);
+    expect(obj.counters.runs).toBe(1);
+    expect(Array.isArray(obj.metrics)).toBe(true);
+  });
+
+  it('failure path: records 404 as failure code 404 is not included (only retryable codes are)', () => {
+    // 404 is handled as unfundedAccountResult, not recorded as horizon_error
+    const m = new MetricsCollector();
+    m.recordMetric('horizon_error', 429, 'http_status');
+    const report = m.buildJobSummary();
+    expect(report.failureCodes).toContain(429);
+    expect(report.failureCodes).not.toContain(404);
+  });
+
+  it('100+ metrics: latency averages correctly at scale', () => {
+    const m = new MetricsCollector();
+    for (let i = 1; i <= 100; i++) {
+      m.recordMetric('horizon_fetch_duration', i, 'ms');
+    }
+    const report = m.buildJobSummary();
+    // Sum of 1..100 = 5050, avg = 50.5
+    expect(report.latencyMs).toBeCloseTo(50.5, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave #27: writeJobSummary
+// ---------------------------------------------------------------------------
+
+describe('writeJobSummary (Wave #27)', () => {
+  let summaryAddHeadingMock: jest.Mock;
+  let summaryAddTableMock: jest.Mock;
+  let summaryAddDetailsMock: jest.Mock;
+  let summaryWriteMock: jest.Mock;
+
+  beforeEach(() => {
+    summaryAddHeadingMock = jest.fn().mockReturnThis();
+    summaryAddTableMock = jest.fn().mockReturnThis();
+    summaryAddDetailsMock = jest.fn().mockReturnThis();
+    summaryWriteMock = jest.fn().mockResolvedValue(undefined);
+
+    (mockCore.summary as unknown as Record<string, jest.Mock>) = {
+      addHeading: summaryAddHeadingMock,
+      addTable: summaryAddTableMock,
+      addDetails: summaryAddDetailsMock,
+      write: summaryWriteMock,
+    };
+  });
+
+  function makeReport(overrides: Partial<JobSummaryReport> = {}): JobSummaryReport {
+    return {
+      latencyMs: 42.5,
+      failureCodes: [429, 503],
+      totalRuns: 5,
+      totalErrors: 2,
+      jsonArtifact: '{"totalMetrics":0,"counters":{},"metrics":[]}',
+      ...overrides,
+    };
+  }
+
+  it('calls core.summary.write', async () => {
+    await writeJobSummary(makeReport());
+    expect(summaryWriteMock).toHaveBeenCalled();
+  });
+
+  it('adds a heading with TrustBridge Metrics', async () => {
+    await writeJobSummary(makeReport());
+    expect(summaryAddHeadingMock).toHaveBeenCalledWith(
+      expect.stringContaining('TrustBridge Metrics'),
+      2,
+    );
+  });
+
+  it('includes run label in heading when provided', async () => {
+    await writeJobSummary(makeReport(), 'Wave #27');
+    expect(summaryAddHeadingMock).toHaveBeenCalledWith(
+      expect.stringContaining('Wave #27'),
+      2,
+    );
+  });
+
+  it('includes a table with totals and latency', async () => {
+    await writeJobSummary(makeReport({ totalRuns: 7, latencyMs: 99.9 }));
+    const tableArg = summaryAddTableMock.mock.calls[0][0] as unknown[][];
+    const flat = tableArg.flat().map(String);
+    expect(flat.join(' ')).toContain('7');
+    expect(flat.join(' ')).toContain('99.9');
+  });
+
+  it('renders failure codes in table row', async () => {
+    await writeJobSummary(makeReport({ failureCodes: [429, 503] }));
+    const tableArg = summaryAddTableMock.mock.calls[0][0] as unknown[][];
+    const flat = tableArg.flat().map(String).join(' ');
+    expect(flat).toContain('429');
+    expect(flat).toContain('503');
+  });
+
+  it('shows _none_ when no failure codes', async () => {
+    await writeJobSummary(makeReport({ failureCodes: [] }));
+    const tableArg = summaryAddTableMock.mock.calls[0][0] as unknown[][];
+    const flat = tableArg.flat().map(String).join(' ');
+    expect(flat).toContain('_none_');
+  });
+
+  it('shows _none recorded_ when latencyMs is null', async () => {
+    await writeJobSummary(makeReport({ latencyMs: null }));
+    const tableArg = summaryAddTableMock.mock.calls[0][0] as unknown[][];
+    const flat = tableArg.flat().map(String).join(' ');
+    expect(flat).toContain('_none recorded_');
+  });
+
+  it('includes JSON artifact in addDetails call', async () => {
+    const artifact = '{"totalMetrics":1,"counters":{},"metrics":[]}';
+    await writeJobSummary(makeReport({ jsonArtifact: artifact }));
+    expect(summaryAddDetailsMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining(artifact),
+    );
+  });
+
+  it('does not throw if core.summary.write rejects (observability-only)', async () => {
+    summaryWriteMock.mockRejectedValue(new Error('GITHUB_STEP_SUMMARY not set'));
+    await expect(writeJobSummary(makeReport())).resolves.not.toThrow();
+  });
+
+  it('does not throw if core.summary methods throw (outside Actions context)', async () => {
+    summaryAddHeadingMock.mockImplementation(() => { throw new Error('no summary'); });
+    await expect(writeJobSummary(makeReport())).resolves.not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #703: HorizonLatencyHistogram
+// ---------------------------------------------------------------------------
+
+describe('HorizonLatencyHistogram', () => {
+  it('starts with zero samples for both endpoint kinds', () => {
+    const h = new HorizonLatencyHistogram();
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(0);
+    expect(snap.fallback.count).toBe(0);
+    expect(h.totalSamples).toBe(0);
+  });
+
+  it('records primary and fallback samples independently', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('primary', 200);
+    h.record('fallback', 300);
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(2);
+    expect(snap.fallback.count).toBe(1);
+    expect(h.totalSamples).toBe(3);
+  });
+
+  it('computes correct min, max, avg, and total for primary', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('primary', 300);
+    const { primary } = h.toSnapshot();
+    expect(primary.minMs).toBe(100);
+    expect(primary.maxMs).toBe(300);
+    expect(primary.totalMs).toBe(400);
+    expect(primary.avgMs).toBe(200);
+  });
+
+  it('places samples into the correct bucket', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 40);   // <=50ms
+    h.record('primary', 80);   // <=100ms
+    h.record('primary', 600);  // <=1000ms
+    h.record('primary', 9000); // +Inf
+    const { primary } = h.toSnapshot();
+    expect(primary.buckets['<=50ms']).toBe(1);
+    expect(primary.buckets['<=100ms']).toBe(1);
+    expect(primary.buckets['<=1000ms']).toBe(1);
+    expect(primary.buckets['+Inf']).toBe(1);
+  });
+
+  it('all defined LATENCY_BUCKETS_MS keys are present in snapshot', () => {
+    const h = new HorizonLatencyHistogram();
+    const { primary } = h.toSnapshot();
+    for (const bound of LATENCY_BUCKETS_MS) {
+      const key = bound === Infinity ? '+Inf' : `<=${bound}ms`;
+      expect(primary.buckets).toHaveProperty(key);
+    }
+  });
+
+  it('reset clears all samples', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    h.record('fallback', 200);
+    h.reset();
+    expect(h.totalSamples).toBe(0);
+    const snap = h.toSnapshot();
+    expect(snap.primary.count).toBe(0);
+    expect(snap.fallback.count).toBe(0);
+  });
+
+  it('buildJobSummary includes histogram snapshot when histogram is passed', () => {
+    const m = new MetricsCollector();
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 120);
+    h.record('fallback', 450);
+    const report = m.buildJobSummary(h);
+    expect(report.horizonFetchLatencyHistogram).toBeDefined();
+    expect(report.horizonFetchLatencyHistogram!.primary.count).toBe(1);
+    expect(report.horizonFetchLatencyHistogram!.fallback.count).toBe(1);
+  });
+
+  it('buildJobSummary omits histogram when no histogram is passed', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    expect(report.horizonFetchLatencyHistogram).toBeUndefined();
+  });
+
+  it('jsonArtifact includes horizonFetchLatencyHistogram when histogram is passed', () => {
+    const m = new MetricsCollector();
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 75);
+    const report = m.buildJobSummary(h);
+    const artifact = JSON.parse(report.jsonArtifact);
+    expect(artifact.horizonFetchLatencyHistogram).toBeDefined();
+    expect(artifact.horizonFetchLatencyHistogram.primary.count).toBe(1);
+  });
+
+  it('jsonArtifact omits horizonFetchLatencyHistogram when no histogram is passed', () => {
+    const m = new MetricsCollector();
+    const report = m.buildJobSummary();
+    const artifact = JSON.parse(report.jsonArtifact);
+    expect(artifact.horizonFetchLatencyHistogram).toBeUndefined();
+  });
+
+  it('histogram snapshot contains no raw addresses or URLs', () => {
+    const h = new HorizonLatencyHistogram();
+    h.record('primary', 100);
+    const snap = JSON.stringify(h.toSnapshot());
+    // Must not contain anything that looks like a Stellar address or URL
+    expect(snap).not.toMatch(/G[A-Z2-7]{55}/);
+    expect(snap).not.toMatch(/https?:\/\//);
   });
 });

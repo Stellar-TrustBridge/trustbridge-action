@@ -1,0 +1,339 @@
+# ============================================================
+# TrustBridge — Scheduled wallet re-validation
+# ============================================================
+# Purpose
+# -------
+# Re-validate every contributor's Stellar wallet on all OPEN,
+# ASSIGNED bounty issues. Wallets that were valid at assignment
+# time can become invalid later (trustline removed, account
+# drained below the XLM reserve, wallet rotated). Running this
+# check on a schedule catches stale trustlines before payout.
+#
+# Trigger
+# -------
+# Runs every day at 03:00 UTC. Adjust the cron expression to
+# match your project's payout cadence. Also supports
+# workflow_dispatch for on-demand re-validation sweeps.
+#
+# Scope / what this workflow does NOT do
+# ---------------------------------------
+# • It does NOT auto-close or auto-unassign issues on failure.
+# • It does NOT search issues; that logic lives in a preceding
+#   step (see the "Query open bounty issues" step below).
+# • It does NOT manage wallets or balances; it only validates.
+#
+# Permissions required
+# --------------------
+# issues: write   — post / update the TrustBridge comment
+# contents: read  — standard for checkout-less action runs
+#
+# If your token already has broader org-level permissions you
+# may omit `contents: read`, but listing it explicitly is
+# recommended for clarity and least-privilege hygiene.
+#
+# Fork safety
+# -----------
+# Scheduled workflows run on every fork by default. To prevent
+# unnecessary runs on developer forks, add an `if:` condition:
+#   if: github.repository == 'YOUR_ORG/YOUR_REPO' || !github.event.repository.fork
+#
+# Secrets & Authentication
+# ------------------------
+# • GITHUB_TOKEN (default): standard token with `issues: write`.
+# • TRUSTBRIDGE_TOKEN (optional): Fine-grained PAT if org-level
+#   token restrictions block issue commenting.
+# • GITHUB_APP_TOKEN (optional): GitHub App installation token
+#   for higher API rate limits (15,000 req/hr).
+#
+# Comment mode & Safety
+# ---------------------
+# • posting_mode: "dry-run" — validates and sets outputs without
+#   making GitHub comment API calls (safest for audit runs).
+# • posting_mode: "post" (default) — posts using comment_mode threading.
+# • posting_mode: "off" — skips comment posting; validation outputs remain.
+#
+# Recommended settings for cron runs
+# ------------------------------------
+# • fail_on_missing: false  — keeps the cron job green even
+#   when some wallets are stale; the comment still shows ❌
+#   for failing checks. Maintainers are alerted via a
+#   subsequent step rather than a broken CI badge.
+# • sticky_comment: true    — updates the existing TrustBridge
+#   comment instead of flooding the issue thread on every run.
+# • debug_mode: false       — leave off in cron; enable only
+#   for targeted one-off investigations.
+# ============================================================
+
+name: "TrustBridge — Scheduled wallet re-validation"
+
+on:
+  # Run nightly. Adjust to match your bounty payout schedule.
+  schedule:
+    - cron: "0 3 * * *"
+
+  # Allow maintainers to trigger a manual sweep at any time.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log issues that would be checked without posting comments (true/false)"
+        required: false
+        default: "false"
+      batch_size:
+        description: "Max issues to process in this run (default: 50)"
+        required: false
+        default: "50"
+      comment_mode:
+        description: "Comment posting mode: post, dry-run, or off (default: dry-run for cron safety)"
+        required: false
+        default: "dry-run"
+
+# Minimal, explicit permissions — principle of least privilege.
+permissions:
+  issues: write   # post / update TrustBridge comments
+  contents: read  # standard for checkout-less action runs
+
+env:
+  # Label that identifies bounty issues in your repo.
+  # Change to match your labelling convention, e.g. "bounty",
+  # "reward", "wave-6", etc.
+  BOUNTY_LABEL: "bounty"
+
+  # Stellar asset to validate trustline for.
+  ASSET_CODE: "USDC"
+  ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+
+  # Minimum XLM reserve required for payout eligibility.
+  MIN_XLM_RESERVE: "1.5"
+
+  # Maximum issues to process per cron run. Increase carefully;
+  # see rate-limit guidance in the header comment above.
+  REVALIDATION_BATCH_SIZE: "50"
+
+jobs:
+  revalidate-wallets:
+    name: "Re-validate contributor wallets"
+    runs-on: ubuntu-latest
+    # Guard against accidental runs on fork repositories
+    if: !github.event.repository.fork
+
+    steps:
+      # ------------------------------------------------------------------
+      # Step 1: Query open bounty issues
+      # ------------------------------------------------------------------
+      # Fetch all open issues that carry the bounty label and have at
+      # least one assignee. The GitHub CLI (gh) is pre-installed on
+      # ubuntu-latest runners and handles pagination automatically.
+      #
+      # Output: a JSON array written to $GITHUB_OUTPUT as `issues`.
+      # Each element has: { number, title, assignees: [{ login }],
+      #                     body }
+      # ------------------------------------------------------------------
+      - name: Query open bounty issues
+        id: query
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || env.REVALIDATION_BATCH_SIZE }}
+        run: |
+          echo "Fetching open '${BOUNTY_LABEL}' issues with assignees..."
+
+          # gh issue list returns issues in descending creation order.
+          # --json limits the fields to what we actually need to avoid
+          # inadvertently logging sensitive issue body content.
+          ISSUES=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "${BOUNTY_LABEL}" \
+            --state open \
+            --limit "${BATCH_SIZE}" \
+            --json number,title,assignees,body)
+
+          # Filter to issues that have at least one assignee.
+          ASSIGNED=$(echo "${ISSUES}" | jq '[.[] | select(.assignees | length > 0)]')
+
+          COUNT=$(echo "${ASSIGNED}" | jq 'length')
+          echo "Found ${COUNT} open assigned bounty issue(s)."
+
+          # Write the JSON to a step output for downstream steps.
+          # GitHub Actions outputs cannot exceed 1 MB; if you have
+          # thousands of open issues, add a server-side filter or
+          # increase BATCH_SIZE in chunks across multiple jobs.
+          echo "issues=$(echo "${ASSIGNED}" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Step 2: Extract Stellar addresses
+      # ------------------------------------------------------------------
+      # Parse each issue body for the contributor's Stellar G-address.
+      # Adjust the regex / field name to match your issue template.
+      #
+      # This example expects a line in the issue body of the form:
+      #   Stellar address: GABCDEF...
+      #
+      # Output: a JSON array of { issue_number, assignee, address }
+      # objects, written to $GITHUB_OUTPUT as `wallet_map`.
+      # Issues where no address is found are skipped with a warning.
+      # ------------------------------------------------------------------
+      - name: Extract Stellar addresses from issue bodies
+        id: extract
+        env:
+          ISSUES_JSON: ${{ steps.query.outputs.issues }}
+        run: |
+          WALLET_MAP=$(echo "${ISSUES_JSON}" | jq -c '
+            [
+              .[] |
+              . as $issue |
+              # Extract address with a permissive pattern; validation is
+              # done by trustbridge-action itself, not here.
+              ($issue.body // "" | capture("(?i)stellar address:\\s*(?<addr>G[A-Z2-7]{55})") // null) as $match |
+              if $match != null then
+                {
+                  issue_number: $issue.number,
+                  title:        $issue.title,
+                  assignee:     ($issue.assignees[0].login // "unknown"),
+                  address:      $match.addr
+                }
+              else
+                empty
+              end
+            ]
+          ')
+
+          # Warn about any issues that could not be parsed.
+          PARSEABLE=$(echo "${WALLET_MAP}" | jq 'length')
+          TOTAL=$(echo "${ISSUES_JSON}" | jq 'length')
+          SKIPPED=$(( TOTAL - PARSEABLE ))
+          if [ "${SKIPPED}" -gt 0 ]; then
+            echo "::warning::${SKIPPED} issue(s) had no parseable Stellar address and will be skipped."
+          fi
+
+          echo "wallet_map=$(echo "${WALLET_MAP}" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "parseable=${PARSEABLE}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Step 3: Re-validate each wallet via trustbridge-action
+      # ------------------------------------------------------------------
+      # Iterate over the wallet map and run trustbridge-action for each
+      # contributor address. The action is called once per issue inside a
+      # bash loop. A matrix job would also work but spawns one runner per
+      # issue, which is expensive for large repos.
+      #
+      # This step requires the calling repo to have a workflow that
+      # accepts `stellar_address` and `issue_number` as dispatch inputs
+      # (see docs/CRON_REVALIDATION.md § "Inline variant" for an
+      # alternative that avoids the extra workflow file).
+      #
+      # Key cron-specific flags used by the target workflow:
+      #   fail_on_missing: false  → step always succeeds; ❌ shows in
+      #                             the comment, not as a CI failure.
+      #   sticky_comment:  true   → update the existing comment instead
+      #                             of posting a new one per run.
+      # ------------------------------------------------------------------
+      - name: Re-validate contributor wallets
+        id: revalidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WALLET_MAP: ${{ steps.extract.outputs.wallet_map }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          # Name of the workflow file in .github/workflows/ that accepts
+          # stellar_address and issue_number as workflow_dispatch inputs.
+          REVALIDATION_WORKFLOW_FILE: "trustbridge.yml"
+        run: |
+          FAILURES=0
+
+          while IFS= read -r ENTRY; do
+            ISSUE_NUMBER=$(echo "${ENTRY}" | jq -r '.issue_number')
+            ASSIGNEE=$(echo "${ENTRY}"     | jq -r '.assignee')
+            ADDRESS=$(echo "${ENTRY}"      | jq -r '.address')
+            TITLE=$(echo "${ENTRY}"        | jq -r '.title')
+
+            echo "---"
+            echo "Issue #${ISSUE_NUMBER}: ${TITLE}"
+            echo "Assignee: @${ASSIGNEE}  |  Address: ${ADDRESS:0:8}...(redacted)"
+
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "[dry-run] Would revalidate ${ADDRESS} on issue #${ISSUE_NUMBER}"
+              continue
+            fi
+
+            # Dispatch a per-issue revalidation run. Adjust
+            # REVALIDATION_WORKFLOW_FILE to match your real workflow name.
+            RESULT=$(gh workflow run "${REVALIDATION_WORKFLOW_FILE}" \
+              --repo "${{ github.repository }}" \
+              --field stellar_address="${ADDRESS}" \
+              --field issue_number="${ISSUE_NUMBER}" \
+              2>&1) && STATUS="dispatched" || STATUS="failed"
+
+            if [ "${STATUS}" = "failed" ]; then
+              FAILURES=$(( FAILURES + 1 ))
+              echo "::warning::Failed to dispatch revalidation for issue #${ISSUE_NUMBER} (@${ASSIGNEE}): ${RESULT}"
+            fi
+
+            # Brief pause between dispatches to avoid saturating the
+            # GitHub API. Increase if you see 429 responses.
+            sleep 1
+
+          done < <(echo "${WALLET_MAP}" | jq -c '.[]')
+
+          echo "failures=${FAILURES}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Step 4: Alert maintainers on failures
+      # ------------------------------------------------------------------
+      # Emit a summary and optionally post to a tracking issue when any
+      # dispatch fails or when no addresses could be parsed. This step
+      # runs even when the job is otherwise green (fail_on_missing:false).
+      # Replace the body echo with a Slack webhook, email, or comment on
+      # a pinned tracking issue as appropriate for your team.
+      # ------------------------------------------------------------------
+      - name: Alert maintainers on dispatch failures
+        if: steps.revalidate.outputs.failures != '0' || steps.extract.outputs.parseable == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILURES: ${{ steps.revalidate.outputs.failures || '0' }}
+          PARSEABLE: ${{ steps.extract.outputs.parseable || '0' }}
+          TOTAL: ${{ steps.query.outputs.count || '0' }}
+        run: |
+          BODY="## TrustBridge cron re-validation alert
+
+          **Run:** \`${{ github.run_id }}\`
+          **Trigger:** \`${{ github.event_name }}\`
+          **Issues scanned:** \`${TOTAL}\`
+          **Addresses parsed:** \`${PARSEABLE}\`
+          **Dispatch failures:** \`${FAILURES}\`
+
+          Review the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+
+          # Log the alert body. Uncomment below to post to a tracking issue:
+          # gh issue comment "${ALERT_ISSUE_NUMBER}" \
+          #   --repo "${{ github.repository }}" \
+          #   --body "${BODY}"
+          echo "${BODY}"
+          echo "::warning::TrustBridge cron re-validation: ${FAILURES} failure(s), ${PARSEABLE}/${TOTAL} addresses parsed."
+
+      # ------------------------------------------------------------------
+      # Step 5: Write job summary
+      # ------------------------------------------------------------------
+      - name: Write job summary
+        if: always()
+        env:
+          TOTAL: ${{ steps.query.outputs.count || '0' }}
+          PARSEABLE: ${{ steps.extract.outputs.parseable || '0' }}
+          FAILURES: ${{ steps.revalidate.outputs.failures || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          {
+            echo "## TrustBridge cron re-validation summary"
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Open bounty issues found | \`${TOTAL}\` |"
+            echo "| Addresses successfully parsed | \`${PARSEABLE}\` |"
+            echo "| Dispatch failures | \`${FAILURES}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
+            echo "| Triggered at | \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\` |"
+            echo ""
+            if [ "${FAILURES}" = "0" ]; then
+              echo "All dispatches succeeded."
+            else
+              echo "Warning: ${FAILURES} dispatch(es) failed. Review the run log and check maintainer alerts."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

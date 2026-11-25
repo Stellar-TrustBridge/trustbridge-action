@@ -1,0 +1,233 @@
+/**
+ * Tests for SEP-0007 wallet deep links in src/links.ts (Issue #44).
+ * Covers buildSep0007TxLink and buildSep0007PayLink.
+ */
+
+import {
+  buildSep0007PayLink,
+  buildSep0007TxLink,
+  inferStellarNetwork,
+} from '../src/links';
+
+const PUBLIC_PASSPHRASE = 'Public Global Stellar Network ; September 2015';
+const TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';
+const DEST = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+/** URLSearchParams encodes spaces as +; decode both % and + encoding. */
+function decode(uri: string): string {
+  return decodeURIComponent(uri.replace(/\+/g, ' '));
+}
+
+// ---------------------------------------------------------------------------
+// buildSep0007TxLink
+// ---------------------------------------------------------------------------
+
+describe('buildSep0007TxLink', () => {
+  it('produces a web+stellar:tx URI', () => {
+    const uri = buildSep0007TxLink({ xdr: 'AAAAAQ==' });
+    expect(uri).toMatch(/^web\+stellar:tx\?/);
+  });
+
+  it('includes the XDR parameter', () => {
+    const uri = buildSep0007TxLink({ xdr: 'AAAAAQ==' });
+    expect(uri).toContain('xdr=AAAAAQ');
+  });
+
+  it('uses the public network passphrase by default', () => {
+    const uri = buildSep0007TxLink({ xdr: 'x' });
+    expect(decode(uri)).toContain(PUBLIC_PASSPHRASE);
+  });
+
+  it('uses the testnet passphrase when network=testnet', () => {
+    const uri = buildSep0007TxLink({ xdr: 'x', network: 'testnet' });
+    expect(decode(uri)).toContain(TESTNET_PASSPHRASE);
+  });
+
+  it('uses a custom network passphrase when provided', () => {
+    const custom = 'My Custom Network ; 2024';
+    const uri = buildSep0007TxLink({ xdr: 'x', networkPassphrase: custom });
+    expect(decode(uri)).toContain(custom);
+  });
+
+  it('appends msg when provided', () => {
+    const uri = buildSep0007TxLink({ xdr: 'x', msg: 'Add trustline' });
+    expect(decode(uri)).toContain('Add trustline');
+  });
+
+  it('appends callback when provided', () => {
+    const cb = 'https://example.com/callback';
+    const uri = buildSep0007TxLink({ xdr: 'x', callback: cb });
+    expect(decode(uri)).toContain(cb);
+  });
+
+  it('appends origin_domain when provided', () => {
+    const uri = buildSep0007TxLink({ xdr: 'x', originDomain: 'trustbridge.example' });
+    expect(uri).toContain('origin_domain=');
+    expect(decode(uri)).toContain('trustbridge.example');
+  });
+
+  it('omits optional fields when not provided', () => {
+    const uri = buildSep0007TxLink({ xdr: 'x' });
+    expect(uri).not.toContain('msg=');
+    expect(uri).not.toContain('callback=');
+    expect(uri).not.toContain('origin_domain=');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildSep0007PayLink
+// ---------------------------------------------------------------------------
+
+describe('buildSep0007PayLink', () => {
+  it('produces a web+stellar:pay URI', () => {
+    const uri = buildSep0007PayLink({ destination: DEST });
+    expect(uri).toMatch(/^web\+stellar:pay\?/);
+  });
+
+  it('includes the destination parameter', () => {
+    const uri = buildSep0007PayLink({ destination: DEST });
+    expect(uri).toContain(`destination=${DEST}`);
+  });
+
+  it('uses the public network passphrase by default', () => {
+    const uri = buildSep0007PayLink({ destination: DEST });
+    expect(decode(uri)).toContain(PUBLIC_PASSPHRASE);
+  });
+
+  it('uses the testnet passphrase when network=testnet', () => {
+    const uri = buildSep0007PayLink({ destination: DEST, network: 'testnet' });
+    expect(decode(uri)).toContain(TESTNET_PASSPHRASE);
+  });
+
+  it('appends amount when provided', () => {
+    const uri = buildSep0007PayLink({ destination: DEST, amount: '1.5' });
+    expect(uri).toContain('amount=1.5');
+  });
+
+  it('encodes asset_code, asset_issuer, and custom network passphrase correctly', () => {
+    const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    const customPassphrase = 'My Custom Network ; 2024';
+    const uri = buildSep0007PayLink({
+      destination: DEST,
+      assetCode: 'USDC',
+      assetIssuer: issuer,
+      networkPassphrase: customPassphrase,
+    });
+
+    expect(uri).toContain('asset_code=USDC');
+    expect(uri).toContain(`asset_issuer=${issuer}`);
+    expect(decode(uri)).toContain(customPassphrase);
+  });
+
+  it('requires both assetCode and assetIssuer to be valid when either is provided', () => {
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'USDC' })).toThrow(/asset_issuer/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' })).toThrow(/asset_code/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'usdc!', assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' })).toThrow(/asset_code/i);
+    expect(() => buildSep0007PayLink({ destination: DEST, assetCode: 'USDC', assetIssuer: 'not-a-stellar-address' })).toThrow(/asset_issuer/i);
+  });
+
+  it('rejects blank custom network passphrases before building the URI', () => {
+    expect(() => buildSep0007PayLink({ destination: DEST, networkPassphrase: '   ' })).toThrow(/network passphrase/i);
+  });
+
+  it('appends memo and memo_type when provided', () => {
+    const uri = buildSep0007PayLink({ destination: DEST, memo: 'hello', memoType: 'text' });
+    expect(decode(uri)).toContain('memo=hello');
+    expect(uri).toContain('memo_type=text');
+  });
+
+  it('defaults memo_type to text when memo is given but memoType is omitted', () => {
+    const uri = buildSep0007PayLink({ destination: DEST, memo: 'hi' });
+    expect(uri).toContain('memo_type=text');
+  });
+
+  it('appends msg when provided', () => {
+    const uri = buildSep0007PayLink({ destination: DEST, msg: 'Activate account' });
+    expect(decode(uri)).toContain('Activate account');
+  });
+
+  it('omits optional fields when not provided', () => {
+    const uri = buildSep0007PayLink({ destination: DEST });
+    expect(uri).not.toContain('amount=');
+    expect(uri).not.toContain('asset_code=');
+    expect(uri).not.toContain('memo=');
+    expect(uri).not.toContain('msg=');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inferStellarNetwork (existing helper — regression guard)
+// ---------------------------------------------------------------------------
+
+describe('inferStellarNetwork', () => {
+  it('returns testnet for testnet horizon URL', () => {
+    expect(inferStellarNetwork('https://horizon-testnet.stellar.org')).toBe('testnet');
+  });
+
+  it('returns public for mainnet horizon URL', () => {
+    expect(inferStellarNetwork('https://horizon.stellar.org')).toBe('public');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEP-0010 challenge snippet (Issue #252)
+// ---------------------------------------------------------------------------
+
+import {
+  buildSep0010ChallengeSnippet,
+  isValidDashboardUrl,
+} from '../src/links';
+
+describe('buildSep0010ChallengeSnippet', () => {
+  it('returns undefined when neither dashboard nor XDR provided', () => {
+    expect(buildSep0010ChallengeSnippet({})).toBeUndefined();
+    expect(buildSep0010ChallengeSnippet({ dashboardUrl: '', challengeXdr: '' })).toBeUndefined();
+  });
+
+  it('prefers dashboard link over raw XDR and does not leak XDR', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://dashboard.example/verify?address=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      challengeXdr: 'AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      network: 'public',
+      stellarAddress: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    });
+    expect(snippet).toContain('dashboard.example');
+    expect(snippet).toContain('SEP-0010');
+    expect(snippet).not.toContain('AAAAAQ'); // raw XDR not rendered when dashboard wins
+  });
+
+  it('renders truncated XDR when only challengeXdr is set', () => {
+    const longXdr = 'AAAAAQ' + 'B'.repeat(200) + 'CCCCCCCC';
+    const snippet = buildSep0010ChallengeSnippet({ challengeXdr: longXdr, network: 'testnet' });
+    expect(snippet).toContain('…');
+    expect(snippet).not.toContain(longXdr);
+    expect(snippet).toContain('testnet');
+  });
+
+  it('rejects private/loopback dashboard URLs (SSRF guard)', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://127.0.0.1/verify',
+    });
+    expect(snippet).toBeUndefined(); // invalid dashboard falls back to no snippet
+  });
+
+  it('does not block ready — informational only', () => {
+    const snippet = buildSep0010ChallengeSnippet({
+      dashboardUrl: 'https://dashboard.example/verify',
+    });
+    expect(snippet).toContain('does not block');
+  });
+});
+
+describe('isValidDashboardUrl', () => {
+  it('accepts https public URLs', () => {
+    expect(isValidDashboardUrl('https://dashboard.example/verify')).toBe(true);
+  });
+
+  it('rejects http, private IPs, metadata, and non-https', () => {
+    expect(isValidDashboardUrl('http://dashboard.example/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://127.0.0.1/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://192.168.1.1/verify')).toBe(false);
+    expect(isValidDashboardUrl('https://metadata.google.internal/verify')).toBe(false);
+  });
+});

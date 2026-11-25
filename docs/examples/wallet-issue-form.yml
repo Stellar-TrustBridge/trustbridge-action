@@ -1,0 +1,39 @@
+# Example GitHub Issue Form for collecting a contributor's Stellar wallet
+# address. Copy this to `.github/ISSUE_TEMPLATE/wallet-onboarding.yml` in a
+# consumer repository.
+#
+# See docs/USAGE.md#extracting-stellar-addresses-from-issue-forms for the
+# matching extraction step (docs/examples/extract-stellar-address.yml).
+
+name: Wallet onboarding
+description: Register your Stellar wallet address so we can verify it before assigning bounty issues.
+title: '[Wallet] '
+labels: ['wallet-onboarding']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for contributing! Provide your Stellar **G-address** below —
+        TrustBridge will check that it's funded and holds the required
+        trustline before this issue is assigned to you.
+
+  - type: input
+    id: stellar_address
+    attributes:
+      label: Stellar wallet address
+      description: Your Stellar public key (G-address, 56 characters, starts with "G").
+      placeholder: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX
+    validations:
+      required: true
+
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      description: Which Stellar network is this address on?
+      options:
+        - Public (mainnet)
+        - Testnet
+      default: 0
+    validations:
+      required: true

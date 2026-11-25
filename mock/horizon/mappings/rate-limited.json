@@ -1,0 +1,22 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb510",
+  "name": "GET /accounts/{address} — rate limited (429) with Retry-After header",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "Content-Type": "application/json",
+      "Retry-After": "1",
+      "X-Mock-Source": "trustbridge-mock-horizon"
+    },
+    "jsonBody": {
+      "type": "https://stellar.org/horizon-errors/too_many_requests",
+      "title": "Too Many Requests",
+      "status": 429,
+      "detail": "Rate limit exceeded. Please retry after 1 second."
+    }
+  }
+}

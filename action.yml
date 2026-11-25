@@ -1,14 +1,14 @@
-name: 'TrustBridge Action'
+name: "TrustBridge Action"
 description: >-
   Verify that a Stellar account is funded, holds a trustline for a specified
   asset (default USDC), and meets the minimum XLM reserve before continuing
   GitHub issue workflows.
-author: 'Stellar-TrustBridge'
-
+author: "Stellar-TrustBridge"
 branding:
-  icon: 'shield'
-  color: 'blue'
+  icon: "shield"
+  color: "blue"
 
+# Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md, ensure guidance matches freshness of check results. 
 inputs:
   max_retries:
     description: "Maximum number of retry attempts for Horizon API requests"
@@ -19,60 +19,124 @@ inputs:
     required: false
     default: "1000"
   horizon_url:
-    description: 'Stellar Horizon API base URL'
+    description: "Stellar Horizon API base URL"
     required: false
-    default: 'https://horizon.stellar.org'
+    default: "https://horizon.stellar.org"
   asset_code:
-    description: 'Asset code to check trustline for'
+    description: "Asset code to check trustline for"
     required: false
-    default: 'USDC'
+    default: "USDC"
   asset_issuer:
-    description: 'Asset issuer Stellar address (G-address)'
+    description: 'Asset issuer Stellar address (G-address or Soroban contract C-address)'
     required: false
-    default: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+    default: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
   min_xlm_reserve:
-    description: 'Minimum native XLM balance required (string, e.g. 1.5)'
+    description: "Minimum native XLM balance required (string, e.g. 1.5)"
     required: false
-    default: '1.5'
+    default: "1.5"
+  min_trustline_limit:
+    description: >-
+      Minimum trustline limit required for the configured asset (numeric, e.g. 100).
+      When set, the action will warn or fail if the account's trustline limit is below
+      this threshold. Leave empty to skip this check. (Issue #140)
+    required: false
+    default: ""
+  min_asset_balance:
+    description: >-
+      Minimum balance required for the configured asset (numeric string, e.g. 100).
+      When set, the action will warn or fail if the account's asset balance is below
+      this threshold. Leave empty to skip this check. (Issue #112)
+    required: false
+    default: ""
   stellar_address_input:
-    description: 'Stellar account address (G-address) to validate'
-    required: true
+    description: >-
+      Stellar destination address (G-address or Soroban contract C-address)
+      to validate. Required unless assignee_address_map is set, in which case
+      the address is resolved from the map using the GitHub assignee login.
+      C-address destinations are checked via Soroban RPC and skip Horizon
+      account/trustline balance checks.
+    required: false
+    default: ""
+  assignee_address_map:
+    description: >-
+      Optional JSON object (or path to a JSON file) mapping GitHub usernames
+      (assignees) to Stellar G-addresses. When set, TrustBridge resolves the
+      assignee login from the GitHub event context and looks up their address
+      before calling Horizon — so assignment workflows do not need to parse
+      the issue body. Example: '{"alice":"G...","bob":"G..."}' or
+      'rosters/wallets.json'. Do not commit private rosters to public repos;
+      prefer org/repo secrets or a private path.
+    required: false
+    default: ""
   fail_on_missing:
-    description: 'Fail the workflow step when checks do not pass (true) or only warn (false)'
+    description: "Fail the workflow step when checks do not pass (true) or only warn (false)"
     required: false
     default: 'true'
-  debug_mode:
-    description: 'Enable extra action logs for troubleshooting'
+  preflight_only:
+    description: >-
+      Run only the issues:write preflight check and exit before any Horizon
+      calls. Useful when verifying token permissions or setting up a new
+      workflow. Default false.
     required: false
     default: 'false'
-  horizon_timeout_ms:
-    description: 'Horizon request timeout in milliseconds (1000-60000)'
+  issue_number:
+    description: >-
+      Explicit issue or pull request number to comment on. Use this for
+      reusable workflows or workflow_dispatch runs that need to post results
+      without trusting event payload text. Leave empty to resolve from the
+      GitHub event context (`issues`, `pull_request`, or `pull_request_target`).
     required: false
-    default: '15000'
+    default: ''
+  debug_mode:
+    description: "Enable extra action logs for troubleshooting"
+    required: false
+    default: "false"
+  horizon_timeout_ms:
+    description: "Horizon request timeout in milliseconds (1000-60000)"
+    required: false
+    default: "15000"
+  per_address_timeout_ms:
+    description: >-
+      Batch mode only: deadline in milliseconds for validating one address
+      (all of its Horizon requests and retries). An address that exceeds it is
+      reported as ADDRESS_TIMEOUT and the batch continues with the next one.
+      A global cancellation/job timeout always takes precedence. "0" (default)
+      disables the per-address deadline. (Issue #928)
+    required: false
+    default: "0"
   sticky_comment:
     description: >-
       Update TrustBridge's previous comment on the issue instead of posting a
       new one each run (true), or always post a new comment (false)
     required: false
     default: 'true'
+  comment_mode:
+    description: >-
+      Controls only how a posted comment is threaded. One of 'sticky' (default,
+      update the previous comment), 'new' (post a new top-level comment), or
+      'reply' (post a chronological reply). Use posting_mode to control whether
+      comments are posted. Legacy post/dry-run/off values in comment_mode remain
+      supported only when posting_mode is unset.
+    required: false
+    default: 'sticky'
   wait_until_funded:
     description: >-
       Poll Horizon until the account becomes funded (true) instead of
       immediately returning an unfunded result on the first 404 (false)
     required: false
-    default: 'false'
+    default: "false"
   wait_until_funded_timeout_ms:
     description: >-
       Maximum total time to poll for the account to become funded, in
       milliseconds (0-600000). Only used when wait_until_funded is true.
     required: false
-    default: '120000'
+    default: "120000"
   wait_until_funded_interval_ms:
     description: >-
       Delay between funded-account polling attempts, in milliseconds
       (1000-60000). Only used when wait_until_funded is true.
     required: false
-    default: '5000'
+    default: "5000"
   horizon_url_fallback:
     description: >-
       Optional fallback Horizon API base URL. When the primary Horizon URL
@@ -80,35 +144,995 @@ inputs:
       against this URL before giving up. Useful for cross-region or
       multi-provider resilience.
     required: false
-    default: ''
+    default: ""
   horizon_cache_ttl_ms:
     description: >-
       Time-to-live for the in-memory Horizon account cache, in milliseconds.
       Set to 0 to disable caching entirely. Default 60000 (60 seconds).
     required: false
-    default: '60000'
+    default: "60000"
   rpc_fallback_url:
-    description: 'Optional secondary/fallback Horizon or RPC URL if primary fails'
+    description: "Optional secondary/fallback Horizon or RPC URL if primary fails"
     required: false
-    default: ''
+    default: ""
+  horizon_max_requests:
+    description: "Global cap on Horizon requests per run to prevent 429 stampedes (0 for unlimited)"
+    required: false
+    default: "0"
+  retry_max_delay_ms:
+    description: >-
+      Maximum delay in milliseconds for any single Horizon retry sleep. Caps
+      both server-supplied Retry-After values on HTTP 429/503 and exponential
+      backoff (retry_base_delay_ms * 2^attempt). "0" disables sleeping between
+      retries while still honoring max_retries. Default 30000.
+    required: false
+    default: "30000"
+  retry_max_total_wait_ms:
+    description: >-
+      Total retry sleep budget in milliseconds per Horizon endpoint. When the
+      next (already capped) sleep would push the cumulative wait past this
+      value, retries stop and the run fails with RATE_LIMIT_EXHAUSTED instead
+      of sleeping. See docs/ERROR_HANDLING.md for the worst-case formula.
+      Default 120000.
+    required: false
+    default: "120000"
   use_cache:
-    description: 'Cache successful Horizon responses in job memory (true/false)'
+    description: "Cache successful Horizon responses in job memory (true/false)"
+    required: false
+    default: "false"
+  use_actions_cache_backend:
+    description: >-
+      Enable GitHub Actions cache backend persistence (true/false) to share
+      cached Horizon responses across matrix legs and subsequent workflow runs.
+      When enabled, cached data is persisted to GitHub Actions' cache backend
+      with TTL respected. TTL violations and poisoning is prevented by
+      validating account state on cache hits. Defaults to false for
+      backward compatibility.
+    required: false
+    default: "false"
+  allow_cross_network_fallback:
+    description: >-
+      By default, the fallback URL (`horizon_url_fallback`/`rpc_fallback_url`)
+      is only used when it resolves to the same Stellar network (public vs
+      testnet, inferred from the URL) as `horizon_url` — a G-address is valid
+      on every network, so a mismatched fallback could otherwise silently
+      return funded/trustline/reserve data for the wrong ledger. Set this to
+      `true` to opt into cross-network fallback anyway. Defaults to false.
+    required: false
+    default: "false"
+  log_inputs:
+    description: >-
+      Emit a structured JSON log record of all resolved action inputs at run
+      start (redacted — Stellar addresses, Horizon URLs, and any embedded
+      secrets are masked before the record is written to GitHub Actions log
+      output). Useful for auditing which inputs were active during a run.
+      Defaults to false.
+    required: false
+    default: "false"
+  trustbridge_config_path:
+    description: >-
+      Path (relative to the repository root, or absolute) to a consumer
+      trustbridge.yml config file that can supply default values for
+      horizon_url, asset_code, asset_issuer, min_xlm_reserve, and other
+      inputs.  Explicit action inputs always override values from the file.
+      The file is validated for SSRF-safe URLs, injection-clean strings, and
+      secret field redaction before any value is used.  Defaults to
+      ".trustbridge.yml" in the repository root.  Leave empty to skip the
+      config file entirely.
+    required: false
+    default: ".trustbridge.yml"
+
+  trustbridge_config_strict:
+    description: >-
+      When "true", unknown top-level keys in the trustbridge config file fail
+      the run with a "did you mean" hint instead of being silently ignored, so
+      typos cannot fall back to defaults. Default "false" (lenient mode keeps
+      the previous behavior). (Issue #927)
     required: false
     default: 'false'
+  milestone_allowlist:
+    description: >-
+      Comma-separated list of allowed milestone names. When set, runs will skip
+      validation unless the issue/PR milestone matches one of these values. Useful
+      for repo-level workflow gates.
+    required: false
+    default: ""
+  milestone_fail_on_skip:
+    description: >-
+      When true and the milestone gate skips validation, fail the workflow step
+      instead of only logging a warning. Default false.
+    required: false
+    default: "false"
+  required_labels:
+    description: >-
+      Comma- or newline-separated label names that must all be present on the
+      issue/PR before Horizon checks run (case-insensitive). When any is
+      missing the run skips with reason_code REQUIRED_LABELS_MISSING. Empty
+      disables the gate. Max 20 labels, 50 characters each. See
+      docs/LABEL_GATE_DESIGN.md.
+    required: false
+    default: ""
+  required_labels_fail_on_skip:
+    description: >-
+      When true and the required_labels gate skips validation, fail the
+      workflow step instead of only logging. Default false.
+    required: false
+    default: "false"
   github_token:
-    description: 'GitHub token used to post issue comments'
+    description: >-
+      GitHub token used to post issue comments. Requires `issues: write`
+      permission on the repository. `GITHUB_TOKEN` with `permissions:
+      issues: write` is sufficient for issue-triggered runs on the default
+      branch and on non-fork pull requests. For fork pull requests, org-level
+      token restrictions, or GitHub Enterprise Server, you may need a
+      fine-grained PAT or a GitHub App token with the Issues (read and write)
+      permission. For `discussion` events, the comment is posted via GraphQL
+      and requires `discussions: write` instead of `issues: write` (Issue
+      #221). On `discussion_comment` events the comment is posted as a reply
+      in the triggering comment's thread (under its top-level comment when
+      the trigger is itself a reply, since Discussions allow one reply
+      level), and the sticky comment is tracked per thread; `discussion`
+      events post a top-level comment (Issue #472). Omit or leave empty when running in a context where comment
+      posting is not required (outputs are still set).
     required: true
+  github_app_token:
+    description: >-
+      Optional pre-minted GitHub App installation token (e.g. from
+      actions/create-github-app-token) used instead of GITHUB_TOKEN for
+      organization-wide triage workflows or cross-repository comments.
+      When provided, takes precedence over github_token. (Issue #225)
+    required: false
+    default: ""
+  assets_json:
+    description: >-
+      JSON array of additional assets to validate trustlines for, e.g.
+      [{"code":"USDC","issuer":"GA5Z..."},{"code":"EURC","issuer":"GCQT..."}].
+      When provided, trustline checks are run for every listed asset in
+      addition to (or instead of) the single asset_code/asset_issuer pair.
+      Duplicate entries are silently deduplicated. Results are exposed via
+      the `assets_trustline_status` and `trustlines_summary` outputs and
+      rendered as a per-asset breakdown in the issue comment.
+    required: false
+    default: ""
+  sep0007_deep_links:
+    description: >-
+      When true, embed SEP-0007 wallet deep links in the issue comment for
+      funding and trustline setup. Default false.
+    required: false
+    default: "false"
+  auto_wallet_labels:
+    description: >-
+      Automatically apply a wallet state label to the issue
+      (wallet: funded | wallet: unfunded | wallet: trustline-missing |
+      wallet: reserve-low | wallet: horizon-error). Requires
+      `issues: write` permission. Default false.
+    required: false
+    default: "false"
+  pass_label:
+    description: >-
+      Optional label name to apply when the TrustBridge check passes. Leave empty to disable.
+      Useful for boards or labels that represent a ready state distinct from auto_wallet_labels.
+    required: false
+    default: ""
+  fail_label:
+    description: >-
+      Optional label name to apply when the TrustBridge check fails. Leave empty to disable.
+      Useful for boards or labels that represent a not-ready state distinct from auto_wallet_labels.
+    required: false
+    default: ""
+  sep0007_origin_domain:
+    description: >-
+      Optional origin domain embedded in SEP-0007 URIs for wallet validation
+      (SEP-0007 §3.4). Leave empty to omit the field.
+    required: false
+    default: ""
+  snooze_window_minutes:
+    description: >-
+      Time window (in minutes) to suppress duplicate validation failure comments
+      on the same issue. When a check fails and the last check also failed
+      within this window, the comment update is suppressed to reduce notification
+      noise. Outputs are always updated even when snoozed. Set to 0 to disable
+      snoozing (always post). Default 30 minutes. (Issue #155)
+    required: false
+    default: "30"
+  snooze_max_override:
+    description: >-
+      Maintainer override for the snooze duration cap (Issue #962). By default
+      snooze_window_minutes is clamped to 7 days (10080 minutes) so a failing
+      gate cannot stay skipped indefinitely; when "true" the cap is raised to
+      30 days. The cap is never removed. A clamp logs reason_code
+      snooze_window_capped.
+    required: false
+    default: "false"
+  summary_emoji_free:
+    description: >-
+      When "true", Job Summary and digest output replace emoji with stable
+      ASCII tokens ([PASS], [FAIL], [WARN], [PAUSED], [OK], [SNOOZED]) and drop
+      other pictographs, for enterprise log drains that strip unicode.
+      (Issue #961)
+    required: false
+    default: "false"
+  force_comment:
+    description: >-
+      Bypass snooze logic and force an immediate comment post, even if within
+      the snooze window. Useful for maintainers who want to re-alert after
+      a fix attempt. Default false. (Issue #155)
+    required: false
+    default: "false"
+  webhook_url:
+    description: >-
+      Optional HTTPS URL to POST a signed webhook notification to after every
+      validation run. When empty (default) no webhook is sent and comment
+      posting is completely unaffected. The payload is signed with
+      HMAC-SHA256 when `webhook_secret` is also supplied. Disabled by default.
+      (Issue #101)
+    required: false
+    default: ""
+  webhook_secret:
+    description: >-
+      Shared secret used to sign the webhook payload with HMAC-SHA256. The
+      signature is included as the `X-TrustBridge-Signature` HTTP header in
+      the format `sha256=<hex-digest>`. Never logged or embedded in comments.
+      Leave empty to send unsigned webhooks (not recommended for production).
+      Only used when `webhook_url` is set. (Issue #101)
+    required: false
+    default: ""
+  webhook_secret_previous:
+    description: >-
+      Previous webhook secret, set only while rotating `webhook_secret`. When
+      set, requests also carry `X-TrustBridge-Signature-Previous` signed with
+      this key so receivers still on the old key keep verifying. Remove once
+      all receivers accept the new key. Never logged. (Issue #795)
+    required: false
+    default: ""
+  webhook_timeout_ms:
+    description: >-
+      Maximum time in milliseconds to wait for the webhook endpoint to
+      respond. When the timeout elapses the request is aborted and a warning
+      is logged — comment posting and validation results are unaffected. An
+      Actions runner cancellation signal also aborts the in-flight request.
+      Default 5000 (5 seconds). (Issue #101)
+    required: false
+    default: "5000"
+  webhook_auth_mode:
+    description: >-
+      Authentication mechanism for dashboard webhook notifications: "hmac" (default)
+      using HMAC-SHA256 signature with webhook_secret, or "oidc" to mint a GitHub OIDC
+      ID token and send as `Authorization: Bearer <token>`. Requires `id-token: write`
+      permission when set to "oidc". (Issue #224)
+    required: false
+    default: "hmac"
+  webhook_oidc_audience:
+    description: >-
+      Expected audience for GitHub OIDC token when webhook_auth_mode is "oidc".
+      Default "trustbridge-dashboard". (Issue #224)
+    required: false
+    default: "trustbridge-dashboard"
+  docs_base_url:
+    description: >-
+      Optional base URL for FAQ/docs deep links embedded in failing check
+      bullets. Defaults to this repository's `docs/FAQ.md`. Override for
+      forks or mirrors that host their own documentation. Must be an HTTPS
+      URL; invalid values fall back to the default silently. (Issue #104)
+    required: false
+    default: ""
+  idn_host_allowlist:
+    description: >-
+      Comma- or newline-separated exact host names allowed to be
+      internationalized (non-ASCII or punycode `xn--`) in `docs_base_url` and
+      `sep0010_dashboard_url`. By default every such host is rejected as a
+      possible look-alike (homograph) of another site and the default link is
+      used instead; a warning names the reason. Entries must be bare hosts, no
+      scheme, port, path, or wildcard (max 50). Default empty. See
+      docs/USAGE.md#link-host-safety. (Issue #963)
+    required: false
+    default: ""
+  network:
+    description: >-
+      Stellar network shorthand: "testnet", "public", or "mainnet". When set
+      (and "preset" is empty), the matching campaign preset overrides
+      horizon_url, asset_code, and asset_issuer defaults. Explicit action
+      inputs always win over preset values. (Issue #207) Matching is
+      case-insensitive and surrounding whitespace is ignored; any other value
+      fails the step before any Horizon call with an error listing the
+      allowed values. (Issue #901)
+    required: false
+    default: ""
+  preset:
+    description: >-
+      Campaign preset name (e.g. "testnet", "public", "testnet-usdc",
+      "mainnet"). When set, overrides horizon_url, asset_code, and
+      asset_issuer defaults. Takes precedence over the "network" input.
+      Explicit action inputs always win. (Issue #207)
+    required: false
+    default: ""
+
+  posting_mode:
+    description: >-
+      Controls whether TrustBridge posts an issue comment: "post" (default)
+      posts using the comment_mode threading strategy, "dry-run" builds the
+      comment but does not call the GitHub API, and "off" skips comment posting.
+      Outputs are always set regardless of mode. If unset, legacy post/dry-run/off
+      values in comment_mode are honored; otherwise the effective default is post.
+    required: false
+    default: ''
+
+  use_check_runs:
+    description: >-
+      When true, creates a GitHub Check Run with individual validation check
+      annotations and a conclusion reflecting the overall validation result.
+      Requires 'checks: write' permission. Default false.
+    required: false
+    default: 'false'
+
+  use_friendbot:
+    description: >-
+      Automatically call Stellar Friendbot to fund unfunded (404) accounts on
+      supported test networks (testnet, futurenet). Refused on mainnet/public network.
+    required: false
+    default: "false"
+
+  friendbot_url:
+    description: >-
+      URL of the Stellar Friendbot endpoint. Must be on the allowlist (SSRF protection).
+      Defaults to https://friendbot.stellar.org.
+    required: false
+    default: "https://friendbot.stellar.org"
+
+  friendbot_timeout_ms:
+    description: "Timeout in milliseconds for Friendbot requests (1000-60000)"
+    required: false
+    default: "15000"
+  fixture_mode:
+    description: >-
+      When true, load the Horizon account response from a local JSON file
+      (fixture_path) instead of calling the live Horizon API. No network
+      call is made. Intended for offline development, comment formatting
+      iteration, and CI runs that do not need a live Horizon endpoint.
+      SSRF validation is still applied to horizon_url when fixture_mode is
+      false (the default). Default false.
+    required: false
+    default: 'false'
+  fixture_path:
+    description: >-
+      Path to a Horizon account JSON fixture file, relative to the
+      repository root (GITHUB_WORKSPACE). Only used when fixture_mode is
+      true. A path-traversal guard prevents escaping outside the workspace.
+      Example: "fixtures/account-funded.json". Default empty.
+    required: false
+    default: ''
+  dashboard_webhook_url:
+    description: >-
+      Optional dashboard webhook URL (alias / Wave #38 harness input). When set,
+      TrustBridge POSTs a signed notification after every validation run.
+      Prefer webhook_url for production; this input remains for dry-run smoke
+      tests and backwards-compatible workflows.
+    required: false
+    default: ''
+  onboarding_checklist:
+    description: >-
+      Include an onboarding checklist task list in the issue comment whose
+      checkboxes reflect live ValidationResult state. Default true.
+    required: false
+    default: "true"
+  check_ledger_freshness:
+    description: >-
+      When true, query Horizon root for ledger lag before account checks and
+      surface a freshness banner in the comment. Default false.
+    required: false
+    default: "false"
+  max_ledger_lag_seconds:
+    description: >-
+      Maximum acceptable Horizon ledger lag in seconds when check_ledger_freshness
+      is enabled. Default 60.
+    required: false
+    default: "60"
+  ledger_freshness_fail_on_stale:
+    description: >-
+      When true and ledger freshness is stale, treat the run as invalid.
+      Default false (warn only).
+    required: false
+    default: "false"
+  network_passphrase:
+    description: >-
+      Optional Stellar network passphrase override used for diagnostics and
+      SEP-0007 deep links. Leave empty to infer from horizon_url.
+    required: false
+    default: ""
+  home_domain_check_enabled:
+    description: >-
+      Enable SEP-0001 home_domain alignment check against the asset issuer
+      account. Default false.
+    required: false
+    default: "false"
+  expected_home_domain:
+    description: >-
+      Expected issuer home_domain value when home_domain_check_enabled is true.
+      Leave empty to accept any non-empty on-chain home_domain.
+    required: false
+    default: ""
+  home_domain_check_mode:
+    description: >-
+      How to treat home_domain mismatches: "warn" (default) or "strict"
+      (blocks valid). Case-insensitive; any other value fails the step
+      before any Horizon call instead of silently falling back to "warn".
+      (Issue #901)
+    required: false
+    default: "warn"
+  stellar_toml_fetch_enabled:
+    description: >-
+      Enable optional SEP-0001 stellar.toml fetch and validation when
+      home_domain_check_enabled is true. Fetches the TOML file at
+      https://{home_domain}/.well-known/stellar.toml with SSRF protection
+      and TTL caching. Default false.
+    required: false
+    default: "false"
+  stellar_toml_cache_ttl_ms:
+    description: >-
+      Time-to-live for stellar.toml fetch cache in milliseconds. Default 3600000
+      (1 hour); "0" disables caching; values are capped at 86400000 (24 hours).
+      Only used when stellar_toml_fetch_enabled is true.
+    required: false
+    default: "3600000"
+  stellar_toml_hash_pin:
+    description: >-
+      Optional integrity hash for stellar.toml content validation. Format:
+      "algorithm:hexvalue" (e.g. "sha256:abc123..."). When set, the fetched TOML
+      content is hashed and compared; a mismatch fails the check. Protects against
+      cache poisoning and MITM attacks. Only used when stellar_toml_fetch_enabled
+      is true.
+    required: false
+    default: ""
+  stellar_toml_allow_insecure_testnet:
+    description: >-
+      Testnet/futurenet only (Issue #960). When "true", an http:// home_domain
+      is tolerated (logged as a warning) and upgraded to HTTPS; the fetch itself
+      is always HTTPS. Ignored on pubnet, where any non-HTTPS scheme fails with
+      reason_code toml_https_required.
+    required: false
+    default: "false"
+  write_validation_json:
+    description: >-
+      When true, write the validation result to validation_json_path as a
+      machine-readable JSON artifact. Includes all check results, account
+      state, and metadata. Default false.
+    required: false
+    default: "false"
+  validation_json_path:
+    description: >-
+      File path where the validation result JSON is written when
+      write_validation_json is true. Relative paths are resolved from the
+      workflow workspace. Default "validation.json".
+    required: false
+    default: "validation.json"
+  trustbridge_plugins_path:
+    description: >-
+      Comma-separated list of workspace-relative paths to external CheckPlugin
+      modules to load and register (e.g. "plugins/kyc.ts,plugins/custom-check.ts").
+      Plugins are loaded from the workspace only and must be allowlisted here.
+      Each path is validated against path-traversal attacks. Default empty (no
+      external plugins). When a plugin fails to load, a warning is logged and
+      the run continues (fail-open).
+    required: false
+    default: ""
+
+  sarif_output_path:
+    description: >-
+      Path to write SARIF 2.1.0 output file for GitHub Advanced Security
+      integration. Leave empty to skip SARIF output. The file is written
+      under GITHUB_WORKSPACE. (Issue #197)
+    required: false
+    default: ""
+
+  diagnostics_zip_path:
+    description: >-
+      Optional path (inside GITHUB_WORKSPACE, must end in ".zip") where a
+      redacted diagnostics bundle is written for artifact upload. The zip holds
+      manifest.json (file list, sizes, SHA-256, anything omitted), inputs.json,
+      diagnostics.md and run-info.json. Secrets, tokens and unmasked Stellar
+      addresses are never included. Empty (default) disables the bundle. Attach
+      it with actions/upload-artifact. Enable it when asking maintainers for help
+      with a failing run; see docs/TROUBLESHOOTING.md#diagnostics-bundle.
+    required: false
+    default: ""
+  diagnostics_zip_max_bytes:
+    description: >-
+      Maximum size of the diagnostics bundle in bytes (4096 to 52428800).
+      Optional files are dropped, largest first, to fit; if the mandatory files
+      still do not fit, no zip is written and diagnostics_zip_status is
+      "too_large". Default 1048576 (1 MiB).
+    required: false
+    default: "1048576"
+  use_plugin_runner:
+    description: >-
+      Use the plugin-based check pipeline (runPlugins + core plugins)
+      instead of the monolith runAccountChecks. Default false. (Issue #198)
+    required: false
+    default: "false"
+
+  locale:
+    description: >-
+      Language for issue comments. Supported values: en (English), es
+      (Spanish), pt (Portuguese), ja (Japanese), fr (French), de (German).
+      When unset, the Actions runner language (LANGUAGE, LC_ALL, then LANG) is
+      negotiated to one of these locales; unsupported values fall back to
+      English. (Issue #202, #313, #974)
+    required: false
+    default: ""
+
+  trace_sampling_ratio:
+    description: >-
+      Fraction of tracing-enabled runs that record/export spans (0 to 1,
+      inclusive). Requires OTEL_TRACES_ENABLED=true to have any effect.
+      Leave empty for the event default: 0 on pull_request (conservative for
+      fork CI cost/PII), 1 otherwise. Invalid or out-of-range values fail
+      closed to 0. (Issue #967)
+    required: false
+    default: ""
+
+  stellar_addresses:
+    description: >-
+      Newline-separated list or JSON array of Stellar addresses for batch
+      validation. When set, validates all addresses and posts a batch
+      summary comment. Single-address jobs should use
+      stellar_address_input instead. (Issue #199)
+    required: false
+    default: ""
+
+  batch_max_addresses:
+    description: >-
+      Hard cap on unique addresses validated per run in batch mode
+      (stellar_addresses). Must be a whole number between 1 and 2000.
+      A larger list fails with BATCH_ADDRESS_LIMIT_EXCEEDED before any
+      Horizon request, telling you how many matrix legs to split into.
+      Default 500. (Issue #911)
+    required: false
+    default: "500"
+
+  unassign_on_not_ready:
+    description: >-
+      Automatically unassign the GitHub assignee(s) when readiness checks fail
+      (ready is false). Defaults to false (opt-in policy). Requires `issues: write`
+      permission. Permission or API errors are logged as warnings and do not fail the run.
+      Does not unassign during Horizon network/connectivity outages. (Issue #228)
+    required: false
+    default: "false"
+
+  project_id:
+    description: >-
+      Optional GitHub Projects v2 ID (node ID e.g. PVT_...) to update item status
+      when validation passes or fails. Requires a token with Projects read/write
+      access; issue and pull request events are supported. (Issue #222)
+    required: false
+    default: ""
+
+  project_status_field:
+    description: >-
+      Name of the status field in the GitHub Projects v2 board. Default "Status". (Issue #222)
+    required: false
+    default: "Status"
+
+  project_status_pass:
+    description: >-
+      Value/option to set on the project status field when validation passes. (Issue #222)
+    required: false
+    default: ""
+
+  project_status_fail:
+    description: >-
+      Value/option to set on the project status field when validation fails. (Issue #222)
+    required: false
+    default: ""
+
+  project_token:
+    description: >-
+      Optional GitHub token with Projects read/write access if different from
+      github_token. When omitted, github_token is used. (Issue #222)
+    required: false
+    default: ""
+
+  claimable_balance_policy:
+    description: >-
+      How to treat claimable balances when determining funded status (Issue #260):
+      "ignore" (default) — funded means Horizon account exists; claimable balances do not affect funded/ready and no extra Horizon request is made;
+      "count" — when account is 404, also checks claimable_balances claimant endpoint and surfaces claimable presence in the comment (informational, does not auto-claim).
+      Empty claimables are treated as no hint in either mode. Default "ignore" matches today’s behavior.
+    required: false
+    default: "ignore"
+
+  sep0010_challenge_xdr:
+    description: >-
+      Optional base64 XDR of a SEP-0010 challenge transaction to display in the comment (Issue #252).
+      When set, the comment includes a truncated challenge snippet for Freighter signing. Prefer `sep0010_dashboard_url` to avoid leaking nonces.
+      Does not block `ready` unless your workflow explicitly gates on it.
+    required: false
+    default: ""
+
+  sep0010_dashboard_url:
+    description: >-
+      Optional HTTPS dashboard URL where Freighter SEP-0010 proof can be verified (Issue #252).
+      When set, the comment shows a "Verify with Freighter on dashboard" link instead of a raw XDR snippet. Preferred over `sep0010_challenge_xdr`.
+      Must be https and not a private/loopback host. Does not block `ready` unless documented.
+    required: false
+    default: ""
+
+  unauthorized_trustline_policy:
+    description: >-
+      How to treat a trustline that exists but is not yet authorized by the issuer
+      (AUTHORIZATION_REQUIRED): "warn" (default, surfaces warning), "fail" (blocks ready),
+      or "ignore" (skips check). (Issue #247)
+    required: false
+    default: 'warn'
+
+  clawback_strict_mode:
+    description: >-
+      When true, fail validation if the configured asset has clawback enabled
+      (is_clawback_enabled / AUTH_CLAWBACK_ENABLED). When false (default), surfaces
+      an informational notice without failing the run. (Issue #247)
+    required: false
+    default: 'false'
+
+  skip_for_maintainers:
+    description: >-
+      Opt-in skip of validation checks when the workflow actor is a maintainer
+      (listed in CODEOWNERS or maintainers_allowlist). Defaults to false. (Issue #241)
+      This is the canonical input name; when it is set explicitly it always takes
+      precedence over the deprecated skip_if_maintainer alias. (Issue #448)
+    required: false
+    default: 'false'
+
+  skip_if_maintainer:
+    description: >-
+      DEPRECATED alias for skip_for_maintainers. Only consulted when
+      skip_for_maintainers is unset; a conflict resolves in favour of
+      skip_for_maintainers and emits a warning. Scheduled for removal in a future
+      major release — migrate to skip_for_maintainers. (Issue #241, #448)
+    required: false
+    default: ''
+
+  maintainers_allowlist:
+    description: >-
+      Optional comma-separated list of GitHub usernames or teams to treat as maintainers
+      when skip_for_maintainers is true. (Issue #241)
+    required: false
+    default: ''
+  horizon_pin_fingerprint:
+    description: >-
+      Optional TLS certificate fingerprint (SHA-256, colon-separated hex, e.g.
+      AA:BB:CC:...:FF) to pin the Horizon endpoint certificate against.
+      When set, TrustBridge performs a pre-flight TLS probe to the horizon_url
+      host and compares the server certificate fingerprint. A mismatch fails
+      the action immediately with a clear error. Default empty (pinning disabled).
+      WARNING: Pin rotation will break your workflow until you update this value.
+      Do not pin in shared public workflow examples. (Issue #303)
+    required: false
+    default: ""
+
+  federation_resolution_enabled:
+    description: >-
+      Enable optional federation (user*domain) address resolution. When true,
+      addresses in "user*domain" format are resolved via HTTPS stellar.toml
+      federation protocol. Default false. (Issue #257)
+    required: false
+    default: 'false'
+
+  horizon_url_allowlist:
+    description: >-
+      Optional comma-separated list of allowed Horizon base URLs.
+      When set, any configured Horizon URL must strictly match one of these allowed
+      hosts, in addition to passing the existing SSRF block-list checks.
+    required: false
+    default: ''
+
+  dashboard_roster_url:
+    description: >-
+      Optional dashboard API URL to fetch the assignee roster via HTTP GET.
+      When configured, this overrides the local assignee_address_map.
+    required: false
+    default: ''
+
+  dashboard_roster_secret:
+    description: >-
+      Optional secret key used to generate the X-TrustBridge-Signature HMAC for dashboard requests.
+    required: false
+    default: ''
+
+  dashboard_roster_timeout_ms:
+    description: 'Dashboard HTTP request timeout in milliseconds (1000-60000)'
+    required: false
+    default: '5000'
+
+  dashboard_roster_allow_http:
+    description: >-
+      Allow non-HTTPS URLs for dashboard_roster_url. Defaults to false.
+      Only enable this for local testing or mock endpoints, as it bypasses
+      HTTPS-only SSRF protections.
+    required: false
+    default: 'false'
+
+  soroban_full_roster:
+    description: >-
+      If true, retrieves the complete assignee roster from the Soroban contract using pagination.
+      Defaults to false (single lookup).
+    required: false
+    default: 'false'
+
+  soroban_roster_page_limit:
+    description: 'Maximum number of pages to fetch when soroban_full_roster is true'
+    required: false
+    default: '10'
+
+  custom_comment_template_path:
+    description: >-
+      Optional workspace-relative (or absolute within the workspace) path to a
+      Markdown partial file appended to the TrustBridge issue comment just
+      before the footer (#312). Useful for adding Wave-specific help,
+      campaign links, or org-specific remediation guidance without forking
+      the action.
+
+      The partial supports {{variable}} interpolation for safe substitution:
+        - {{account}}       -- checked Stellar address
+        - {{asset}}         -- asset code (e.g. USDC)
+        - {{issuer}}        -- asset issuer address
+        - {{network}}       -- inferred network (mainnet / testnet / unknown)
+        - {{horizon}}       -- Horizon base URL
+        - {{status}}        -- ready or blocked with emoji
+        - {{locale:KEY}}    -- i18n string for KEY in the active locale
+
+      All substituted values (except status) are escaped with
+      escapeMarkdownInline to prevent Markdown injection. Dangerous
+      patterns (<script>, javascript:, inline event handlers,
+      {{constructor}}, {{__proto__}}) are rejected before
+      interpolation. The file must reside inside the workspace root (path
+      traversal is blocked) and must not exceed 8 KB. Leave empty to
+      disable this feature entirely.
+    required: false
+    default: ''
+
+  ready_pass_label:
+    description: >-
+      Deprecated alias for pass_label. Used only when pass_label is empty.
+      Leave empty to use the default pass label.
+    required: false
+    default: ''
+
+  ready_label_pass:
+    description: >-
+      Deprecated alias for pass_label with a lower precedence than
+      ready_pass_label. Used only when both pass_label and ready_pass_label are
+      empty. (Issue #306)
+    required: false
+    default: ''
+
+  ready_fail_label:
+    description: >-
+      Deprecated alias for fail_label. Used only when fail_label is empty.
+      Leave empty to use the default fail label.
+    required: false
+    default: ''
+
+  ready_label_fail:
+    description: >-
+      Deprecated alias for fail_label with a lower precedence than
+      ready_fail_label. Used only when both fail_label and ready_fail_label are
+      empty. (Issue #306)
+    required: false
+    default: ''
+
+  codeowners_path:
+    description: >-
+      Optional repository-relative path to a CODEOWNERS file used to decide
+      whether the workflow actor is a maintainer. Defaults to the conventional
+      CODEOWNERS locations (.github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS).
+      Only used when skip_for_maintainers is true. (Issue #241, #448)
+    required: false
+    default: ''
+
+  github_username:
+    description: >-
+      Optional GitHub username used for account-level lookups that cannot be
+      derived from the workflow event context. Leave empty to use the event
+      actor. (Issue #257)
+    required: false
+    default: ''
+
+  previous_validation_path:
+    description: >-
+      Optional workspace-relative path to the previous run's
+      validation.json artifact. When set, the comment includes a delta section
+      comparing this run against the previous one. No extra API scopes are
+      required. Leave empty to disable the delta section. (Issue #148)
+    required: false
+    default: ''
+
+  report_output_path:
+    description: >-
+      Workspace-relative path for the Markdown validation report written during
+      the run. Defaults to trustbridge-report.md at the workspace root.
+    required: false
+    default: 'trustbridge-report.md'
+
+  privacy_mode:
+    description: >-
+      When true, redact Stellar addresses (G‑ and C‑addresses) from the workflow
+      log output and from issue comments. SEP-0007 wallet deep links are omitted
+      from comments because they require the full destination address.
+      Defaults to false.
+    required: false
+    default: 'false'
+
+  soroban_rpc_url:
+    description: >-
+      Optional Soroban RPC URL used together with contract_id to resolve a
+      contract-derived Stellar address. Leave empty to skip contract
+      resolution. (Issue #318)
+    required: false
+    default: ''
+
+  contract_id:
+    description: >-
+      Optional Soroban contract ID used with soroban_rpc_url to resolve a
+      contract-derived Stellar address. Leave empty to skip contract
+      resolution. (Issue #318)
+    required: false
+    default: ''
 
 outputs:
+  # Structured JSON outputs (checks_json, timings_json, assignee_results_json,
+  # matrix_ready_map, conflict_report, assets_trustline_status,
+  # batch_summary_json) are validated against schemas in src/outputs.ts before
+  # core.setOutput publishes them. Invalid values fail with path-aware errors
+  # instead of breaking downstream fromJSON() callers. (Issue #969)
+  # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
-    description: 'Whether the account has a trustline for the configured asset'
+    description: "Whether the account has a trustline for the configured asset. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   xlm_balance:
-    description: 'Current native XLM balance as reported by Horizon'
+    description: "Current native XLM balance as reported by Horizon"
   account_funded:
-    description: 'Whether the account exists and is activated on the Stellar network'
+    description: "Whether the account exists and is activated on the Stellar network. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   comment_url:
-    description: 'URL of the created or updated issue comment, when run in an issue context'
+    description: "URL of the created or updated issue comment, when run in an issue context"
+  comment_id:
+    description: >-
+      Numeric REST id (as a string) of the issue comment TrustBridge created or
+      updated this run. Pass it to issues.updateComment in a later step to edit
+      the same comment. Empty string when no comment was posted (posting_mode
+      dry-run or off, no issue/PR context, or the post failed). (Issue #696)
+  full_report_path:
+    description: >-
+      Absolute path of the full validation report file written to the workflow
+      workspace when the comment body exceeded GitHub's size limit.  Empty
+      when the comment was within the limit and no file was written.
+
+  # ── Audit & Integration outputs (Issue #66, #67) ─────────────────────────
+  ready:
+    description: "Whether all validation checks passed. Always \"true\" or \"false\" (never empty or 1/0); gate with steps.trustbridge.outputs.ready == 'true' (Issue #919)"
+  validated_at:
+    description: "ISO-8601 timestamp when the validation checks were performed"
+  horizon_url:
+    description: "Horizon API base URL used for validation"
+  asset_code:
+    description: "Asset code validated by the action"
+  asset_issuer:
+    description: "Asset issuer address validated by the action"
+  reason_code:
+    description: "Machine-readable failure reason code (e.g. SUCCESS, ACCOUNT_NOT_FUNDED, TRUSTLINE_MISSING, RESERVE_TOO_LOW)"
+  checks_json:
+    description: "JSON string array of individual check results and pass/fail statuses"
+
+  # ── Badge outputs (Issue #TBD) ────────────────────────────────────────────
+  badge_markdown:
+    description: "Markdown-formatted badge snippet (e.g. for README embeds) linking to TrustBridge repo"
+  badge_url:
+    description: "Shields.io badge URL reflecting validation state (pass/fail/pending), with a short cacheSeconds hint so stale images aren't served after a recheck"
+  badge_etag:
+    description: "Weak ETag (RFC 7232) derived from the current badge state/label, for a dashboard that fronts its own cache for the badge image (Issue #796)"
+  snooze_expired:
+    description: "\"true\" when this run's comment was posted specifically because an active snooze window just lapsed, \"false\" otherwise (Issue #799)"
+
+  # ── Split balance outputs (Issue #246) ─────────────────────────────────────
+  asset_balance:
+    description: "Current configured asset (e.g. USDC) balance as reported by Horizon (7-decimal string, 0 if no trustline, unknown on Horizon error)"
+  native_balance:
+    description: "Native XLM balance alias of xlm_balance (7-decimal Horizon string)"
+
+  # ── Timing breakdown outputs (Issue #93) ──────────────────────────────────
+  timings_json:
+    description: "JSON string containing millisecond execution timings for all major phases"
+  timing_input_parse_ms:
+    description: "Execution duration of input parsing phase in milliseconds"
+  timing_horizon_fetch_ms:
+    description: "Execution duration of Horizon API fetch phase in milliseconds"
+  timing_checks_ms:
+    description: "Execution duration of validation checks phase in milliseconds"
+  timing_comment_post_ms:
+    description: "Execution duration of comment posting phase in milliseconds"
+  timing_total_ms:
+    description: 'Total execution duration in milliseconds'
+  num_sponsoring:
+    description: 'Number of accounts this account is sponsoring (numeric string)'
+  num_sponsored:
+    description: 'Number of accounts sponsoring this account (numeric string)'
+  network_passphrase_mismatch:
+    description: 'Whether the configured and Horizon network passphrases differ (true/false)'
+  expected_network_passphrase:
+    description: 'Configured or inferred network passphrase'
+  actual_network_passphrase:
+    description: 'Network passphrase reported by Horizon'
+  assignee_results_json:
+    description: 'JSON result for the validated assignee, when an assignee is available'
+  matrix_ready_map:
+    description: 'JSON map of assignee login to validation readiness'
+  friendbot_called:
+    description: 'Whether Friendbot was called to fund the testnet account (true/false)'
+  friendbot_success:
+    description: 'Whether Friendbot funding succeeded (true/false)'
+  friendbot_transaction_hash:
+    description: 'Transaction hash from successful Friendbot funding, if called'
+  check_run_id:
+    description: 'ID of the created GitHub Check Run when use_check_runs is true, empty otherwise'
+  check_run_conclusion:
+    description: 'Conclusion of the created Check Run (success/failure), empty when skipped'
+
+  # Merge-resolution conflict report (Issue #524)
+  conflict_report:
+    description: 'JSON string of the merge-resolution conflict report (empty object when no conflicts)'
+  has_conflicts:
+    description: "Whether any input conflicts were detected (true/false). Gate with steps.trustbridge.outputs.has_conflicts == 'true'"
+  assets_trustline_status:
+    description: >-
+      JSON array of additional assets from assets_json with asset_code,
+      asset_issuer, trustline_exists, and balance fields. Empty when no
+      additional assets were checked.
+  trustlines_summary:
+    description: >-
+      Human-readable count of additional assets with trustlines, formatted as
+      "N of M additional trustlines present".
+  outputs_truncated:
+    description: >-
+      "true" when a JSON/array output this run produced (assets_trustline_status
+      in single-address mode, or batch_summary_json's failures array in batch
+      mode) was truncated to stay under GitHub Actions' per-output size limit;
+      "false" otherwise. Always set. Gate with
+      `if: steps.trustbridge.outputs.outputs_truncated == 'true'` before trusting
+      a JSON output's array length as the full result set — see
+      docs/USAGE.md#output-size-limits.
+
+  # ── Batch mode outputs (stellar_addresses / assignee_address_map) ───────
+  #
+  # These are only populated when the action runs in batch mode over multiple
+  # addresses. Single-address runs do not set them, so they read as empty
+  # strings in workflow expressions rather than zero — guard consumers with
+  # `if: steps.bridge.outputs.batch_passed_count != ''` before branching on them.
+  batch_summary_json:
+    description: >-
+      JSON object summarizing the batch run, as produced by buildBatchSummary in
+      src/batch.ts. Fields: `total` (number of addresses validated), `passed`
+      (count that passed every check), `failed` (count that did not),
+      `failures` (array of {address, reason} for each failed address), and
+      `failureTaxonomy` (counts by class: accountNotFunded, trustlineMissing,
+      reserveInsufficient, horizonError, invalidAddress). Empty in single-address mode.
+  batch_passed_count:
+    description: >-
+      Number of addresses that passed every validation check (numeric string).
+      Gate a matrix job with `if: steps.bridge.outputs.batch_failed_count == '0'`.
+      Empty in single-address mode.
+  batch_failed_count:
+    description: >-
+      Number of addresses that failed at least one validation check (numeric
+      string). Each entry appears in the `failures` array of
+      `batch_summary_json` with a human-readable reason. Empty in single-address mode.
+
+  diagnostics_zip_path:
+    description: >-
+      Absolute path of the diagnostics bundle when one was written (or already
+      up to date) this run, empty otherwise. Upload it with actions/upload-artifact.
+  diagnostics_zip_status:
+    description: >-
+      Outcome of the optional diagnostics bundle: written, unchanged, disabled,
+      invalid_path, invalid_max_bytes, too_large, or write_failed. See
+      docs/TROUBLESHOOTING.md#diagnostics-bundle.
 
 runs:
-  using: 'node20'
-  main: 'dist/index.js'
+  using: "node20"
+  main: "dist/index.js"

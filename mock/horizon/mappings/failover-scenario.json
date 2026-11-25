@@ -1,0 +1,16 @@
+{
+  "id": "b6d6f9b2-4f9d-4d70-ae4d-9cbf00fbb504",
+  "name": "Failover Scenario (Secondary Success)",
+  "scenarioName": "Failover",
+  "requiredScenarioState": "Started",
+  "newScenarioState": "Secondary Success",
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/accounts/GHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
+  },
+  "response": {
+    "status": 503,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "error": "Primary failure" }
+  }
+}

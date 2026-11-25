@@ -1,0 +1,38 @@
+# .github/zizmor.yml
+#
+# zizmor configuration for trustbridge-action.
+# https://woodruffw.github.io/zizmor/configuration/
+#
+# Suppressions documented here represent known-safe patterns in this repository.
+# Each suppression must include a justification explaining why it is intentional
+# and not a security risk.
+
+rules:
+  unpinned-uses:
+    # The check-unpinned-actions.sh script and the check-unpinned-actions CI job
+    # enforce SHA pinning for all third-party actions. zizmor's own unpinned-uses
+    # rule provides a second layer of defence.
+    #
+    # NOTE: zizmor `ignore` entries must be workflow filenames
+    # (`file.yml[:line[:column]]`) — glob paths such as `./.github/actions/**`
+    # are invalid syntax and cause a configuration error ("no audit was
+    # performed"). Local composite actions (`uses: ./...`) need no ignore
+    # entry: both the repo script and zizmor's unpinned-uses audit skip them.
+    ignore: []
+
+  template-injection:
+    # No template injection suppressions are needed for this repository.
+    # All workflow steps that use ${{ }} expressions operate on trusted,
+    # internally generated values (build outputs, refs) and never interpolate
+    # user-controlled input directly into `run:` scripts.
+    ignore: []
+
+  excessive-permissions:
+    # The top-level `permissions: contents: read` declaration in ci.yml and
+    # workflow-security.yml is intentionally minimal. No suppression needed.
+    ignore: []
+
+  ref-confusion:
+    # All third-party `uses:` references are pinned to immutable commit SHAs
+    # as enforced by check-unpinned-actions.sh. No ref-confusion risk.
+    ignore: []

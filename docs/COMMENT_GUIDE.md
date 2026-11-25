@@ -1,22 +1,142 @@
-# Issue Comment Guide
+# TrustBridge Comment Guide
 
-TrustBridge comments are designed to be actionable for contributors and auditable for maintainers.
+This document describes how TrustBridge formats issue comments, how FAQ deep links are generated and kept in sync, and the rules contributors must follow when adding new check CTAs.
 
-## Sticky comment upsert
+---
 
-By default (`sticky_comment: true`), TrustBridge does not post a new comment on every run. Each comment body embeds a hidden marker (`<!-- trustbridge-action:sticky-comment -->`). On subsequent runs, the action:
+## Comment structure
 
-1. Lists the issue's comments (paginated, so it still finds the marker on issues with 100+ comments).
-2. Looks for a comment containing the marker.
-3. Updates that comment in place if found; otherwise creates a new one.
+Every TrustBridge issue comment follows a fixed section order:
 
-This keeps re-runs (e.g. after a contributor funds their wallet) from spamming the issue with duplicate check results — the same comment simply flips from ❌ to ✅.
+1. **Hidden markers** — `<!-- trustbridge-action:sticky-comment:schema-v… -->` and a snooze marker. Used for upsert detection and snooze state.
+2. **Header** — `## TrustBridge — Stellar Account Check`
+3. **Account/Horizon/Asset summary** — checked account address, Horizon URL, and asset identity.
+4. **Results** — one bullet per check (`✅`/`❌`), with a `[→ FAQ]` link on each failing check.
+5. **Circuit-breaker banner** *(only when the Horizon circuit breaker was open)* — see [Circuit-breaker banner](#circuit-breaker-banner-issue-434).
+6. **Onboarding checklist** — a GitHub Markdown task-list showing fund → trustline → verify balance (default `on`, disable via `onboarding_checklist: false`).
+7. **Optional sections** (in order): ledger freshness alert, network-passphrase mismatch, delta section, validation gate, balances, setup cost estimate, Stellar Lab / LOBSTR links, SEP-0007 deep links, SEP-0010 proof, remediation, configuration summary, action outputs reference, hardened metrics, expert diagnostics (debug mode only).
+8. **Footer** — `_Posted by [trustbridge-action](…)_`
 
-If the comment lookup itself fails (rate limit, permission issue, transient API error), the action logs a warning and falls back to posting a new comment rather than failing the whole run.
+### Oversized comments
 
-Set `sticky_comment: false` to always post a new comment (e.g. if you want a full audit trail of every check in the issue timeline).
+Comments are kept below a 64,000-byte formatting budget and a 65,536-byte posting limit. If content exceeds the formatting budget, the remediation body is shortened first; the results and onboarding checklist stay ahead of lower-priority optional sections. If the remaining body still exceeds the posting limit, both issue (REST) and discussion (GraphQL) paths use the same UTF-8-safe truncator before calling GitHub.
 
-## What the comment includes
+Every shortened body includes the hidden `trustbridge-action:comment-truncated` metadata marker and ends with the stable `... [Truncated due to GitHub length limits. See workflow logs for full details.]` notice. The truncator prefers a line boundary, never cuts a Unicode surrogate pair, and preserves the TrustBridge footer. In dry-run workflows, formatting still emits the truncation notice and metadata, so the body indicates what would be shortened without making a GitHub API request.
+
+### Oversized Job Summaries (Issue #780)
+
+GitHub rejects step summaries larger than 1 MiB. Before writing large batch results to the Job Summary, pass the markdown through `guardJobSummaryMarkdown()` from `src/summary.ts`. Content under `JOB_SUMMARY_MAX_BYTES` (1,048,576 bytes) is returned unchanged; larger content is cut at the last whole line that fits (never splitting a UTF-8 character) and ends with the hidden `trustbridge-action:summary-truncated` marker plus a notice linking to the issue comment (or the workflow logs when no comment URL is known).
+
+---
+
+## Comment threading & posting modes (`comment_mode` & `posting_mode`)
+
+TrustBridge separates the comment posting policy from the comment threading strategy:
+
+### Posting policy (`posting_mode`)
+
+- **`post`** (default): Post or update comments on GitHub.
+- **`dry-run`**: Build comment body and set all action outputs, but skip GitHub API calls to post comments.
+- **`off`**: Skip comment posting; validation and action outputs still run.
+
+`posting_mode` controls whether the comment is posted; `comment_mode` controls how a posted comment is threaded. For backwards compatibility only, legacy `post`, `dry-run`, or `off` values in `comment_mode` are treated as `posting_mode` when `posting_mode` is omitted. New workflows should use the inputs independently.
+
+### Threading strategy (`comment_mode`)
+
+- **`sticky`** (default): Find and update TrustBridge's previous comment in place on the issue or discussion (`sticky_comment: true`).
+- **`new`**: Always post a fresh top-level comment on every run (`sticky_comment: false`), providing a complete audit log.
+- **`reply`**: Thread comments chronologically under the first TrustBridge check comment.
+
+#### Reply mode implementation & GitHub API behavior (Issue #419)
+
+GitHub's REST API for Issues (`/repos/{owner}/{repo}/issues/{issue_number}/comments`) does not support a native `in_reply_to` parameter (which is exclusive to pull request review comments).
+
+When `comment_mode: 'reply'` is configured, TrustBridge:
+1. Locates the **first (oldest)** TrustBridge comment on the issue using `findFirstTrustBridgeComment` (via GraphQL pagination with REST fallback).
+2. If an existing TrustBridge comment is found (e.g. comment `#12345`), TrustBridge prepends a Markdown reference header to the comment body:
+```markdown
+> _Reply to [TrustBridge check #12345](https://github.com/owner/repo/issues/1#issuecomment-12345)_
+```
+3. If no previous TrustBridge comment exists on the issue, TrustBridge posts the initial comment cleanly without a reply prefix.
+4. On GitHub Discussions, TrustBridge uses GraphQL `addDiscussionComment` with `replyToId` to post threaded replies in the discussion thread.
+
+### `comment_id` output (Issue #696)
+
+Every successful post publishes the numeric REST comment id as the `comment_id` action output, next to `comment_url`. `upsertIssueComment` in `src/comment.ts` returns `{ url, id, snoozeExpired }` from the response of whichever call actually wrote the body, and `setValidationOutputs` publishes `comment_id`/`comment_url` from it (see [`snooze_expired` output](#snooze_expired-output-issue-799) below for `snoozeExpired`).
+
+How `posting_mode` and `comment_mode` decide between update and create:
+
+| `posting_mode` | `comment_mode` (`sticky_comment`) | Prior TrustBridge comment | API call | `comment_id` |
+| --- | --- | --- | --- | --- |
+| `post` | `sticky` (`true`) | found | `issues.updateComment` | id of the existing comment |
+| `post` | `sticky` (`true`) | found, but update fails | `issues.createComment` (fallback) | id of the **new** comment |
+| `post` | `sticky` (`true`) | not found / lookup fails | `issues.createComment` | id of the new comment |
+| `post` | `sticky` (`true`) | found, snooze window active | none | id of the existing comment |
+| `post` | `new` (`false`) | any | `issues.createComment` | id of the new comment |
+| `post` | `reply` | any | `issues.createComment` (with reply header) | id of the reply |
+| `dry-run` | any | any | none | `""` |
+| `off` | any | any | none | `""` |
+
+Notes:
+
+- With an explicit `issue_number` (e.g. `workflow_dispatch`), the lookup and the id refer to that issue. With no issue or PR context the post is skipped with a warning and `comment_id` is `""`; the job is not failed.
+- A failed post is downgraded to a warning and leaves `comment_id` empty.
+- The id is always a REST issue-comment id. Discussion comments (GraphQL node ids such as `DC_…`) are not published as `comment_id`.
+- `comment_id` is not part of the dashboard webhook payload, so `privacy_mode` has nothing extra to redact.
+
+See [USAGE.md — `comment_id`](USAGE.md#comment_id--chaining-a-follow-up-edit-issue-696) for a workflow that edits the comment in a later step.
+
+### `snooze_expired` output (Issue #799)
+
+A dashboard that wants to know when a Wave issue "comes back" after a snooze window ends, without polling the comment to diff snooze state itself, can read the `snooze_expired` action output (`"true"` / `"false"`) published by every run — or, if it builds the webhook payload itself via `buildWebhookPayload`/`sendWebhookNotification` (`src/webhook.ts`), pass the same value through as their optional `snoozeExpired` argument to get an additive `snooze_expired: true` field on the `validation_complete` payload it already receives.
+
+The flag is `"true"` only for the specific run that resumes posting *because* a prior snooze window lapsed — not for an ordinary first failure, a pass→fail or fail→pass status change, or any run with snoozing disabled (`snooze_window_minutes: 0` or the batch `snoozeWindowMs` option left unset). See `evaluateCombinedSnoozeState`'s `snoozeExpired` field in `src/snooze.ts` for the exact decision table, and `__tests__/snooze.test.ts` / `__tests__/comment.test.ts` for the regression coverage (marker-based and reaction-based expiry, plus every non-expiry case).
+
+**Known gap:** the single-address comment path in `src/index.ts` does not currently pass `snoozeWindowMs` to `upsertIssueComment`, so `snooze_expired` is always `"false"` there today even though `snooze_window_minutes` defaults to `30`. The batch validation path already wires it through. Fixing the single-address gap is a separate, larger behavioral change (it would newly start suppressing repeated-failure comments by default) and is tracked outside this issue rather than bundled into it.
+
+## Custom comment template limits (Issue #905)
+
+A `custom_comment_template_path` partial (`src/template.ts`) is bounded at
+three points so it can never push the comment past GitHub's limit or hang a
+Wave job:
+
+| Limit | Constant | Value | Error |
+|---|---|---|---|
+| Raw file size | `MAX_TEMPLATE_BYTES` | 8 KB (8,192 bytes) | `custom_comment_template_path "…" exceeds the maximum allowed size …` |
+| Placeholders per template | `MAX_TEMPLATE_PLACEHOLDERS` | 200 `{{…}}` tokens | `[TEMPLATE_TOO_MANY_PLACEHOLDERS] custom comment template contains N placeholders; the maximum is 200.` |
+| Rendered (interpolated) size | `MAX_TEMPLATE_RENDERED_BYTES` | 16 KB (16,384 UTF-8 bytes) | `[TEMPLATE_OUTPUT_TOO_LARGE] custom comment template renders to more than 16384 bytes. …` |
+
+The rendered cap closes the **expansion bomb** gap: a 2 KB file that repeats
+`{{horizon}}` or a long `{{locale:KEY}}` hundreds of times passes the file
+size check but would otherwise expand to tens of kilobytes. Rendering stops
+as soon as the running output crosses the cap, so the oversized string is
+never built.
+
+Both new failures throw `TemplateRenderError` with a stable `code`
+(`TEMPLATE_OUTPUT_TOO_LARGE` / `TEMPLATE_TOO_MANY_PLACEHOLDERS`), and the
+message starts with `[CODE]`. As with every other template failure,
+`formatCommentBody` does **not** fail the run: it logs a
+`Failed to load custom comment template (…): [CODE] …` warning and posts
+the comment **without** the partial. Callers using `interpolateTemplate`
+directly can pass `{ maxOutputBytes }` to tighten the cap; non-finite or
+non-positive values fall back to the 16 KB default.
+
+To fix: remove repeated placeholders, move long static prose to a linked
+doc, or split the partial. Test coverage:
+`__tests__/template-output-limit.test.ts`.
+
+---
+## FAQ deep links
+
+### How they work
+
+Every failing check bullet in the **Results** section automatically appends a `[→ FAQ]` link that takes contributors straight to the relevant section of `docs/FAQ.md`. This is implemented in `src/comment.ts` via `buildFaqLinkForCheck` from `src/links.ts`.
+
+The onboarding checklist items (Fund account / Add trustline / Verify XLM balance) also carry FAQ links, generated in `src/markdown.ts` via `buildOnboardingChecklist`. The label text is localized (Issue #436), but the anchors are locale-independent.
+
+### Anchor registry
+
+All FAQ anchor names are declared in `src/links.ts` in the `FAQ_ANCHORS` constant:
 
 - The checked Stellar account.
 - The Horizon endpoint used for verification.
@@ -25,14 +145,284 @@ Set `sticky_comment: false` to always post a new comment (e.g. if you want a ful
 - Result reasons are shown in a three-column Markdown table. Long cells wrap at
   80 characters with `<br>` line breaks, and literal pipes are rendered as
   `&#124;` so dynamic Horizon text cannot create extra columns.
+- An optional **Onboarding checklist** (default on via `onboarding_checklist: true`) with Markdown task-list checkboxes that auto-check from live `ValidationResult` state, plus FAQ links for each step.
 - A machine-readable validation-gate summary that callers can use to tell whether the run is release-ready or blocked.
 - Links to Stellar Laboratory and LOBSTR for remediation.
 
-## Maintainer tips
+## Validation gate
 
-If contributors are confused, ask them to compare the account and issuer shown in the comment with the wallet account they intended to use. Most failures come from unfunded accounts, wrong issuers, or missing Change Trust operations.
+The **Validation gate** section is the machine-readable verdict that mirrors the `ready` and `reason_code` action outputs, so a dashboard triager can read the outcome straight from the comment instead of digging through the Actions log (Issue #450).
 
-## Golden Snapshots in Release/CI
+```markdown
+### Validation gate
 
-Comment Markdown formatting is protected by golden snapshot tests (`__tests__/comment.test.ts`). Any changes to comment structure, headers, status icons, or links will cause golden snapshot verification in CI (`.github/workflows/ci.yml`) to fail unless explicitly updated via `npx jest -u`.
+- Ready to proceed: all checks passed.
+- Passed checks: 3/3
+- Failed checks: 0
+- Ready: `true`
+- Reason code: `SUCCESS`
+```
 
+On a blocked run the first bullet becomes `Blocked by: <failed check labels>` and `Ready` / `Reason code` reflect the failure.
+
+| Field | Source | Fallback |
+| --- | --- | --- |
+| `Ready` | `buildValidationGate(result).ready` | Always present |
+| `Reason code` | `result.reasonCode` | `SUCCESS` when `result.valid`, otherwise `FAILED` |
+
+The fallback is the same contract the `reason_code` action output uses, so the comment and the output never disagree. `Reason code` is rendered inside a code span, so snake_case values stay literal and copy-pasteable; only backticks are neutralized.
+
+Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code. The full code list is in [SCHEMA.md](SCHEMA.md#webhook-and-reason-code-versioning-policy).
+
+All labels in this section are localized (Issue #450). The supported set is exactly `en` (English), `es` (Spanish), `pt` (Portuguese), `ja` (Japanese), `fr` (French), `de` (German), exported as `SUPPORTED_LOCALES` from [`src/i18n.ts`](../src/i18n.ts).
+
+### Locale negotiation (Issue #974)
+
+The `locale` action input is optional. When it is set to a supported value, that locale is used. When it is unset (the default is an empty string), TrustBridge negotiates from the Actions runner language, checking `LANGUAGE`, then `LC_ALL`, then `LANG`. POSIX and BCP-47 values are reduced to their base language (`es_ES.UTF-8` → `es`, `pt-BR` → `pt`); `LANGUAGE` may be a colon-separated preference list and the first supported language wins. If neither source is supported, or a value is malformed/unknown/oversized, the complete English pack is used. Negotiation never throws and never produces a partially rendered comment — see `negotiateLocale()` in [`src/i18n.ts`](../src/i18n.ts), `getRunnerLanguage()` in [`src/inputs.ts`](../src/inputs.ts), and the fallback contract in `__tests__/i18n-missing-locale-fallback.test.ts` (Issue #859).
+
+Example:
+
+```yaml
+# Explicit locale wins over the runner language.
+with:
+  locale: fr
+```
+
+Operators who want runner-driven comments should leave `locale` unset (or pass an empty string); GitHub-hosted runners commonly default to `C.UTF-8`, which negotiates to English. No token, address, or other sensitive input is involved in locale negotiation.
+
+---
+
+## Multi-check failure summaries (Issue #761)
+
+When a single run fails more than one check, the **Results** section lists every failing bullet in the fixed check order (funding → trustline → XLM reserve → per-asset trustlines → clawback → authorization), each with its own `[→ FAQ]` link. The **Validation gate** then aggregates them into one `Blocked by:` line so a triager can read the whole failure set without scanning the log.
+
+These examples show the combinations Wave contributors hit most often. They are illustrative — the exact wording comes from `src/markdown.ts` and the labels from `src/i18n.ts`.
+
+### Example A — multi-asset + clawback + unauthorized
+
+A run with `assets_json` listing two assets, where the primary asset is clawback-enabled and the account is not authorized for one of the listed assets:
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ❌ XLM reserve below minimum [→ FAQ](docs/FAQ.md#xlm-reserve)
+- ❌ Trustline missing for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#asset-trustlines)
+- ❌ Asset `USDC:GA5Z…KZVN` has clawback enabled [→ FAQ](docs/FAQ.md#clawback)
+- ❌ Account not authorized for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#authorization)
+
+### Validation gate
+
+- Blocked by: XLM reserve, Asset trustlines, Clawback, Authorization
+- Passed checks: 2/6
+- Failed checks: 4
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example B — multi-asset only (no clawback, no authorization)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ❌ Trustline missing for `EURC:GCQT…KRR2` [→ FAQ](docs/FAQ.md#asset-trustlines)
+- ❌ Trustline missing for `FOO:GA5Z…KZVN` [→ FAQ](docs/FAQ.md#asset-trustlines)
+
+### Validation gate
+
+- Blocked by: Asset trustlines
+- Passed checks: 3/5
+- Failed checks: 2
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example C — clawback + unauthorized (single asset)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ❌ Asset `USDC:GA5Z…KZVN` has clawback enabled [→ FAQ](docs/FAQ.md#clawback)
+- ❌ Account not authorized for `USDC:GA5Z…KZVN` [→ FAQ](docs/FAQ.md#authorization)
+
+### Validation gate
+
+- Blocked by: Clawback, Authorization
+- Passed checks: 3/5
+- Failed checks: 2
+- Ready: `false`
+- Reason code: `FAILED`
+```
+
+### Example D — happy path (all checks pass)
+
+```markdown
+### Results
+
+- ✅ Account funded
+- ✅ Trustline ready for `USDC:GA5Z…KZVN`
+- ✅ XLM reserve sufficient
+- ✅ Trustline ready for `EURC:GCQT…KRR2`
+- ✅ Asset `USDC:GA5Z…KZVN` has no clawback
+- ✅ Account authorized for `EURC:GCQT…KRR2`
+
+### Validation gate
+
+- Ready to proceed: all checks passed.
+- Passed checks: 6/6
+- Failed checks: 0
+- Ready: `true`
+- Reason code: `SUCCESS`
+```
+
+### Rules for multi-check summaries
+
+- **Order is stable.** Failing bullets follow the fixed check order above so diffs between runs stay readable and sticky-comment updates don't reshuffle lines.
+- **One FAQ link per failing bullet.** Never collapse multiple failures into a single bullet — each failure keeps its own `[→ FAQ]` anchor so remediation is one click away.
+- **`Blocked by:` lists every failed check label**, comma-separated, in the same order as the Results bullets. It is derived from the same `ValidationResult` the `reason_code` output uses, so the comment and the output never disagree.
+- **`Passed checks` / `Failed checks`** count every check that ran, including per-asset trustline checks from `assets_json`.
+- **Clawback and authorization failures are distinct checks.** A clawback-enabled asset and an unauthorized account are separate bullets with separate FAQ anchors; do not merge them.
+- **Empty or malformed `assets_json`** is ignored (no per-asset bullets) and never produces a partial privileged state — the run either renders the full set or omits the section entirely, matching the single-asset golden snapshots.
+
+Implementation: `buildResults` and `buildValidationGate` in `src/markdown.ts`, wired into `formatCommentBody` in `src/comment.ts`; labels localized in `src/i18n.ts`.
+
+---
+
+## Per-asset trustline table (`assets_json`) (Issue #552)
+
+When the workflow sets `assets_json`, the run checks trustlines for every listed asset in addition to the primary `asset_code`/`asset_issuer` pair. The results are rendered as a dedicated table directly after the **Balances** section — matching the behaviour `action.yml` documents for the `assets_trustline_status` / `trustlines_summary` outputs.
+
+```markdown
+### Asset trustlines
+
+| Asset | Trustline | Balance | Issuer |
+| --- | --- | --- | --- |
+| EURC | ✅ exists | `12.5000000` | `GCQT…KRR2` |
+| FOO | ❌ missing | `0` — no trustline | `GA5Z…KZVN` |
+```
+
+Rendering rules:
+
+- **Section is omitted entirely** when `assets_json` is unset, empty, or every entry was deduplicated against the primary asset — single-asset comments are byte-identical to previous releases (golden snapshots unchanged).
+- Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
+- Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
+- A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+- **Blank values never produce an empty cell** (Issue #921). An empty or whitespace-only asset code, issuer, or balance renders as `_unknown_` instead of an empty code span, so a row always keeps its four columns. A `|` inside a value is escaped as `\|`, and line breaks are collapsed to spaces, since either one would otherwise split the row.
+- An empty or whitespace-only `reason_code` in the Validation gate section falls back to the verdict default (`SUCCESS` or `FAILED`) instead of rendering an empty code span.
+- **Long tables are truncated** (Issue #860): only the first `MAX_ASSET_TABLE_ROWS` (50) rows render. The Trustline status column stays intact for every visible row — truncation only hides rows, never columns. A plain sentence *after* the table (not an extra table row — GitHub Markdown tables have no colspan) summarizes what was cut, e.g.:
+
+  ```markdown
+  _…and **187** more assets not shown (showing 50 of 237). See the `assets_trustline_status` / `trustlines_summary` action outputs for the full list._
+  ```
+
+  Because the summary is ordinary paragraph text after the table rather than a malformed row, it reads correctly for screen readers and does not depend on sighted users noticing a visual cutoff. Use the `assets_trustline_status` / `trustlines_summary` action outputs for the complete, untruncated per-asset list.
+
+Implementation: `buildAssetTrustlineTable` in `src/markdown.ts`, wired into `formatCommentBody` via the `CommentConfig.assets` field (`src/comment.ts`), populated from the `assets_json` multi-asset check in `src/index.ts`.
+
+---
+
+## Circuit-breaker banner (Issue #434)
+
+When the Horizon circuit breaker is open, `CircuitBreaker.execute` fast-fails the request **without contacting Horizon at all**. Nothing is known about the account, so the comment says so explicitly instead of rendering a list of account checks that look like ordinary failures:
+
+```markdown
+> ⚡ **Circuit breaker open**
+> - This run fast-failed because the Horizon circuit breaker was open — the account was **not** checked.
+> - This is a resilience safeguard, not a problem with the account. Wait for the recovery window to elapse, then re-run the workflow.
+```
+
+## Duplicate workflow runs (Issue #790)
+
+With `comment_mode: sticky` (the default), re-running the workflow — including repeated `workflow_dispatch` runs for the same `issue_number` — updates the existing TrustBridge comment instead of posting a new one.
+
+Two runs that start at the same moment can both find no comment and each create one. To handle that race, every run that creates a comment re-reads the thread right afterwards. If an older TrustBridge comment exists, the run writes its body there and deletes the comment it just created, so all runs converge on the oldest comment. `comment_url` / `comment_id` outputs point at that surviving comment.
+
+This never fails the step:
+
+| Situation | Result |
+|-----------|--------|
+| Re-read fails (network / API error) | The new comment is kept; warning logged |
+| Original comment cannot be updated | The new comment is kept, nothing deleted; warning logged |
+| Duplicate cannot be deleted (missing `issues: write`) | Original is updated; warning names the missing permission |
+
+`comment_mode: new` and `comment_mode: reply` are unchanged — they intentionally post a new comment on every run.
+
+## Sticky comment selection policy (Issues #867 and #790)
+
+The default `comment_mode: sticky` edits a comment in place only when the
+comment is identified by a TrustBridge marker (current schema marker, legacy
+marker, or TrustBridge footer) and GitHub says the authenticated token may
+update it. When GitHub returns author metadata, a marked comment authored by a
+human is not selected. A missing marker is never inferred from similar prose,
+and a lookup, permission, or update failure has stable behavior: warn and post
+a new comment rather than editing an unrelated comment. `comment_mode: new`
+always creates a new top-level comment; `comment_mode: reply` always creates a
+new chronological reply/reference.
+
+Maintainers should grant the token the permission needed to update issue/PR
+comments (`issues: write`, plus the appropriate PR/discussion permission for
+those targets). A read-only token may find a marker but cannot safely update
+it; the action keeps the existing comment and creates a new result when posting
+is otherwise enabled. `force_comment` bypasses snooze suppression only; it
+does not bypass marker, authorship, or GitHub permission checks.
+
+## Plural forms for failure counts (Issue #922)
+
+Counts of failed assets in translated comments must use the right plural form for 0, 1 and many. Plural selection is CLDR-based through `Intl.PluralRules`, so it is not a `count === 1` check:
+
+- `formatAssetFailureCount(locale, count)` in `src/i18n.ts` renders the sentence, for example `2 assets failed` (`en`) or `2 actifs ont échoué` (`fr`).
+- `failureCountCategory(locale, count)` returns the CLDR category (`zero`, `one`, `two`, `few`, `many` or `other`) when you need the raw category.
+- Per-locale phrases live in `ASSET_FAILURE_PHRASES`. Each locale defines only the categories it needs. `other` is required and is the fallback for any category a locale does not define.
+
+Behaviour for edge inputs: a `NaN`, infinite or negative count renders as `0`, and a fractional count is truncated. A missing or unsupported locale falls back to English.
+
+**Translator rules:**
+
+1. Add a phrase per category your language needs (`one`, `few`, `many`, ...) and keep `other` for the rest.
+2. Put the count first so the number always reads first; the helper inserts it already formatted.
+3. Check 0, 1 and a large value in `__tests__/i18n.test.ts` (the `FIXTURES` table) before merging. French and Portuguese treat `0` as singular, so expect `0 actif a échoué`.
+
+## Marker format stability
+
+Wave issues often carry comments from several bots, such as the Drips Wave
+application bot, coverage reporters and other automation. Many of them use
+hidden HTML comments as their own markers. TrustBridge decides that a comment
+is its own with `isTrustBridgeComment()` in `src/comment.ts`. The comment must
+contain one of these identity lines (`TRUSTBRIDGE_IDENTITY_LINES`):
+
+| Identity line | Status |
+|---|---|
+| `<!-- trustbridge-action:sticky-comment:schema-v<N> -->` (`<N>` = the current `COMMENT_SCHEMA_VERSION`) | Current. Written as the first line of every comment. |
+| `<!-- trustbridge-action:sticky-comment -->` | Legacy. Matched so comments from older releases can still be updated. Never written. |
+| `_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_` | Footer. Matched as a fallback if a marker was lost. |
+
+Matching rules (Issue #900):
+
+- The identity line must be a **whole line on its own**. Surrounding spaces and
+  `\r\n` line endings are allowed. A marker inside a sentence, inside inline
+  code, or nested in another bot's HTML comment (for example
+  `<!-- other-bot:quote <!-- trustbridge-action:sticky-comment --> -->`) does
+  not count.
+- Lines in fenced code blocks (```` ``` ```` or `~~~`), indented code blocks
+  and blockquotes (`>`) are ignored (`markdownLinesOutsideCode()` in
+  `src/markdown.ts`). A bot that quotes an earlier TrustBridge comment is not
+  taken for TrustBridge.
+- Only the exact strings above match. Similar prefixes such as
+  `<!-- trustbridge-action:sticky-comment-mirror -->`, and other schema
+  versions such as `schema-v999`, are not TrustBridge comments.
+- Other bots' markers (`<!-- wave:… -->`, `<!-- codecov-comment -->`, …) never
+  match, so TrustBridge never edits another bot's comment.
+
+The marker strings are a stable contract. Changing one breaks sticky updates
+for every existing comment, so a change needs a `COMMENT_SCHEMA_VERSION` bump
+and an entry in `docs/BREAKING_CHANGES.md`, and the old string must stay in
+`TRUSTBRIDGE_IDENTITY_LINES`. `__tests__/comment-marker-collision.test.ts`
+fixes the strings and runs sticky lookup (GraphQL and the REST fallback)
+against an issue shared with several foreign bots.

