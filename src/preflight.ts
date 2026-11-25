@@ -410,3 +410,112 @@ function extractHttpStatus(error: unknown): number | undefined {
   }
   return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #955 — required-label presence gate
+// ---------------------------------------------------------------------------
+
+/** Cataloged reason code emitted when a required label is absent. */
+export const REASON_CODE_REQUIRED_LABELS_MISSING = 'REQUIRED_LABELS_MISSING';
+
+/** Max number of labels accepted by `required_labels`. */
+export const REQUIRED_LABELS_MAX_COUNT = 20;
+
+/** Max length of one label name (GitHub's own label-name limit). */
+export const REQUIRED_LABELS_MAX_LENGTH = 50;
+
+/** Stable code for a malformed `required_labels` input. */
+export const REQUIRED_LABELS_INVALID_CODE = 'required_labels_invalid';
+
+export interface RequiredLabelsDecision {
+  /** `true` when at least one required label is missing and checks must skip. */
+  shouldSkip: boolean;
+  /** Required labels absent from the issue/PR (original casing). */
+  missing: string[];
+  /** `REQUIRED_LABELS_MISSING` when skipping, otherwise `undefined`. */
+  reasonCode?: typeof REASON_CODE_REQUIRED_LABELS_MISSING;
+  /** Log-ready message. */
+  message: string;
+}
+
+/**
+ * Parse the comma/newline-separated `required_labels` input.
+ *
+ * Empty input disables the gate (returns `[]`). Entries are trimmed and
+ * de-duplicated case-insensitively. More than {@link REQUIRED_LABELS_MAX_COUNT}
+ * entries, or an entry longer than {@link REQUIRED_LABELS_MAX_LENGTH}, throws a
+ * {@link PreflightError} with reason code `required_labels_invalid`.
+ */
+export function parseRequiredLabels(raw: string | undefined | null): string[] {
+  if (raw === undefined || raw === null) return [];
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const part of String(raw).split(/[,\n]/)) {
+    const label = part.trim();
+    if (label === '') continue;
+    if (label.length > REQUIRED_LABELS_MAX_LENGTH) {
+      throw new PreflightError(
+        `required_labels: label "${label.slice(0, 20)}…" exceeds ${REQUIRED_LABELS_MAX_LENGTH} characters.`,
+        400,
+        REQUIRED_LABELS_INVALID_CODE,
+      );
+    }
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  if (labels.length > REQUIRED_LABELS_MAX_COUNT) {
+    throw new PreflightError(
+      `required_labels: ${labels.length} labels given; at most ${REQUIRED_LABELS_MAX_COUNT} are allowed.`,
+      400,
+      REQUIRED_LABELS_INVALID_CODE,
+    );
+  }
+  return labels;
+}
+
+function extractEventLabels(payload: Record<string, unknown> | undefined): string[] {
+  if (!payload) return [];
+  const subject =
+    (payload.pull_request as Record<string, unknown> | undefined) ??
+    (payload.issue as Record<string, unknown> | undefined);
+  const raw = subject?.labels;
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string') names.push(entry);
+    else if (entry && typeof entry === 'object' && typeof (entry as { name?: unknown }).name === 'string') {
+      names.push((entry as { name: string }).name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Evaluate the required-label gate against the event payload. Matching is
+ * case-insensitive (GitHub label names are case-insensitive). An event with no
+ * issue/PR (or no labels) is treated as having no labels, so every required
+ * label is missing and the run skips.
+ */
+export function evaluateRequiredLabels(
+  required: readonly string[],
+  payload: Record<string, unknown> | undefined,
+): RequiredLabelsDecision {
+  if (required.length === 0) {
+    return { shouldSkip: false, missing: [], message: 'required_labels gate disabled.' };
+  }
+  const present = new Set(extractEventLabels(payload).map((l) => l.toLowerCase()));
+  const missing = required.filter((l) => !present.has(l.toLowerCase()));
+  if (missing.length === 0) {
+    return { shouldSkip: false, missing: [], message: 'All required_labels are present.' };
+  }
+  return {
+    shouldSkip: true,
+    missing,
+    reasonCode: REASON_CODE_REQUIRED_LABELS_MISSING,
+    message:
+      `[TrustBridge] Skipping Horizon checks: required label(s) missing: ${missing.join(', ')} ` +
+      `(reason_code: ${REASON_CODE_REQUIRED_LABELS_MISSING}).`,
+  };
+}

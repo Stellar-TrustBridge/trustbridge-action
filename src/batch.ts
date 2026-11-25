@@ -10,7 +10,7 @@ import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureRes
 import { fetchAccount, fetchHomeDomainIssuerAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
 import { RateBudgetExhaustedError } from './resilience';
-import { globalMetrics } from './metrics';
+import { globalMetrics, globalCheckLatencyHistogram, type CheckLatencyOutcome } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
 import { runWithAddressDeadline } from './checks-run';
@@ -329,6 +329,39 @@ interface AddressOutcome {
  * exact same per-address logic and metrics instead of duplicating it.
  */
 async function validateOneAddress(
+  address: string,
+  config: CheckConfig,
+  horizonUrl: string,
+  fetchOptions: FetchAccountOptions,
+  extraAssets: AssetConfigInput[],
+  issuerAccount: HorizonAccount | null | undefined,
+): Promise<AddressOutcome> {
+  // Issue #956: time every per-address check into the bounded histogram.
+  // The address is never used as a label — only the fixed outcome is.
+  const startedAt = Date.now();
+  let outcome: CheckLatencyOutcome = 'error';
+  try {
+    const result = await validateOneAddressTimed(
+      address,
+      config,
+      horizonUrl,
+      fetchOptions,
+      extraAssets,
+      issuerAccount,
+    );
+    outcome =
+      result.result.reasonCode === BATCH_REASON_CODES.invalidAddress
+        ? 'invalid'
+        : result.result.valid
+          ? 'pass'
+          : 'fail';
+    return result;
+  } finally {
+    globalCheckLatencyHistogram.record(outcome, Date.now() - startedAt);
+  }
+}
+
+async function validateOneAddressTimed(
   address: string,
   config: CheckConfig,
   horizonUrl: string,

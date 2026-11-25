@@ -221,6 +221,9 @@ export type FederationErrorCode =
  */
 export type MemoType = 'text' | 'id' | 'hash';
 
+/** Issue #957 — exact hex length of a `hash` memo (32 bytes). */
+export const MEMO_HASH_HEX_LENGTH = 64;
+
 /** Maximum length (bytes) of a `text` memo per the Stellar protocol. */
 export const MEMO_TEXT_MAX_BYTES = 28;
 
@@ -770,11 +773,22 @@ export function validateMemo(
   }
 
   if (memoType === 'hash') {
-    if (!/^[0-9a-f]{64}$/i.test(memoStr)) {
+    // Issue #957: distinguish encoding errors from length errors so operators
+    // can tell a base64/garbled memo apart from a truncated or padded one.
+    // Both map to the stable MEMO_TYPE_MISMATCH code. The memo value is not
+    // echoed back (it may be a routing secret) — only its length.
+    if (!/^[0-9a-f]+$/i.test(memoStr)) {
       return {
         valid: false,
         code: 'MEMO_TYPE_MISMATCH',
-        reason: `memo_type is "hash" but memo "${memoStr}" is not a 64-character hex string.`,
+        reason: `memo_type is "hash" but memo is not hex-encoded (length ${memoStr.length}); expected exactly ${MEMO_HASH_HEX_LENGTH} hex characters (32 bytes).`,
+      };
+    }
+    if (memoStr.length !== MEMO_HASH_HEX_LENGTH) {
+      return {
+        valid: false,
+        code: 'MEMO_TYPE_MISMATCH',
+        reason: `memo_type is "hash" but memo has invalid length ${memoStr.length}; expected exactly ${MEMO_HASH_HEX_LENGTH} hex characters (32 bytes).`,
       };
     }
   }

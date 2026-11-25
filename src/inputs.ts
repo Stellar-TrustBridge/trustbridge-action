@@ -640,6 +640,9 @@ export interface Inputs {
   trustbridge_config_strict?: string;
   milestone_allowlist?: string;
   milestone_fail_on_skip?: string;
+  /** Issue #955 — labels that must be present before checks run. */
+  required_labels?: string;
+  required_labels_fail_on_skip?: string;
   github_token: string;
   github_app_token?: string;
   assets_json?: string;

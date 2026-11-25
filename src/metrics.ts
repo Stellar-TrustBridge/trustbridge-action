@@ -883,10 +883,106 @@ export class HorizonLatencyHistogram {
   }
 }
 
+/**
+ * Issue #956 — bounded outcome labels for the per-address check latency
+ * histogram. The address itself is NEVER a label: every observation is
+ * aggregated under one of these fixed outcomes so cardinality is constant
+ * regardless of batch size.
+ */
+export const CHECK_LATENCY_OUTCOMES = ['pass', 'fail', 'invalid', 'error'] as const;
+export type CheckLatencyOutcome = (typeof CHECK_LATENCY_OUTCOMES)[number];
+
+/** Snapshot shape of {@link CheckLatencyHistogram}, keyed by outcome. */
+export type CheckLatencyHistogramSnapshot = Record<CheckLatencyOutcome, LatencyStats>;
+
+/**
+ * Issue #956 — per-address check latency histogram.
+ *
+ * Records the wall-clock duration of each per-address check (fetch + rule
+ * evaluation) into the fixed {@link LATENCY_BUCKETS_MS} buckets. Storage is
+ * bounded: only counts, totals, min and max are kept per outcome — no raw
+ * samples and no addresses — so memory and label cardinality are O(1).
+ *
+ * Invalid observations (negative, NaN, non-finite) are rejected and counted
+ * under `rejected` instead of skewing the buckets.
+ */
+export class CheckLatencyHistogram {
+  private stats: Map<CheckLatencyOutcome, LatencyStats> = new Map();
+  private rejectedCount = 0;
+
+  constructor() {
+    this.reset();
+  }
+
+  private static emptyStats(): LatencyStats {
+    const buckets: Record<string, number> = {};
+    for (const bound of LATENCY_BUCKETS_MS) {
+      buckets[bound === Infinity ? '+Inf' : `<=${bound}ms`] = 0;
+    }
+    return { count: 0, totalMs: 0, minMs: 0, maxMs: 0, avgMs: 0, buckets };
+  }
+
+  /**
+   * Record one per-address check duration.
+   * @returns `true` when recorded, `false` when the input was rejected.
+   */
+  record(outcome: CheckLatencyOutcome, latencyMs: number): boolean {
+    const stats = this.stats.get(outcome);
+    if (stats === undefined || typeof latencyMs !== 'number' || !Number.isFinite(latencyMs) || latencyMs < 0) {
+      this.rejectedCount += 1;
+      return false;
+    }
+    stats.minMs = stats.count === 0 ? latencyMs : Math.min(stats.minMs, latencyMs);
+    stats.maxMs = stats.count === 0 ? latencyMs : Math.max(stats.maxMs, latencyMs);
+    stats.count += 1;
+    stats.totalMs += latencyMs;
+    stats.avgMs = Math.round(stats.totalMs / stats.count);
+    for (const bound of LATENCY_BUCKETS_MS) {
+      if (latencyMs <= bound) {
+        stats.buckets[bound === Infinity ? '+Inf' : `<=${bound}ms`] += 1;
+        break;
+      }
+    }
+    return true;
+  }
+
+  /** Number of observations rejected as malformed. */
+  get rejected(): number {
+    return this.rejectedCount;
+  }
+
+  /** Total accepted observations across all outcomes. */
+  get totalSamples(): number {
+    let n = 0;
+    for (const s of this.stats.values()) n += s.count;
+    return n;
+  }
+
+  /** Deep-copied, address-free snapshot for the metrics JSON artifact. */
+  toSnapshot(): CheckLatencyHistogramSnapshot {
+    const out = {} as CheckLatencyHistogramSnapshot;
+    for (const outcome of CHECK_LATENCY_OUTCOMES) {
+      const s = this.stats.get(outcome) ?? CheckLatencyHistogram.emptyStats();
+      out[outcome] = { ...s, buckets: { ...s.buckets } };
+    }
+    return out;
+  }
+
+  reset(): void {
+    this.rejectedCount = 0;
+    for (const outcome of CHECK_LATENCY_OUTCOMES) {
+      this.stats.set(outcome, CheckLatencyHistogram.emptyStats());
+    }
+  }
+}
+
 export const globalMetrics = new MetricsCollector();
 
 /** Global Horizon fetch latency histogram — wired into `fetchAccountOnce` in `horizon.ts`. */
 export const globalHorizonHistogram = new HorizonLatencyHistogram();
+
+/** Issue #956 — global per-address check latency histogram, wired into `batch.ts`. */
+export const globalCheckLatencyHistogram = new CheckLatencyHistogram();
 
 /** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
 export const globalOctokitMetrics = new OctokitMetrics();
