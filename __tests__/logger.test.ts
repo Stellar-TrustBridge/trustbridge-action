@@ -30,6 +30,13 @@ import {
   redactHorizonBaseUrl,
   LOG_CONTEXT_KEY_ALLOWLIST,
   isAllowedLogContextKey,
+  RepeatWarningSampler,
+  horizonRetrySampler,
+  horizonRetrySampleKey,
+  flushHorizonRetrySamples,
+  formatRepeatSampleSummary,
+  HORIZON_RETRY_SAMPLE_BURST,
+  HORIZON_RETRY_SAMPLE_WINDOW_MS,
 } from '../src/logger';
 
 jest.mock('@actions/core');
@@ -524,6 +531,7 @@ describe('structured Horizon retry events (Issue #697)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     logger.setDebugMode(true);
+    horizonRetrySampler.reset();
   });
 
   afterEach(() => {
@@ -823,5 +831,168 @@ describe('redactValue nested objects and arrays regression suite (Issue #858)', 
       { strict: true },
     );
     expect(result).toEqual({ component: 'x' });
+  });
+});
+
+// Issue #924: repeated Horizon retry warnings are sampled per failure pattern.
+describe('Horizon retry warning sampling (Issue #924)', () => {
+  const HORIZON = 'https://horizon.stellar.org';
+
+  function exhausted(overrides: Partial<HorizonRetryEvent> = {}): HorizonRetryEvent {
+    return {
+      phase: 'exhausted',
+      reason: 'max_retries',
+      attempt: 3,
+      maxAttempts: 4,
+      status: 429,
+      delayMs: 0,
+      capped: false,
+      kind: 'http',
+      endpointKind: 'primary',
+      horizonUrl: HORIZON,
+      stellarAddress: VALID_G_ADDRESS,
+      ...overrides,
+    };
+  }
+
+  function warnings(): string[] {
+    return (core.warning as jest.Mock).mock.calls.map((args) => String(args[0]));
+  }
+
+  function fakeClock(start = 1_000_000) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    horizonRetrySampler.reset();
+    logger.setDebugMode(true);
+  });
+
+  afterEach(() => {
+    logger.setDebugMode(false);
+  });
+
+  describe('RepeatWarningSampler', () => {
+    it('emits the first burst events and suppresses the rest in one window', () => {
+      const sampler = new RepeatWarningSampler<string>(3, 60_000, fakeClock().now);
+      const decisions = [1, 2, 3, 4, 5].map(() => sampler.record('k', 'sample').emit);
+      expect(decisions).toEqual([true, true, true, false, false]);
+      const [summary] = sampler.flush();
+      expect(summary).toMatchObject({ key: 'k', total: 5, suppressed: 2, sample: 'sample' });
+    });
+
+    it('closes a window after windowMs and returns its summary on the next event', () => {
+      const clock = fakeClock();
+      const sampler = new RepeatWarningSampler<string>(1, 1_000, clock.now);
+      sampler.record('k', 'first');
+      sampler.record('k', 'second');
+      sampler.record('k', 'third');
+      clock.advance(999);
+      expect(sampler.record('k', 'still-open').rolled).toBeUndefined();
+      clock.advance(1_000);
+      const next = sampler.record('k', 'fresh-window');
+      expect(next.emit).toBe(true);
+      // first (emitted), then second, third and still-open are suppressed.
+      expect(next.rolled).toMatchObject({ total: 4, suppressed: 3, sample: 'first' });
+      // last in-window event ('still-open') was at +999ms.
+      expect(next.rolled!.lastAt - next.rolled!.firstAt).toBe(999);
+    });
+
+    it('keeps first and last timestamps and counts for each window', () => {
+      const clock = fakeClock(5_000);
+      const sampler = new RepeatWarningSampler<string>(0, 10_000, clock.now);
+      sampler.record('k', 'a');
+      clock.advance(250);
+      sampler.record('k', 'b');
+      clock.advance(250);
+      sampler.record('k', 'c');
+      const [summary] = sampler.flush();
+      expect(summary).toMatchObject({ total: 3, suppressed: 3, firstAt: 5_000, lastAt: 5_500 });
+    });
+
+    it('flush returns nothing when no event was suppressed, and clears state', () => {
+      const sampler = new RepeatWarningSampler<string>(3, 60_000, fakeClock().now);
+      sampler.record('a', 'x');
+      sampler.record('b', 'y');
+      expect(sampler.flush()).toEqual([]);
+      expect(sampler.flush()).toEqual([]);
+    });
+
+    it('tracks keys independently', () => {
+      const sampler = new RepeatWarningSampler<string>(1, 60_000, fakeClock().now);
+      expect(sampler.record('a', '1').emit).toBe(true);
+      expect(sampler.record('b', '2').emit).toBe(true);
+      expect(sampler.record('a', '3').emit).toBe(false);
+      expect(sampler.record('b', '4').emit).toBe(false);
+    });
+
+    it('rejects a negative burst and a non-positive window', () => {
+      expect(() => new RepeatWarningSampler<string>(-1, 1_000)).toThrow(RangeError);
+      expect(() => new RepeatWarningSampler<string>(1, 0)).toThrow(RangeError);
+      expect(() => new RepeatWarningSampler<string>(1.5, 1_000)).toThrow(RangeError);
+    });
+  });
+
+  it('defaults to the documented burst and window', () => {
+    expect(HORIZON_RETRY_SAMPLE_BURST).toBe(3);
+    expect(HORIZON_RETRY_SAMPLE_WINDOW_MS).toBe(60_000);
+  });
+
+  it('logs the first burst of identical exhaustion warnings and counts the rest', () => {
+    for (let i = 0; i < 6; i += 1) {
+      logger.horizonRetry(exhausted({ stellarAddress: undefined }));
+    }
+    expect(core.warning).toHaveBeenCalledTimes(3);
+    expect(warnings().every((line) => line.includes('HORIZON_RETRIES_EXHAUSTED'))).toBe(true);
+
+    expect(flushHorizonRetrySamples()).toBe(1);
+    expect(core.warning).toHaveBeenCalledTimes(4);
+    const summary = warnings()[3];
+    expect(summary).toContain('Horizon retry warnings sampled (HORIZON_RETRIES_EXHAUSTED): 3 suppressed of 6');
+    expect(summary).toContain('event=horizon_retry_sampled');
+    expect(summary).toContain('suppressedCount=3');
+    expect(summary).toContain('totalCount=6');
+  });
+
+  it('samples by failure pattern, so a different endpoint is not suppressed', () => {
+    for (let i = 0; i < 5; i += 1) {
+      logger.horizonRetry(exhausted());
+    }
+    logger.horizonRetry(exhausted({ endpointKind: 'fallback' }));
+    // 3 primary + 1 fallback are logged in full.
+    expect(core.warning).toHaveBeenCalledTimes(4);
+    expect(warnings().filter((line) => line.includes('fallback'))).toHaveLength(1);
+  });
+
+  it('keeps the same key across different account addresses', () => {
+    const keyA = horizonRetrySampleKey(exhausted({ stellarAddress: VALID_G_ADDRESS }));
+    const keyB = horizonRetrySampleKey(exhausted({ stellarAddress: VALID_C_ADDRESS }));
+    expect(keyA).toBe(keyB);
+    expect(keyA).not.toContain(VALID_G_ADDRESS);
+  });
+
+  it('never samples scheduled retries, which stay at debug level', () => {
+    for (let i = 0; i < 10; i += 1) {
+      logger.horizonRetry(exhausted({ phase: 'scheduled', reason: undefined, attempt: i }));
+    }
+    expect(core.debug).toHaveBeenCalledTimes(10);
+    expect(core.warning).not.toHaveBeenCalled();
+    expect(flushHorizonRetrySamples()).toBe(0);
+  });
+
+  it('redacts addresses in the summary line and keeps the reason code', () => {
+    const summary = formatRepeatSampleSummary({
+      key: 'k',
+      sample: buildHorizonRetryLogContext(exhausted({ stellarAddress: VALID_G_ADDRESS }))!,
+      total: 4,
+      suppressed: 1,
+      firstAt: 0,
+      lastAt: 0,
+    });
+    expect(summary.message).toContain('1 suppressed of 4');
+    expect(JSON.stringify(summary.context)).not.toContain(VALID_G_ADDRESS);
+    expect(summary.context.reasonCode).toBe('HORIZON_RETRIES_EXHAUSTED');
   });
 });

@@ -64,7 +64,8 @@ import * as crypto from 'crypto';
 import * as core from '@actions/core';
 import { logger, redactStellarAddress, redactHorizonUrl, redactString } from './logger';
 import type { ValidationResult } from './checks';
-import type { AssetReasonCode, AssetReasonEvaluation } from './assets';
+import type { AssetReasonEvaluation } from './assets';
+import { ASSET_REASON_CODES, WEBHOOK_DELIVERY_REASON_CODES, deprecatedReasonCodesFor, type AssetReasonCode } from './reasonCodes';
 import { traceWebhookDeliver } from './tracing';
 import { truncateJsonArray } from './outputs';
 
@@ -201,6 +202,8 @@ export interface WebhookAssetEntry {
   trustline_exists: boolean;
   clawback_enabled: boolean;
   reason_code: AssetReasonCode;
+  /** Old names of `reason_code`, present only during a rename window (Issue #945). */
+  deprecated_reason_codes?: string[];
 }
 
 export interface WebhookPayload {
@@ -427,14 +430,18 @@ export function buildWebhookPayload(
   };
 
   if (assets && assets.length > 0) {
-    payload.assets = assets.slice(0, WEBHOOK_MAX_ASSETS).map((a) => ({
+    payload.assets = assets.slice(0, WEBHOOK_MAX_ASSETS).map((a) => {
+      const deprecated = deprecatedReasonCodesFor(a.reasonCode);
+      return {
       asset_code: a.assetCode,
       asset_issuer: redactStellarAddress(a.assetIssuer),
       primary: a.primary,
       trustline_exists: a.trustlineExists,
       clawback_enabled: a.clawbackEnabled,
       reason_code: a.reasonCode,
-    }));
+      ...(deprecated.length > 0 ? { deprecated_reason_codes: deprecated } : {}),
+      };
+    });
   }
 
   if (snoozeExpired) {
@@ -478,10 +485,7 @@ export const WEBHOOK_PAYLOAD_TRUNCATED = 'WEBHOOK_PAYLOAD_TRUNCATED' as const;
 /** Reason code: the body could not be reduced below the cap and was not sent (Issue #894). */
 export const WEBHOOK_SIZE_LIMIT_EXCEEDED = 'WEBHOOK_SIZE_LIMIT_EXCEEDED' as const;
 /** All webhook size-cap reason codes (Issue #894). */
-export const WEBHOOK_SIZE_REASON_CODES = [
-  WEBHOOK_PAYLOAD_TRUNCATED,
-  WEBHOOK_SIZE_LIMIT_EXCEEDED,
-] as const;
+export const WEBHOOK_SIZE_REASON_CODES = WEBHOOK_DELIVERY_REASON_CODES;
 export type WebhookSizeReasonCode = (typeof WEBHOOK_SIZE_REASON_CODES)[number];
 
 export interface WebhookSizeGuardResult {
@@ -634,7 +638,8 @@ export const WEBHOOK_ASSET_REQUIRED_FIELDS = [
   'clawback_enabled',
   'reason_code',
 ] as const;
-export const WEBHOOK_ASSET_REASON_CODES = ['SUCCESS', 'TRUSTLINE_MISSING', 'CLAWBACK_BLOCKED'] as const;
+export const WEBHOOK_ASSET_OPTIONAL_FIELDS = ['deprecated_reason_codes'] as const;
+export const WEBHOOK_ASSET_REASON_CODES = ASSET_REASON_CODES;
 export const WEBHOOK_REPOSITORY_PATTERN = '^[^/]+/[^/]+$';
 export const WEBHOOK_STELLAR_ADDRESS_PATTERN = '^[GC][A-Z2-7]{3}\\.{3}[A-Z2-7]{4}$';
 
@@ -759,7 +764,15 @@ function validateAssetEntries(assets: unknown, errors: string[]): void {
       errors.push(`${at}: must be an object`);
       return;
     }
-    checkObjectKeys(asset, WEBHOOK_ASSET_REQUIRED_FIELDS, at, errors);
+    checkObjectKeys(asset, WEBHOOK_ASSET_REQUIRED_FIELDS, at, errors, WEBHOOK_ASSET_OPTIONAL_FIELDS);
+    if (
+      'deprecated_reason_codes' in asset &&
+      !(Array.isArray(asset.deprecated_reason_codes) &&
+        asset.deprecated_reason_codes.length > 0 &&
+        asset.deprecated_reason_codes.every((c) => typeof c === 'string' && /^[A-Z][A-Z0-9_]*$/.test(c)))
+    ) {
+      errors.push(`${at}.deprecated_reason_codes: must be a non-empty array of codes`);
+    }
     if ('asset_code' in asset && typeof asset.asset_code !== 'string') errors.push(`${at}.asset_code: must be a string`);
     if ('asset_issuer' in asset && (typeof asset.asset_issuer !== 'string' || !addressPattern.test(asset.asset_issuer))) {
       errors.push(`${at}.asset_issuer: must be a redacted address (first-4...last-4)`);
@@ -771,6 +784,187 @@ function validateAssetEntries(assets: unknown, errors: string[]): void {
       errors.push(`${at}.reason_code: must be one of ${WEBHOOK_ASSET_REASON_CODES.join(', ')}`);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Consumer-side tolerant reader (Issue #917)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every `schema_version` this release can read. A receiver routes on this
+ * list: additive fields never change it, a breaking change adds a new
+ * version (see docs/SCHEMA.md#webhook-payload-versioning-policy-issue-917).
+ */
+export const WEBHOOK_SUPPORTED_SCHEMA_VERSIONS: readonly string[] = Object.freeze([WEBHOOK_SCHEMA_VERSION]);
+
+/** Stable error codes returned by {@link readWebhookPayloadForConsumer}. */
+export const WEBHOOK_CONSUMER_ERROR_CODES = [
+  'WEBHOOK_PAYLOAD_MALFORMED',
+  'WEBHOOK_PAYLOAD_TOO_LARGE',
+  'WEBHOOK_SCHEMA_VERSION_UNSUPPORTED',
+] as const;
+export type WebhookConsumerErrorCode = (typeof WEBHOOK_CONSUMER_ERROR_CODES)[number];
+
+/** Maximum number of ignored field paths listed individually. */
+export const WEBHOOK_MAX_IGNORED_FIELDS_LISTED = 100;
+
+export type WebhookConsumerReadResult =
+  | {
+      ok: true;
+      /** The payload reduced to the fields this release knows about. */
+      payload: WebhookPayload;
+      /** Paths of unknown (additive) fields that were dropped, e.g. `payload.run_id`. */
+      ignoredFields: string[];
+      /** Unknown values in closed sets (asset `reason_code`, `dropped_fields`), kept as-is. */
+      unknownReasonCodes: string[];
+    }
+  | { ok: false; code: WebhookConsumerErrorCode; errors: string[] };
+
+/** Errors the tolerant reader accepts because they describe additive values. */
+const TOLERATED_ERROR_PATTERNS = [
+  /^assets\[\d+\]\.reason_code: must be one of /,
+  /^dropped_fields\[\d+\]: must be one of /,
+];
+
+function pickKnown(
+  obj: Record<string, unknown>,
+  known: readonly string[],
+  at: string,
+  ignored: string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (known.includes(key)) out[key] = value;
+    else ignored.push(`${at}.${key}`);
+  }
+  return out;
+}
+
+function shortValue(value: unknown): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+  return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+}
+
+/**
+ * Reference implementation of the receiver rules in docs/SCHEMA.md
+ * (Issue #917). Accepts a raw request body (string) or an already parsed
+ * object and applies the versioning policy the way a Wave subscriber
+ * should:
+ *
+ * 1. Bodies over {@link WEBHOOK_MAX_BODY_BYTES} → `WEBHOOK_PAYLOAD_TOO_LARGE`.
+ * 2. Unparsable JSON, a non-object, or a missing / non-string
+ *    `schema_version` → `WEBHOOK_PAYLOAD_MALFORMED`.
+ * 3. A `schema_version` not in {@link WEBHOOK_SUPPORTED_SCHEMA_VERSIONS} →
+ *    `WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` (route or quarantine; never guess).
+ * 4. Unknown fields at any level are **ignored** (dropped from the returned
+ *    payload and listed in `ignoredFields`) — they are additive.
+ * 5. Unknown values in closed sets (an asset `reason_code`, a
+ *    `dropped_fields` entry) are kept and listed in `unknownReasonCodes`;
+ *    they never fail the read.
+ * 6. Frozen v1 fields are still type-checked exactly like the producer-side
+ *    {@link validateWebhookPayload}; a violation → `WEBHOOK_PAYLOAD_MALFORMED`.
+ *
+ * Never throws.
+ */
+export function readWebhookPayloadForConsumer(input: unknown): WebhookConsumerReadResult {
+  let raw: unknown = input;
+  if (typeof input === 'string') {
+    if (webhookByteLength(input) > WEBHOOK_MAX_BODY_BYTES) {
+      return {
+        ok: false,
+        code: 'WEBHOOK_PAYLOAD_TOO_LARGE',
+        errors: [`body: exceeds ${WEBHOOK_MAX_BODY_BYTES} bytes`],
+      };
+    }
+    try {
+      raw = JSON.parse(input);
+    } catch {
+      return { ok: false, code: 'WEBHOOK_PAYLOAD_MALFORMED', errors: ['body: not valid JSON'] };
+    }
+  }
+
+  if (!isPlainObject(raw)) {
+    return { ok: false, code: 'WEBHOOK_PAYLOAD_MALFORMED', errors: ['payload: must be an object'] };
+  }
+  if (typeof raw.schema_version !== 'string') {
+    return {
+      ok: false,
+      code: 'WEBHOOK_PAYLOAD_MALFORMED',
+      errors: ['schema_version: missing or not a string'],
+    };
+  }
+  if (!WEBHOOK_SUPPORTED_SCHEMA_VERSIONS.includes(raw.schema_version)) {
+    return {
+      ok: false,
+      code: 'WEBHOOK_SCHEMA_VERSION_UNSUPPORTED',
+      errors: [
+        `schema_version: "${shortValue(raw.schema_version)}" is not supported (supported: ${WEBHOOK_SUPPORTED_SCHEMA_VERSIONS.join(', ')})`,
+      ],
+    };
+  }
+
+  const ignored: string[] = [];
+  const unknownCodes = new Set<string>();
+  const top = pickKnown(
+    raw,
+    [...WEBHOOK_PAYLOAD_REQUIRED_FIELDS, ...WEBHOOK_PAYLOAD_OPTIONAL_FIELDS],
+    'payload',
+    ignored,
+  );
+
+  if (isPlainObject(top.result)) {
+    const result = pickKnown(top.result, WEBHOOK_RESULT_REQUIRED_FIELDS, 'result', ignored);
+    if (Array.isArray(result.checks)) {
+      result.checks = result.checks.map((check, i) =>
+        isPlainObject(check) ? pickKnown(check, WEBHOOK_CHECK_REQUIRED_FIELDS, `result.checks[${i}]`, ignored) : check,
+      );
+    }
+    top.result = result;
+  }
+
+  if (Array.isArray(top.assets)) {
+    top.assets = top.assets.map((asset, i) => {
+      if (!isPlainObject(asset)) return asset;
+      const known = pickKnown(asset, WEBHOOK_ASSET_REQUIRED_FIELDS, `assets[${i}]`, ignored);
+      if (
+        typeof known.reason_code === 'string' &&
+        !(WEBHOOK_ASSET_REASON_CODES as readonly string[]).includes(known.reason_code)
+      ) {
+        unknownCodes.add(shortValue(known.reason_code));
+      }
+      return known;
+    });
+  }
+
+  if (Array.isArray(top.dropped_fields)) {
+    for (const field of top.dropped_fields) {
+      if (typeof field === 'string' && !(WEBHOOK_TRUNCATABLE_FIELDS as readonly string[]).includes(field)) {
+        unknownCodes.add(shortValue(field));
+      }
+    }
+  }
+
+  const errors = validateWebhookPayload(top).filter(
+    (error) => !TOLERATED_ERROR_PATTERNS.some((pattern) => pattern.test(error)),
+  );
+  if (errors.length > 0) {
+    return { ok: false, code: 'WEBHOOK_PAYLOAD_MALFORMED', errors };
+  }
+
+  const ignoredFields =
+    ignored.length > WEBHOOK_MAX_IGNORED_FIELDS_LISTED
+      ? [
+          ...ignored.slice(0, WEBHOOK_MAX_IGNORED_FIELDS_LISTED),
+          `...and ${ignored.length - WEBHOOK_MAX_IGNORED_FIELDS_LISTED} more`,
+        ]
+      : ignored;
+
+  return {
+    ok: true,
+    payload: top as unknown as WebhookPayload,
+    ignoredFields,
+    unknownReasonCodes: [...unknownCodes],
+  };
 }
 
 // ---------------------------------------------------------------------------

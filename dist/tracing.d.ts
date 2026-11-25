@@ -562,6 +562,63 @@ export declare function clearTraceSpans(): void;
  * - Token / secret fields → [REDACTED].
  */
 export declare function redactSpanAttributes(attrs: Record<string, string | number | boolean>): Record<string, string | number | boolean>;
+/** Span name for a single non-2xx Horizon response. */
+export declare const HORIZON_HTTP_ERROR_SPAN_NAME = "horizon.http_error";
+/**
+ * The complete, fixed set of attribute keys a `horizon.http_error` span may
+ * carry. Response bodies (`detail`, `title`, `type`, `extras`, …) are never
+ * among them: Horizon problem documents can echo account data back, so only
+ * the status code and request metadata are recorded. Documented in
+ * docs/ARCHITECTURE.md#horizon-error-spans.
+ */
+export declare const HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES: readonly ["horizon.url", "http.response.status_code", "horizon.status_class", "horizon.retryable", "horizon.endpoint_kind", "horizon.attempt", "horizon.latency_ms", "error.type"];
+/** Bucket an HTTP status for low-cardinality span attributes. */
+export declare function horizonStatusClass(statusCode: number): '4xx' | '5xx' | 'transport' | 'other';
+/**
+ * Body-free span error message (Issue #913).
+ *
+ * `HorizonError` messages for non-2xx responses embed the Horizon problem
+ * `detail`/`title` (`Horizon request failed (400): <detail>`), and the 404
+ * message embeds the account id. For any Horizon-like error with an HTTP
+ * status >= 400 the span message is therefore rebuilt from the status code
+ * alone. Every other error message is passed through `redactString` so
+ * addresses, JWTs and secret assignments are masked.
+ */
+export declare function safeSpanErrorMessage(err: unknown): string;
+/**
+ * Error attributes for a Horizon span: status, class, retryability and
+ * error type only — never the message or response body.
+ */
+export declare function horizonErrorSpanAttributes(err: unknown): Record<string, string | number | boolean>;
+/** Options for {@link recordHorizonHttpError}. */
+export interface HorizonHttpErrorSpanOptions {
+    /** Horizon base URL (path stripped before recording). */
+    horizonUrl: string;
+    /** HTTP status of the non-2xx response. */
+    statusCode: number;
+    /** Whether the status is retryable (429 / 5xx). */
+    retryable: boolean;
+    /** `primary` (horizon_url) or `fallback`. */
+    endpointKind: 'primary' | 'fallback';
+    /** Zero-based attempt index. */
+    attempt: number;
+    /** Latency of this attempt in milliseconds. */
+    latencyMs: number;
+    /** Parent span name for nesting context. */
+    parentName?: string;
+}
+/**
+ * Record one ERROR span for a non-2xx Horizon response (Issue #913).
+ *
+ * Called once per failed attempt from `fetchOnce` in src/horizon.ts, before
+ * the response body is read, so retried 429/5xx attempts are visible as
+ * individual spans for Wave latency incidents. The signature deliberately
+ * has no body/detail parameter: only the attributes in
+ * {@link HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES} are recorded.
+ *
+ * No-op when tracing is disabled. Never throws.
+ */
+export declare function recordHorizonHttpError(opts: HorizonHttpErrorSpanOptions): void;
 /**
  * Execute an async operation within a named trace span.
  *

@@ -425,6 +425,8 @@ A complete caller workflow that passes these inputs through the reusable workflo
 6. On success, TrustBridge fetches the account from Horizon again and runs the normal checks against the funded account.
 7. On failure (HTTP error, timeout, network error), the run continues with the original "account not funded" result.
 
+For timing races and recommended waits, see [Friendbot-funded testnet false negatives](FAQ.md#friendbot-testnet-false-negatives).
+
 #### Safety guarantees
 
 **Network guard:** Friendbot only runs against test networks. Pubnet runs never call Friendbot, even when `use_friendbot: true`.
@@ -561,6 +563,45 @@ with:
 **Self-hosted mirrors and GHES:** private Horizon mirrors and GitHub Enterprise Server runners behind egress proxies often use hostnames that differ from the official presets. See [GHES_COMPATIBILITY.md](GHES_COMPATIBILITY.md) for proxy and allowlist considerations, and set `network_passphrase` explicitly for any mirror whose hostname doesn't name its network.
 
 **Offline runs:** fixture / offline modes don't contact Horizon or Friendbot. Use the official preset URL for the network you are simulating (for example `https://horizon-testnet.stellar.org`) as a placeholder `horizon_url`, so network inference and comment links still match that network.
+
+### Explorer URL overrides
+
+Explorer account links (`<base>/account/<G-address>`) are built by `buildExplorerAccountLink` in `src/links.ts`. An explorer base URL override is validated **per network** by `validateExplorerBaseUrl` (Issue #910), because an unchecked override would turn every Wave comment into a phishing link.
+
+**Safe defaults** (used when no override is set, or when a rendered link's override is rejected):
+
+| Network | Default explorer base |
+| --- | --- |
+| `public` | `https://stellar.expert/explorer/public` |
+| `testnet` | `https://stellar.expert/explorer/testnet` |
+
+**Host allowlist** (exact, lowercased hostname match — subdomains are not implied):
+
+| Network | Allowed hosts |
+| --- | --- |
+| `public` | `stellar.expert`, `stellarchain.io`, `laboratory.stellar.org` |
+| `testnet` | `stellar.expert`, `testnet.stellarchain.io`, `laboratory.stellar.org` |
+
+**Rules and stable rejection codes:**
+
+| Code | Rejected when |
+| --- | --- |
+| `EXPLORER_URL_EMPTY` | the override is blank |
+| `EXPLORER_URL_TOO_LONG` | longer than 2048 characters |
+| `EXPLORER_URL_MALFORMED` | not an absolute URL |
+| `EXPLORER_URL_INSECURE_SCHEME` | not `https:` — `http:` is **always rejected on `public`** and tolerated on `testnet` only for an allowlisted host; `javascript:`, `data:` and other schemes are rejected everywhere |
+| `EXPLORER_URL_CREDENTIALS` | the URL embeds `user:pass@` |
+| `EXPLORER_URL_HOST_NOT_ALLOWED` | the host is not on the allowlist for that network (e.g. a testnet-only host on `public`, or `stellar.expert.attacker.example`) |
+| `EXPLORER_URL_UNSAFE` | the URL contains characters that would break a Markdown link (`(`, `)`, quotes, whitespace, …) |
+
+Query strings, fragments and trailing slashes are stripped from an accepted base. Rejection messages name the network and host only, never the full override.
+
+Two entry points, matching the existing link helpers:
+
+- `parseExplorerBaseUrlInput(value, network)` in `src/inputs.ts` **fails fast**: it throws `explorer_base_url rejected (<CODE>): <message>` so a bad override is caught before any comment is rendered.
+- `resolveExplorerBaseUrl(network, override)` / `buildExplorerAccountLink(...)` in `src/links.ts` **fall back** to the safe default for an invalid override, the same way `docs_base_url` falls back in `buildFaqLink`, so comment posting is never blocked.
+
+Explorer overrides are not yet exposed as an `action.yml` input; these helpers are the validated surface any future input must go through.
 
 ---
 
@@ -924,6 +965,43 @@ The `__tests__/federation-memo-resolution.test.ts` test file contains ready-made
 { "account_id": "G...", "memo_type": "return", "memo": "some-value" }
 ```
 
+### DNS and HTTP timeouts (Issue #906)
+
+Each federation lookup resolves two hosts (the `stellar.toml` domain and the
+`FEDERATION_SERVER` host). Each host is first resolved under its own **DNS
+timeout**, and only then is the HTTPS request sent under a separate **HTTP
+timeout** — so a slow resolver can never consume the HTTP budget, and a slow
+server is never reported as a DNS failure.
+
+| Knob (`resolveFederationAddress(addr, options)`) | Default | Applies to |
+|---|---|---|
+| `dnsTimeoutMs` | `5000` (`FEDERATION_DNS_TIMEOUT_MS`) | Each host lookup (`stellar.toml` domain, federation server) |
+| `httpTimeoutMs` | `10000` (`FEDERATION_HTTP_TIMEOUT_MS`) | Each HTTPS fetch, measured after DNS has resolved |
+| `dnsLookup` | OS resolver (`defaultSSRFDnsLookup`) | Injectable resolver (tests, custom DNS) |
+
+Values must be positive numbers no greater than `60000`
+(`FEDERATION_MAX_TIMEOUT_MS`); anything else falls back to the default and
+logs a warning with code `INVALID_TIMEOUT`. The resolved DNS answer is
+pinned into `fetchSSRFSafe`'s rebinding guard, so the SSRF check reuses it
+instead of resolving again inside the HTTP budget. Horizon requests
+(`horizon_timeout_ms`, `src/horizon.ts`) keep their own independent timeout
+and are unaffected.
+
+| Code | Timeout that fired |
+|---|---|
+| `TOML_DNS_TIMEOUT` / `FEDERATION_DNS_TIMEOUT` | DNS timeout (`dnsTimeoutMs`) |
+| `TOML_TIMEOUT` / `FEDERATION_TIMEOUT` | HTTP timeout (`httpTimeoutMs`) |
+| `TOML_NXDOMAIN` / `FEDERATION_NXDOMAIN` | Resolver error or empty answer (no timeout) |
+
+```ts
+const resolution = await resolveFederationAddress('alice*example.com', {
+  dnsTimeoutMs: 2000,
+  httpTimeoutMs: 8000,
+});
+```
+
+Test coverage: `__tests__/federation-dns-timeout.test.ts`.
+
 ---
 
 ## Debug mode and timeout
@@ -938,6 +1016,42 @@ with:
 
 - `debug_mode: true` enables extra action logs for troubleshooting.
 - `horizon_timeout_ms` controls Horizon request timeout in milliseconds.
+
+## Snooze duration cap (Issue #962)
+
+`snooze_window_minutes` is clamped to **7 days** (10080 minutes). Unbounded
+snoozes would let a failing Wave gate stay skipped indefinitely — a contributor
+(or a stale :zzz: reaction) could otherwise park a payout gate forever. When the
+configured window exceeds the cap the action logs a warning with
+`reason_code: snooze_window_capped` and uses the cap.
+
+Maintainers can raise the ceiling to **30 days** with `snooze_max_override: "true"`.
+The override never removes the cap. Negative, `NaN` or infinite windows disable
+snoozing. `force_comment` still bypasses snooze entirely.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    snooze_window_minutes: "20160"   # 14 days
+    snooze_max_override: "true"      # maintainer opt-in; otherwise clamped to 7 days
+```
+
+## Emoji-free summaries (Issue #961)
+
+Set `summary_emoji_free: "true"` to render the Job Summary and digest with
+ASCII tokens instead of emoji, for enterprise log drains that strip unicode:
+
+| Emoji | Token |
+|---|---|
+| ✅ | `[PASS]` |
+| ❌ | `[FAIL]` |
+| ⚠️ | `[WARN]` |
+| ⏸️ | `[PAUSED]` |
+| ✓ | `[OK]` |
+| 💤 | `[SNOOZED]` |
+
+Other pictographs are dropped. Default output is unchanged. See also
+[GHES compatibility](GHES_COMPATIBILITY.md).
 
 ## Sticky comments across re-runs
 
@@ -1784,6 +1898,17 @@ This is a library function for workflow authors who maintain a CSV roster upstre
 
 ---
 
+
+#### Accepted CSV dialects (Issue #953)
+
+`parseRosterCsv` accepts what Excel and Google Sheets export:
+
+- **UTF-8 BOM:** a leading `\uFEFF` (Excel's "CSV UTF-8") is stripped, so the header row is still recognised.
+- **Line endings:** CRLF, LF, and bare CR.
+- **Quoted fields (RFC 4180 subset):** `"Doe, Jane"` keeps its comma, and `""` inside quotes is a literal `"`. Whitespace outside quotes is trimmed. Multi-line quoted cells are not supported.
+- **Formulas rejected:** a row with any cell starting with `=`, `+`, `-`, `@`, tab, or CR is rejected into `invalid` with a "spreadsheet formula" reason (CSV-injection guard). The rest of the roster is still imported.
+- **Malformed quotes:** a row with an unterminated quoted field is rejected into `invalid` with `Roster CSV has an unterminated quoted field.`
+
 ## Per-check named outputs (fine-grained gating)
 
 > **Note:** `check_account_funded`, `check_trustline` and `check_xlm_reserve` are **not declared in `action.yml`** and are not emitted by `src/outputs.ts`, so in a workflow they read as `''`. Until they are added to the output contract, gate on `account_funded`, `trustline_exists`, `ready` and `reason_code`, or parse `checks_json`. The authoritative output list is the [README Outputs section](../README.md#outputs).
@@ -1885,7 +2010,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 
 <!-- BEGIN GENERATED: reason-codes (source: schemas/reason-codes.json) -->
 <!-- AUTOGENERATED — do not edit by hand. Run `npm run reason-codes:doc`. -->
-<!-- 20 codes from schemas/reason-codes.json (catalog version 1). -->
+<!-- 21 codes from schemas/reason-codes.json (catalog version 1). -->
 
 | `reason_code` | `valid` | `account_funded` | `trustline_exists` | `xlm_reserve_met` | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1905,6 +2030,7 @@ TrustBridge exposes both legacy outputs and comprehensive audit & timing metadat
 | `HOME_DOMAIN_MISMATCH` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The asset issuer's on-chain `home_domain` does not match `expected_home_domain` and `home_domain_check_mode: strict` blocked validation. The account itself may be fully funded with the trustline present. In `warn` mode this condition is reported in the comment but does not change the reason code. |
 | `HOME_DOMAIN_MISSING` | ❌ `false` | ✅ `true` | ✅ `true` | ✅ `true` | The asset issuer has no `home_domain` set on-chain (or its account could not be fetched) and `home_domain_check_mode: strict` blocked validation. Distinct from HOME_DOMAIN_MISMATCH: there is no domain to compare. In `warn` mode this condition is reported in the comment but does not change the reason code. |
 | `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The milestone gate skipped validation because the issue or pull request's milestone was not in `milestone_allowlist` (or no milestone was set while the allowlist was active). No account checks were performed, so this is a skip rather than a validation failure. Set `milestone_fail_on_skip: true` to hard-fail instead of warn. |
+| `REQUIRED_LABELS_MISSING` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | The required_labels gate skipped validation because one or more labels listed in `required_labels` are absent from the issue or pull request. No account checks were performed, so this is a skip rather than a validation failure. Set `required_labels_fail_on_skip: true` to hard-fail instead. |
 | `MAINTAINER_SKIPPED` | ✅ `true` | ✅ `true` | ✅ `true` | ✅ `true` | Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`). |
 | `SAC_ISSUER_NOT_VERIFIABLE` | ❌ `false` | ✅ `true` | ❌ `false` | ✅ `true` | The asset is issued by a Soroban Stellar Asset Contract (C-address). SAC balances are never exposed as classic Horizon trustlines, so the balance cannot be confirmed or denied by this check. Verify the balance on the Stellar Lab contract page or via Soroban RPC `getContractData`. |
 | `HORIZON_WAIT_BUDGET_EXHAUSTED` | ❌ `false` | ❌ `false` | ❌ `false` | ❌ `false` | Horizon kept returning retryable errors until the configured retry wait budget ran out. Distinct from HORIZON_ERROR/HORIZON_TIMEOUT: retries were attempted and exhausted rather than failing on the first request. The account state could not be determined. |
@@ -2191,6 +2317,9 @@ When `privacy_mode: true`, addresses and asset issuers in `validation.json` (and
 ## SARIF output for GitHub Advanced Security
 
 TrustBridge can emit validation results as SARIF 2.1.0 for integration with GitHub Advanced Security (GHAS) code scanning. This allows wallet-check failures to appear alongside other security findings in the repository's Security tab.
+
+> Upload failing? See [Troubleshooting SARIF upload failures](TROUBLESHOOTING.md#sarif-upload-failures)
+> and the working example in [`docs/examples/sarif-code-scanning.yml`](examples/sarif-code-scanning.yml).
 
 ### Enable SARIF output
 
@@ -3202,6 +3331,60 @@ All outputs are **strings** (GitHub Actions limitation). Consume them as:
 - Number: `parseFloat('${{ steps.bridge.outputs.timing_total_ms }}')`
 - JSON: `JSON.parse('${{ steps.bridge.outputs.checks_json }}')`
 
+### Boolean outputs in `if:` conditions (Issue #919)
+
+Every boolean output is published as **exactly** the lower-case string
+`"true"` or `"false"` — never empty, never `"True"`, `"1"`/`"0"`, or
+`"undefined"` — on every code path (single-address, batch, dry-run). The
+normalization lives in `src/outputs.ts` (`toBooleanOutput`,
+`normalizeBooleanOutputs`) and runs as the last step before
+`core.setOutput`.
+
+| Output | `"true"` when |
+| --- | --- |
+| `ready` | All validation checks passed. |
+| `trustline_exists` | The account holds the configured asset trustline. |
+| `account_funded` | Horizon found the account on the ledger. |
+| `snooze_expired` | This run posted because a snooze window just lapsed. |
+| `has_conflicts` | At least one input source conflict was detected. |
+| `network_passphrase_mismatch` | Configured and Horizon network passphrases differ. |
+| `friendbot_called` | Friendbot was called to fund a testnet account. |
+| `friendbot_success` | Friendbot funding succeeded. |
+| `outputs_truncated` | A JSON/array output was truncated to fit the size cap. |
+
+Always compare against the string literal:
+
+```yaml
+- name: Pay out
+  if: steps.trustbridge.outputs.ready == 'true'
+  run: ./payout.sh
+
+- name: Explain why not
+  if: steps.trustbridge.outputs.ready != 'true'
+  run: echo "Not ready: ${{ steps.trustbridge.outputs.reason_code }}"
+```
+
+Do **not** write `if: steps.trustbridge.outputs.ready` on its own: GitHub
+expressions treat any non-empty string — including `"false"` — as truthy, so
+that condition is always true. Do **not** use `fromJSON(...)` on the value
+either; the `== 'true'` comparison is the stable contract.
+
+**Legacy `1`/`0` values.** Boolean *inputs* already accept `true`/`false`,
+`1`/`0`, and `yes`/`no` (`parseBooleanInput` in `src/inputs.ts`). For
+*outputs*, an internal producer that hands over a legacy `1`/`0` (number or
+string), `"TRUE"`, or surrounding whitespace is normalized to
+`"true"`/`"false"`; `null`, `undefined`, and `""` mean `"false"`. Any other
+value (for example `"yes"`, `2`, `NaN`, or an object) is a producer bug: the
+output **fails closed** to `"false"` — a payout gate never opens on garbage —
+and a workflow warning is emitted:
+
+```
+Output "ready" expects a boolean (true/false, or legacy 1/0); received string "maybe". Publishing "false" (fail closed).
+```
+
+The warning names the output and the value's type, never a long raw value,
+so it cannot leak addresses into logs. Tests: `npx jest __tests__/outputs-boolean.test.ts`.
+
 ---
 
 ## GitHub Projects v2 status updates (Issue #222)
@@ -3515,6 +3698,10 @@ app.post('/api/webhooks/trustbridge-action', (req, res) => {
     return;
   }
 
+  // Additive fields (new optional keys, new checks, new reason codes) can
+  // appear in any v1.x release without a schema_version bump. Read only the
+  // fields you need and ignore the rest — never reject on an unknown key.
+
   // Process the payload.
   const { event, repository, issue_number, stellar_address, result } = payload;
   console.log(`[${event}] repo=${repository} issue=${issue_number} address=${stellar_address} valid=${result.valid}`);
@@ -3524,6 +3711,26 @@ app.post('/api/webhooks/trustbridge-action', (req, res) => {
 
 app.listen(3000);
 ```
+
+### Handling new fields and reason codes (Issue #917)
+
+Within `schema_version: "1"`, TrustBridge may add optional fields (top-level,
+on `result`, on `result.checks[]` or `assets[]` items) and new reason-code
+values in any minor or patch release. Removing, renaming, or retyping a field
+— or changing what a reason code means — only happens with a new
+`schema_version`. Your receiver should therefore:
+
+- route on `X-TrustBridge-Schema-Version` and reject versions it does not
+  implement (`422`),
+- ignore fields it does not know,
+- treat an unknown `assets[].reason_code` as "not ready for that asset"
+  without rejecting the delivery, and gate on `result.valid`.
+
+`readWebhookPayloadForConsumer(rawBody)` in `src/webhook.ts` applies these
+rules and returns `WEBHOOK_PAYLOAD_TOO_LARGE`, `WEBHOOK_PAYLOAD_MALFORMED`, or
+`WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` on failure, or the known-field payload
+plus `ignoredFields` / `unknownReasonCodes` on success. Full policy and
+examples: [SCHEMA.md — Webhook payload versioning policy](SCHEMA.md#webhook-payload-versioning-policy-issue-917).
 
 ### End-to-end dry-run verification
 
@@ -4126,6 +4333,7 @@ The `reason_code` output is a machine-readable string that identifies why a vali
 | `TLS_ERROR` | ❌ `false` | ❌ | ❌ | ❌ | TLS/certificate verification failed for the Horizon endpoint. Most common with private/enterprise mirrors. |
 | `FAILED` | ❌ `false` | ✅ | ✅ | ✅ | Generic fallback: the account passed the core checks but another check (e.g. minimum asset balance) caused failure. |
 | `MILESTONE_GATE_SKIPPED` | ❌ `false` | ❌ | ❌ | ❌ | Milestone gate skipped validation because the issue's milestone was not in the allowlist. No account checks were performed. |
+| `REQUIRED_LABELS_MISSING` | ❌ `false` | ❌ | ❌ | ❌ | Required-label gate skipped validation because a label in `required_labels` is missing. No account checks were performed. |
 
 ### Switching on reason_code in downstream jobs
 
@@ -4265,6 +4473,48 @@ No live collector is required at any point.
 
 Before a Drips Wave opens, follow the Wave freeze labeling steps in [MAINTAINER_CHECKLIST](MAINTAINER_CHECKLIST.md): apply labels, set `snooze_window_minutes`, freeze the workflow, then unfreeze (optionally with `force_comment: true`) after the Wave closes.
 
+### Snooze audit log (Issue #908)
+
+A snooze never skips validation silently. Whenever `enforceSnoozeWindow`
+(`src/snooze.ts`) skips validation because an issue is inside an active
+snooze window, it:
+
+1. **Emits one structured log line** (`core.info`, always visible — not
+   gated on `debug_mode`):
+
+   ```text
+   Validation skipped: issue is within an active snooze window (source=marker, expires 2026-01-01T13:00:00.000Z). {"component":"snooze","event":"snooze_skip","reason_code":"snoozed","check":"snooze","source":"marker","snoozeWindowMs":3600000,"elapsedMs":900000,"remainingMs":2700000,"expiresAt":"2026-01-01T13:00:00.000Z","issueNumber":7}
+   ```
+
+   | Field | Meaning |
+   |---|---|
+   | `event` | Always `snooze_skip` (`SNOOZE_AUDIT_EVENT`). |
+   | `reason_code` / `check` | Always `snoozed` / `snooze` — grep either to find every skipped run. |
+   | `source` | `marker` (repeated failure inside the window) or `reaction` (maintainer :zzz:/:eyes: reaction). Reaction user logins are never logged. |
+   | `snoozeWindowMs`, `elapsedMs`, `remainingMs` | Window size and how far into it this run is. |
+   | `expiresAt` | ISO-8601 UTC time the window lapses, or `unknown`. |
+   | `issueNumber` | Present when the caller passes `issueNumber`. |
+
+   Pass `audit: false` only if the caller emits the line itself via
+   `emitSnoozeAuditLog` / `buildSnoozeAuditLogContext`.
+
+2. **Returns a concise comment notice with the expiry**, e.g.
+   ``⏸️ **Validation snoozed** — … Validation will resume automatically in ~45m (snooze expires `2026-01-01T13:00:00.000Z`). …``
+
+3. **Records skipped metrics** when a `MetricsCollector` is passed via
+   `metrics`: the `snooze_skipped` counter and a `snooze_skipped` metric
+   tagged with `source` (bounded: `marker` | `reaction`) are incremented, and
+   the job outcome is recorded as `skipped` (`trustbridge_job_outcome_total{outcome="skipped"}`).
+
+When a sticky-comment **update** is suppressed by the snooze window
+(`upsertIssueComment` / discussion comments in `src/comment.ts`), the
+existing "Snooze window active … Suppressing comment update" line is now a
+structured line with the same fields and `event: snooze_comment_suppressed`.
+
+Runs that are **not** snoozed — a passing check, a first failure, an expired
+window, or `force_comment: true` — emit no audit line and record no skipped
+metric. Test coverage: `__tests__/snooze-audit-log.test.ts`.
+
 ## Wave runtime safeguards (Issues #861–#864)
 
 ### Job Summary budget
@@ -4286,6 +4536,56 @@ For HTTP 429, 502, 503, and 504 responses, TrustBridge parses `Retry-After` as e
 
 Batch mode always preserves per-address failures in `batch_summary_json`. Account-level failures such as an unfunded 404, trustline failure, or ordinary Horizon outage remain recoverable rows. Configuration/authentication failures (HTTP 400/401/403), cancellation, and exhausted request budgets are classified with `FATAL_*` reason codes or `RATE_BUDGET_EXHAUSTED` and set `fatal: true`; callers should fail the job rather than treating the batch as a green partial result. No raw response bodies or secrets are included.
 
+## Batch address limit
+
+Batch mode (`stellar_addresses`) validates at most `batch_max_addresses`
+**unique** addresses per run (default `500`, maximum `2000`; duplicates are
+removed before counting). Issue #911.
+
+| Input | Default | Allowed values |
+| --- | --- | --- |
+| `batch_max_addresses` | `500` | Whole number from `1` to `2000` |
+
+When the list is longer than the limit, the run fails **before any Horizon
+request** (including the single-address checks), so an oversized matrix never
+spends rate budget or runner memory. The error carries the stable code
+`BATCH_ADDRESS_LIMIT_EXCEEDED` and says how to split the run:
+
+```text
+stellar_addresses contains 742 unique addresses, which exceeds the batch_max_addresses limit of 500 (BATCH_ADDRESS_LIMIT_EXCEEDED). No Horizon requests were made. Split the addresses across a job matrix with at most 500 addresses per leg (at least 2 legs), or raise batch_max_addresses (maximum 2000). See docs/USAGE.md#batch-address-limit.
+```
+
+A malformed value (`abc`, `1.5`, `0`, `2001`) fails with
+`batch_max_addresses must be a whole number between 1 and 2000. Received: "<value>"`.
+
+To split a large roster, pass one slice per matrix leg:
+
+```yaml
+strategy:
+  matrix:
+    slice: [0, 1]
+steps:
+  - id: slice
+    run: |
+      # 500 addresses per leg, taken from a newline-separated roster file
+      tail -n +$(( ${{ matrix.slice }} * 500 + 1 )) roster.txt | head -n 500 > slice.txt
+      {
+        echo 'addresses<<EOF'
+        cat slice.txt
+        echo 'EOF'
+      } >> "$GITHUB_OUTPUT"
+  - uses: Stellar-TrustBridge/trustbridge-action@v1
+    with:
+      stellar_addresses: ${{ steps.slice.outputs.addresses }}
+      batch_max_addresses: '500'
+```
+
+Library callers get the same guard from `parseBatchAddresses(raw, { maxAddresses })`
+and `runBatchValidation(addresses, config, horizonUrl, { maxAddresses })`, both
+of which throw `BatchAddressLimitError` (`reasonCode`, `count`, `limit`,
+`suggestedJobs`) from `src/batch.ts`. The error only reports counts; addresses
+are never included in the message.
+
 ## Negative Horizon account caching (#870)
 
 When `horizon_cache_ttl_ms` is enabled, not-found account responses use a separate 15-second negative-cache TTL (`negativeCacheTtlMs` for library callers). Negative entries contain only status and a safe message, never account payloads. Expiry is required so an account funded during a later run becomes visible; set the library option to `0` to disable negative caching.
@@ -4297,6 +4597,23 @@ Roster allowlist and denylist entries may be exact addresses or bounded `*` / `?
 ## Clock-skew tolerance (#871)
 
 Freshness checks tolerate a ledger close timestamp up to 30 seconds in the future, which covers normal runner/NTP skew. A future timestamp beyond that tolerance is reported as `status: unknown` and remains fail-open; it is never treated as proof that Horizon is fresh. Library callers can override this with `clockSkewToleranceSeconds`. Keep runner clocks synchronized and investigate repeated `freshness_clock_skew_unknown` metrics.
+
+## Snooze timezone and DST boundary enforcement (#873)
+
+Snooze windows that cross Daylight Saving Time (DST) boundaries or are stored without timezone context can reopen early or late. Wave freeze snoozes that reopen prematurely re-fail assignees before their grace or freeze period has elapsed.
+
+TrustBridge enforces UTC physical millisecond invariance for all snooze evaluations:
+
+1. **UTC Normalization**: Every snooze timestamp — whether stored in comment body markers (`<!-- trustbridge-action:snooze:... -->`), GitHub reaction timestamps (`created_at`), or operator configurations — is normalized to UTC epoch milliseconds via `normalizeToUtc` in `src/snooze.ts`.
+2. **Naive Timestamp Handling**: Any date/time string stored without explicit timezone context (e.g. `2026-11-01T01:30:00` or `2026-11-01 01:30:00`) is parsed strictly as UTC (never runner-local time), preventing 1-hour shifts when runners reside in non-UTC or DST-observing zones.
+3. **DST Boundary Invariance**: Elapsed duration (`elapsedMs = nowUtcMs - startUtcMs`) measures physical time. Across Autumn fall-back (e.g. EDT to EST) and Spring forward (e.g. EST to EDT) transitions, a 120-minute snooze window remains active for exactly 120 physical minutes (7,200,000 ms) and never reopens 1 hour early or late.
+4. **Documented Operator Format**:
+   - **Canonical format:** ISO 8601 UTC string (`YYYY-MM-DDTHH:mm:ssZ`), e.g. `2026-11-01T02:00:00Z`.
+   - **Offset format:** ISO 8601 with explicit timezone offset (`YYYY-MM-DDTHH:mm:ss±HH:mm`), e.g. `2026-11-01T03:00:00+01:00`.
+   - **Unix epoch ms:** Integer milliseconds since Unix epoch, e.g. `1761962400000`.
+   - **Marker format:** `<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=<unix-ms|iso-utc>(?:,timezone=<tz>)? -->`.
+   - **Duration format:** `snooze_window_minutes: <number>` in workflow inputs (0 to 43200 minutes).
+5. **Fail-Closed Validation**: Empty, non-finite, negative, or malformed timestamps fail closed with stable errors (`validateSnoozeTimestamp`) rather than causing premature un-snoozing or workflow aborts.
 
 ## Combined authorization and clawback states (Issue #865)
 
@@ -4367,3 +4684,135 @@ labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
 applies only after the gate is open. Label-check failures should fail open and
 run validation, while an optional skip comment is best effort and must not
 block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).
+
+## Matrix strategy patterns for large roster splits (Issue #952)
+
+One job that validates a huge `stellar_addresses` list runs into several limits. Batch concurrency is capped at `MAX_BATCH_CONCURRENCY` (20, `src/batch.ts`). Each output is capped at `MAX_OUTPUT_VALUE_BYTES` (~900 KB, `src/outputs.ts`), and when the `failures` array is cut to fit, `outputs_truncated` is set to `"true"`. A GitHub matrix also caps out at 256 jobs. To stay inside these limits, split the roster into shards and give each shard its own matrix leg.
+
+**Pattern 1: fixed shards (copy-paste)**
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: split
+        # roster.txt: one address per line. SHARD_SIZE ≤ a few hundred keeps
+        # each batch_summary_json far below the output cap.
+        run: |
+          SHARD_SIZE=200
+          jq -R -s -c --argjson n "$SHARD_SIZE" \
+            'split("\n") | map(select(length > 0)) | unique as $a
+             | [range(0; $a|length; $n) as $i | {index: ($i / $n), addresses: ($a[$i:$i+$n] | join("\n"))}]' \
+            roster.txt > shards.json
+          echo "shards=$(cat shards.json)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one bad shard must not cancel the others
+      max-parallel: 4           # stay friendly to Horizon rate limits
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - id: tb
+        uses: Stellar-TrustBridge/trustbridge-action@v1
+        with:
+          stellar_addresses: ${{ matrix.shard.addresses }}
+          posting_mode: off      # aggregate once instead of N comments
+      - name: Persist shard result
+        run: echo '${{ steps.tb.outputs.batch_summary_json }}' > "summary-${{ matrix.shard.index }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trustbridge-shard-${{ matrix.shard.index }}
+          path: summary-*.json
+```
+
+**Pattern 2: aggregate shard outputs**
+
+Matrix legs cannot pass outputs to a downstream job reliably, because only one leg's value survives. Upload each shard's `batch_summary_json` as an artifact and merge them:
+
+```yaml
+  aggregate:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: trustbridge-shard-*, merge-multiple: true }
+      - env:
+          EXPECTED: ${{ needs.plan.outputs.shard_count }}   # add `shard_count=$(jq length shards.json)` in plan
+        run: |
+          test "$(ls summary-*.json | wc -l)" -eq "$EXPECTED"   # a missing shard is a failure, not "0 failures"
+          jq -s '{total: map(.total) | add, passed: map(.passed) | add,
+                  failed: map(.failed) | add, failures: map(.failures) | add}' summary-*.json > batch.json
+          test "$(jq .failed batch.json)" -eq 0
+```
+
+**Aggregation notes**
+
+- **Count every shard.** Compare the number of summary files to the number of shards from `plan`. A missing file means a leg crashed. Never treat it as "0 failures".
+- **Check truncation per shard.** If any leg reports `outputs_truncated == 'true'`, that shard's `failures` array is incomplete, so lower `SHARD_SIZE`. `total`, `passed`, and `failed` are always exact.
+- **Sort and deduplicate before splitting.** Shards then stay stable between runs, and one address can never land in two shards.
+- **Keep shards ≤ 256** (the GitHub matrix limit). For bigger rosters, raise `SHARD_SIZE` or chain workflows.
+
+A full working example (including `shard_count`) is in [`docs/examples/batch-validation-with-matrix-outputs.yml`](examples/batch-validation-with-matrix-outputs.yml) (job `sharded-validate`).
+
+## Delta ignore-list for volatile fields (Issue #926)
+
+The delta section (`previous_validation_path`) compares each check's status, and also its other per-check fields, against the previous `validation.json`. Fields that change on every run are ignored so the comment only highlights meaningful changes:
+
+- **Default ignore-list** (`DEFAULT_DELTA_IGNORED_FIELDS` in `src/delta.ts`): `timestamp`, `checkedAt`, `fetchedAt`, `durationMs`, `latencyMs`, `elapsedMs`, `requestId`, `traceId`.
+- **Embedded ISO-8601 timestamps** in free-text fields such as `detail` are normalized before comparison, so `ok at 2026-01-01T00:00:00Z` and `ok at 2026-11-24T10:11:12Z` count as equal.
+- **Extra fields** can be passed via `computeValidationDelta(prev, curr, { ignoreFields })`. `parseDeltaIgnoreFields()` parses a comma- or newline-separated list and returns invalid (non-identifier) names separately, so a caller can fail with a stable message.
+- `label` and `passed` can never be ignored. Status transitions (newly passed / newly failed) are always reported.
+
+Checks whose status is unchanged but whose non-volatile fields differ are listed under **Details changed** in the comment (`ValidationDelta.changed`).
+
+## Per-address deadline (Issue #928)
+
+In batch mode (`stellar_addresses`), `per_address_timeout_ms` caps the time spent validating any single address, including all of its Horizon requests and retries. When an address exceeds it:
+
+- its in-flight requests are aborted;
+- its row is reported with `reason_code: ADDRESS_TIMEOUT`;
+- the batch moves on to the next address, so one hung address cannot use up the whole job budget.
+
+Precedence:
+
+1. **Global cancellation / job timeout wins.** If the batch-level signal fires, affected rows are `CANCELLED`, even if the per-address deadline also expired.
+2. **Per-address deadline.** It applies to each address independently and never stops the rest of the batch.
+3. **`horizon_timeout_ms`** still bounds each individual Horizon request inside that deadline.
+
+`0` (the default), empty, or non-finite values disable the deadline and keep the previous behavior exactly. The shared helper is `runWithAddressDeadline` in `src/checks-run.ts`.
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    stellar_addresses: ${{ env.WAVE_ADDRESSES }}
+    per_address_timeout_ms: '20000'
+```
+
+## Required-label gate
+
+Issue #955. Set `required_labels` to require labels on the issue/PR before any Horizon request is made:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    required_labels: "wave, ready-for-payout"
+    required_labels_fail_on_skip: "false"
+```
+
+- Matching is case-insensitive; entries are comma- or newline-separated, trimmed and de-duplicated.
+- When any label is missing the run skips with `ready=false`, `reason_code=REQUIRED_LABELS_MISSING`, `checks_json=[]`, and the job outcome metric records `skipped`.
+- `required_labels_fail_on_skip: true` turns the skip into a step failure.
+- More than 20 labels, or a label longer than 50 characters, fails the step with a `required_labels_invalid` error before any network traffic.
+- The gate runs after `milestone_allowlist`; see [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md#required-label-presence-gate) for how it interacts with `pass_label` / `fail_label`.
+
+## Federation memo hash validation
+
+Issue #957. When a federation server returns `memo_type: "hash"`, the `memo` must be exactly 64 hex characters (32 bytes). Non-hex input (for example base64) and wrong-length hex both fail with the stable code `MEMO_TYPE_MISMATCH`; the error message states which (`not hex-encoded` vs `invalid length N`) and never echoes the memo value.

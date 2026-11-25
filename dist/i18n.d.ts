@@ -148,3 +148,41 @@ export interface LocaleNegotiationOptions {
  * unusual locale can never break comment rendering.
  */
 export declare function negotiateLocale(options?: LocaleNegotiationOptions): Locale;
+/**
+ * Phrase builder for one plural category. `n` is the already formatted count
+ * (for example `"3"`), so the phrase controls word order and noun agreement.
+ */
+export type PluralPhrase = (n: string) => string;
+/**
+ * Per-locale phrases for "N assets failed". Each locale lists only the CLDR
+ * categories it needs; `other` is mandatory and is the fallback for any
+ * category a locale does not list (for example `many` in `fr`, or every
+ * category in `ja`, which has no grammatical plural).
+ *
+ * Translators: add or change a phrase here, not at the call site. Keep the
+ * `{n}`-style argument as the first word so the count always reads first.
+ */
+export declare const ASSET_FAILURE_PHRASES: Readonly<Record<Locale, Partial<Record<Intl.LDMLPluralRule, PluralPhrase>> & {
+    other: PluralPhrase;
+}>>;
+/**
+ * Normalize a failure count before pluralization (Issue #922).
+ *
+ * Non-finite and negative values become `0`, and fractions are truncated, so
+ * a bad count can never render as `NaN assets failed` or `-1 assets failed`.
+ */
+export declare function normalizeFailureCount(count: number): number;
+/**
+ * Pick the CLDR plural category for `count` in `locale` (Issue #922).
+ *
+ * Uses `Intl.PluralRules`, so the rules follow CLDR rather than hand-written
+ * `=== 1` checks: French treats `0` as singular, and Portuguese treats `0`
+ * and `1` as singular. Unknown locales use English rules.
+ */
+export declare function failureCountCategory(locale: string | null | undefined, count: number): Intl.LDMLPluralRule;
+/**
+ * Render "N assets failed" in `locale` with the correct plural form for
+ * 0, 1 and many (Issue #922). Categories a locale does not define fall back
+ * to `other`, and the count is normalized by {@link normalizeFailureCount}.
+ */
+export declare function formatAssetFailureCount(locale: string | null | undefined, count: number): string;

@@ -104,17 +104,11 @@ export declare function aggregateDigest(entries: DigestEntry[], options?: {
     privacyMode?: boolean;
     now?: string;
 }): DigestReport;
-/**
- * Format a `DigestReport` as a Markdown string suitable for posting as a
- * GitHub issue comment.
- *
- * - Lists ready and blocked contributors with their issue numbers and
- *   (optionally redacted) addresses.
- * - Caps each section at `DIGEST_MAX_LISTED_ISSUES` with a note when
- *   truncated.
- * - Includes a machine-readable gate summary (ready/blocked counts).
- */
-export declare function formatDigestComment(report: DigestReport): string;
+/** Replace known status emoji with ASCII tokens and drop any remaining pictographs. */
+export declare function stripEmoji(markdown: string): string;
+export declare function formatDigestComment(report: DigestReport, options?: {
+    emojiFree?: boolean;
+}): string;
 /**
  * A single human-readable change detected between two successive runs.
  * `kind` is a stable machine token so callers/tests can assert on it without
@@ -199,4 +193,5 @@ export interface JobSummaryReportLike {
  */
 export declare function formatJobSummaryMarkdown(report: JobSummaryReportLike, options?: {
     maxBytes?: number;
+    emojiFree?: boolean;
 }): JobSummaryGuardResult;

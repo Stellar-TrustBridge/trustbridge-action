@@ -94,6 +94,37 @@ The flag is `"true"` only for the specific run that resumes posting *because* a 
 
 **Known gap:** the single-address comment path in `src/index.ts` does not currently pass `snoozeWindowMs` to `upsertIssueComment`, so `snooze_expired` is always `"false"` there today even though `snooze_window_minutes` defaults to `30`. The batch validation path already wires it through. Fixing the single-address gap is a separate, larger behavioral change (it would newly start suppressing repeated-failure comments by default) and is tracked outside this issue rather than bundled into it.
 
+## Custom comment template limits (Issue #905)
+
+A `custom_comment_template_path` partial (`src/template.ts`) is bounded at
+three points so it can never push the comment past GitHub's limit or hang a
+Wave job:
+
+| Limit | Constant | Value | Error |
+|---|---|---|---|
+| Raw file size | `MAX_TEMPLATE_BYTES` | 8 KB (8,192 bytes) | `custom_comment_template_path "…" exceeds the maximum allowed size …` |
+| Placeholders per template | `MAX_TEMPLATE_PLACEHOLDERS` | 200 `{{…}}` tokens | `[TEMPLATE_TOO_MANY_PLACEHOLDERS] custom comment template contains N placeholders; the maximum is 200.` |
+| Rendered (interpolated) size | `MAX_TEMPLATE_RENDERED_BYTES` | 16 KB (16,384 UTF-8 bytes) | `[TEMPLATE_OUTPUT_TOO_LARGE] custom comment template renders to more than 16384 bytes. …` |
+
+The rendered cap closes the **expansion bomb** gap: a 2 KB file that repeats
+`{{horizon}}` or a long `{{locale:KEY}}` hundreds of times passes the file
+size check but would otherwise expand to tens of kilobytes. Rendering stops
+as soon as the running output crosses the cap, so the oversized string is
+never built.
+
+Both new failures throw `TemplateRenderError` with a stable `code`
+(`TEMPLATE_OUTPUT_TOO_LARGE` / `TEMPLATE_TOO_MANY_PLACEHOLDERS`), and the
+message starts with `[CODE]`. As with every other template failure,
+`formatCommentBody` does **not** fail the run: it logs a
+`Failed to load custom comment template (…): [CODE] …` warning and posts
+the comment **without** the partial. Callers using `interpolateTemplate`
+directly can pass `{ maxOutputBytes }` to tighten the cap; non-finite or
+non-positive values fall back to the 16 KB default.
+
+To fix: remove repeated placeholders, move long static prose to a linked
+doc, or split the partial. Test coverage:
+`__tests__/template-output-limit.test.ts`.
+
 ---
 ## FAQ deep links
 
@@ -138,7 +169,7 @@ On a blocked run the first bullet becomes `Blocked by: <failed check labels>` an
 
 The fallback is the same contract the `reason_code` action output uses, so the comment and the output never disagree. `Reason code` is rendered inside a code span, so snake_case values stay literal and copy-pasteable; only backticks are neutralized.
 
-Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code.
+Every value this bullet can render is frozen in the `ReasonCode` union at [`src/reasonCodes.ts`](../src/reasonCodes.ts), which mirrors the public catalog at `schemas/reason-codes.json` (full descriptions in [docs/USAGE.md#reason-code-reference](USAGE.md#reason-code-reference)). A check branch that returns a code outside that union fails `tsc`, so this comment can never show an undocumented reason code. The full code list is in [SCHEMA.md](SCHEMA.md#webhook-and-reason-code-versioning-policy).
 
 All labels in this section are localized (Issue #450). The supported set is exactly `en` (English), `es` (Spanish), `pt` (Portuguese), `ja` (Japanese), `fr` (French), `de` (German), exported as `SUPPORTED_LOCALES` from [`src/i18n.ts`](../src/i18n.ts).
 
@@ -280,6 +311,8 @@ Rendering rules:
 - Asset codes are escaped through `escapeMarkdownInline`, so a code containing `|`, `*`, `[`, or backticks cannot break out of the table or inject Markdown structure.
 - Issuers are shortened to `first4…last4` inside inline code to keep the table compact; the full address remains visible in workflow logs and the validation JSON artifact.
 - A missing trustline renders its balance as `` `0` — no trustline ``; a Horizon error renders `_unknown_`.
+- **Blank values never produce an empty cell** (Issue #921). An empty or whitespace-only asset code, issuer, or balance renders as `_unknown_` instead of an empty code span, so a row always keeps its four columns. A `|` inside a value is escaped as `\|`, and line breaks are collapsed to spaces, since either one would otherwise split the row.
+- An empty or whitespace-only `reason_code` in the Validation gate section falls back to the verdict default (`SUCCESS` or `FAILED`) instead of rendering an empty code span.
 - **Long tables are truncated** (Issue #860): only the first `MAX_ASSET_TABLE_ROWS` (50) rows render. The Trustline status column stays intact for every visible row — truncation only hides rows, never columns. A plain sentence *after* the table (not an extra table row — GitHub Markdown tables have no colspan) summarizes what was cut, e.g.:
 
   ```markdown
@@ -336,6 +369,22 @@ those targets). A read-only token may find a marker but cannot safely update
 it; the action keeps the existing comment and creates a new result when posting
 is otherwise enabled. `force_comment` bypasses snooze suppression only; it
 does not bypass marker, authorship, or GitHub permission checks.
+
+## Plural forms for failure counts (Issue #922)
+
+Counts of failed assets in translated comments must use the right plural form for 0, 1 and many. Plural selection is CLDR-based through `Intl.PluralRules`, so it is not a `count === 1` check:
+
+- `formatAssetFailureCount(locale, count)` in `src/i18n.ts` renders the sentence, for example `2 assets failed` (`en`) or `2 actifs ont échoué` (`fr`).
+- `failureCountCategory(locale, count)` returns the CLDR category (`zero`, `one`, `two`, `few`, `many` or `other`) when you need the raw category.
+- Per-locale phrases live in `ASSET_FAILURE_PHRASES`. Each locale defines only the categories it needs. `other` is required and is the fallback for any category a locale does not define.
+
+Behaviour for edge inputs: a `NaN`, infinite or negative count renders as `0`, and a fractional count is truncated. A missing or unsupported locale falls back to English.
+
+**Translator rules:**
+
+1. Add a phrase per category your language needs (`one`, `few`, `many`, ...) and keep `other` for the rest.
+2. Put the count first so the number always reads first; the helper inserts it already formatted.
+3. Check 0, 1 and a large value in `__tests__/i18n.test.ts` (the `FIXTURES` table) before merging. French and Portuguese treat `0` as singular, so expect `0 actif a échoué`.
 
 ## Marker format stability
 

@@ -180,3 +180,10 @@ If `HTTPS_PROXY` / `HTTP_PROXY` contains a malformed URL, TrustBridge logs a war
 ## Verification Without a Live GHES Instance
 
 See [USAGE.md — Verification checklist](USAGE.md#verification-checklist-no-live-ghes-instance-required) for steps to validate TrustBridge on your GHES org.
+
+## Emoji-free summaries for log drains (Issue #961)
+
+Some GHES deployments forward job logs and summaries to enterprise log drains
+that strip or mangle non-ASCII characters. Set `summary_emoji_free: "true"` to
+replace status emoji with stable ASCII tokens (`[PASS]`, `[FAIL]`, `[WARN]`,
+`[PAUSED]`, `[OK]`, `[SNOOZED]`). See [USAGE.md](USAGE.md#emoji-free-summaries-issue-961).

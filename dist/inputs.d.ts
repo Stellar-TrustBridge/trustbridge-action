@@ -1,3 +1,4 @@
+import { StellarNetwork } from './links';
 /**
  * Return the Actions runner language value used for locale negotiation
  * (Issue #974). Precedence follows the usual POSIX convention: `LANGUAGE`
@@ -71,6 +72,24 @@ export declare function parseNumberInput(value: string, defaultValue: number, op
     min?: number;
     max?: number;
 }): number;
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+export declare const DEFAULT_BATCH_MAX_ADDRESSES = 500;
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+export declare const BATCH_MAX_ADDRESSES_CEILING = 2000;
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+export declare function parseBatchMaxAddressesInput(value: string | undefined): number;
 export declare function getErrorMessage(error: unknown): string;
 /**
  * Maintainer-provided roster: GitHub username (assignee login) → Stellar G-address.
@@ -106,6 +125,47 @@ export type UnauthorizedTrustlinePolicy = 'fail' | 'warn' | 'ignore';
  *   - "ignore" — no additional check or warning (pre-#72 behavior).
  */
 export declare function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTrustlinePolicy;
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+export declare const VALID_NETWORK_INPUTS: readonly ["testnet", "public", "mainnet"];
+export type NetworkInput = (typeof VALID_NETWORK_INPUTS)[number];
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+export declare const VALID_HOME_DOMAIN_CHECK_MODES: readonly ["warn", "strict"];
+export type HomeDomainCheckModeInput = (typeof VALID_HOME_DOMAIN_CHECK_MODES)[number];
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+export declare function parseNetworkInput(value: string | undefined): NetworkInput | '';
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+export declare function parseHomeDomainCheckModeInput(value: string | undefined): HomeDomainCheckModeInput;
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+export declare function parseExplorerBaseUrlInput(value: string | undefined, network: StellarNetwork, inputName?: string): string;
 /**
  * Mapping of TRUSTBRIDGE_* environment variable names to action input names.
  * Explicit `with:` values always win; env is only used when with: is empty.
@@ -206,6 +266,7 @@ export interface Inputs {
     issue_number?: string;
     debug_mode?: string;
     horizon_timeout_ms?: string;
+    per_address_timeout_ms?: string;
     sticky_comment?: string;
     comment_mode?: string;
     wait_until_funded?: string;
@@ -222,8 +283,12 @@ export interface Inputs {
     allow_cross_network_fallback?: string;
     log_inputs?: string;
     trustbridge_config_path?: string;
+    trustbridge_config_strict?: string;
     milestone_allowlist?: string;
     milestone_fail_on_skip?: string;
+    /** Issue #955 — labels that must be present before checks run. */
+    required_labels?: string;
+    required_labels_fail_on_skip?: string;
     github_token: string;
     github_app_token?: string;
     assets_json?: string;
@@ -233,7 +298,9 @@ export interface Inputs {
     fail_label?: string;
     sep0007_origin_domain?: string;
     snooze_window_minutes?: string;
+    snooze_max_override?: string;
     force_comment?: string;
+    summary_emoji_free?: string;
     webhook_url?: string;
     webhook_secret?: string;
     webhook_secret_previous?: string;
@@ -262,6 +329,7 @@ export interface Inputs {
     stellar_toml_fetch_enabled?: string;
     stellar_toml_cache_ttl_ms?: string;
     stellar_toml_hash_pin?: string;
+    stellar_toml_allow_insecure_testnet?: string;
     write_validation_json?: string;
     validation_json_path?: string;
     trustbridge_plugins_path?: string;
@@ -270,6 +338,7 @@ export interface Inputs {
     locale?: string;
     trace_sampling_ratio?: string;
     stellar_addresses?: string;
+    batch_max_addresses?: string;
     unassign_on_not_ready?: string;
     project_id?: string;
     project_status_field?: string;
@@ -306,3 +375,57 @@ export interface Inputs {
     soroban_rpc_url?: string;
     contract_id?: string;
 }
+/**
+ * Parse a strict boolean input (Issues #961, #962, #960). Empty means
+ * `defaultValue`; anything other than true/false throws a stable error.
+ */
+export declare function parseStrictBooleanInput(name: string, raw: string | undefined, defaultValue?: boolean): boolean;
+/**
+ * Stable error prefix emitted when two mutually exclusive inputs are both
+ * enabled. Not a `reason_code` output: the run fails before validation.
+ */
+export declare const INPUT_CONFLICT_REASON_CODE = "INPUT_CONFLICT";
+/** One row of the mutually exclusive input matrix. */
+export interface InputConflictRule {
+    /** Stable identifier, e.g. `preflight_only+wait_until_funded`. */
+    id: string;
+    /** The two boolean inputs that cannot both be `true`. */
+    inputs: readonly [string, string];
+    /** Actionable explanation appended to the error message. */
+    reason: string;
+}
+/**
+ * Pairs of boolean inputs that contradict each other. Documented in
+ * docs/INPUT_VALIDATION.md ("Mutually exclusive inputs"); keep both in sync.
+ */
+export declare const INPUT_CONFLICT_MATRIX: readonly InputConflictRule[];
+/** A detected conflict between two enabled inputs. */
+export interface InputConflict {
+    id: string;
+    inputs: readonly [string, string];
+    reasonCode: typeof INPUT_CONFLICT_REASON_CODE;
+    message: string;
+}
+/**
+ * Detect every mutually exclusive input pair that is enabled at once.
+ *
+ * Values are parsed with {@link parseBooleanInput} (default `false`), so
+ * unset, empty, or unrecognised values never trigger a conflict. Results are
+ * returned in matrix order so error output is deterministic.
+ *
+ * @param rawInputs Raw input strings keyed by input name.
+ */
+export declare function detectInputConflicts(rawInputs: Record<string, string | undefined>): InputConflict[];
+/**
+ * Throw a single actionable error listing every conflict, or return silently
+ * when the inputs are consistent. Call before any network work so conflicting
+ * workflows fail early instead of producing undefined behaviour mid-run.
+ */
+export declare function assertNoInputConflicts(rawInputs: Record<string, string | undefined>): void;
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export declare function buildSorobanContractConfig(raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>): import('./soroban').ContractConfig | null;

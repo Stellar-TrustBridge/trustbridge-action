@@ -71,6 +71,123 @@ export interface ActionOutputExtras {
 }
 
 // ---------------------------------------------------------------------------
+// #919 — Boolean output normalization for workflow `if:` conditions
+// ---------------------------------------------------------------------------
+
+/** The only two values a boolean action output may ever carry. */
+export type BooleanOutputString = 'true' | 'false';
+
+/**
+ * Every action output that carries a boolean. Each one is always published
+ * as exactly `"true"` or `"false"` — lower-case, no whitespace, never empty,
+ * never `"1"`/`"0"`/`"undefined"` — so a workflow can gate with
+ * `if: steps.trustbridge.outputs.<name> == 'true'` and get a stable answer.
+ */
+export const BOOLEAN_OUTPUT_NAMES = Object.freeze([
+  'ready',
+  'trustline_exists',
+  'account_funded',
+  'snooze_expired',
+  'has_conflicts',
+  'network_passphrase_mismatch',
+  'friendbot_called',
+  'friendbot_success',
+  'outputs_truncated',
+] as const);
+
+export type BooleanOutputName = (typeof BOOLEAN_OUTPUT_NAMES)[number];
+
+/**
+ * Thrown by {@link parseBooleanOutput} for a value that is not a recognised
+ * boolean. `received` is a short type/shape description, never the raw
+ * value, so an unexpected object cannot leak into logs.
+ */
+export class BooleanOutputError extends TypeError {
+  constructor(
+    public readonly outputName: string,
+    public readonly received: string,
+  ) {
+    super(
+      `Output "${outputName}" expects a boolean (true/false, or legacy 1/0); received ${received}.`,
+    );
+    this.name = 'BooleanOutputError';
+  }
+}
+
+const TRUE_STRINGS = new Set(['true', '1']);
+const FALSE_STRINGS = new Set(['false', '0', '']);
+
+function describeReceived(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.length > 32 ? `a ${value.length}-character string` : `string ${JSON.stringify(value)}`;
+  }
+  if (typeof value === 'number') return `number ${String(value)}`;
+  if (Array.isArray(value)) return 'an array';
+  return typeof value;
+}
+
+/**
+ * Strictly parse a boolean-like value into a real boolean.
+ *
+ * Accepted (case-insensitive, surrounding whitespace ignored for strings):
+ * - `true` / `false` (boolean or string)
+ * - legacy `1` / `0` (number or string)
+ * - `null`, `undefined`, and `""` → `false` (an absent flag is off)
+ *
+ * Anything else — `"yes"`, `2`, `NaN`, objects, arrays — throws a
+ * {@link BooleanOutputError}. Outputs are a machine contract; guessing at
+ * `"yes"` here would hide a producer bug.
+ */
+export function parseBooleanOutput(value: unknown, outputName = 'value'): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    throw new BooleanOutputError(outputName, describeReceived(value));
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (TRUE_STRINGS.has(normalized)) return true;
+    if (FALSE_STRINGS.has(normalized)) return false;
+  }
+  throw new BooleanOutputError(outputName, describeReceived(value));
+}
+
+/**
+ * Normalize a boolean-like value to the `"true"` / `"false"` string contract.
+ *
+ * Fails closed: a malformed value publishes `"false"` (so a payout gate
+ * never opens on garbage) and emits a `core.warning` naming the output.
+ */
+export function toBooleanOutput(value: unknown, outputName = 'value'): BooleanOutputString {
+  try {
+    return parseBooleanOutput(value, outputName) ? 'true' : 'false';
+  } catch (error) {
+    core.warning(
+      `${error instanceof Error ? error.message : String(error)} Publishing "false" (fail closed).`,
+    );
+    return 'false';
+  }
+}
+
+/**
+ * Re-normalize every {@link BOOLEAN_OUTPUT_NAMES} entry of an outputs map in
+ * place-safe fashion (returns a new object). Non-boolean outputs pass
+ * through untouched. Used as the last step before `core.setOutput` so no
+ * code path can publish `"True"`, `"1"`, or `"undefined"`.
+ */
+export function normalizeBooleanOutputs<T extends Partial<Record<BooleanOutputName, string>>>(outputs: T): T {
+  const normalized: Record<string, unknown> = { ...outputs };
+  for (const name of BOOLEAN_OUTPUT_NAMES) {
+    if (name in normalized) {
+      normalized[name] = toBooleanOutput(normalized[name], name);
+    }
+  }
+  return normalized as T;
+}
+
+// ---------------------------------------------------------------------------
 // #319 — Merge-resolution conflict report
 // ---------------------------------------------------------------------------
 
@@ -467,13 +584,13 @@ export function toActionOutputs(
   );
   
   return {
-    trustline_exists: String(result.trustlineExists),
+    trustline_exists: toBooleanOutput(result.trustlineExists, 'trustline_exists'),
     xlm_balance: result.xlmBalance,
-    account_funded: String(result.accountFunded),
+    account_funded: toBooleanOutput(result.accountFunded, 'account_funded'),
     comment_url: commentUrl ?? '',
     comment_id: extras.commentId ?? '',
     full_report_path: fullReportPath ?? '',
-    ready: String(result.valid),
+    ready: toBooleanOutput(result.valid, 'ready'),
     validated_at: validatedAt,
     reason_code: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
     horizon_url: extras.horizonUrl ?? '',
@@ -492,7 +609,7 @@ export function toActionOutputs(
     badge_markdown: badgeMarkdown,
     badge_url: badgeUrl,
     badge_etag: badgeEtag,
-    snooze_expired: String(extras.snoozeExpired ?? false),
+    snooze_expired: toBooleanOutput(extras.snoozeExpired, 'snooze_expired'),
     timings_json: JSON.stringify({
       input_parse_ms: timings.input_parse_ms ?? 0,
       horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
@@ -511,8 +628,8 @@ export function toActionOutputs(
     conflict_report: extras.conflictReport
       ? JSON.stringify(extras.conflictReport)
       : '',
-    has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
-    network_passphrase_mismatch: String(Boolean(mismatch)),
+    has_conflicts: toBooleanOutput(extras.conflictReport?.hasConflicts, 'has_conflicts'),
+    network_passphrase_mismatch: toBooleanOutput(Boolean(mismatch), 'network_passphrase_mismatch'),
     expected_network_passphrase: mismatch?.expectedPassphrase ?? '',
     actual_network_passphrase: mismatch?.actualPassphrase ?? '',
     assignee_results_json: assigneeResultsJson,
@@ -521,8 +638,8 @@ export function toActionOutputs(
     // Empty strings when no Check Run was created, per the action.yml contract.
     check_run_id: extras.checkRunId ?? '',
     check_run_conclusion: extras.checkRunConclusion ?? '',
-    friendbot_called: String(Boolean(extras.friendbotCalled)),
-    friendbot_success: String(Boolean(extras.friendbotSuccess)),
+    friendbot_called: toBooleanOutput(extras.friendbotCalled, 'friendbot_called'),
+    friendbot_success: toBooleanOutput(extras.friendbotSuccess, 'friendbot_success'),
     friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
     assets_trustline_status: assetsTrustlineStatusTruncation.json,
     trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
@@ -535,7 +652,7 @@ export function toActionOutputs(
     // truncation result (batch_summary_json can be far larger than
     // assets_trustline_status); single-address mode reports whether
     // assets_trustline_status itself was truncated.
-    outputs_truncated: String(assetsTrustlineStatusTruncation.truncated),
+    outputs_truncated: toBooleanOutput(assetsTrustlineStatusTruncation.truncated, 'outputs_truncated'),
   };
 }
 
@@ -855,7 +972,9 @@ export function setValidationOutputs(
   fullReportPath?: string,
   extras: ActionOutputExtras = {},
 ): void {
-  const outputs = toActionOutputs(result, commentUrl, fullReportPath, extras);
+  // #919: final normalization pass so every boolean output is exactly
+  // "true" or "false", whatever path produced it.
+  const outputs = normalizeBooleanOutputs(toActionOutputs(result, commentUrl, fullReportPath, extras));
   // Issue #969 — validate the complete set first so a malformed structured
   // output can never leave half of the step outputs published.
   validateActionOutputs(outputs);

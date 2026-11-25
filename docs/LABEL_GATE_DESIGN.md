@@ -571,3 +571,20 @@ sequenceDiagram
 
 The skip path writes gate outputs before exiting. Forwarded TrustBridge outputs
 are empty when skipped, so downstream jobs must branch on `gate_skipped` first.
+
+
+## Required-label presence gate
+
+Issue #955 adds an *input* gate (`required_labels`) that complements the *output* labels (`pass_label`, `fail_label`, `auto_wallet_labels`):
+
+| Stage | Mechanism | Effect |
+| --- | --- | --- |
+| Before checks | `milestone_allowlist` | Skip with `MILESTONE_GATE_SKIPPED` |
+| Before checks | `required_labels` | Skip with `REQUIRED_LABELS_MISSING` |
+| After checks | `pass_label` / `fail_label` / `auto_wallet_labels` | Apply labels from the result |
+
+Interplay rules:
+
+- A skipped run never applies `pass_label` / `fail_label`, so a label gate cannot be satisfied by labels the action would itself add.
+- Avoid listing `pass_label` in `required_labels`: the run would skip until a human adds the label, so the action could never apply it.
+- Implemented in `src/preflight.ts` (`parseRequiredLabels`, `evaluateRequiredLabels`) and wired in `src/index.ts` before any Horizon request.

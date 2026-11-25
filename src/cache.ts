@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { logger } from './logger';
+import { globalMetrics } from './metrics';
 
 /** Supported named backend identifiers for `CacheBackendOptions.selectedBackend`. */
 const SUPPORTED_NAMED_BACKENDS = new Set<string>(['memory', 'github-actions']);
@@ -248,11 +249,62 @@ export class GitHubActionsCacheBackend implements PersistentCacheBackend {
   }
 }
 
+/**
+ * Issue #958 — default maximum time (ms) a single-flight waiter blocks on a
+ * leader's in-flight fetch before failing with {@link SingleFlightTimeoutError}.
+ */
+export const DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS = 30_000;
+
+/** Issue #958 — stable error code for a waiter that gave up on a hung leader. */
+export const SINGLE_FLIGHT_WAIT_TIMEOUT_CODE = 'SINGLE_FLIGHT_WAIT_TIMEOUT';
+
+/**
+ * Issue #958 — thrown to a single-flight *waiter* (never the leader) when the
+ * leader's fetch does not settle within `waiterTimeoutMs`. The message carries
+ * no cache key, because keys embed Stellar addresses.
+ */
+export class SingleFlightTimeoutError extends Error {
+  readonly code = SINGLE_FLIGHT_WAIT_TIMEOUT_CODE;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(
+      `[TrustBridge] cache: timed out after ${timeoutMs}ms waiting for an in-flight fetch of the same key ` +
+        `(${SINGLE_FLIGHT_WAIT_TIMEOUT_CODE}). The leader request may be hung; retry or raise the waiter timeout.`,
+    );
+    this.name = 'SingleFlightTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** Issue #958 — counters exposed by {@link SimpleCache.getSingleFlightStats}. */
+export interface SingleFlightStats {
+  /** Calls that started a fetch (cache miss, no fetch in flight). */
+  leaders: number;
+  /** Calls that joined an existing in-flight fetch. */
+  waiters: number;
+  /** Waiters that received the leader's result (success or error). */
+  waiterResolved: number;
+  /** Waiters that gave up with {@link SingleFlightTimeoutError}. */
+  waiterTimeouts: number;
+  /** Fetches currently in flight. */
+  inFlight: number;
+}
+
+export interface GetOrFetchOptions {
+  /** TTL for the stored value. Defaults to 60 seconds. */
+  ttlMs?: number;
+  /** Max wait for waiters. Defaults to {@link DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS}. */
+  waiterTimeoutMs?: number;
+}
+
 export class SimpleCache {
   private store = new Map<string, CacheEntry<unknown>>();
   private negativeStore = new Map<string, CacheEntry<NegativeCacheEntry>>();
   private backend?: PersistentCacheBackend;
   private useBackend: boolean = false;
+  private inFlight = new Map<string, Promise<unknown>>();
+  private sfStats = { leaders: 0, waiters: 0, waiterResolved: 0, waiterTimeouts: 0 };
 
   constructor(options: CacheBackendOptions = {}) {
     // Warn when an unsupported named backend is requested so operators learn
@@ -444,6 +496,72 @@ export class SimpleCache {
   }
 
   /**
+   * Issue #958 — single-flight read-through.
+   *
+   * Returns a cached value when present. Otherwise the first caller for `key`
+   * becomes the *leader* and runs `fetcher`; concurrent callers become
+   * *waiters* and share the leader's promise. Waiters block at most
+   * `waiterTimeoutMs`, then reject with {@link SingleFlightTimeoutError} so a
+   * hung leader cannot stall a whole batch. The leader itself is not
+   * time-limited here (it owns its own request timeout) and a timed-out
+   * waiter never writes to the cache, so no partial state is left behind.
+   */
+  async getOrFetch<T>(key: string, fetcher: () => Promise<T>, options: GetOrFetchOptions = {}): Promise<T> {
+    const cached = this.get<T>(key);
+    if (cached !== null) return cached;
+
+    const waiterTimeoutMs = options.waiterTimeoutMs ?? DEFAULT_SINGLE_FLIGHT_WAIT_TIMEOUT_MS;
+    if (!Number.isFinite(waiterTimeoutMs) || waiterTimeoutMs <= 0) {
+      throw new RangeError(
+        `[TrustBridge] cache: waiterTimeoutMs must be a positive finite number, got ${String(waiterTimeoutMs)}.`,
+      );
+    }
+
+    const existing = this.inFlight.get(key) as Promise<T> | undefined;
+    if (existing) {
+      this.sfStats.waiters += 1;
+      globalMetrics.incrementCounter('cache_single_flight_waiters');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          this.sfStats.waiterTimeouts += 1;
+          globalMetrics.incrementCounter('cache_single_flight_waiter_timeouts');
+          reject(new SingleFlightTimeoutError(waiterTimeoutMs));
+        }, waiterTimeoutMs);
+      });
+      const shared = existing.finally(() => {
+        this.sfStats.waiterResolved += 1;
+      });
+      // Avoid unhandled rejections when the timeout wins the race.
+      shared.catch(() => undefined);
+      try {
+        return await Promise.race([shared, timeout]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
+
+    this.sfStats.leaders += 1;
+    globalMetrics.incrementCounter('cache_single_flight_leaders');
+    const leader = (async () => {
+      try {
+        const value = await fetcher();
+        this.set(key, value, options.ttlMs);
+        return value;
+      } finally {
+        this.inFlight.delete(key);
+      }
+    })();
+    this.inFlight.set(key, leader);
+    return leader;
+  }
+
+  /** Issue #958 — snapshot of single-flight counters (no keys, no addresses). */
+  getSingleFlightStats(): SingleFlightStats {
+    return { ...this.sfStats, inFlight: this.inFlight.size };
+  }
+
+  /**
    * Remove all cached entries from the in-memory store and, if a persistent
    * backend is configured, call its `dispose` lifecycle hook.
    *
@@ -453,6 +571,8 @@ export class SimpleCache {
   async clear(): Promise<void> {
     this.store.clear();
     this.negativeStore.clear();
+    this.inFlight.clear();
+    this.sfStats = { leaders: 0, waiters: 0, waiterResolved: 0, waiterTimeouts: 0 };
     if (this.backend?.dispose) {
       await this.backend.dispose();
     }

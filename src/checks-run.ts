@@ -16,6 +16,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ValidationResult } from './checks';
+import { globalMetrics } from './metrics';
 import { logger } from './logger';
 import { getOctokitProxyOptions } from './proxy';
 
@@ -27,6 +28,100 @@ export const HOME_DOMAIN_CHECK_LABEL = 'SEP-0001 home domain';
  * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
  */
 export const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+
+/** Share of requests since the last change that must be throttled to back off. */
+export const ADAPTIVE_THROTTLE_RATE = 0.2;
+/** Consecutive unthrottled successes needed to regain one slot. */
+export const ADAPTIVE_RECOVERY_SUCCESSES = 10;
+
+/**
+ * Concurrency limit for batch Horizon work (Issue #946): halves when the
+ * throttle rate reaches {@link ADAPTIVE_THROTTLE_RATE}, regains one slot per
+ * {@link ADAPTIVE_RECOVERY_SUCCESSES} successes. Always within `[1, max]`.
+ * Requests started before the last decrease are ignored, so one burst of
+ * 429s causes one decrease.
+ */
+export class AdaptiveConcurrency {
+  private limitValue: number;
+  private active = 0;
+  private epochValue = 0;
+  private successes = 0;
+  private streak = 0;
+  private throttles = 0;
+  private waiters: Array<() => void> = [];
+
+  constructor(private readonly max: number) {
+    this.max = Number.isFinite(max) ? Math.max(1, Math.floor(max)) : 1;
+    this.limitValue = this.max;
+    this.record();
+  }
+
+  get limit(): number {
+    return this.limitValue;
+  }
+
+  get epoch(): number {
+    return this.epochValue;
+  }
+
+  tryAcquire(): boolean {
+    if (this.active >= this.limitValue) return false;
+    this.active++;
+    return true;
+  }
+
+  waitForRelease(): Promise<void> {
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  release(): void {
+    this.active--;
+    this.wake();
+  }
+
+  onThrottle(epoch: number): void {
+    globalMetrics.incrementCounter('batch_horizon_throttled');
+    if (epoch !== this.epochValue) return;
+    this.throttles++;
+    this.streak = 0;
+    if (this.throttles / (this.throttles + this.successes) < ADAPTIVE_THROTTLE_RATE) return;
+    this.epochValue++;
+    this.resetWindow();
+    if (this.limitValue === 1) return;
+    this.limitValue = Math.max(1, Math.floor(this.limitValue / 2));
+    globalMetrics.incrementCounter('batch_concurrency_decreased');
+    this.record();
+  }
+
+  onSuccess(epoch: number): void {
+    if (epoch !== this.epochValue) return;
+    // Cap the history so a long healthy run cannot hide a new throttle burst.
+    this.successes = Math.min(this.successes + 1, ADAPTIVE_RECOVERY_SUCCESSES);
+    if (++this.streak < ADAPTIVE_RECOVERY_SUCCESSES) return;
+    this.resetWindow();
+    if (this.limitValue >= this.max) return;
+    this.limitValue++;
+    globalMetrics.incrementCounter('batch_concurrency_increased');
+    this.record();
+    this.wake();
+  }
+
+  private resetWindow(): void {
+    this.successes = 0;
+    this.streak = 0;
+    this.throttles = 0;
+  }
+
+  private record(): void {
+    globalMetrics.recordMetric('batch_concurrency_limit', this.limitValue, 'count');
+  }
+
+  private wake(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const resolve of waiters) resolve();
+  }
+}
 
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 
@@ -251,5 +346,68 @@ export async function createCheckRun(
       message: errorMsg,
       error: message,
     };
+  }
+}
+
+/**
+ * Per-address deadline (Issue #928).
+ *
+ * Runs `task` with its own AbortSignal that fires after `deadlineMs`, so one
+ * hung address cannot consume the whole job budget. The per-address signal
+ * also follows `parentSignal` (the global/batch cancellation), giving this
+ * precedence:
+ *
+ *   1. `parentSignal` aborted (global timeout / cancel) → `{ status: 'cancelled' }`
+ *      — global cancellation always wins, even if the deadline also expired.
+ *   2. `deadlineMs` elapsed first → `{ status: 'timed_out' }`; only this
+ *      address is affected and the caller continues with the next one.
+ *   3. Otherwise → `{ status: 'completed', value }`.
+ *
+ * `deadlineMs` that is undefined, non-finite or `<= 0` disables the deadline
+ * (task runs exactly as before, still honoring `parentSignal`). The timer is
+ * always cleared, so nothing keeps the event loop alive after settling.
+ */
+export type DeadlineOutcome<T> =
+  | { status: 'completed'; value: T }
+  | { status: 'timed_out'; deadlineMs: number }
+  | { status: 'cancelled' };
+
+export async function runWithAddressDeadline<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+  deadlineMs: number | undefined,
+  parentSignal?: AbortSignal,
+): Promise<DeadlineOutcome<T>> {
+  const controller = new AbortController();
+  if (parentSignal?.aborted) return { status: 'cancelled' };
+  const onParentAbort = (): void => controller.abort();
+  parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+
+  const enabled = deadlineMs !== undefined && Number.isFinite(deadlineMs) && deadlineMs > 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<'deadline'>((resolve) => {
+    if (!enabled) return;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      resolve('deadline');
+    }, deadlineMs);
+  });
+
+  try {
+    const raced = await Promise.race([
+      task(controller.signal).then((value) => ({ value })),
+      deadline,
+    ]);
+    if (parentSignal?.aborted) return { status: 'cancelled' };
+    if (raced === 'deadline' || timedOut) return { status: 'timed_out', deadlineMs: deadlineMs as number };
+    return { status: 'completed', value: raced.value };
+  } catch (error) {
+    if (parentSignal?.aborted) return { status: 'cancelled' };
+    if (timedOut) return { status: 'timed_out', deadlineMs: deadlineMs as number };
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
   }
 }

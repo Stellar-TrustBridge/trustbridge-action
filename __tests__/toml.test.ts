@@ -19,6 +19,7 @@ import {
   computeHash,
   validateTomlHash,
   buildTomlCacheKey,
+  buildTomlFinalHostAliasKey,
   fetchTomlWithCache,
   runStellarTomlCheck,
   MAX_STELLAR_TOML_CACHE_TTL_MS,
@@ -198,29 +199,55 @@ describe('validateTomlHash', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildTomlCacheKey', () => {
-  it('builds cache key for simple domain', () => {
+  const url = (domain: string) => `https://${domain}/.well-known/stellar.toml`;
+
+  it('builds cache key for simple domain from its canonical URL and host', () => {
     const key = buildTomlCacheKey('example.com');
-    expect(key).toBe('toml:example.com');
+    expect(key).toBe(`toml:${url('example.com')}|final:example.com`);
   });
 
   it('normalizes domain to lowercase', () => {
     const key = buildTomlCacheKey('EXAMPLE.COM');
-    expect(key).toBe('toml:example.com');
+    expect(key).toBe(`toml:${url('example.com')}|final:example.com`);
   });
 
   it('trims whitespace', () => {
     const key = buildTomlCacheKey('  example.com  ');
-    expect(key).toBe('toml:example.com');
+    expect(key).toBe(`toml:${url('example.com')}|final:example.com`);
   });
 
   it('handles subdomain', () => {
     const key = buildTomlCacheKey('api.example.com');
-    expect(key).toBe('toml:api.example.com');
+    expect(key).toBe(`toml:${url('api.example.com')}|final:api.example.com`);
   });
 
   it('preserves hyphens and dots', () => {
     const key = buildTomlCacheKey('my-domain.example.co.uk');
-    expect(key).toBe('toml:my-domain.example.co.uk');
+    expect(key).toBe(`toml:${url('my-domain.example.co.uk')}|final:my-domain.example.co.uk`);
+  });
+
+  it('accepts a full URL and treats a bare domain as the same target (Issue #914)', () => {
+    expect(buildTomlCacheKey(url('example.com'))).toBe(buildTomlCacheKey('example.com'));
+  });
+
+  it('includes the redirect-final host so remapped hosts never share an entry (Issue #914)', () => {
+    const direct = buildTomlCacheKey('example.com');
+    const remapped = buildTomlCacheKey('example.com', 'CDN.example.net');
+    expect(remapped).toBe(`toml:${url('example.com')}|final:cdn.example.net`);
+    expect(remapped).not.toBe(direct);
+  });
+
+  it('builds a separate alias key per request URL (Issue #914)', () => {
+    expect(buildTomlFinalHostAliasKey('Example.com')).toBe(`toml-final-host:${url('example.com')}`);
+    expect(buildTomlFinalHostAliasKey('example.com')).not.toBe(buildTomlCacheKey('example.com'));
+  });
+
+  it('throws a stable error for an empty target (Issue #914)', () => {
+    expect(() => buildTomlCacheKey('   ')).toThrow('toml: cache key target must be a non-empty domain or URL');
+  });
+
+  it('throws a stable error for a malformed target (Issue #914)', () => {
+    expect(() => buildTomlCacheKey('exa mple.com')).toThrow(/toml: cache key target is not a valid URL/);
   });
 });
 
@@ -615,5 +642,105 @@ describe('fetchTomlWithCache — size, content-type and redirect limits (Issue #
     expect(isAllowedTomlContentType(null)).toBe(true);
     expect(isAllowedTomlContentType('Application/TOML')).toBe(true);
     expect(isAllowedTomlContentType('application/json')).toBe(false);
+  });
+});
+
+describe('fetchTomlWithCache — redirect-final host cache keys (Issue #914)', () => {
+  const okResult = (body: string, url?: string) => ({
+    ok: true as const,
+    status: 200,
+    headers: new Headers({ 'content-type': 'text/plain' }),
+    text: async () => body,
+    ...(url ? { url } : {}),
+  });
+  const REQUEST_URL = 'https://anchor.example/.well-known/stellar.toml';
+
+  beforeEach(async () => {
+    await defaultCache.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('caches under the request URL plus the final host and serves the hit', async () => {
+    const spy = jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue(okResult(FIXTURE_TOML, REQUEST_URL));
+
+    const first = await fetchTomlWithCache('anchor.example');
+    const second = await fetchTomlWithCache('ANCHOR.example');
+
+    expect(first.ok && first.fetched).toBe(true);
+    expect(second.ok && !second.fetched).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe(REQUEST_URL);
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example', 'anchor.example'))).toMatchObject({
+      requestUrl: REQUEST_URL,
+      finalHost: 'anchor.example',
+    });
+  });
+
+  it('falls back to the request host when the fetch result carries no final URL', async () => {
+    jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue(okResult(FIXTURE_TOML));
+    await fetchTomlWithCache('anchor.example');
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example'))).toMatchObject({ finalHost: 'anchor.example' });
+  });
+
+  it('re-keys and evicts the old entry when a redirect remaps the final host', async () => {
+    const spy = jest
+      .spyOn(ssrf, 'fetchSSRFSafe')
+      .mockResolvedValueOnce(okResult(FIXTURE_TOML, REQUEST_URL))
+      .mockResolvedValueOnce(okResult(ROTATED_TOML, 'https://mirror.example/.well-known/stellar.toml'));
+
+    await fetchTomlWithCache('anchor.example');
+    // Simulate the previous entry expiring so the next read goes to the network.
+    defaultCache.set(
+      buildTomlCacheKey('anchor.example', 'anchor.example'),
+      { content: FIXTURE_TOML, fetchedAt: Date.now() - 10_000_000 },
+      3_600_000,
+    );
+
+    const remapped = await fetchTomlWithCache('anchor.example');
+    expect(remapped.ok && remapped.content).toBe(ROTATED_TOML);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example', 'anchor.example'))).toBeNull();
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example', 'mirror.example'))).toMatchObject({
+      content: ROTATED_TOML,
+      finalHost: 'mirror.example',
+    });
+    expect(defaultCache.get(buildTomlFinalHostAliasKey('anchor.example'))).toEqual({ finalHost: 'mirror.example' });
+
+    // The remapped host's document is what later hits serve, never the old one.
+    const hit = await fetchTomlWithCache('anchor.example');
+    expect(hit.ok && !hit.fetched && hit.content).toBe(ROTATED_TOML);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('never serves an entry whose recorded final host does not match its key', async () => {
+    const spy = jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue(okResult(ROTATED_TOML, REQUEST_URL));
+    defaultCache.set(
+      buildTomlCacheKey('anchor.example'),
+      { content: FIXTURE_TOML, fetchedAt: Date.now(), requestUrl: REQUEST_URL, finalHost: 'evil.example' },
+      3_600_000,
+    );
+
+    const result = await fetchTomlWithCache('anchor.example');
+    expect(result.ok && result.fetched && result.content).toBe(ROTATED_TOML);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails before any network call for a malformed domain', async () => {
+    const spy = jest.spyOn(ssrf, 'fetchSSRFSafe');
+    const result = await fetchTomlWithCache('bad domain');
+    expect(result.ok).toBe(false);
+    expect((result as any).error).toMatch(/toml: cache key target is not a valid URL/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('does not write a cache entry or alias when the fetch fails', async () => {
+    jest.spyOn(ssrf, 'fetchSSRFSafe').mockResolvedValue({ ok: false, error: 'HTTP 302', status: 302 });
+    const result = await fetchTomlWithCache('anchor.example');
+    expect(result.ok).toBe(false);
+    expect(defaultCache.get(buildTomlCacheKey('anchor.example'))).toBeNull();
+    expect(defaultCache.get(buildTomlFinalHostAliasKey('anchor.example'))).toBeNull();
   });
 });

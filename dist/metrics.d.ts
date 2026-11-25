@@ -186,6 +186,16 @@ export declare class MetricsCollector {
     private timers;
     private jobOutcome;
     /**
+     * Per-run correlation id (Issue #904). Kept as a top-level field of the
+     * summary — never as a metric tag — so it cannot become an unbounded
+     * label series.
+     */
+    private correlationId;
+    /** Attach the per-run correlation id to the metrics summary (Issue #904). */
+    setCorrelationId(id: string | undefined): void;
+    /** The correlation id attached via {@link setCorrelationId}, if any. */
+    getCorrelationId(): string | undefined;
+    /**
      * Record a numeric metric. A `contractAddress` tag is rejected outright:
      * callers must go through `recordContractMetric()`, which validates the
      * address and replaces it with a bounded hash before it ever reaches a
@@ -232,6 +242,7 @@ export declare class MetricsCollector {
         metrics: MetricPoint[];
         counters: Record<string, number>;
         totalMetrics: number;
+        correlationId?: string;
     };
     /**
      * Export metrics in JSON format.
@@ -386,9 +397,50 @@ export declare class HorizonLatencyHistogram {
     /** Reset all recorded samples. */
     reset(): void;
 }
+/**
+ * Issue #956 — bounded outcome labels for the per-address check latency
+ * histogram. The address itself is NEVER a label: every observation is
+ * aggregated under one of these fixed outcomes so cardinality is constant
+ * regardless of batch size.
+ */
+export declare const CHECK_LATENCY_OUTCOMES: readonly ["pass", "fail", "invalid", "error"];
+export type CheckLatencyOutcome = (typeof CHECK_LATENCY_OUTCOMES)[number];
+/** Snapshot shape of {@link CheckLatencyHistogram}, keyed by outcome. */
+export type CheckLatencyHistogramSnapshot = Record<CheckLatencyOutcome, LatencyStats>;
+/**
+ * Issue #956 — per-address check latency histogram.
+ *
+ * Records the wall-clock duration of each per-address check (fetch + rule
+ * evaluation) into the fixed {@link LATENCY_BUCKETS_MS} buckets. Storage is
+ * bounded: only counts, totals, min and max are kept per outcome — no raw
+ * samples and no addresses — so memory and label cardinality are O(1).
+ *
+ * Invalid observations (negative, NaN, non-finite) are rejected and counted
+ * under `rejected` instead of skewing the buckets.
+ */
+export declare class CheckLatencyHistogram {
+    private stats;
+    private rejectedCount;
+    constructor();
+    private static emptyStats;
+    /**
+     * Record one per-address check duration.
+     * @returns `true` when recorded, `false` when the input was rejected.
+     */
+    record(outcome: CheckLatencyOutcome, latencyMs: number): boolean;
+    /** Number of observations rejected as malformed. */
+    get rejected(): number;
+    /** Total accepted observations across all outcomes. */
+    get totalSamples(): number;
+    /** Deep-copied, address-free snapshot for the metrics JSON artifact. */
+    toSnapshot(): CheckLatencyHistogramSnapshot;
+    reset(): void;
+}
 export declare const globalMetrics: MetricsCollector;
 /** Global Horizon fetch latency histogram — wired into `fetchAccountOnce` in `horizon.ts`. */
 export declare const globalHorizonHistogram: HorizonLatencyHistogram;
+/** Issue #956 — global per-address check latency histogram, wired into `batch.ts`. */
+export declare const globalCheckLatencyHistogram: CheckLatencyHistogram;
 /** Global Octokit metrics instance — wired into `postIssueComment` and label operations. */
 export declare const globalOctokitMetrics: OctokitMetrics;
 /**

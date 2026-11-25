@@ -1,3 +1,4 @@
+import type { AssetReasonCode, ReasonCode } from './reasonCodes';
 import {
   HorizonAccount,
   HorizonBalanceCredit,
@@ -341,7 +342,7 @@ export function meetsMinimumBalance(balance: string, minimum: string): boolean {
  * `schemas/reason-codes.json` so webhook receivers can switch on the same
  * strings as the top-level `reason_code` output.
  */
-export type AssetReasonCode = 'SUCCESS' | 'TRUSTLINE_MISSING' | 'CLAWBACK_BLOCKED';
+export type { AssetReasonCode };
 
 /** Evaluated trustline/clawback state for one asset (primary or `assets_json`). */
 export interface AssetReasonEvaluation {
@@ -429,11 +430,10 @@ export function getAssetClawbackStatus(
  * Reason codes the authorization/clawback layer can produce. Every value is
  * part of the public catalog in `schemas/reason-codes.json`.
  */
-export type IssuerAuthFlagReasonCode =
-  | 'SUCCESS'
-  | 'TRUSTLINE_MISSING'
-  | 'TRUSTLINE_UNAUTHORIZED'
-  | 'CLAWBACK_BLOCKED';
+export type IssuerAuthFlagReasonCode = Extract<
+  ReasonCode,
+  'SUCCESS' | 'TRUSTLINE_MISSING' | 'TRUSTLINE_UNAUTHORIZED' | 'CLAWBACK_BLOCKED'
+>;
 
 /**
  * Non-blocking signals surfaced alongside the verdict. They never change the

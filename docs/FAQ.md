@@ -93,7 +93,27 @@ Get free testnet XLM from the [Stellar Friendbot](https://friendbot.stellar.org/
 **Helpful links:**
 - [Stellar Friendbot](https://friendbot.stellar.org/)
 - [Horizon testnet endpoint](https://horizon-testnet.stellar.org)
+- [Friendbot-funded testnet false negatives](#friendbot-testnet-false-negatives)
 - [Stellar Laboratory (testnet)](https://laboratory.stellar.org/#account-viewer?network=testnet)
+
+---
+
+## Friendbot-funded testnet false negatives {#friendbot-testnet-false-negatives}
+
+**Symptom:** A testnet account was just funded by Friendbot, but the run still fails.
+
+| What happened | `reason_code` | Recommended wait / fix |
+|---|---|---|
+| Horizon has not ingested the funding ledger yet | `ACCOUNT_NOT_FUNDED` | Wait 10–15 seconds (about 2–3 ledgers), then re-run. |
+| Friendbot returned 429 or 5xx, or timed out | `ACCOUNT_NOT_FUNDED` | Wait at least 60 seconds, then re-run; on timeouts raise `friendbot_timeout_ms` (max `60000`). |
+| Account funded, but no asset trustline | `TRUSTLINE_MISSING` | Friendbot only sends XLM. Add the trustline; waiting does not help. |
+| Horizon throttled, slow or unavailable | `HORIZON_WAIT_BUDGET_EXHAUSTED`, `HORIZON_TIMEOUT` or `HORIZON_ERROR` | Honor `Retry-After`, or wait 60 seconds and re-run. |
+| A 404 cached before funding | `ACCOUNT_NOT_FUNDED` | Wait for the 15-second negative cache to expire, then re-run. |
+| `horizon_url` and `friendbot_url` on different networks | `ACCOUNT_NOT_FUNDED` | Use the same network; waiting does not help. |
+
+Check `friendbot_called` and `friendbot_success` first: `true` / `true` with a failed run points to ingestion delay or a missing trustline.
+
+See the [example workflow](examples/friendbot-testnet-onboarding.yml), [Friendbot inputs](USAGE.md#friendbot-testnet-funding) and [troubleshooting](TROUBLESHOOTING.md#friendbot-funding-failed).
 
 ---
 

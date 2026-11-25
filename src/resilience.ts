@@ -175,6 +175,107 @@ export function addJitter(delayMs: number, jitterPercent: number = 10, maxDelayM
   return maxDelayMs !== undefined ? Math.min(jittered, maxDelayMs) : jittered;
 }
 
+// ---------------------------------------------------------------------------
+// Cron sweep backoff when Horizon is degraded (Issue #909)
+// ---------------------------------------------------------------------------
+
+/**
+ * `reason_code` values that mean "Horizon was degraded", not "the wallet is
+ * not ready". A scheduled sweep should count these — never wallet failures
+ * such as `TRUSTLINE_MISSING` — when deciding to pause. Documented in
+ * docs/CRON_REVALIDATION.md#backoff-when-horizon-is-degraded.
+ */
+export const HORIZON_DEGRADED_REASON_CODES = [
+  'HORIZON_TIMEOUT',
+  'HORIZON_ERROR',
+  'CIRCUIT_OPEN',
+  'RATE_BUDGET_EXHAUSTED',
+  'HORIZON_WAIT_BUDGET_EXHAUSTED',
+] as const;
+
+export type HorizonDegradedReasonCode = (typeof HORIZON_DEGRADED_REASON_CODES)[number];
+
+/** True when `reasonCode` signals a Horizon-side degradation. */
+export function isHorizonDegradedReasonCode(reasonCode: string): reasonCode is HorizonDegradedReasonCode {
+  return (HORIZON_DEGRADED_REASON_CODES as readonly string[]).includes((reasonCode ?? '').trim());
+}
+
+/** Tuning for {@link shouldPauseCronSweep} / {@link computeCronBackoffDelayMs}. */
+export interface CronBackoffPolicy {
+  /** Fraction (0–1] of degraded results in one sweep that pauses the sweep. */
+  degradedRateThreshold: number;
+  /** Minimum number of results before the rate is trusted. */
+  minSampleSize: number;
+  /** Delay before the first retry sweep after a degraded sweep. */
+  baseDelayMs: number;
+  /** Upper bound for the (pre-jitter) delay. */
+  maxDelayMs: number;
+  /** Jitter applied to the delay, as a percentage (± jitterPercent %). */
+  jitterPercent: number;
+}
+
+/**
+ * Defaults documented in docs/CRON_REVALIDATION.md: pause when ≥ 20 % of at
+ * least 5 results are Horizon-degraded, then back off 15 min → 30 → 60 → …
+ * capped at 6 h, with ± 20 % jitter so many Wave orgs do not resume together.
+ */
+export const DEFAULT_CRON_BACKOFF_POLICY: CronBackoffPolicy = {
+  degradedRateThreshold: 0.2,
+  minSampleSize: 5,
+  baseDelayMs: 15 * 60 * 1000,
+  maxDelayMs: 6 * 60 * 60 * 1000,
+  jitterPercent: 20,
+};
+
+/**
+ * Decide whether a cron sweep should stop dispatching further checks because
+ * Horizon looks degraded (Issue #909).
+ *
+ * @param reasonCodes  `reason_code` outputs collected so far in this sweep.
+ * @returns `true` once at least `minSampleSize` results were seen and the
+ *          share of {@link HORIZON_DEGRADED_REASON_CODES} reaches
+ *          `degradedRateThreshold`. Wallet failures never count.
+ */
+export function shouldPauseCronSweep(
+  reasonCodes: readonly string[],
+  policy: CronBackoffPolicy = DEFAULT_CRON_BACKOFF_POLICY,
+): boolean {
+  if (reasonCodes.length === 0 || reasonCodes.length < policy.minSampleSize) {
+    return false;
+  }
+  const degraded = reasonCodes.filter(isHorizonDegradedReasonCode).length;
+  return degraded / reasonCodes.length >= policy.degradedRateThreshold;
+}
+
+/**
+ * Delay before the next cron sweep after `consecutiveDegradedSweeps`
+ * degraded sweeps in a row (Issue #909).
+ *
+ * `0` sweeps → `0` (run on the normal schedule). Otherwise
+ * `min(baseDelayMs * 2^(n-1), maxDelayMs)` with ± `jitterPercent` jitter,
+ * never above `maxDelayMs`. Negative or non-finite counts throw so a broken
+ * counter in a workflow script fails loudly instead of hammering Horizon.
+ *
+ * @param random  Injectable RNG in [0, 1) for deterministic tests.
+ */
+export function computeCronBackoffDelayMs(
+  consecutiveDegradedSweeps: number,
+  policy: CronBackoffPolicy = DEFAULT_CRON_BACKOFF_POLICY,
+  random: () => number = Math.random,
+): number {
+  if (!Number.isFinite(consecutiveDegradedSweeps) || consecutiveDegradedSweeps < 0) {
+    throw new Error(
+      `consecutiveDegradedSweeps must be a non-negative finite number. Received: ${consecutiveDegradedSweeps}`,
+    );
+  }
+  const n = Math.floor(consecutiveDegradedSweeps);
+  if (n === 0) return 0;
+  const exponent = Math.min(n - 1, 30);
+  const delay = Math.min(policy.baseDelayMs * 2 ** exponent, policy.maxDelayMs);
+  const jitter = delay * (policy.jitterPercent / 100) * (random() * 2 - 1);
+  return Math.round(Math.min(Math.max(0, delay + jitter), policy.maxDelayMs));
+}
+
 /**
  * Sleep for a given duration.
  */
@@ -365,6 +466,42 @@ export interface CircuitBreakerOptions {
    * Issue #888.
    */
   onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
+  /**
+   * Wall clock used for every open-state expiry decision. Returns epoch
+   * milliseconds. Default: `() => Date.now()` (read at call time, so Jest
+   * modern fake timers keep working).
+   *
+   * Open-state expiry is purely time-based: the circuit stays open until
+   * `recoveryTimeoutMs` of wall-clock time has elapsed since it opened,
+   * no matter how many calls are fast-failed in the meantime. Inject a fake
+   * clock in tests to drive the cooldown deterministically.
+   */
+  now?: () => number;
+  /**
+   * Upper bound, in milliseconds, for a server-requested cooldown recorded
+   * via `CircuitBreaker.noteRetryAfter()`. A hostile or misconfigured
+   * Horizon cannot pin the circuit open longer than this. Default: 300 000
+   * (5 minutes). Must be a finite number ≥ 0.
+   */
+  maxRetryAfterMs?: number;
+}
+
+/** Default cap for Retry-After driven cooldowns (5 minutes). */
+export const DEFAULT_MAX_RETRY_AFTER_MS = 300_000;
+
+/**
+ * Validate a millisecond duration option. Throws a `RangeError` with a stable
+ * message for negative, NaN, or infinite values so misconfiguration fails
+ * loudly at construction time instead of producing a circuit that never (or
+ * instantly) recovers.
+ */
+function assertDurationMs(name: string, value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `CircuitBreaker option ${name} must be a finite number of milliseconds >= 0 (received ${String(value)}).`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -389,6 +526,15 @@ export interface CircuitBreakerOptions {
  *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
  *                    allowed; enough consecutive successes closes the circuit,
  *                    any failure re-opens it.
+ *
+ * Issue #920 — wall-clock open-state expiry: the open → half-open transition
+ * is driven only by elapsed time on the injected clock (`options.now`), never
+ * by how many calls were fast-failed. A server-requested `Retry-After`
+ * recorded through `noteRetryAfter()` extends the cooldown: the circuit does
+ * not go half-open, and half-open probes are not admitted, until both the
+ * recovery timeout and the Retry-After deadline have passed. If the clock
+ * moves backwards while open, the cooldown restarts from the new "now"
+ * instead of expiring early.
  */
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
@@ -396,6 +542,8 @@ export class CircuitBreaker {
   private consecutiveSuccesses: number = 0;
   private openedAt: number | null = null;
   private lastErrorClass: string | null = null;
+  /** Issue #920: epoch ms before which no probe may run (Retry-After floor). */
+  private retryAfterUntil: number | null = null;
 
   /** Issue #888: in-flight probe count while in half-open state. */
   private halfOpenProbesInFlight: number = 0;
@@ -408,12 +556,22 @@ export class CircuitBreaker {
   private readonly recoveryTimeoutMs: number;
   private readonly successThreshold: number;
   private readonly halfOpenMaxProbes: number;
+  private readonly maxRetryAfterMs: number;
+  private readonly now: () => number;
   private readonly onStateChange: (from: CircuitState, to: CircuitState, reason: string) => void;
   private readonly onProbeBudgetExhausted: (inFlight: number, maxProbes: number) => void;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.failureThreshold = options.failureThreshold ?? 5;
-    this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30_000;
+    this.recoveryTimeoutMs = assertDurationMs('recoveryTimeoutMs', options.recoveryTimeoutMs ?? 30_000);
+    this.maxRetryAfterMs = assertDurationMs(
+      'maxRetryAfterMs',
+      options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS,
+    );
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new TypeError('CircuitBreaker option now must be a function returning epoch milliseconds.');
+    }
+    this.now = options.now ?? (() => Date.now());
     this.successThreshold = options.successThreshold ?? 2;
     this.halfOpenMaxProbes = options.halfOpenMaxProbes ?? 1;
 
@@ -470,9 +628,24 @@ export class CircuitBreaker {
     this._maybeTransitionToHalfOpen();
 
     if (this.state === 'open') {
+      const remainingCooldownMs = this.getRemainingCooldownMs();
       throw new CircuitOpenError(
-        `Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures).`,
+        `Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures; ~${remainingCooldownMs}ms cooldown remaining).`,
+        remainingCooldownMs,
       );
+    }
+
+    // Issue #920: a Retry-After recorded after the circuit went half-open
+    // still gates probes — fast-fail until the server-requested deadline.
+    if (this.state === 'half-open') {
+      const remainingCooldownMs = this.getRemainingCooldownMs();
+      if (remainingCooldownMs > 0) {
+        throw new CircuitOpenError(
+          `Circuit breaker is half-open but Horizon asked to wait (Retry-After); ` +
+            `probe deferred for ~${remainingCooldownMs}ms.`,
+          remainingCooldownMs,
+        );
+      }
     }
 
     // Issue #888: enforce probe budget in half-open state.
@@ -529,12 +702,63 @@ export class CircuitBreaker {
     this.consecutiveFailures = 0;
     this.consecutiveSuccesses = 0;
     this.openedAt = null;
+    this.retryAfterUntil = null;
     this.halfOpenProbesInFlight = 0;
     this.halfOpenProbesCompleted = 0;
     this.halfOpenProbeBudgetExhaustedCount = 0;
     if (prev !== 'closed') {
       this.onStateChange(prev, 'closed', 'manual reset');
     }
+  }
+
+  /**
+   * Record a server-requested cooldown (Issue #920), typically the parsed
+   * `Retry-After` of a Horizon 429/503. The circuit will not move from open
+   * to half-open — and a half-open circuit will not admit probes — until
+   * `delayMs` has elapsed on the breaker's clock.
+   *
+   * - Values are clamped to `maxRetryAfterMs` so a hostile header cannot pin
+   *   the circuit open indefinitely.
+   * - Negative, NaN, or non-finite values are ignored (returns `false`), the
+   *   same way `parseRetryAfterMs` treats them as absent.
+   * - A shorter Retry-After never shortens an existing, longer deadline.
+   * - In the closed state the deadline is remembered but does not block
+   *   calls; the retry loop already sleeps for Retry-After. It only takes
+   *   effect if the circuit opens before the deadline passes.
+   *
+   * Returns `true` when the deadline was recorded or extended.
+   */
+  noteRetryAfter(delayMs: number): boolean {
+    if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
+      return false;
+    }
+    const until = this.now() + Math.min(delayMs, this.maxRetryAfterMs);
+    if (this.retryAfterUntil !== null && this.retryAfterUntil >= until) {
+      return false;
+    }
+    this.retryAfterUntil = until;
+    return true;
+  }
+
+  /**
+   * Milliseconds until the next probe may reach the wrapped operation
+   * (Issue #920). Always ≥ 0.
+   *
+   * - **closed**: 0.
+   * - **open**: the larger of the remaining recovery timeout and the
+   *   remaining Retry-After deadline.
+   * - **half-open**: the remaining Retry-After deadline (0 when none).
+   */
+  getRemainingCooldownMs(): number {
+    this._maybeTransitionToHalfOpen();
+    if (this.state === 'closed') return 0;
+    const now = this.now();
+    const retryAfterRemaining =
+      this.retryAfterUntil !== null ? Math.max(0, this.retryAfterUntil - now) : 0;
+    if (this.state === 'half-open') return retryAfterRemaining;
+    const recoveryRemaining =
+      this.openedAt !== null ? Math.max(0, this.openedAt + this.recoveryTimeoutMs - now) : 0;
+    return Math.max(recoveryRemaining, retryAfterRemaining);
   }
 
   /**
@@ -572,7 +796,7 @@ export class CircuitBreaker {
    *
    * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
    */
-  getOpenMetrics(now: number = Date.now()): CircuitOpenMetrics {
+  getOpenMetrics(now: number = this.now()): CircuitOpenMetrics {
     const stats = this.getStats();
     return {
       state: stats.state,
@@ -594,11 +818,17 @@ export class CircuitBreaker {
   // ---- private helpers ----
 
   private _maybeTransitionToHalfOpen(): void {
-    if (
-      this.state === 'open' &&
-      this.openedAt !== null &&
-      Date.now() - this.openedAt >= this.recoveryTimeoutMs
-    ) {
+    if (this.state !== 'open' || this.openedAt === null) return;
+    const now = this.now();
+    // Issue #920: a clock that moved backwards must not expire the cooldown
+    // early (or leave it negative) — restart it from the current reading.
+    if (now < this.openedAt) {
+      this.openedAt = now;
+      return;
+    }
+    const recoveryElapsed = now - this.openedAt >= this.recoveryTimeoutMs;
+    const retryAfterElapsed = this.retryAfterUntil === null || now >= this.retryAfterUntil;
+    if (recoveryElapsed && retryAfterElapsed) {
       const prev = this.state;
       this.state = 'half-open';
       this.consecutiveSuccesses = 0;
@@ -636,7 +866,7 @@ export class CircuitBreaker {
       this._wasHalfOpenBeforeFailure = true;
       const prev = this.state;
       this.state = 'open';
-      this.openedAt = Date.now();
+      this.openedAt = this.now();
       this.consecutiveSuccesses = 0;
       const reason = err instanceof Error ? err.message : String(err);
       this.onStateChange(prev, 'open', `probe failed in half-open: ${reason}`);
@@ -651,7 +881,7 @@ export class CircuitBreaker {
     ) {
       const prev = this.state;
       this.state = 'open';
-      this.openedAt = Date.now();
+      this.openedAt = this.now();
       const reason = err instanceof Error ? err.message : String(err);
       this.onStateChange(
         prev,
@@ -703,9 +933,19 @@ function errorClassOf(err: unknown): string {
  * request was fast-failed without reaching the underlying operation.
  */
 export class CircuitOpenError extends Error {
-  constructor(message: string) {
+  /**
+   * Issue #920: milliseconds until the breaker will admit a probe, when
+   * known. Callers can surface this as a hint ("retry in ~Ns") without
+   * guessing the recovery timeout.
+   */
+  public readonly remainingCooldownMs?: number;
+
+  constructor(message: string, remainingCooldownMs?: number) {
     super(message);
     this.name = 'CircuitOpenError';
+    if (remainingCooldownMs !== undefined && Number.isFinite(remainingCooldownMs)) {
+      this.remainingCooldownMs = Math.max(0, Math.round(remainingCooldownMs));
+    }
   }
 }
 

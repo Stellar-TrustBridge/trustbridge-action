@@ -28,6 +28,18 @@ The account exists but its native XLM balance is below `min_xlm_reserve`. Send a
 
 Retry later or switch `horizon_url` to a trusted endpoint for the target network.
 
+## Cron sweep fails across many issues during a Horizon incident
+
+If a scheduled re-validation sweep reports `HORIZON_TIMEOUT`, `HORIZON_ERROR`,
+`CIRCUIT_OPEN`, `RATE_BUDGET_EXHAUSTED` or `HORIZON_WAIT_BUDGET_EXHAUSTED` for
+a large share of issues, Horizon is degraded — the wallets are not the
+problem. Do not shorten the schedule or raise `max_retries`; that amplifies the
+outage. Instead pause the sweep once ≥ 20 % of results are degraded, back off
+the next sweep (15 min doubling up to 6 h, ± 20 % jitter), and lower
+`max_retries` / `retry_max_total_wait_ms` for the incident. The full policy,
+the resilience settings to tune, and a copy-paste workflow snippet are in
+[CRON_REVALIDATION.md → Backoff when Horizon is degraded](CRON_REVALIDATION.md#backoff-when-horizon-is-degraded).
+
 ## Horizon retry wait budget exhausted
 
 For `429`, `502`, `503`, and `504` responses, TrustBridge honors `Retry-After`
@@ -70,6 +82,17 @@ so rate-limit problems can be searched in the Actions log:
 | `retryAfterFromHeader` | `true` when the wait came from a `Retry-After` header. |
 | `reasonCode` | `HORIZON_RETRY_SCHEDULED`, `HORIZON_RETRIES_EXHAUSTED`, or `HORIZON_WAIT_BUDGET_EXHAUSTED`. |
 
+### Sampled exhaustion warnings (Issue #924)
+
+Exhaustion warnings (`HORIZON_RETRIES_EXHAUSTED` and `HORIZON_WAIT_BUDGET_EXHAUSTED`) are sampled so a rate-limit storm does not flood the log and bury the root error:
+
+- For each failure pattern, the first **3** warnings in a **60-second** window are logged in full. A pattern is the reason code, endpoint kind (`primary` or `fallback`), error kind, HTTP status, and redacted Horizon base URL. Account addresses are not part of the pattern, so one outage across many accounts is one stream.
+- Later warnings in the same window are counted, not printed.
+- When a window closes, or when the run ends, one summary line is written: `Horizon retry warnings sampled (<reasonCode>): N suppressed of M`. Its structured context has `event=horizon_retry_sampled`, `suppressedCount`, `totalCount`, `firstAt` and `lastAt` (UTC ISO timestamps for the first and last events in the window).
+- Scheduled retries are debug lines and are never sampled.
+
+To see every warning, count the summary lines against the full log. Each `suppressedCount` plus the printed warnings for that pattern equals `totalCount`. The sampling only affects log output. The `horizon_retry_*` metrics and the Job Summary counters still count every retry.
+
 Horizon response bodies are never logged for retryable (`429` / `5xx`)
 responses, and no other fields are added to these lines. Offline runs never
 call Horizon, so they produce no retry lines.
@@ -94,7 +117,7 @@ redactContext({ component: 'checks', rawPayload: accountResponse }, { strict: tr
 ```
 
 The base allowlist covers `component`, `stellarAddress`, `horizonUrl`,
-`reason_code`, `check`, the generic operational metadata keys `operation`,
+`reason_code`, `check`, `correlation_id` (Issue #904), the generic operational metadata keys `operation`,
 `status`, `count`, `durationMs`, and every key with a defined address
 redaction policy (`assetIssuer`, `accountId`, `contractAddress`, etc.). Pass
 `extraAllowedKeys` to accept additional fields at a specific call site:
@@ -116,6 +139,44 @@ logger — `redactValue` detects the cycle (`[CIRCULAR]`) or caps the depth
 coverage (nested objects/arrays at multiple depths, strict-mode drop
 behavior, and both malformed-input edge cases).
 
+## Quoting the correlation id to support (Issue #904)
+
+Every run generates one **correlation id** (`tb-` + 16 random hex chars, e.g.
+`tb-3f9c1a7e5b2d4c60`) in `initCorrelationId` (`src/diagnostics.ts`). It is
+random — never derived from tokens, addresses or run metadata — so it is
+safe to paste publicly. It appears in:
+
+| Surface | Where |
+|---|---|
+| Actions log | One `TrustBridge correlation id: tb-… (source=generated\|env)` line at the start of the run, plus a `correlation_id` field on **every** structured log line (`logInfo`/`logWarning`/`logError` JSON context and `logger.info`/`.warn`/`.error`/`.debug` `(…)` suffix). |
+| Metrics JSON | Top-level `correlationId` field of `MetricsCollector.getSummary()` / `toJSON()`. It is never a metric tag, so it cannot create an unbounded label series. |
+| Issue comment | Only when `debug_mode: true`: a hidden `<!-- trustbridge-action:correlation-id:tb-… -->` marker and a visible `Correlation ID: tb-…` line under the footer, plus a row at the top of the expert diagnostics block. Without `debug_mode` the comment is unchanged. |
+
+**How support should use it:** ask the reporter to copy the id from the
+comment footer (or the first lines of the job log) and search the Actions log
+for it — `correlation_id":"tb-…"` / `correlation_id=tb-…` matches every line
+from that run. Quote only the id; never ask for tokens or full addresses.
+
+**Propagating an existing id:** set `TRUSTBRIDGE_CORRELATION_ID` in the step
+`env:` (e.g. from a reusable workflow that fans out to several jobs) to reuse
+one id across runs:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  env:
+    TRUSTBRIDGE_CORRELATION_ID: wave-${{ github.run_id }}-${{ github.run_attempt }}
+```
+
+A propagated id must be 8–64 characters of `[A-Za-z0-9._-]` and must survive
+the log redaction policy unchanged (anything that looks like a token,
+secret assignment or Stellar address is rejected). An invalid value is
+**never echoed**: the run logs a warning with reason code
+`CORRELATION_ID_INVALID` and the reason (e.g. `correlation id must be 8-64
+characters (got 3)`), then generates a fresh id. The `correlation_id` key is
+on `LOG_CONTEXT_KEY_ALLOWLIST`, so strict-mode redaction keeps it.
+
+Test coverage: `__tests__/correlation-id.test.ts`.
+
 ## Friendbot funding failed
 
 With `use_friendbot: true`, a failed Friendbot call does not fail the job by
@@ -134,6 +195,9 @@ account is reported as unfunded. Common messages:
   hosts are accepted. On futurenet use `https://friendbot-futurenet.stellar.org`.
 - Warning `use_friendbot is enabled but horizon_url is not a test network`:
   Friendbot is never called on pubnet.
+
+If funding succeeded but the run still fails, see the
+[false-negative FAQ](FAQ.md#friendbot-testnet-false-negatives).
 
 See [USAGE.md — Friendbot testnet funding](USAGE.md#friendbot-testnet-funding)
 for the input reference.
@@ -236,3 +300,25 @@ GitHub Job Summaries have a 1 MiB UTF-8 budget. TrustBridge treats the verbose m
 ## Retry-After wait metrics
 
 A `horizon_retry_after_wait` metric records each actual jittered wait in milliseconds. The `horizon_retry_after_waits` and `horizon_retry_after_wait_ms` counters show how often and how long the action waited on server guidance. The wait is always bounded by `retry_max_delay_ms` and the cumulative `retry_max_total_wait_ms` budget.
+
+## SARIF upload failures
+
+Playbook for `github/codeql-action/upload-sarif` failures after TrustBridge
+writes `sarif_output_path` (generated by `src/sarif.ts`, SARIF 2.1.0). Working
+workflow: [`docs/examples/sarif-code-scanning.yml`](examples/sarif-code-scanning.yml).
+
+| Symptom (upload-sarif log) | Cause | Fix |
+|---|---|---|
+| `Resource not accessible by integration` / HTTP 403 | Job lacks `security-events: write` | Add `permissions: { security-events: write, contents: read }` to the job. Fork PRs never get this permission — gate the upload with `if: github.event.pull_request.head.repo.full_name == github.repository`. |
+| `Advanced Security must be enabled for this repository` | Code scanning disabled on a private repo | Enable GitHub Advanced Security / code scanning in repo settings. |
+| HTTP 404 on GHES | Code scanning not available on that GHES version | See [GHES compatibility](GHES_COMPATIBILITY.md); skip the upload step on unsupported servers. |
+| `Path does not exist` / `No SARIF files found` | Upload ran when TrustBridge did not write the file (input empty, earlier step failed) | Set `sarif_output_path`, run the upload with `if: always()` and `hashFiles('trustbridge-results.sarif') != ''`. |
+| `SARIF file is too large` / payload over 10 MB gzipped, or over 5000 results per run | Very large batch rosters | Split batches (`stellar_addresses`) across matrix jobs, one SARIF `category` each. |
+| `Unable to upload: ... is not valid SARIF` / schema error | File edited or truncated after generation, or non-JSON written to the path | Do not post-process the file; validate with `jq empty trustbridge-results.sarif`. `$schema` must be the SARIF 2.1.0 schema URL and `version` `2.1.0` (`SARIF_SCHEMA` / `SARIF_VERSION` in `src/sarif.ts`). |
+| Alerts duplicate on every run | Changing `category` between runs, or uploading multiple runs with the same category | Keep one stable `category` per workflow/matrix leg. Fingerprints use `partialFingerprints["trustbridge/v1"]`, so identical findings dedupe automatically. |
+| Upload "succeeds" but no alerts appear | All checks passed (no results), or filtered by branch | Expected: a clean run uploads an empty `results` array. Alerts only show for the default branch and PR refs. |
+
+Rule IDs (`TB000`–`TB010`) and their help URIs are defined in `src/sarif.ts`
+and documented in [USAGE.md](USAGE.md#sarif-output-for-github-advanced-security).
+Never paste SARIF into public issues without checking it: addresses are
+redacted per the logging policy, but treat the file as CI output.

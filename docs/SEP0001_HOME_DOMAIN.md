@@ -90,6 +90,27 @@ Add the inputs to your workflow step:
 The domain fetched is `expected_home_domain` when it is set, otherwise the
 on-chain `home_domain`. When neither is known, the TOML step is skipped.
 
+### HTTPS-only transport (Issue #960)
+
+`stellar.toml` is always fetched as `https://{domain}/.well-known/stellar.toml`
+through the SSRF gate (`src/ssrf.ts`), which refuses any non-HTTPS URL and
+any redirect that downgrades the scheme. `src/toml.ts` additionally inspects
+the configured/on-chain domain for an explicit scheme prefix:
+
+| Network | Domain value | `stellar_toml_allow_insecure_testnet` | Result |
+|---|---|---|---|
+| pubnet (default) | `example.com` / `https://example.com` | any | Fetched over HTTPS. |
+| pubnet | `http://example.com` (or any other scheme) | any (ignored) | **Fails** with `reason_code: toml_https_required`; no network call. |
+| testnet / futurenet | `http://example.com` | `false` | **Fails** with `toml_https_required`. |
+| testnet / futurenet | `http://example.com` | `true` | Warning logged; scheme **upgraded** and fetched over HTTPS. |
+| any | `ftp://…`, `file://…` | any | **Fails** with `toml_https_required`. |
+
+The network is inferred from `horizon_url` (same preset logic as the network
+presets). The testnet override exists only so testnet issuers whose
+`home_domain` was set with an `http://` prefix do not hard-fail; it never
+performs a plain-HTTP request. An unset or unrecognised network is treated as
+pubnet (fail closed).
+
 ### Cache TTL semantics
 
 - A cached body is served only while `now − fetchedAt < stellar_toml_cache_ttl_ms`.
@@ -99,6 +120,37 @@ on-chain `home_domain`. When neither is known, the TOML step is skipped.
 - TTLs above 24 h are clamped. `0` disables the cache.
 - The cache lives in job memory only. Nothing is written to disk or to the
   Actions cache, so a poisoned entry cannot outlive the job.
+
+### Cache keys (Issue #914)
+
+Every cached body is keyed on **both** the normalized request URL and the
+host that actually served the document after redirects
+(`buildTomlCacheKey` in `src/toml.ts`):
+
+```
+toml:https://anchor.example/.well-known/stellar.toml|final:anchor.example
+```
+
+- A bare domain is expanded to its canonical
+  `https://{domain}/.well-known/stellar.toml` URL; scheme and host are
+  lower-cased, so `ANCHOR.example` and `anchor.example` share an entry.
+- A small alias entry (`toml-final-host:<url>`) remembers which final host
+  last served the URL, so a lookup can build the full key before any network
+  call.
+- If a later fetch of the same URL resolves to a **different** final host, the
+  entry cached for the previous host is evicted and a warning is logged
+  (`stellar.toml for <domain> now resolves to a different final host; cache
+  entry re-keyed`). The old document is never served for the remapped URL.
+- An entry whose recorded request URL or final host does not match the key it
+  was read from is treated as a miss and re-fetched.
+- An unparseable domain fails before any network call with
+  `toml: cache key target is not a valid URL: <domain>`.
+
+Redirects are still refused today (see [Fetch limits](#fetch-limits-issue-782)),
+so the final host currently always equals the request host. Keying on the final
+host keeps the cache correct if a future change allows same-origin redirects,
+and stops a wrong document being served for a `home_domain` (a false pass or
+fail).
 
 ### Hash pin behaviour
 

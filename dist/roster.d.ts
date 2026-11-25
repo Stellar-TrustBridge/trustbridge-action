@@ -2,7 +2,9 @@ import { AssigneeAddressMap } from './inputs';
 export interface RosterFilterOptions {
     /** Exact addresses or bounded globs using `*` and `?`. */
     allowlist?: string[];
-    /** Exact addresses or bounded globs using `*` and `?`; deny wins. */
+    /** Exact addresses or bounded globs using `*` and `?`; deny wins.
+    ocument operator remediation; test both paths in batch mode.
+    */
     denylist?: string[];
 }
 /** Linear-time glob matcher. It does not compile user input into a RegExp. */
@@ -67,6 +69,13 @@ export interface RosterCsvImportResult {
      */
     summaryMarkdown: string;
 }
+/**
+ * True when a cell starts with a spreadsheet formula trigger (`=`, `+`, `-`,
+ * `@`, tab or CR). Such cells are rejected rather than imported so an
+ * Excel-exported roster can never smuggle a formula (CSV injection) into
+ * downstream reports (Issue #953).
+ */
+export declare function isCsvFormulaCell(cell: string): boolean;
 /**
  * Parse a CSV roster of Stellar addresses (optionally paired with GitHub
  * logins) into a validated, de-duplicated roster plus a rejection summary

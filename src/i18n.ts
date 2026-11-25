@@ -1050,3 +1050,85 @@ export function negotiateLocale(options: LocaleNegotiationOptions = {}): Locale 
 
   return 'en';
 }
+
+// ---------------------------------------------------------------------------
+// Plural forms for failure counts (Issue #922)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phrase builder for one plural category. `n` is the already formatted count
+ * (for example `"3"`), so the phrase controls word order and noun agreement.
+ */
+export type PluralPhrase = (n: string) => string;
+
+/**
+ * Per-locale phrases for "N assets failed". Each locale lists only the CLDR
+ * categories it needs; `other` is mandatory and is the fallback for any
+ * category a locale does not list (for example `many` in `fr`, or every
+ * category in `ja`, which has no grammatical plural).
+ *
+ * Translators: add or change a phrase here, not at the call site. Keep the
+ * `{n}`-style argument as the first word so the count always reads first.
+ */
+export const ASSET_FAILURE_PHRASES: Readonly<Record<Locale, Partial<Record<Intl.LDMLPluralRule, PluralPhrase>> & { other: PluralPhrase }>> = {
+  en: {
+    one: (n) => `${n} asset failed`,
+    other: (n) => `${n} assets failed`,
+  },
+  es: {
+    one: (n) => `${n} activo falló`,
+    other: (n) => `${n} activos fallaron`,
+  },
+  pt: {
+    one: (n) => `${n} ativo falhou`,
+    other: (n) => `${n} ativos falharam`,
+  },
+  ja: {
+    other: (n) => `${n} 件のアセットが失敗`,
+  },
+  fr: {
+    one: (n) => `${n} actif a échoué`,
+    other: (n) => `${n} actifs ont échoué`,
+  },
+  de: {
+    one: (n) => `${n} Asset fehlgeschlagen`,
+    other: (n) => `${n} Assets fehlgeschlagen`,
+  },
+};
+
+/**
+ * Normalize a failure count before pluralization (Issue #922).
+ *
+ * Non-finite and negative values become `0`, and fractions are truncated, so
+ * a bad count can never render as `NaN assets failed` or `-1 assets failed`.
+ */
+export function normalizeFailureCount(count: number): number {
+  if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return 0;
+  return Math.trunc(count);
+}
+
+/**
+ * Pick the CLDR plural category for `count` in `locale` (Issue #922).
+ *
+ * Uses `Intl.PluralRules`, so the rules follow CLDR rather than hand-written
+ * `=== 1` checks: French treats `0` as singular, and Portuguese treats `0`
+ * and `1` as singular. Unknown locales use English rules.
+ */
+export function failureCountCategory(locale: string | null | undefined, count: number): Intl.LDMLPluralRule {
+  const resolved = parseLocaleInput(locale ?? undefined);
+  return new Intl.PluralRules(resolved).select(normalizeFailureCount(count));
+}
+
+/**
+ * Render "N assets failed" in `locale` with the correct plural form for
+ * 0, 1 and many (Issue #922). Categories a locale does not define fall back
+ * to `other`, and the count is normalized by {@link normalizeFailureCount}.
+ */
+export function formatAssetFailureCount(locale: string | null | undefined, count: number): string {
+  const resolved = parseLocaleInput(locale ?? undefined);
+  const safeCount = normalizeFailureCount(count);
+  const phrases = ASSET_FAILURE_PHRASES[resolved];
+  const category = failureCountCategory(resolved, safeCount);
+  const phrase = phrases[category] ?? phrases.other;
+  return phrase(safeCount.toLocaleString('en-US'));
+}

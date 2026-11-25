@@ -1,3 +1,4 @@
+import { effectiveReasonCode } from './reasonCodes';
 import * as core from "@actions/core";
 import * as fs from "fs";
 import * as path from "path";
@@ -36,12 +37,22 @@ import {
   parseSnoozeMarker,
   evaluateCombinedSnoozeState,
   CommentReaction,
+  SNOOZE_REASON_CODE,
+  SNOOZE_AUDIT_CHECK,
+  formatSnoozeExpiry,
+  type SnoozeState,
 } from './snooze';
-import { buildDiagnosticsBlock, DiagnosticsConfig } from './diagnostics';
+import {
+  buildDiagnosticsBlock,
+  DiagnosticsConfig,
+  formatCorrelationFooter,
+  formatCorrelationMarker,
+} from './diagnostics';
 import { Locale, getStrings } from './i18n';
 import { formatDeltaMarkdown, ValidationDelta } from './delta';
 import { traceCommentPost } from './tracing';
-import { redactStellarAddress } from './logger';
+import { redactStellarAddress, logInfo } from './logger';
+import type { LogContext } from './logger';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -148,6 +159,48 @@ export interface CommentConfig extends CheckConfig {
    * Matches the `privacy_mode` action input.
    */
   privacyMode?: boolean;
+  /**
+   * Per-run correlation id from `initCorrelationId` in `src/diagnostics.ts`
+   * (Issue #904). Only rendered when `correlationFooter` is true.
+   */
+  correlationId?: string;
+  /**
+   * When true and `correlationId` is valid, append a hidden
+   * `<!-- trustbridge-action:correlation-id:… -->` marker and a visible
+   * "Correlation ID" line under the footer so support can match the comment
+   * to the Actions log. The action enables it when `debug_mode: true`.
+   * Default false — the comment is byte-identical to earlier releases.
+   */
+  correlationFooter?: boolean;
+}
+
+/**
+ * Structured log context for a snooze-suppressed comment update (Issue #908).
+ * Mirrors `buildSnoozeAuditLogContext` in `src/snooze.ts` (same stable
+ * `reason_code` / `check` keys) with `event: snooze_comment_suppressed`.
+ */
+export function buildSnoozeSuppressionLogContext(
+  state: SnoozeState,
+  snoozeWindowMs: number,
+  issueNumber?: number,
+): LogContext {
+  const remainingMs =
+    state.elapsedMs !== undefined ? Math.max(0, snoozeWindowMs - state.elapsedMs) : undefined;
+  const expiresAt =
+    state.lastTimestamp !== undefined ? state.lastTimestamp + snoozeWindowMs : undefined;
+  const context: LogContext = {
+    component: 'snooze',
+    event: 'snooze_comment_suppressed',
+    reason_code: SNOOZE_REASON_CODE,
+    check: SNOOZE_AUDIT_CHECK,
+    source: state.lastStatus !== undefined ? 'marker' : 'reaction',
+    snoozeWindowMs,
+    elapsedMs: state.elapsedMs ?? null,
+    remainingMs: remainingMs ?? null,
+    expiresAt: formatSnoozeExpiry(expiresAt),
+  };
+  if (issueNumber !== undefined) context['issueNumber'] = issueNumber;
+  return context;
 }
 
 export const TRUSTBRIDGE_FOOTER =
@@ -347,7 +400,12 @@ export function formatCommentBody(
     // `ready` / `reason_code` action outputs expose. Surfacing it here means a
     // dashboard triager can read the reason code straight from the comment
     // instead of digging through the Actions log.
-    const reasonCode = result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED');
+    // Issue #921: empty/whitespace reason codes fall back via effectiveReasonCode.
+    const trimmedReason = result.reasonCode?.trim();
+    const reasonCode = effectiveReasonCode({
+      valid: result.valid,
+      reasonCode: trimmedReason ? (trimmedReason as typeof result.reasonCode) : undefined,
+    });
     lines.push(
       "",
       `### ${strings.validationGateHeading}`,
@@ -620,6 +678,15 @@ export function formatCommentBody(
     }
 
     lines.push("", "---", TRUSTBRIDGE_FOOTER);
+
+    // Correlation id footer (Issue #904) — opt-in, rendered after the
+    // standard footer so the contributor-facing content is unchanged.
+    if (config.correlationFooter) {
+      const correlationFooter = formatCorrelationFooter(config.correlationId);
+      if (correlationFooter) {
+        lines.push(formatCorrelationMarker(config.correlationId), correlationFooter);
+      }
+    }
 
     return lines.join("\n");
   };
@@ -1527,8 +1594,10 @@ export async function upsertIssueComment(
       snoozeExpired = snoozeState.snoozeExpired;
 
       if (snoozeState.isSnoozed) {
-        core.info(
+        // Structured audit line (Issue #908) so a suppressed update is never silent.
+        logInfo(
           `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`,
+          buildSnoozeSuppressionLogContext(snoozeState, snoozeWindowMs, issueNumber),
         );
         return {
           url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
@@ -1973,8 +2042,9 @@ export async function postDiscussionComment(
     );
 
     if (snoozeState.isSnoozed) {
-      core.info(
+      logInfo(
         `Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`,
+        buildSnoozeSuppressionLogContext(snoozeState, snoozeWindowMs),
       );
       return undefined;
     }

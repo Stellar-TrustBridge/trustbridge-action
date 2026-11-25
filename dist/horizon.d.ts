@@ -114,7 +114,12 @@ export declare class HorizonPinMismatchError extends HorizonError {
  * working unchanged.
  */
 export declare class HorizonCircuitOpenError extends HorizonError {
-    constructor(message: string);
+    /**
+     * Issue #920: milliseconds until the breaker admits another probe, copied
+     * from the underlying `CircuitOpenError` when known.
+     */
+    readonly remainingCooldownMs?: number;
+    constructor(message: string, remainingCooldownMs?: number);
 }
 /** Is this error a circuit-breaker fast-fail (Issue #434)? */
 export declare function isCircuitOpenError(error: unknown): error is HorizonCircuitOpenError;
@@ -141,6 +146,8 @@ export interface FetchAccountOptions {
     negativeCacheTtlMs?: number;
     cache?: SimpleCache;
     fetchFn?: FetchLike;
+    /** Called on every Horizon 429, or any error response with Retry-After (Issue #946). */
+    onThrottle?: () => void;
     /**
      * Optional AbortSignal from a parent controller (e.g. job cancellation).
      * When the signal fires, in-flight and pending requests are aborted
