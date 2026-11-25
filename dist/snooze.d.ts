@@ -26,7 +26,14 @@
  *
  * **Force Post**: An optional `force_comment` input bypasses snooze logic
  * so maintainers can force an immediate comment post if needed.
+ *
+ * **Audit trail (Issue #908)**: Whenever a snooze skips validation, a
+ * structured `snooze_skip` log line (reason_code `snoozed`) is emitted with
+ * the snooze source, elapsed/remaining time, and expiry timestamp, and the
+ * comment notice names the expiry — so a snooze is never silent.
  */
+import type { LogContext } from './logger';
+import type { MetricsCollector } from './metrics';
 /**
  * Hidden marker format in comment body:
  * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms|iso-utc}(?:,timezone={tz})? -->
@@ -186,7 +193,43 @@ export interface SnoozeEnforcement {
     commentNotice?: string;
     /** Underlying snooze state that produced this decision. */
     state: SnoozeState;
+    /** Which mechanism is holding the snooze (set when `skipValidation`). */
+    source?: SnoozeSource;
+    /** Remaining snooze time in ms (set when `skipValidation`). */
+    remainingMs?: number;
+    /** Unix-ms timestamp at which the snooze window expires (set when `skipValidation`). */
+    expiresAt?: number;
 }
+/** Mechanism that put an issue into snooze (Issue #908). */
+export type SnoozeSource = 'marker' | 'reaction';
+/** Stable `event` field on the snooze audit log line (Issue #908). */
+export declare const SNOOZE_AUDIT_EVENT: "snooze_skip";
+/** Stable `check` label on the snooze audit log line (Issue #908). */
+export declare const SNOOZE_AUDIT_CHECK: "snooze";
+/** In-process counter incremented once per snooze-skipped run (Issue #908). */
+export declare const SNOOZE_SKIPPED_COUNTER: "snooze_skipped";
+/**
+ * Format a unix-ms timestamp as an ISO-8601 string, or `'unknown'` when the
+ * value is missing or not a valid date.
+ */
+export declare function formatSnoozeExpiry(expiresAt: number | undefined): string;
+/**
+ * Build the structured log context for a snooze-skip audit line (Issue #908).
+ *
+ * The context carries only bounded, non-sensitive fields (no addresses, no
+ * reaction user logins), and always includes the stable `reason_code`
+ * (`snoozed`) and `check` (`snooze`) keys so Wave operators can grep for it.
+ */
+export declare function buildSnoozeAuditLogContext(enforcement: SnoozeEnforcement, snoozeWindowMs: number, extra?: {
+    issueNumber?: number;
+}): LogContext;
+/**
+ * Emit the structured snooze-skip audit log line (Issue #908). No-op when
+ * the enforcement did not skip validation.
+ */
+export declare function emitSnoozeAuditLog(enforcement: SnoozeEnforcement, snoozeWindowMs: number, extra?: {
+    issueNumber?: number;
+}): void;
 /**
  * Format a human-readable duration for snooze notices (e.g. "2h 15m").
  */
@@ -203,8 +246,19 @@ export declare function formatSnoozeDuration(ms: number | undefined): string;
  * guaranteeing snooze duration integrity across DST boundaries.
  *
  * `forceComment` bypasses enforcement so maintainers can force a run.
+ *
+ * When validation is skipped (Issue #908):
+ * - a structured `snooze_skip` audit log line is emitted (disable with
+ *   `audit: false` when the caller emits it itself);
+ * - the comment notice states the expiry time (ISO-8601, UTC);
+ * - when `metrics` is passed, the `snooze_skipped` counter is incremented, a
+ *   `snooze_skipped` metric tagged with the source is recorded, and the job
+ *   outcome is recorded as `skipped`.
  */
 export declare function enforceSnoozeWindow(currentPassed: boolean, lastMarker: SnoozeMarker | undefined, reactions: CommentReaction[] | undefined | null, snoozeWindowMs: number, options?: {
     forceComment?: boolean;
     now?: number | string | Date;
+    audit?: boolean;
+    metrics?: MetricsCollector;
+    issueNumber?: number;
 }): SnoozeEnforcement;

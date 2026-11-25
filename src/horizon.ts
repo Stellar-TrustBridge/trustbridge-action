@@ -153,9 +153,18 @@ export class HorizonPinMismatchError extends HorizonError {
  * working unchanged.
  */
 export class HorizonCircuitOpenError extends HorizonError {
-  constructor(message: string) {
+  /**
+   * Issue #920: milliseconds until the breaker admits another probe, copied
+   * from the underlying `CircuitOpenError` when known.
+   */
+  public readonly remainingCooldownMs?: number;
+
+  constructor(message: string, remainingCooldownMs?: number) {
     super(message, 0, false);
     this.name = "HorizonCircuitOpenError";
+    if (remainingCooldownMs !== undefined) {
+      this.remainingCooldownMs = remainingCooldownMs;
+    }
   }
 }
 
@@ -662,6 +671,15 @@ async function fetchAccountOnce(
 
       if (!response.ok) {
         const retryable = isRetryableStatus(response.status);
+        // Issue #920: feed a server-requested Retry-After into the circuit
+        // breaker so, if the circuit opens, it cannot go half-open (and
+        // half-open probes are not admitted) before Horizon's deadline.
+        if (retryable && circuitBreaker && typeof response.headers?.get === 'function') {
+          const breakerRetryAfterMs = parseRetryAfterMs(response);
+          if (breakerRetryAfterMs !== null) {
+            circuitBreaker.noteRetryAfter(breakerRetryAfterMs);
+          }
+        }
         // Issue #913: record the span error before the body is read, so the
         // Horizon problem document (detail/title/extras) can never reach it.
         recordHorizonHttpError({
@@ -864,6 +882,7 @@ async function fetchAccountOnce(
         }));
         throw new HorizonCircuitOpenError(
           `Horizon request blocked by circuit breaker: ${error.message}`,
+          error.remainingCooldownMs,
         );
       }
 

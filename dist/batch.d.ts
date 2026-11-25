@@ -9,6 +9,31 @@ import { CheckConfig, HomeDomainOutcome } from './checks';
 import { HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
 import { AssetConfigInput } from './assets';
+import { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING } from './inputs';
+export { DEFAULT_BATCH_MAX_ADDRESSES, BATCH_MAX_ADDRESSES_CEILING };
+/** Stable reason code carried by {@link BatchAddressLimitError}. */
+export declare const BATCH_ADDRESS_LIMIT_REASON_CODE = "BATCH_ADDRESS_LIMIT_EXCEEDED";
+/**
+ * Thrown when a batch run is asked to validate more unique addresses than
+ * `batch_max_addresses` allows. Always raised **before** any Horizon request
+ * so an oversized matrix never spends rate budget or runner memory.
+ */
+export declare class BatchAddressLimitError extends Error {
+    readonly reasonCode = "BATCH_ADDRESS_LIMIT_EXCEEDED";
+    /** Number of unique addresses requested. */
+    readonly count: number;
+    /** Effective per-run limit. */
+    readonly limit: number;
+    /** Minimum number of matrix legs needed to stay within `limit`. */
+    readonly suggestedJobs: number;
+    constructor(count: number, limit: number);
+}
+/**
+ * Enforce the per-run address cap (Issue #911).
+ *
+ * @throws {BatchAddressLimitError} When `addresses` exceeds the limit.
+ */
+export declare function enforceBatchAddressLimit(addresses: readonly string[], maxAddresses?: number): void;
 /**
  * `reason_code` emitted for a batch row (or asset) blocked by
  * `clawback_strict_mode: true`. Mirrors the SARIF rule `TB005` used by the
@@ -35,6 +60,11 @@ export declare const BATCH_REASON_CODES: {
      * spent, the run was cancelled by the caller.
      */
     readonly cancelled: "CANCELLED";
+    /**
+     * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+     * fails; remaining addresses keep being validated.
+     */
+    readonly addressTimeout: "ADDRESS_TIMEOUT";
 };
 /** A single asset that hit `clawback_strict_mode` for one address. */
 export interface BatchAssetFailure {
@@ -155,6 +185,20 @@ export interface BatchRunOptions {
      * orphaned.
      */
     signal?: AbortSignal;
+    /**
+     * Hard cap on addresses per run (Issue #911, `batch_max_addresses`).
+     * Defaults to {@link DEFAULT_BATCH_MAX_ADDRESSES}. Exceeding it throws a
+     * {@link BatchAddressLimitError} before any Horizon request or metric.
+     */
+    maxAddresses?: number;
+    /**
+     * Per-address deadline in milliseconds (Issue #928), independent of the
+     * global `signal`. When one address takes longer, its in-flight requests
+     * are aborted and the row is reported as `ADDRESS_TIMEOUT`; the batch moves
+     * on. Global cancellation (`signal`) always takes precedence. Unset, `0`,
+     * or non-finite disables the deadline (previous behavior).
+     */
+    perAddressTimeoutMs?: number;
 }
 /** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
 export declare const MIN_BATCH_CONCURRENCY = 1;
@@ -167,9 +211,13 @@ export declare const MAX_BATCH_CONCURRENCY = 20;
  * - Newline-separated list: one address per line (blank lines ignored)
  * - JSON array: `["GABC...", "GDEF..."]`
  *
- * Throws if the resulting list is empty.
+ * Throws if the resulting list is empty, or (Issue #911) a
+ * {@link BatchAddressLimitError} when the deduplicated list exceeds
+ * `options.maxAddresses` (default {@link DEFAULT_BATCH_MAX_ADDRESSES}).
  */
-export declare function parseBatchAddresses(raw: string): string[];
+export declare function parseBatchAddresses(raw: string, options?: {
+    maxAddresses?: number;
+}): string[];
 export declare function runBatchValidation(addresses: string[], config: CheckConfig, horizonUrl: string, options?: BatchRunOptions): Promise<BatchAddressResult[]>;
 /**
  * Compute aggregate summary metrics from batch results.

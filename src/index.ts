@@ -48,7 +48,7 @@ import {
   parseHomeDomainCheckModeInput,
 } from './inputs';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport, toBooleanOutput } from './outputs';
 import { logger, emitInputsLogRecord, logInfo, logWarning } from './logger';
 import { initCorrelationId, CORRELATION_ID_ENV, CORRELATION_ID_INVALID_REASON_CODE } from './diagnostics';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
@@ -1084,7 +1084,7 @@ export async function run(): Promise<void> {
     // Authoritative for batch mode — overwrites setValidationOutputs's
     // single-address-derived value above, same precedence as the other
     // batch outputs.
-    core.setOutput('outputs_truncated', String(batchOutputsTruncated));
+    core.setOutput('outputs_truncated', toBooleanOutput(batchOutputsTruncated, 'outputs_truncated'));
   }
 
   // ---------------------------------------------------------------------------

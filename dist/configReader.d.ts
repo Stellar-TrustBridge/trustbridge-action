@@ -13,7 +13,8 @@
  *   3. Secret redaction — known secret field names (token, api_key, …) are
  *      never logged; they are replaced with "***" in any diagnostic output.
  *
- * The reader is intentionally conservative: unknown keys are ignored, and
+ * The reader is intentionally conservative: unknown keys are ignored (or, in
+ * strict mode, rejected with a "did you mean" hint — Issue #927), and
  * only the fields declared in `TrustbridgeConsumerConfig` are surfaced to
  * the caller.  This keeps the attack surface small and prevents a malicious
  * config from injecting unexpected values into the action runtime.
@@ -33,6 +34,23 @@ import { TrustbridgeConsumerConfig, ValidationResult } from './validation';
  * multi-line values, or any YAML feature that could be used for injection.
  */
 export declare function parseSimpleYaml(content: string): Record<string, unknown>;
+/** Every key `.trustbridge.yml` understands (mirrors `TrustbridgeConsumerConfig`). */
+export declare const KNOWN_CONFIG_KEYS: readonly string[];
+export interface ReadConfigOptions {
+    /**
+     * When true, unknown top-level keys are validation errors (the config is
+     * rejected). When false (default, lenient mode) they are ignored exactly as
+     * before, so existing configs keep working.
+     */
+    strict?: boolean;
+}
+/** Closest known key within edit distance 3, for "did you mean" hints. */
+export declare function suggestConfigKey(unknown: string): string | null;
+/**
+ * Lists unknown top-level keys with stable messages. Key names are passed
+ * through `redactString` so a pasted secret used as a key is never echoed.
+ */
+export declare function findUnknownConfigKeys(raw: Record<string, unknown>): string[];
 export interface ReadConfigResult {
     /** The validated and typed config, or null if no config files were found. */
     config: TrustbridgeConsumerConfig | null;
@@ -50,7 +68,7 @@ export interface ReadConfigResult {
  * Organization config (.github/trustbridge.yml) is loaded first.
  * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
  */
-export declare function readTrustbridgeConfigs(repoConfigPath?: string, workspaceRoot?: string): ReadConfigResult;
+export declare function readTrustbridgeConfigs(repoConfigPath?: string, workspaceRoot?: string, options?: ReadConfigOptions): ReadConfigResult;
 /**
  * Read and validate a consumer trustbridge.yml config file.
  *
@@ -59,8 +77,9 @@ export declare function readTrustbridgeConfigs(repoConfigPath?: string, workspac
  *                    workspace root when omitted or empty.
  * @param workspaceRoot  Absolute path to the repository root.  Defaults to
  *                       `process.cwd()` when omitted.
+ * @param options  `strict: true` rejects unknown keys (Issue #927).
  */
-export declare function readTrustbridgeConfig(configPath?: string, workspaceRoot?: string): ReadConfigResult;
+export declare function readTrustbridgeConfig(configPath?: string, workspaceRoot?: string, options?: ReadConfigOptions): ReadConfigResult;
 /**
  * Merge consumer config values into a set of action input defaults.
  * Consumer config values take precedence over defaults but are overridden

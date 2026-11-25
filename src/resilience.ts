@@ -466,6 +466,42 @@ export interface CircuitBreakerOptions {
    * Issue #888.
    */
   onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
+  /**
+   * Wall clock used for every open-state expiry decision. Returns epoch
+   * milliseconds. Default: `() => Date.now()` (read at call time, so Jest
+   * modern fake timers keep working).
+   *
+   * Open-state expiry is purely time-based: the circuit stays open until
+   * `recoveryTimeoutMs` of wall-clock time has elapsed since it opened,
+   * no matter how many calls are fast-failed in the meantime. Inject a fake
+   * clock in tests to drive the cooldown deterministically.
+   */
+  now?: () => number;
+  /**
+   * Upper bound, in milliseconds, for a server-requested cooldown recorded
+   * via `CircuitBreaker.noteRetryAfter()`. A hostile or misconfigured
+   * Horizon cannot pin the circuit open longer than this. Default: 300 000
+   * (5 minutes). Must be a finite number ≥ 0.
+   */
+  maxRetryAfterMs?: number;
+}
+
+/** Default cap for Retry-After driven cooldowns (5 minutes). */
+export const DEFAULT_MAX_RETRY_AFTER_MS = 300_000;
+
+/**
+ * Validate a millisecond duration option. Throws a `RangeError` with a stable
+ * message for negative, NaN, or infinite values so misconfiguration fails
+ * loudly at construction time instead of producing a circuit that never (or
+ * instantly) recovers.
+ */
+function assertDurationMs(name: string, value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `CircuitBreaker option ${name} must be a finite number of milliseconds >= 0 (received ${String(value)}).`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -490,6 +526,15 @@ export interface CircuitBreakerOptions {
  *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
  *                    allowed; enough consecutive successes closes the circuit,
  *                    any failure re-opens it.
+ *
+ * Issue #920 — wall-clock open-state expiry: the open → half-open transition
+ * is driven only by elapsed time on the injected clock (`options.now`), never
+ * by how many calls were fast-failed. A server-requested `Retry-After`
+ * recorded through `noteRetryAfter()` extends the cooldown: the circuit does
+ * not go half-open, and half-open probes are not admitted, until both the
+ * recovery timeout and the Retry-After deadline have passed. If the clock
+ * moves backwards while open, the cooldown restarts from the new "now"
+ * instead of expiring early.
  */
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
@@ -497,6 +542,8 @@ export class CircuitBreaker {
   private consecutiveSuccesses: number = 0;
   private openedAt: number | null = null;
   private lastErrorClass: string | null = null;
+  /** Issue #920: epoch ms before which no probe may run (Retry-After floor). */
+  private retryAfterUntil: number | null = null;
 
   /** Issue #888: in-flight probe count while in half-open state. */
   private halfOpenProbesInFlight: number = 0;
@@ -509,12 +556,22 @@ export class CircuitBreaker {
   private readonly recoveryTimeoutMs: number;
   private readonly successThreshold: number;
   private readonly halfOpenMaxProbes: number;
+  private readonly maxRetryAfterMs: number;
+  private readonly now: () => number;
   private readonly onStateChange: (from: CircuitState, to: CircuitState, reason: string) => void;
   private readonly onProbeBudgetExhausted: (inFlight: number, maxProbes: number) => void;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.failureThreshold = options.failureThreshold ?? 5;
-    this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30_000;
+    this.recoveryTimeoutMs = assertDurationMs('recoveryTimeoutMs', options.recoveryTimeoutMs ?? 30_000);
+    this.maxRetryAfterMs = assertDurationMs(
+      'maxRetryAfterMs',
+      options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS,
+    );
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new TypeError('CircuitBreaker option now must be a function returning epoch milliseconds.');
+    }
+    this.now = options.now ?? (() => Date.now());
     this.successThreshold = options.successThreshold ?? 2;
     this.halfOpenMaxProbes = options.halfOpenMaxProbes ?? 1;
 
@@ -571,9 +628,24 @@ export class CircuitBreaker {
     this._maybeTransitionToHalfOpen();
 
     if (this.state === 'open') {
+      const remainingCooldownMs = this.getRemainingCooldownMs();
       throw new CircuitOpenError(
-        `Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures).`,
+        `Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures; ~${remainingCooldownMs}ms cooldown remaining).`,
+        remainingCooldownMs,
       );
+    }
+
+    // Issue #920: a Retry-After recorded after the circuit went half-open
+    // still gates probes — fast-fail until the server-requested deadline.
+    if (this.state === 'half-open') {
+      const remainingCooldownMs = this.getRemainingCooldownMs();
+      if (remainingCooldownMs > 0) {
+        throw new CircuitOpenError(
+          `Circuit breaker is half-open but Horizon asked to wait (Retry-After); ` +
+            `probe deferred for ~${remainingCooldownMs}ms.`,
+          remainingCooldownMs,
+        );
+      }
     }
 
     // Issue #888: enforce probe budget in half-open state.
@@ -630,12 +702,63 @@ export class CircuitBreaker {
     this.consecutiveFailures = 0;
     this.consecutiveSuccesses = 0;
     this.openedAt = null;
+    this.retryAfterUntil = null;
     this.halfOpenProbesInFlight = 0;
     this.halfOpenProbesCompleted = 0;
     this.halfOpenProbeBudgetExhaustedCount = 0;
     if (prev !== 'closed') {
       this.onStateChange(prev, 'closed', 'manual reset');
     }
+  }
+
+  /**
+   * Record a server-requested cooldown (Issue #920), typically the parsed
+   * `Retry-After` of a Horizon 429/503. The circuit will not move from open
+   * to half-open — and a half-open circuit will not admit probes — until
+   * `delayMs` has elapsed on the breaker's clock.
+   *
+   * - Values are clamped to `maxRetryAfterMs` so a hostile header cannot pin
+   *   the circuit open indefinitely.
+   * - Negative, NaN, or non-finite values are ignored (returns `false`), the
+   *   same way `parseRetryAfterMs` treats them as absent.
+   * - A shorter Retry-After never shortens an existing, longer deadline.
+   * - In the closed state the deadline is remembered but does not block
+   *   calls; the retry loop already sleeps for Retry-After. It only takes
+   *   effect if the circuit opens before the deadline passes.
+   *
+   * Returns `true` when the deadline was recorded or extended.
+   */
+  noteRetryAfter(delayMs: number): boolean {
+    if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
+      return false;
+    }
+    const until = this.now() + Math.min(delayMs, this.maxRetryAfterMs);
+    if (this.retryAfterUntil !== null && this.retryAfterUntil >= until) {
+      return false;
+    }
+    this.retryAfterUntil = until;
+    return true;
+  }
+
+  /**
+   * Milliseconds until the next probe may reach the wrapped operation
+   * (Issue #920). Always ≥ 0.
+   *
+   * - **closed**: 0.
+   * - **open**: the larger of the remaining recovery timeout and the
+   *   remaining Retry-After deadline.
+   * - **half-open**: the remaining Retry-After deadline (0 when none).
+   */
+  getRemainingCooldownMs(): number {
+    this._maybeTransitionToHalfOpen();
+    if (this.state === 'closed') return 0;
+    const now = this.now();
+    const retryAfterRemaining =
+      this.retryAfterUntil !== null ? Math.max(0, this.retryAfterUntil - now) : 0;
+    if (this.state === 'half-open') return retryAfterRemaining;
+    const recoveryRemaining =
+      this.openedAt !== null ? Math.max(0, this.openedAt + this.recoveryTimeoutMs - now) : 0;
+    return Math.max(recoveryRemaining, retryAfterRemaining);
   }
 
   /**
@@ -673,7 +796,7 @@ export class CircuitBreaker {
    *
    * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
    */
-  getOpenMetrics(now: number = Date.now()): CircuitOpenMetrics {
+  getOpenMetrics(now: number = this.now()): CircuitOpenMetrics {
     const stats = this.getStats();
     return {
       state: stats.state,
@@ -695,11 +818,17 @@ export class CircuitBreaker {
   // ---- private helpers ----
 
   private _maybeTransitionToHalfOpen(): void {
-    if (
-      this.state === 'open' &&
-      this.openedAt !== null &&
-      Date.now() - this.openedAt >= this.recoveryTimeoutMs
-    ) {
+    if (this.state !== 'open' || this.openedAt === null) return;
+    const now = this.now();
+    // Issue #920: a clock that moved backwards must not expire the cooldown
+    // early (or leave it negative) — restart it from the current reading.
+    if (now < this.openedAt) {
+      this.openedAt = now;
+      return;
+    }
+    const recoveryElapsed = now - this.openedAt >= this.recoveryTimeoutMs;
+    const retryAfterElapsed = this.retryAfterUntil === null || now >= this.retryAfterUntil;
+    if (recoveryElapsed && retryAfterElapsed) {
       const prev = this.state;
       this.state = 'half-open';
       this.consecutiveSuccesses = 0;
@@ -737,7 +866,7 @@ export class CircuitBreaker {
       this._wasHalfOpenBeforeFailure = true;
       const prev = this.state;
       this.state = 'open';
-      this.openedAt = Date.now();
+      this.openedAt = this.now();
       this.consecutiveSuccesses = 0;
       const reason = err instanceof Error ? err.message : String(err);
       this.onStateChange(prev, 'open', `probe failed in half-open: ${reason}`);
@@ -752,7 +881,7 @@ export class CircuitBreaker {
     ) {
       const prev = this.state;
       this.state = 'open';
-      this.openedAt = Date.now();
+      this.openedAt = this.now();
       const reason = err instanceof Error ? err.message : String(err);
       this.onStateChange(
         prev,
@@ -804,9 +933,19 @@ function errorClassOf(err: unknown): string {
  * request was fast-failed without reaching the underlying operation.
  */
 export class CircuitOpenError extends Error {
-  constructor(message: string) {
+  /**
+   * Issue #920: milliseconds until the breaker will admit a probe, when
+   * known. Callers can surface this as a hint ("retry in ~Ns") without
+   * guessing the recovery timeout.
+   */
+  public readonly remainingCooldownMs?: number;
+
+  constructor(message: string, remainingCooldownMs?: number) {
     super(message);
     this.name = 'CircuitOpenError';
+    if (remainingCooldownMs !== undefined && Number.isFinite(remainingCooldownMs)) {
+      this.remainingCooldownMs = Math.max(0, Math.round(remainingCooldownMs));
+    }
   }
 }
 

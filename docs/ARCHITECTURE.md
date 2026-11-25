@@ -255,6 +255,69 @@ Enforced by `__tests__/resilience.test.ts` — `CircuitBreaker — half-open pro
 
 ---
 
+## Circuit breaker wall-clock open-state expiry (Issue #920)
+
+The open → half-open transition in `CircuitBreaker` (`src/resilience.ts`)
+is driven **only by elapsed wall-clock time**, never by how many calls were
+fast-failed while open. Under Wave burst traffic hundreds of callers can hit
+an open circuit within a second; counting those attempts toward recovery
+would reopen the circuit (and stampede Horizon) far too early.
+
+### Clock
+
+```
+CircuitBreakerOptions.now  (default: () => Date.now())
+```
+
+Every expiry decision reads this clock. Tests inject a fake clock and step
+it explicitly, so no real time passes and no timer mocking is needed
+(`__tests__/circuit-wall-clock.test.ts`). If the clock moves backwards while
+the circuit is open (VM suspend, NTP correction), the cooldown restarts from
+the new reading instead of expiring early.
+
+`recoveryTimeoutMs` and `maxRetryAfterMs` must be finite numbers ≥ 0;
+anything else throws a `RangeError` at construction
+(`CircuitBreaker option recoveryTimeoutMs must be a finite number of
+milliseconds >= 0 (received …)`). A non-function `now` throws a `TypeError`.
+
+### Interaction with Retry-After
+
+When Horizon answers a retryable status (429/502/503/504) with a valid
+`Retry-After`, `fetchAccount` (`src/horizon.ts`) passes the parsed delay to
+`circuitBreaker.noteRetryAfter(ms)`. The breaker records a deadline of
+`now + min(ms, maxRetryAfterMs)`:
+
+| Breaker state | Effect of a pending Retry-After deadline |
+|---|---|
+| `closed` | None — calls still flow; the retry loop already sleeps for Retry-After (capped by `retry_max_delay_ms`). The deadline is remembered in case the circuit opens before it passes. |
+| `open` | The circuit stays open until **both** `recoveryTimeoutMs` has elapsed since it opened **and** the Retry-After deadline has passed. A shorter Retry-After never shortens the recovery timeout. |
+| `half-open` | Probes are fast-failed with `CircuitOpenError` until the deadline passes. A deferred probe does not count against `halfOpenMaxProbes`. |
+
+Rules:
+
+- `maxRetryAfterMs` (default `300000`, 5 minutes) caps the deadline so a
+  hostile or misconfigured Horizon cannot pin the circuit open.
+- Negative, `NaN`, infinite, or unparsable `Retry-After` values are ignored
+  (the same values `parseRetryAfterMs` already treats as absent).
+- A later, shorter Retry-After never shortens an existing deadline.
+- `reset()` clears the deadline together with the rest of the state.
+- A failed half-open probe re-opens the circuit and restarts the full
+  `recoveryTimeoutMs` from the failure time.
+
+### Observability
+
+`getRemainingCooldownMs()` returns how long until the next probe may run
+(0 when closed). `CircuitOpenError.remainingCooldownMs` and
+`HorizonCircuitOpenError.remainingCooldownMs` carry the same value at the
+moment a call was blocked, so callers can say "retry in ~Ns" without
+guessing the recovery timeout.
+
+```bash
+npx jest __tests__/circuit-wall-clock.test.ts __tests__/resilience.test.ts
+```
+
+---
+
 ## Batch concurrency cap (Issue #852)
 
 `runBatchValidation` (`src/batch.ts`) is the only place the Action fans

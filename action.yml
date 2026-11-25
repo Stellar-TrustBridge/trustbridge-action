@@ -898,11 +898,11 @@ inputs:
 outputs:
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
-    description: "Whether the account has a trustline for the configured asset"
+    description: "Whether the account has a trustline for the configured asset. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   xlm_balance:
     description: "Current native XLM balance as reported by Horizon"
   account_funded:
-    description: "Whether the account exists and is activated on the Stellar network"
+    description: "Whether the account exists and is activated on the Stellar network. Always \"true\" or \"false\"; gate with == 'true' (Issue #919)"
   comment_url:
     description: "URL of the created or updated issue comment, when run in an issue context"
   comment_id:
@@ -919,7 +919,7 @@ outputs:
 
   # ── Audit & Integration outputs (Issue #66, #67) ─────────────────────────
   ready:
-    description: "Whether all validation checks passed (true/false)"
+    description: "Whether all validation checks passed. Always \"true\" or \"false\" (never empty or 1/0); gate with steps.trustbridge.outputs.ready == 'true' (Issue #919)"
   validated_at:
     description: "ISO-8601 timestamp when the validation checks were performed"
   horizon_url:
@@ -967,7 +967,7 @@ outputs:
   num_sponsored:
     description: 'Number of accounts sponsoring this account (numeric string)'
   network_passphrase_mismatch:
-    description: 'Whether the configured and Horizon network passphrases differ'
+    description: 'Whether the configured and Horizon network passphrases differ (true/false)'
   expected_network_passphrase:
     description: 'Configured or inferred network passphrase'
   actual_network_passphrase:
