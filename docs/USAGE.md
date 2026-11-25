@@ -4348,3 +4348,39 @@ labels. A gate skip takes precedence over `fail_on_missing`; `fail_on_missing`
 applies only after the gate is open. Label-check failures should fail open and
 run validation, while an optional skip comment is best effort and must not
 block the workflow. See [LABEL_GATE_DESIGN.md](LABEL_GATE_DESIGN.md).
+
+## Link host safety (Issue #963)
+
+`docs_base_url` and `sep0010_dashboard_url` end up as clickable links in issue comments, so a look-alike host would phish contributors. The action rejects these overrides and falls back to the default link (with a warning naming the reason) when the value:
+
+| Reason | Example |
+|--------|---------|
+| `invalid_url` | not an absolute URL |
+| `not_https` | `http://...`, `javascript:...` |
+| `embedded_credentials` | `https://user:pass@host` |
+| `blocked_host` | private, loopback, link-local or cloud-metadata hosts |
+| `unsafe_characters` | whitespace, `( ) < > " ' \``: percent-encode them |
+| `invisible_characters` | zero-width, bidirectional-override, soft-hyphen or control characters anywhere in the URL |
+| `non_ascii_host` | `https://ex<U+0430>mple.org` (the `a` is Cyrillic U+0430, shown here as an escape), fullwidth letters, or a percent-encoded host |
+| `punycode_host` | `https://xn--exmple-4nf.org` (any `xn--` label) |
+
+Internationalized hosts are rejected **unless allowlisted**. If you really use one, list the exact host in `idn_host_allowlist` (comma or newline separated; Unicode or punycode, stored as punycode):
+
+```yaml
+with:
+  docs_base_url: https://docs.bücher.example/trustbridge
+  idn_host_allowlist: docs.bücher.example
+```
+
+Entries must be bare hosts: a scheme, port, path, credentials, whitespace or wildcard is rejected (`INVALID_ALLOWLIST_ENTRY`), as is a list over 50 entries (`ALLOWLIST_TOO_LARGE`); an invalid allowlist is ignored with a warning, which keeps every look-alike host blocked. The allowlist only exempts the two internationalized-host reasons for that exact host (no subdomains); every other check still applies.
+
+## Deterministic ordering (Issue #964)
+
+Matrix and payout jobs fan out over batch outputs, so the same input always yields the same order:
+
+- **Input**: `stellar_addresses` keeps the first occurrence of each address in the order given (JSON array and newline lists alike). More than 1000 unique addresses fails with `BATCH_INPUT_TOO_LARGE`; other malformed input fails with `BATCH_INPUT_EMPTY`, `BATCH_INPUT_INVALID_JSON`, `BATCH_INPUT_NOT_ARRAY`, `BATCH_INPUT_ITEM_NOT_STRING` or `BATCH_INPUT_NO_ENTRIES`.
+- **Results**: one row per address, in input order, whatever `maxConcurrency` is and however Horizon responses interleave. This is enforced at runtime: a misaligned result list fails with `BATCH_ORDER_COUNT_MISMATCH`, `BATCH_ORDER_ROW_MISSING` or `BATCH_ORDER_ADDRESS_MISMATCH` instead of being emitted.
+- **`batch_summary_json`**: `failures` follow input order, `fatalReasonCodes` is sorted, `failureTaxonomy` keys are fixed. If the output is truncated to fit the size limit, the earliest failures are kept.
+- **Matrix outputs** (`assignee_results_json`, `matrix_ready_map`): assignees appear in input order. Integer-like logins such as `123` are not hoisted to the front the way a plain JavaScript object would, and a login named `__proto__` is kept. A duplicate login keeps its first position with the last value.
+
+Parse these outputs with `fromJSON`; do not rely on object key order across other tools.

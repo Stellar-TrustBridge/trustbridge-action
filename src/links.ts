@@ -141,19 +141,127 @@ const BLOCKED_LINK_EXACT_HOSTS = new Set(['metadata.google.internal']);
  * Markdown `[text](url)` link early and let the rest of the string inject
  * arbitrary Markdown.
  */
-export function isSafeExternalLink(url: string): boolean {
+export function isSafeExternalLink(url: string, policy?: LinkHostPolicy): boolean {
+  return explainLinkRejection(url, policy) === null;
+}
+
+// ---------------------------------------------------------------------------
+// Confusable-host hardening (Issue #963)
+//
+// Explorer / docs / dashboard bases can be overridden by workflow authors (and
+// by values copied from issue comments). A look-alike host such as
+// `https://exаmple.org` (Cyrillic "а") or its punycode form
+// `https://xn--exmple-4nf.org` renders as a normal-looking link in a comment
+// but points somewhere else, phishing Wave assignees. Any internationalized
+// host is therefore rejected unless the operator explicitly allowlists it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable, documented reasons a link is rejected (docs/USAGE.md#link-host-safety).
+ */
+export type LinkRejectionReason =
+  | 'invalid_url'
+  | 'not_https'
+  | 'embedded_credentials'
+  | 'blocked_host'
+  | 'unsafe_characters'
+  | 'invisible_characters'
+  | 'non_ascii_host'
+  | 'punycode_host';
+
+export interface LinkHostPolicy {
+  /**
+   * Exact hosts (punycode/ASCII form, lowercase) permitted to be
+   * internationalized. Build with {@link parseIdnHostAllowlist}. Empty or
+   * omitted means every non-ASCII or punycode host is rejected.
+   */
+  allowedIdnHosts?: readonly string[];
+}
+
+export class LinkAllowlistError extends Error {
+  constructor(
+    public readonly code: 'INVALID_ALLOWLIST_ENTRY' | 'ALLOWLIST_TOO_LARGE',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'LinkAllowlistError';
+  }
+}
+
+export const MAX_IDN_HOST_ALLOWLIST_ENTRIES = 50;
+
+/**
+ * Parse the `idn_host_allowlist` input (comma or newline separated hosts).
+ * Each entry may be written in Unicode or punycode; it is stored in the
+ * normalized ASCII (punycode) form that {@link explainLinkRejection} compares
+ * against. Schemes, paths, ports, credentials and wildcards are rejected so an
+ * entry can never be broader than one exact host.
+ *
+ * @throws {LinkAllowlistError} for malformed entries or more than
+ *         {@link MAX_IDN_HOST_ALLOWLIST_ENTRIES} entries.
+ */
+export function parseIdnHostAllowlist(input: string | readonly string[] | undefined): string[] {
+  const raw = typeof input === 'string' ? input.split(/[\r\n,]+/) : Array.isArray(input) ? [...input] : [];
+  const hosts: string[] = [];
+  for (const entry of raw) {
+    const value = String(entry).trim();
+    if (!value || value.startsWith('#')) continue;
+    if (/[/:@?#*\s\\]/.test(value)) {
+      throw new LinkAllowlistError(
+        'INVALID_ALLOWLIST_ENTRY',
+        `Allowlist entries must be bare host names (no scheme, port, path, credentials, or wildcard): ${JSON.stringify(value)}`,
+      );
+    }
+    let hostname: string;
+    try {
+      hostname = new URL(`https://${value}`).hostname.toLowerCase();
+    } catch {
+      throw new LinkAllowlistError('INVALID_ALLOWLIST_ENTRY', `Allowlist entry is not a valid host name: ${JSON.stringify(value)}`);
+    }
+    if (!hostname || hostname !== hostname.replace(/[^a-z0-9.-]/g, '')) {
+      throw new LinkAllowlistError('INVALID_ALLOWLIST_ENTRY', `Allowlist entry is not a valid host name: ${JSON.stringify(value)}`);
+    }
+    if (!hosts.includes(hostname)) hosts.push(hostname);
+    if (hosts.length > MAX_IDN_HOST_ALLOWLIST_ENTRIES) {
+      throw new LinkAllowlistError('ALLOWLIST_TOO_LARGE', `At most ${MAX_IDN_HOST_ALLOWLIST_ENTRIES} allowlisted hosts are supported.`);
+    }
+  }
+  return hosts;
+}
+
+/** Zero-width, bidi-control, soft-hyphen, and C0/C1 control characters. */
+const INVISIBLE_CHARS = /[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202F\u205F-\u206F\u3000\uFEFF]/;
+
+/** Host portion of the raw (unparsed) URL, so Unicode that the URL parser would silently fold stays visible. */
+function rawHostOf(url: string): string {
+  const match = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(url);
+  if (!match) return '';
+  const authority = match[1];
+  const host = authority.slice(authority.lastIndexOf('@') + 1);
+  return host.startsWith('[') ? host : host.replace(/:\d*$/, '');
+}
+
+/**
+ * Why `url` may not be rendered as a clickable link, or `null` when it is
+ * safe. {@link isSafeExternalLink} is `explainLinkRejection(...) === null`.
+ */
+export function explainLinkRejection(url: string, policy?: LinkHostPolicy): LinkRejectionReason | null {
+  if (typeof url !== 'string' || url.length === 0) return 'invalid_url';
+  // Checked on the raw string: the URL parser silently strips tabs/newlines,
+  // so a hidden character would otherwise vanish before any later check.
+  if (INVISIBLE_CHARS.test(url)) return 'invisible_characters';
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return false;
+    return 'invalid_url';
   }
-  if (parsed.protocol !== 'https:') return false;
-  if (parsed.username || parsed.password) return false;
+  if (parsed.protocol !== 'https:') return 'not_https';
+  if (parsed.username || parsed.password) return 'embedded_credentials';
   const host = parsed.hostname.toLowerCase();
-  if (BLOCKED_LINK_EXACT_HOSTS.has(host)) return false;
+  if (BLOCKED_LINK_EXACT_HOSTS.has(host)) return 'blocked_host';
   for (const pattern of BLOCKED_LINK_HOSTS) {
-    if (pattern.test(host)) return false;
+    if (pattern.test(host)) return 'blocked_host';
   }
   // Issue #853: every caller in this codebase embeds the URL this check
   // approves directly as raw `[text](url)` Markdown (buildFaqLink, the
@@ -163,8 +271,41 @@ export function isSafeExternalLink(url: string): boolean {
   // brackets, and quotes are rejected too since a well-formed URL never
   // needs them unencoded — a legitimate URL that needs one of these
   // characters should percent-encode it (`)` -> `%29`, etc).
-  if (/[()\s`<>"']/.test(url)) return false;
-  return true;
+  if (/[()\s`<>"']/.test(url)) return 'unsafe_characters';
+
+  // Issue #963: internationalized / confusable hosts.
+  const rawHost = rawHostOf(url);
+  const allowed = new Set((policy?.allowedIdnHosts ?? []).map((h) => h.toLowerCase()));
+  const allowlisted = allowed.has(host);
+  if (/[^\x00-\x7F]/.test(rawHost) || rawHost.includes('%')) {
+    if (!allowlisted) return 'non_ascii_host';
+  }
+  if (host.split('.').some((label) => label.startsWith('xn--'))) {
+    if (!allowlisted) return 'punycode_host';
+  }
+  return null;
+}
+
+/** One-line, actionable explanation of a {@link LinkRejectionReason} for logs. */
+export function describeLinkRejection(reason: LinkRejectionReason): string {
+  switch (reason) {
+    case 'invalid_url':
+      return 'is not a valid absolute URL';
+    case 'not_https':
+      return 'must use https://';
+    case 'embedded_credentials':
+      return 'must not contain embedded credentials';
+    case 'blocked_host':
+      return 'points at a private, loopback, link-local, or metadata host';
+    case 'unsafe_characters':
+      return 'contains characters that are unsafe in a Markdown link (percent-encode them)';
+    case 'invisible_characters':
+      return 'contains invisible, control, or bidirectional-override characters';
+    case 'non_ascii_host':
+      return 'has a non-ASCII host that could be a look-alike of another site; add the exact host to idn_host_allowlist if it is intentional';
+    case 'punycode_host':
+      return 'has a punycode (xn--) host that could be a look-alike of another site; add the exact host to idn_host_allowlist if it is intentional';
+  }
 }
 
 /**
@@ -178,9 +319,9 @@ export function isSafeExternalLink(url: string): boolean {
  *                 silently so comment posting is never blocked by an
  *                 invalid or malicious override.
  */
-export function buildFaqLink(anchor: FaqAnchor, baseUrl?: string): string {
+export function buildFaqLink(anchor: FaqAnchor, baseUrl?: string, policy?: LinkHostPolicy): string {
   let base = DEFAULT_FAQ_BASE_URL;
-  if (baseUrl && isSafeExternalLink(baseUrl)) {
+  if (baseUrl && isSafeExternalLink(baseUrl, policy)) {
     base = baseUrl.replace(/\/$/, '');
   }
   return `${base}#${anchor}`;
@@ -194,14 +335,16 @@ export function buildFaqLink(anchor: FaqAnchor, baseUrl?: string): string {
  *
  * @param checkLabel  The human-readable check label from the ValidationResult.
  * @param baseUrl     Optional FAQ base URL override.
+ * @param policy      Optional host policy (IDN allowlist, Issue #963).
  */
 export function buildFaqLinkForCheck(
   checkLabel: string,
   baseUrl?: string,
+  policy?: LinkHostPolicy,
 ): string | undefined {
   const anchor = getFaqAnchorForCheck(checkLabel);
   if (!anchor) return undefined;
-  return buildFaqLink(anchor, baseUrl);
+  return buildFaqLink(anchor, baseUrl, policy);
 }
 
 export type StellarNetwork = 'public' | 'testnet';
@@ -293,16 +436,21 @@ export function buildAccountViewerLink(
   stellarAddress: string,
   network: StellarNetwork,
   dashboardUrl?: string,
+  policy?: LinkHostPolicy,
 ): string {
-  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl, policy)) {
     throw new Error('Invalid dashboard URL');
   }
   const params = new URLSearchParams({ network, account: stellarAddress });
   return `https://laboratory.stellar.org/#account-viewer?${params.toString()}`;
 }
 
-export function buildChangeTrustLink(network: StellarNetwork, dashboardUrl?: string): string {
-  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
+export function buildChangeTrustLink(
+  network: StellarNetwork,
+  dashboardUrl?: string,
+  policy?: LinkHostPolicy,
+): string {
+  if (dashboardUrl && !isValidDashboardUrl(dashboardUrl, policy)) {
     throw new Error('Invalid dashboard URL');
   }
   const params = new URLSearchParams({ network });
@@ -517,6 +665,8 @@ export interface Sep0010ChallengeOptions {
   network?: StellarNetwork;
   /** Stellar G-address being verified (for link text). */
   stellarAddress?: string;
+  /** Host policy for the dashboard URL (IDN allowlist, Issue #963). */
+  linkHostPolicy?: LinkHostPolicy;
 }
 
 /**
@@ -528,8 +678,8 @@ export interface Sep0010ChallengeOptions {
  * either the Stellar Laboratory builders or an explicitly trusted dashboard
  * host — never a plausible-looking but unrecognized one.
  */
-export function isValidDashboardUrl(url: string): boolean {
-  if (!isSafeExternalLink(url)) return false;
+export function isValidDashboardUrl(url: string, policy?: LinkHostPolicy): boolean {
+  if (!isSafeExternalLink(url, policy)) return false;
   try {
     const parsed = new URL(url);
     // `dashboard.stellar.org` is not a recognized Stellar dashboard
@@ -562,7 +712,7 @@ export function buildSep0010ChallengeSnippet(options: Sep0010ChallengeOptions): 
     return undefined;
   }
 
-  if (hasDashboard && isValidDashboardUrl(options.dashboardUrl!)) {
+  if (hasDashboard && isValidDashboardUrl(options.dashboardUrl!, options.linkHostPolicy)) {
     const addrNote = options.stellarAddress ? ` for \`${options.stellarAddress}\`` : '';
     return (
       `**SEP-0010 wallet proof${addrNote}:** verify ownership via Freighter on the dashboard: ` +

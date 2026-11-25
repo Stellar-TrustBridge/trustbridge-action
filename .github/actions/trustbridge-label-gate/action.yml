@@ -449,6 +449,18 @@ outputs:
       string). Empty unless the action ran in batch mode.
     value: ${{ steps.run-trustbridge.outputs.batch_failed_count }}
 
+  diagnostics_zip_path:
+    description: >-
+      Absolute path of the redacted diagnostics bundle when diagnostics_zip_path
+      was set and the bundle was written, empty otherwise.
+    value: ${{ steps.run-trustbridge.outputs.diagnostics_zip_path }}
+
+  diagnostics_zip_status:
+    description: >-
+      Outcome of the optional diagnostics bundle: written, unchanged, disabled,
+      invalid_path, invalid_max_bytes, too_large, or write_failed.
+    value: ${{ steps.run-trustbridge.outputs.diagnostics_zip_status }}
+
 runs:
   using: 'composite'
   steps:

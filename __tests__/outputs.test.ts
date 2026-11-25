@@ -917,6 +917,8 @@ describe('setValidationOutputs ↔ action.yml output parity (Issue #550)', () =>
       num_sponsoring: '2',
       num_sponsored: '1',
       conflict_report: '',
+      diagnostics_zip_path: '',
+      diagnostics_zip_status: 'disabled',
       has_conflicts: 'false',
       network_passphrase_mismatch: 'false',
       expected_network_passphrase: '',
