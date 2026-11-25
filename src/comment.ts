@@ -9,7 +9,7 @@ import {
   estimateTrustlineSetupCost,
 } from './checks';
 import { buildAccountViewerLink, buildChangeTrustLink, buildLobstrLink, inferStellarNetwork } from './links';
-import { inlineCode } from './markdown';
+import { inlineCode, wrapMarkdownTableCell } from './markdown';
 
 /**
  * Semantic schema version embedded in every TrustBridge issue comment.
@@ -17,7 +17,7 @@ import { inlineCode } from './markdown';
  * shape, etc.) changes in a way that downstream consumers or future
  * versions of this action need to detect.
  */
-export const COMMENT_SCHEMA_VERSION = '1.0.0';
+export const COMMENT_SCHEMA_VERSION = '1.1.0';
 
 export interface CommentConfig extends CheckConfig {
   stellarAddress: string;
@@ -69,8 +69,9 @@ export function formatCommentBody(
     '',
   ];
 
+  lines.push('| Status | Check | Reason |', '| --- | --- | --- |');
   for (const check of result.checks) {
-    lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
+    lines.push(`| ${statusIcon(check.passed)} | **${wrapMarkdownTableCell(check.label)}** | ${wrapMarkdownTableCell(check.detail)} |`);
   }
 
   lines.push(

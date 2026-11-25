@@ -1,8 +1,8 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`formatCommentBody golden snapshots matches golden snapshot for missing trustline failure path 1`] = `
-"<!-- trustbridge-action:sticky-comment:schema-v1.0.0 -->
-<!-- trustbridge-action:schema-version:1.0.0 -->
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
 ## TrustBridge — Stellar Account Check
 
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
@@ -11,9 +11,11 @@ Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 
 ### Results
 
-- ✅ **Account funded** — Account exists on Horizon.
-- ❌ **USDC trustline** — Account does not hold a trustline for USDC.
-- ✅ **XLM reserve** — Balance 5.0 XLM >= minimum 1.5 XLM.
+| Status | Check | Reason |
+| --- | --- | --- |
+| ✅ | **Account funded** | Account exists on Horizon. |
+| ❌ | **USDC trustline** | Account does not hold a trustline for USDC. |
+| ✅ | **XLM reserve** | Balance 5.0 XLM >= minimum 1.5 XLM. |
 
 ### Validation gate
 
@@ -66,8 +68,8 @@ _Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbrid
 `;
 
 exports[`formatCommentBody golden snapshots matches golden snapshot for successful validation result 1`] = `
-"<!-- trustbridge-action:sticky-comment:schema-v1.0.0 -->
-<!-- trustbridge-action:schema-version:1.0.0 -->
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
 ## TrustBridge — Stellar Account Check
 
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
@@ -76,9 +78,11 @@ Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 
 ### Results
 
-- ✅ **Account funded** — Account exists on Horizon.
-- ✅ **USDC trustline** — Trustline exists with balance 50.0.
-- ✅ **XLM reserve** — Balance 10.5 XLM >= minimum 1.5 XLM.
+| Status | Check | Reason |
+| --- | --- | --- |
+| ✅ | **Account funded** | Account exists on Horizon. |
+| ✅ | **USDC trustline** | Trustline exists with balance 50.0. |
+| ✅ | **XLM reserve** | Balance 10.5 XLM >= minimum 1.5 XLM. |
 
 ### Validation gate
 
@@ -127,8 +131,8 @@ _Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbrid
 `;
 
 exports[`formatCommentBody golden snapshots matches golden snapshot for unfunded account failure path 1`] = `
-"<!-- trustbridge-action:sticky-comment:schema-v1.0.0 -->
-<!-- trustbridge-action:schema-version:1.0.0 -->
+"<!-- trustbridge-action:sticky-comment:schema-v1.1.0 -->
+<!-- trustbridge-action:schema-version:1.1.0 -->
 ## TrustBridge — Stellar Account Check
 
 Checked account: \`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\`
@@ -137,9 +141,11 @@ Asset: **USDC** · Issuer: \`GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K
 
 ### Results
 
-- ❌ **Account funded** — Account was not found on Horizon (404).
-- ❌ **USDC trustline** — Cannot check trustline without an active account.
-- ❌ **XLM reserve** — Cannot check XLM reserve without an active account.
+| Status | Check | Reason |
+| --- | --- | --- |
+| ❌ | **Account funded** | Account was not found on Horizon (404). |
+| ❌ | **USDC trustline** | Cannot check trustline without an active account. |
+| ❌ | **XLM reserve** | Cannot check XLM reserve without an active account. |
 
 ### Validation gate
 

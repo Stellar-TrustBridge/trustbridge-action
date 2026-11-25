@@ -1,3 +1,4 @@
+import { MetricsCollector } from './metrics';
 /**
  * Advanced retry and rate-limiting strategies for resilient API interactions.
  */
@@ -12,6 +13,21 @@ export interface RetryPolicy {
  * Default retry policy for API calls.
  */
 export declare const DEFAULT_RETRY_POLICY: RetryPolicy;
+/**
+ * Records how long a named circuit remains open. Repeated open notifications
+ * are idempotent; closing a circuit that was not open does nothing.
+ */
+export declare class CircuitOpenDurationTracker {
+    private readonly circuitName;
+    private readonly metrics;
+    private readonly now;
+    private openedAt;
+    constructor(circuitName: string, metrics?: MetricsCollector, now?: () => number);
+    open(): void;
+    /** Returns the recorded duration in ms, or null when no open period existed. */
+    close(): number | null;
+    isOpen(): boolean;
+}
 /**
  * Calculate the delay for a retry attempt using exponential backoff.
  */

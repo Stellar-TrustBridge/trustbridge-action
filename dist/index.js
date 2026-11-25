@@ -33910,6 +33910,69 @@ function normalizeAssetConfig(input) {
 
 /***/ }),
 
+/***/ 7377:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Simple in-memory cache for Horizon API responses.
+ * Useful for reducing redundant calls within a single GitHub Actions job.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.defaultCache = exports.SimpleCache = void 0;
+class SimpleCache {
+    constructor() {
+        this.store = new Map();
+    }
+    /**
+     * Get a cached value if it exists and hasn't expired.
+     */
+    get(key) {
+        const entry = this.store.get(key);
+        if (!entry) {
+            return null;
+        }
+        if (Date.now() > entry.expiresAt) {
+            this.store.delete(key);
+            return null;
+        }
+        return entry.data;
+    }
+    /**
+     * Set a value in the cache with an expiration time.
+     * @param key Cache key
+     * @param data Data to cache
+     * @param ttlMs Time to live in milliseconds (default: 60 seconds)
+     */
+    set(key, data, ttlMs = 60000) {
+        this.store.set(key, {
+            data,
+            expiresAt: Date.now() + ttlMs,
+        });
+    }
+    /**
+     * Clear all cached entries.
+     */
+    clear() {
+        this.store.clear();
+    }
+    /**
+     * Get cache statistics for debugging.
+     */
+    getStats() {
+        return {
+            size: this.store.size,
+            entries: Array.from(this.store.keys()),
+        };
+    }
+}
+exports.SimpleCache = SimpleCache;
+exports.defaultCache = new SimpleCache();
+
+
+/***/ }),
+
 /***/ 2122:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -33931,6 +33994,7 @@ exports.buildReserveRequirement = buildReserveRequirement;
 exports.buildValidationGate = buildValidationGate;
 const horizon_1 = __nccwpck_require__(9164);
 const markdown_1 = __nccwpck_require__(3758);
+const links_1 = __nccwpck_require__(3346);
 /** Stellar public network base reserve per ledger entry (XLM). */
 exports.STELLAR_BASE_RESERVE_XLM = 0.5;
 /** Minimum balance required to activate a new account (XLM). */
@@ -33998,9 +34062,10 @@ function runAccountChecks(account, config) {
     const valid = checks.every((c) => c.passed);
     let remediation;
     if (!valid) {
+        const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
         const steps = [];
         if (!trustlineExists) {
-            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) (Change Trust operation) or a wallet such as [LOBSTR](https://lobstr.co/).`);
+            steps.push(`Add a **${safeAssetCode}** trustline using [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) (Change Trust operation) or a wallet such as [LOBSTR](${(0, links_1.buildLobstrLink)()}).`);
         }
         if (!xlmReserveMet) {
             steps.push(`Send at least **${reserveRequirement.missing} XLM** to ${(0, markdown_1.inlineCode)(account.account_id)} to meet the reserve requirement.`);
@@ -34020,6 +34085,7 @@ function runAccountChecks(account, config) {
 function unfundedAccountResult(stellarAddress, config) {
     const safeAssetCode = (0, markdown_1.escapeMarkdownInline)(config.assetCode);
     const safeAddress = (0, markdown_1.inlineCode)(stellarAddress);
+    const network = (0, links_1.inferStellarNetwork)(config.horizonUrl ?? '');
     const checks = [
         {
             passed: false,
@@ -34046,7 +34112,7 @@ function unfundedAccountResult(stellarAddress, config) {
         checks,
         remediation: [
             `Activate ${safeAddress} by sending at least **${exports.STELLAR_MIN_ACCOUNT_BALANCE_XLM} XLM** (Stellar minimum account balance).`,
-            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](https://laboratory.stellar.org/#txbuilder?network=public) or [LOBSTR](https://lobstr.co/).`,
+            `Then add a **${safeAssetCode}** trustline via [Stellar Laboratory](${(0, links_1.buildChangeTrustLink)(network)}) or [LOBSTR](${(0, links_1.buildLobstrLink)()}).`,
             `Estimated setup cost: ~**${estimateTrustlineSetupCost()} XLM** (1 XLM base + 0.5 XLM per trustline reserve).`,
         ].join('\n\n'),
     };
@@ -34157,8 +34223,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.STICKY_COMMENT_MARKER = exports.TRUSTBRIDGE_FOOTER = void 0;
+exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
 exports.formatCommentBody = formatCommentBody;
+exports.isTrustBridgeComment = isTrustBridgeComment;
 exports.findStickyComment = findStickyComment;
 exports.postIssueComment = postIssueComment;
 const core = __importStar(__nccwpck_require__(7484));
@@ -34166,12 +34233,27 @@ const github = __importStar(__nccwpck_require__(3228));
 const checks_1 = __nccwpck_require__(2122);
 const links_1 = __nccwpck_require__(3346);
 const markdown_1 = __nccwpck_require__(3758);
+/**
+ * Semantic schema version embedded in every TrustBridge issue comment.
+ * Bump when the comment body structure (sections, markers, remediation
+ * shape, etc.) changes in a way that downstream consumers or future
+ * versions of this action need to detect.
+ */
+exports.COMMENT_SCHEMA_VERSION = '1.1.0';
 exports.TRUSTBRIDGE_FOOTER = '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_';
 /**
- * Hidden marker embedded in every TrustBridge comment body. Used to find a
- * prior comment to update in place instead of posting a new one each run.
+ * Legacy hidden marker (pre-schema-version). Kept for backward
+ * compatibility in `findStickyComment` so comments posted by older
+ * releases of the action are still eligible for upsert.
  */
-exports.STICKY_COMMENT_MARKER = '<!-- trustbridge-action:sticky-comment -->';
+exports.STICKY_COMMENT_MARKER_LEGACY = '<!-- trustbridge-action:sticky-comment -->';
+/**
+ * Hidden marker embedded in every TrustBridge comment body. Includes the
+ * comment schema version so future releases can detect the format of a
+ * prior comment and decide whether to update it in place or post a new
+ * one.
+ */
+exports.STICKY_COMMENT_MARKER = `<!-- trustbridge-action:sticky-comment:schema-v${exports.COMMENT_SCHEMA_VERSION} -->`;
 function statusIcon(passed) {
     return passed ? '✅' : '❌';
 }
@@ -34180,6 +34262,7 @@ function formatCommentBody(result, config) {
     const gate = (0, checks_1.buildValidationGate)(result);
     const lines = [
         exports.STICKY_COMMENT_MARKER,
+        `<!-- trustbridge-action:schema-version:${exports.COMMENT_SCHEMA_VERSION} -->`,
         '## TrustBridge — Stellar Account Check',
         '',
         `Checked account: ${(0, markdown_1.inlineCode)(config.stellarAddress)}`,
@@ -34189,8 +34272,9 @@ function formatCommentBody(result, config) {
         '### Results',
         '',
     ];
+    lines.push('| Status | Check | Reason |', '| --- | --- | --- |');
     for (const check of result.checks) {
-        lines.push(`- ${statusIcon(check.passed)} **${check.label}** — ${check.detail}`);
+        lines.push(`| ${statusIcon(check.passed)} | **${(0, markdown_1.wrapMarkdownTableCell)(check.label)}** | ${(0, markdown_1.wrapMarkdownTableCell)(check.detail)} |`);
     }
     lines.push('', '### Validation gate', '', gate.ready
         ? '- Ready to proceed: all checks passed.'
@@ -34198,13 +34282,37 @@ function formatCommentBody(result, config) {
     if (result.remediation) {
         lines.push('', '### Remediation', '', result.remediation);
     }
-    lines.push('', '---', '_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_');
+    lines.push('', '### Configuration summary', '', `| Input | Value |`, `| --- | --- |`, `| \`fail_on_missing\` | ${config.failOnMissing === undefined ? '_default (true)_' : config.failOnMissing ? '`true` — step fails on missing checks' : '`false` — only warns'} |`, `| \`sticky_comment\` | ${config.stickyComment === undefined ? '_default (true)_' : config.stickyComment ? '`true` — upserts prior comment' : '`false` — always posts new'} |`, `| \`wait_until_funded\` | ${config.waitUntilFunded ? '`true`' : '`false` (default)'} |`);
+    if (config.waitUntilFunded) {
+        const timeout = config.waitUntilFundedTimeoutMs ?? 120000;
+        const interval = config.waitUntilFundedIntervalMs ?? 5000;
+        lines.push(`| \`wait_until_funded_timeout_ms\` | \`${timeout}\` |`, `| \`wait_until_funded_interval_ms\` | \`${interval}\` |`);
+    }
+    lines.push('', '### Action outputs reference', '', '_Use these output names in downstream workflow steps via `steps.<id>.outputs.<name>`._', '', `| Output | Value in this run | Description |`, `| --- | --- | --- |`, `| \`account_funded\` | \`${String(result.accountFunded)}\` | Whether the account exists on the Stellar network (from \`action.yml\`) |`, `| \`trustline_exists\` | \`${String(result.trustlineExists)}\` | Whether the **${config.assetCode}** trustline is configured (from \`action.yml\`) |`, `| \`xlm_balance\` | \`${result.xlmBalance}\` | Native XLM balance reported by Horizon (from \`action.yml\`) |`, `| \`comment_url\` | _set after posting_ | URL of this issue comment (from \`action.yml\`) |`, '', '---', exports.TRUSTBRIDGE_FOOTER);
     return lines.join('\n');
+}
+/**
+ * Returns true when a comment body matches any of the TrustBridge
+ * identifiers: the current versioned sticky marker, the legacy marker
+ * (pre-schema-version), or the TrustBridge footer. Matching on any of
+ * these provides defense-in-depth across upgrades and accidental
+ * marker drift.
+ */
+function isTrustBridgeComment(body) {
+    if (!body)
+        return false;
+    return (body.includes(exports.STICKY_COMMENT_MARKER) ||
+        body.includes(exports.STICKY_COMMENT_MARKER_LEGACY) ||
+        body.includes(exports.TRUSTBRIDGE_FOOTER));
 }
 /**
  * Find TrustBridge's previous sticky comment on the issue, if any.
  * Paginates through every comment so the marker is found even on
  * high-traffic issues with 100+ comments.
+ *
+ * Matches on the current versioned marker, the legacy marker, and the
+ * action footer so comments posted by older releases are still eligible
+ * for upsert.
  */
 async function findStickyComment(octokit, owner, repo, issueNumber) {
     const comments = await octokit.paginate(octokit.rest.issues.listComments, {
@@ -34213,7 +34321,7 @@ async function findStickyComment(octokit, owner, repo, issueNumber) {
         issue_number: issueNumber,
         per_page: 100,
     });
-    const existing = comments.find((comment) => comment.body?.includes(exports.STICKY_COMMENT_MARKER));
+    const existing = comments.find((comment) => isTrustBridgeComment(comment.body));
     return existing?.id;
 }
 async function postIssueComment(token, body, options = {}) {
@@ -34310,9 +34418,12 @@ exports.isCreditBalance = isCreditBalance;
 exports.getNativeBalance = getNativeBalance;
 exports.hasTrustline = hasTrustline;
 exports.parseHorizonBalance = parseHorizonBalance;
+const cache_1 = __nccwpck_require__(7377);
+const logger_1 = __nccwpck_require__(6999);
+const proxy_1 = __nccwpck_require__(8903);
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
-        super(message);
+        super((0, proxy_1.redactProxyCredentials)(message));
         this.statusCode = statusCode;
         this.retryable = retryable;
         this.name = 'HorizonError';
@@ -34321,6 +34432,7 @@ class HorizonError extends Error {
 exports.HorizonError = HorizonError;
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_CACHE_TTL_MS = 60000;
 function normalizeHorizonUrl(baseUrl) {
     return baseUrl.trim().replace(/\/+$/, '');
 }
@@ -34345,27 +34457,79 @@ function parseRetryAfterMs(response) {
 async function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
-    const fetch = (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
-    if (!normalizedHorizonUrl) {
-        throw new HorizonError('horizon_url is required.', 0, false);
+function buildCacheKey(normalizedHorizonUrl, stellarAddress) {
+    return `horizon:account:${normalizedHorizonUrl}:${stellarAddress}`;
+}
+function redactCacheKey(key) {
+    return (0, logger_1.redactString)(key);
+}
+function redactCacheStats(stats) {
+    return {
+        size: stats.size,
+        entries: stats.entries.map(redactCacheKey),
+    };
+}
+function safeHorizonContext(base) {
+    const ctx = { ...base };
+    if (base.horizonUrlFallback) {
+        ctx.horizonUrlFallback = (0, logger_1.redactHorizonUrl)(base.horizonUrlFallback);
     }
+    if (base.cacheKey) {
+        ctx.cacheKey = redactCacheKey(base.cacheKey);
+    }
+    return ctx;
+}
+/**
+ * Snapshot of non-sensitive account fields that are safe to include in a
+ * debug log. Never include balance values, sequence numbers, sponsor
+ * counts, or the raw account_id — only aggregate structural data, plus
+ * the redacted address via `stellarAddress` on the surrounding context.
+ */
+function safeAccountSummary(account) {
+    return {
+        balancesCount: account.balances.length,
+        hasNativeBalance: account.balances.some((b) => b.asset_type === 'native'),
+        creditTrustlineCount: account.balances.filter((b) => b.asset_type !== 'native').length,
+        subentryCount: account.subentry_count,
+    };
+}
+async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeoutMs, maxRetries, endpointKind) {
+    const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
     const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
+    const safeUrlForLog = (0, logger_1.redactHorizonUrl)(url);
     let attempt = 0;
     let lastError;
     while (attempt <= maxRetries) {
+        const requestStartedAt = Date.now();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
+        logger_1.logger.debug('Horizon fetch start', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl: targetHorizonUrl,
+            endpointKind,
+            attempt,
+            maxAttempts: maxRetries + 1,
+            timeoutMs,
+            url: safeUrlForLog,
+        }));
         try {
             const response = await fetch(url, {
                 method: 'GET',
                 headers: { Accept: 'application/json' },
                 signal: controller.signal,
             });
+            const latencyMs = Date.now() - requestStartedAt;
             if (response.status === 404) {
+                logger_1.logger.debug('Horizon account not found (404)', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    status: 404,
+                    latencyMs,
+                    attempt,
+                }));
                 throw new HorizonError(`Account ${stellarAddress} was not found on Horizon (not funded or activated).`, 404, false);
             }
             if (!response.ok) {
@@ -34379,19 +34543,83 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
                     else if (body.title) {
                         detail = body.title;
                     }
+                    logger_1.logger.debug('Horizon error response parsed', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        errorDetail: (0, logger_1.redactString)(detail),
+                        errorType: body.type ? (0, logger_1.redactString)(body.type) : undefined,
+                        errorTitle: body.title ? (0, logger_1.redactString)(body.title) : undefined,
+                    }));
                 }
                 catch {
-                    // ignore JSON parse errors on error responses
+                    logger_1.logger.debug('Horizon error response missing JSON body', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        statusText: response.statusText,
+                    }));
                 }
                 if (retryable && attempt < maxRetries) {
-                    const retryAfter = parseRetryAfterMs(response) ?? 1000 * 2 ** attempt;
+                    const retryAfterHeader = parseRetryAfterMs(response);
+                    const retryAfter = retryAfterHeader ?? 1000 * 2 ** attempt;
+                    logger_1.logger.debug('Horizon retry scheduled', safeHorizonContext({
+                        component: 'horizon',
+                        stellarAddress,
+                        horizonUrl: targetHorizonUrl,
+                        endpointKind,
+                        status: response.status,
+                        retryable,
+                        latencyMs,
+                        attempt,
+                        retryAfterMs: retryAfter,
+                        retryAfterFromHeader: retryAfterHeader !== null,
+                        nextAttempt: attempt + 1,
+                    }));
                     await sleep(retryAfter);
                     attempt += 1;
                     continue;
                 }
+                logger_1.logger.debug('Horizon non-retryable HTTP error (exhausted retries)', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    status: response.status,
+                    retryable,
+                    latencyMs,
+                    attempt,
+                    final: true,
+                }));
                 throw new HorizonError(`Horizon request failed (${response.status}): ${detail}`, response.status, retryable);
             }
-            return (await response.json());
+            const parsed = (await response.json());
+            logger_1.logger.debug('Horizon fetch success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                status: response.status,
+                latencyMs,
+                attempt,
+                ...safeAccountSummary(parsed),
+            }));
+            return {
+                account: parsed,
+                statusCode: response.status,
+                latencyMs,
+                attempts: attempt + 1,
+            };
         }
         catch (error) {
             if (error instanceof HorizonError) {
@@ -34403,19 +34631,210 @@ async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
                 : error instanceof Error
                     ? error.message
                     : 'Unknown Horizon error';
+            const latencyMs = Date.now() - requestStartedAt;
+            logger_1.logger.debug('Horizon transport error', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                kind: isAbort ? 'timeout' : 'network',
+                latencyMs,
+                attempt,
+                timeoutMs,
+                errorMessage: (0, logger_1.redactString)(message),
+            }));
             lastError = new HorizonError(message, isAbort ? 408 : 0, true);
             if (attempt < maxRetries) {
-                await sleep(1000 * 2 ** attempt);
+                const backoffMs = 1000 * 2 ** attempt;
+                logger_1.logger.debug('Horizon transport retry scheduled', safeHorizonContext({
+                    component: 'horizon',
+                    stellarAddress,
+                    horizonUrl: targetHorizonUrl,
+                    endpointKind,
+                    kind: isAbort ? 'timeout' : 'network',
+                    latencyMs,
+                    attempt,
+                    retryAfterMs: backoffMs,
+                    nextAttempt: attempt + 1,
+                }));
+                await sleep(backoffMs);
                 attempt += 1;
                 continue;
             }
+            logger_1.logger.debug('Horizon transport error (exhausted retries)', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl: targetHorizonUrl,
+                endpointKind,
+                kind: isAbort ? 'timeout' : 'network',
+                latencyMs,
+                attempt,
+                final: true,
+            }));
             throw lastError;
         }
         finally {
             clearTimeout(timer);
         }
     }
+    logger_1.logger.debug('Horizon retry loop exited without result (fallback throw)', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl: targetHorizonUrl,
+        endpointKind,
+        maxAttempts: maxRetries + 1,
+    }));
     throw lastError ?? new HorizonError('Horizon request failed after retries', 0, true);
+}
+async function fetchAccount(horizonUrl, stellarAddress, options = {}) {
+    const fetch = options.fetchFn ?? (await Promise.resolve().then(() => __importStar(__nccwpck_require__(6705)))).default;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const cache = options.cache ?? cache_1.defaultCache;
+    const normalizedHorizonUrl = normalizeHorizonUrl(horizonUrl);
+    const fallbackCandidate = options.horizonUrlFallback || (options.fallbackUrls && options.fallbackUrls[0]);
+    const normalizedFallbackUrl = fallbackCandidate
+        ? normalizeHorizonUrl(fallbackCandidate)
+        : '';
+    if (!normalizedHorizonUrl) {
+        throw new HorizonError('horizon_url is required.', 0, false);
+    }
+    const cachingEnabled = cacheTtlMs > 0;
+    const cacheKey = cachingEnabled
+        ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
+        : '';
+    if (cachingEnabled) {
+        const cacheStatsBefore = redactCacheStats(cache.getStats());
+        logger_1.logger.debug('Horizon cache lookup start', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey,
+            cacheTtlMs,
+            cacheSizeBefore: cacheStatsBefore.size,
+            cacheEntryCountBefore: cacheStatsBefore.entries.length,
+        }));
+        const cached = cache.get(cacheKey);
+        if (cached) {
+            logger_1.logger.debug('Horizon cache hit', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                ...safeAccountSummary(cached),
+            }));
+            return cached;
+        }
+        logger_1.logger.debug('Horizon cache miss', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheKey,
+            cacheTtlMs,
+        }));
+    }
+    else {
+        logger_1.logger.debug('Horizon cache disabled (ttl=0)', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            cacheTtlMs: 0,
+        }));
+    }
+    let primaryError;
+    try {
+        const result = await fetchAccountOnce(fetch, normalizedHorizonUrl, stellarAddress, timeoutMs, maxRetries, 'primary');
+        if (cachingEnabled) {
+            cache.set(cacheKey, result.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after primary success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'primary',
+                ...safeAccountSummary(result.account),
+            }));
+        }
+        return result.account;
+    }
+    catch (error) {
+        if (error instanceof HorizonError) {
+            primaryError = error;
+            if (error.statusCode === 404) {
+                throw error;
+            }
+        }
+        else {
+            throw error;
+        }
+    }
+    if (!normalizedFallbackUrl) {
+        throw primaryError;
+    }
+    logger_1.logger.debug('Horizon RPC fallback: primary exhausted, switching to fallback URL', safeHorizonContext({
+        component: 'horizon',
+        stellarAddress,
+        horizonUrl,
+        horizonUrlFallback: normalizedFallbackUrl,
+        cacheKey: cachingEnabled ? cacheKey : undefined,
+        primaryStatusCode: primaryError?.statusCode,
+        primaryRetryable: primaryError?.retryable,
+        primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+    }));
+    try {
+        const fallbackResult = await fetchAccountOnce(fetch, normalizedFallbackUrl, stellarAddress, timeoutMs, maxRetries, 'fallback');
+        if (cachingEnabled) {
+            cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+            const cacheStatsAfter = redactCacheStats(cache.getStats());
+            logger_1.logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                cacheKey,
+                cacheTtlMs,
+                cacheSizeAfter: cacheStatsAfter.size,
+                cacheEntryCountAfter: cacheStatsAfter.entries.length,
+                source: 'fallback',
+                ...safeAccountSummary(fallbackResult.account),
+            }));
+        }
+        logger_1.logger.debug('Horizon RPC fallback succeeded', safeHorizonContext({
+            component: 'horizon',
+            stellarAddress,
+            horizonUrl,
+            horizonUrlFallback: normalizedFallbackUrl,
+            fallbackAttempts: fallbackResult.attempts,
+            fallbackLatencyMs: fallbackResult.latencyMs,
+        }));
+        return fallbackResult.account;
+    }
+    catch (fallbackError) {
+        if (fallbackError instanceof HorizonError) {
+            logger_1.logger.debug('Horizon RPC fallback exhausted', safeHorizonContext({
+                component: 'horizon',
+                stellarAddress,
+                horizonUrl,
+                horizonUrlFallback: normalizedFallbackUrl,
+                primaryStatusCode: primaryError?.statusCode,
+                primaryErrorMessage: primaryError ? (0, logger_1.redactString)(primaryError.message) : undefined,
+                fallbackStatusCode: fallbackError.statusCode,
+                fallbackErrorMessage: (0, logger_1.redactString)(fallbackError.message),
+            }));
+        }
+        throw fallbackError;
+    }
 }
 const DEFAULT_WAIT_TIMEOUT_MS = 120000;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -34539,11 +34958,25 @@ async function run() {
     const waitUntilFunded = (0, inputs_1.parseBooleanInput)(core.getInput('wait_until_funded'), false);
     const waitUntilFundedTimeoutMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_timeout_ms'), 120000, { min: 0, max: 600000 });
     const waitUntilFundedIntervalMs = (0, inputs_1.parseNumberInput)(core.getInput('wait_until_funded_interval_ms'), 5000, { min: 1000, max: 60000 });
+    const horizonUrlFallback = core.getInput('horizon_url_fallback') || '';
+    const rpcFallbackUrlRaw = core.getInput('rpc_fallback_url') || '';
+    const fallbackUrls = rpcFallbackUrlRaw
+        ? rpcFallbackUrlRaw.split(',').map((u) => u.trim()).filter(Boolean)
+        : horizonUrlFallback
+            ? [horizonUrlFallback]
+            : [];
+    const horizonCacheTtlMs = (0, inputs_1.parseNumberInput)(core.getInput('horizon_cache_ttl_ms'), 60000, {
+        min: 0,
+        max: 3600000,
+    });
+    const useCache = (0, inputs_1.parseBooleanInput)(core.getInput('use_cache'), false);
     const githubToken = core.getInput('github_token', { required: true });
     logger_1.logger.setDebugMode(debugMode);
     logger_1.logger.debug('Action inputs loaded', {
         component: 'index',
         horizonUrl,
+        horizonUrlFallback,
+        horizonCacheTtlMs,
         assetCode,
         assetIssuer,
         minXlmReserveRaw,
@@ -34553,6 +34986,8 @@ async function run() {
         waitUntilFunded,
         waitUntilFundedTimeoutMs,
         waitUntilFundedIntervalMs,
+        rpcFallbackUrl: rpcFallbackUrlRaw,
+        useCache,
     });
     (0, checks_1.validateStellarAddress)(stellarAddress);
     const minXlmReserve = (0, checks_1.parseMinXlmReserve)(minXlmReserveRaw);
@@ -34571,12 +35006,20 @@ async function run() {
     const checkConfig = {
         ...normalizedAsset,
         minXlmReserve,
+        horizonUrl,
     };
     core.info(`Checking Stellar account ${stellarAddress} via ${horizonUrl}`);
     if (waitUntilFunded) {
         core.info(`wait_until_funded is enabled — polling every ${waitUntilFundedIntervalMs}ms for up to ${waitUntilFundedTimeoutMs}ms.`);
     }
     let result;
+    const horizonOptions = {
+        timeoutMs: horizonTimeoutMs,
+        horizonUrlFallback: horizonUrlFallback || undefined,
+        fallbackUrls,
+        cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
+        useCache,
+    };
     try {
         const account = waitUntilFunded
             ? await (0, horizon_1.waitForFundedAccount)(horizonUrl, stellarAddress, {
@@ -34588,8 +35031,8 @@ async function run() {
                     attempt,
                     elapsedMs,
                 }),
-            })
-            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, { timeoutMs: horizonTimeoutMs });
+            }, (hUrl, sAddr, opts) => (0, horizon_1.fetchAccount)(hUrl, sAddr, { ...horizonOptions, ...opts }))
+            : await (0, horizon_1.fetchAccount)(horizonUrl, stellarAddress, horizonOptions);
         result = (0, checks_1.runAccountChecks)(account, checkConfig);
     }
     catch (error) {
@@ -34611,6 +35054,11 @@ async function run() {
         ...checkConfig,
         stellarAddress,
         horizonUrl,
+        failOnMissing,
+        stickyComment,
+        waitUntilFunded,
+        waitUntilFundedTimeoutMs,
+        waitUntilFundedIntervalMs,
     });
     let commentUrl;
     try {
@@ -34649,7 +35097,7 @@ run().catch((error) => {
 /***/ }),
 
 /***/ 8422:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
@@ -34657,6 +35105,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseBooleanInput = parseBooleanInput;
 exports.parseNumberInput = parseNumberInput;
 exports.getErrorMessage = getErrorMessage;
+const proxy_1 = __nccwpck_require__(8903);
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
         return defaultValue;
@@ -34687,7 +35136,7 @@ function parseNumberInput(value, defaultValue, options = {}) {
     return parsed;
 }
 function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
+    return (0, proxy_1.safeProxyErrorMessage)(error);
 }
 
 
@@ -34761,7 +35210,160 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Timer = exports.logger = void 0;
+exports.redactStellarAddress = redactStellarAddress;
+exports.redactString = redactString;
+exports.redactHorizonUrl = redactHorizonUrl;
+exports.redactContext = redactContext;
 const core = __importStar(__nccwpck_require__(7484));
+const proxy_1 = __nccwpck_require__(8903);
+/**
+ * Well-known context keys whose string values always carry a Stellar
+ * address (G-address or C-address) and must be redacted.
+ */
+const ADDRESS_CONTEXT_KEYS = new Set([
+    'stellarAddress',
+    'assetIssuer',
+    'accountId',
+    'account_id',
+    'contractAddress',
+]);
+/**
+ * Pattern matching Stellar G-addresses (classic) and C-addresses (Soroban
+ * contracts): 56-character StrKey starting with G or C, followed by 55
+ * base32 characters (A-Z, 2-7).
+ */
+const STELLAR_ADDRESS_REGEX = /\b([GC][A-Z2-7]{55})\b/g;
+/**
+ * Redacts a single Stellar address (G- or C-address) to its first 4 and
+ * last 4 characters, separated by `...`. Non-address strings are returned
+ * unchanged so non-address log values never collide with the redaction
+ * pass.
+ *
+ * Examples:
+ *   redactStellarAddress('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
+ *     => 'GA5Z...KZVN'
+ */
+function redactStellarAddress(address) {
+    if (!address)
+        return address;
+    const trimmed = address.trim();
+    if (trimmed.length !== 56)
+        return address;
+    const first = trimmed.charAt(0);
+    if (first !== 'G' && first !== 'C')
+        return address;
+    if (!STELLAR_ADDRESS_REGEX.test(trimmed)) {
+        // Reset regex state (global flag); bail out if it's not a clean match.
+        STELLAR_ADDRESS_REGEX.lastIndex = 0;
+        return address;
+    }
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+/**
+ * Redacts every Stellar address embedded in an arbitrary free-form
+ * string — error messages, Horizon URLs, JSON snippets, stack traces, etc.
+ * Uses the same first-4/last-4 policy as `redactStellarAddress`.
+ */
+function redactString(value) {
+    if (!value)
+        return value;
+    value = (0, proxy_1.redactProxyCredentials)(value);
+    STELLAR_ADDRESS_REGEX.lastIndex = 0;
+    return value.replace(STELLAR_ADDRESS_REGEX, (match) => redactStellarAddress(match));
+}
+/**
+ * Redacts a Horizon endpoint URL so any embedded account address in the
+ * path (e.g. `/accounts/G...`) is masked and any query-string values
+ * matching an address shape are masked before the URL reaches a log line.
+ * The base hostname / protocol is preserved so operators can still verify
+ * which Horizon instance was called.
+ */
+function redactHorizonUrl(url) {
+    if (!url)
+        return url;
+    const hadTrailingSlash = /\/(?:\?|#|$)/.test(url);
+    let masked = url.replace(/\/accounts\/([GC][A-Z2-7]{55})([^A-Z2-7]|$)/g, (_m, addr, rest) => `/accounts/${redactStellarAddress(addr)}${rest ?? ''}`);
+    try {
+        const parsed = new URL(masked);
+        const safeParams = new URLSearchParams();
+        for (const [key, rawValue] of parsed.searchParams.entries()) {
+            safeParams.set(key, redactString(rawValue));
+        }
+        const query = safeParams.toString();
+        parsed.search = query ? `?${query}` : '';
+        masked = parsed.toString();
+        if (!hadTrailingSlash) {
+            masked = masked.replace(/\/(?=\?|#|$)/, '');
+        }
+    }
+    catch {
+        // If the URL is malformed, fall back to regex-only redaction on the
+        // raw string — we never want the redaction step itself to throw and
+        // mask the underlying log event we were trying to emit.
+    }
+    return redactString(masked);
+}
+/**
+ * Redacts a `LogContext` record in place (returns a new object, no
+ * mutation) for safe logging. Policy per key type:
+ *
+ * - Keys in `ADDRESS_CONTEXT_KEYS`  → run `redactStellarAddress` on the
+ *   raw string value.
+ * - Key == `horizonUrl`             → run `redactHorizonUrl`.
+ * - Unknown string values           → scan and mask embedded addresses
+ *   via `redactString` so free-form messages attached to context don't
+ *   leak.
+ * - Non-string values               → passed through as-is (numbers,
+ *   booleans). Objects and arrays are recursed shallowly for the common
+ *   case of nested debug payloads.
+ */
+function redactContext(context) {
+    if (!context)
+        return context;
+    const safe = {};
+    for (const key of Object.keys(context)) {
+        const raw = context[key];
+        if (key === 'component') {
+            safe.component = raw;
+            continue;
+        }
+        if (key === 'horizonUrl' && typeof raw === 'string') {
+            safe.horizonUrl = redactHorizonUrl(raw);
+            continue;
+        }
+        if (ADDRESS_CONTEXT_KEYS.has(key) && typeof raw === 'string') {
+            safe[key] = redactStellarAddress(raw);
+            continue;
+        }
+        safe[key] = redactValue(raw);
+    }
+    return safe;
+}
+function redactValue(raw) {
+    if (typeof raw === 'string')
+        return redactString(raw);
+    if (raw === null || raw === undefined)
+        return raw;
+    if (Array.isArray(raw))
+        return raw.map((item) => redactValue(item));
+    if (typeof raw === 'object') {
+        const safeObj = {};
+        for (const [k, v] of Object.entries(raw)) {
+            if (ADDRESS_CONTEXT_KEYS.has(k) && typeof v === 'string') {
+                safeObj[k] = redactStellarAddress(v);
+            }
+            else if (k === 'horizonUrl' && typeof v === 'string') {
+                safeObj[k] = redactHorizonUrl(v);
+            }
+            else {
+                safeObj[k] = redactValue(v);
+            }
+        }
+        return safeObj;
+    }
+    return raw;
+}
 class StructuredLogger {
     constructor(debugMode = false) {
         this.debugMode = debugMode;
@@ -34776,23 +35378,23 @@ class StructuredLogger {
      * Log an informational message.
      */
     info(message, context) {
-        core.info(this.formatMessage(message, context));
+        core.info(this.formatMessage(redactString(message), redactContext(context)));
     }
     /**
      * Log a warning message.
      */
     warn(message, context) {
-        core.warning(this.formatMessage(message, context));
+        core.warning(this.formatMessage(redactString(message), redactContext(context)));
     }
     /**
      * Log an error message.
      */
     error(message, context, error) {
-        let fullMessage = this.formatMessage(message, context);
+        let fullMessage = this.formatMessage(redactString(message), redactContext(context));
         if (error) {
-            fullMessage += `\n  Error: ${error.message}`;
+            fullMessage += `\n  Error: ${redactString(error.message)}`;
             if (error.stack) {
-                fullMessage += `\n  Stack: ${error.stack}`;
+                fullMessage += `\n  Stack: ${redactString(error.stack)}`;
             }
         }
         core.error(fullMessage);
@@ -34802,7 +35404,7 @@ class StructuredLogger {
      */
     debug(message, context) {
         if (this.debugMode) {
-            core.debug(this.formatMessage(`[DEBUG] ${message}`, context));
+            core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
         }
     }
     /**
@@ -34814,6 +35416,10 @@ class StructuredLogger {
     }
     /**
      * Format a message with context information.
+     *
+     * Precondition: `message` and every string in `context` have already
+     * been run through their respective redaction helpers. This method is
+     * purely responsible for layout.
      */
     formatMessage(message, context) {
         if (!context) {
@@ -34826,11 +35432,27 @@ class StructuredLogger {
         const otherKeys = Object.keys(context).filter((k) => k !== 'component');
         if (otherKeys.length > 0) {
             const contextStr = otherKeys
-                .map((k) => `${k}=${context[k]}`)
+                .map((k) => `${k}=${stringifyForLog(context[k])}`)
                 .join(', ');
             parts.push(`(${contextStr})`);
         }
         return parts.join(' ');
+    }
+}
+function stringifyForLog(value) {
+    if (value === null)
+        return 'null';
+    if (value === undefined)
+        return 'undefined';
+    if (typeof value === 'string')
+        return value;
+    if (typeof value === 'number' || typeof value === 'boolean')
+        return String(value);
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return '[Unserializable]';
     }
 }
 exports.logger = new StructuredLogger();
@@ -34878,11 +35500,45 @@ exports.Timer = Timer;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.escapeMarkdownInline = escapeMarkdownInline;
 exports.inlineCode = inlineCode;
+exports.wrapMarkdownTableCell = wrapMarkdownTableCell;
 function escapeMarkdownInline(value) {
     return value.replace(/([`*_{}[\]()#+.!|>~-])/g, '\\$1');
 }
 function inlineCode(value) {
     return `\`${value.replace(/`/g, '\\`')}\``;
+}
+/** Escape table delimiters and wrap a cell with explicit Markdown line breaks. */
+function wrapMarkdownTableCell(value, maxWidth = 80) {
+    if (!Number.isInteger(maxWidth) || maxWidth < 1) {
+        throw new Error('Markdown table cell width must be a positive integer.');
+    }
+    const safe = value.replace(/\r\n?|\n/g, ' ');
+    const words = safe.split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+        let remaining = word;
+        while (remaining.length > maxWidth) {
+            if (line) {
+                lines.push(line);
+                line = '';
+            }
+            lines.push(remaining.slice(0, maxWidth));
+            remaining = remaining.slice(maxWidth);
+        }
+        if (!remaining)
+            continue;
+        if (line && line.length + 1 + remaining.length > maxWidth) {
+            lines.push(line);
+            line = remaining;
+        }
+        else {
+            line = line ? `${line} ${remaining}` : remaining;
+        }
+    }
+    if (line)
+        lines.push(line);
+    return lines.map((wrappedLine) => wrappedLine.replace(/\|/g, '&#124;')).join('<br>');
 }
 
 
@@ -35072,6 +35728,35 @@ function setValidationOutputs(result, commentUrl) {
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
     }
+}
+
+
+/***/ }),
+
+/***/ 8903:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/** Proxy URL helpers. Error text from HTTP clients may include proxy URLs. */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.redactProxyCredentials = redactProxyCredentials;
+exports.safeProxyErrorMessage = safeProxyErrorMessage;
+const PROXY_URL_WITH_USERINFO = /([a-z][a-z\d+.-]*:\/\/)([^\s/]+)@/gi;
+/**
+ * Mask URL userinfo in arbitrary error text while retaining the scheme and
+ * proxy host. This intentionally works on malformed URLs too, since the
+ * value commonly arrives inside a client error message rather than alone.
+ */
+function redactProxyCredentials(value) {
+    if (!value)
+        return value;
+    return value.replace(PROXY_URL_WITH_USERINFO, '$1***@');
+}
+/** Normalize an unknown thrown value to safe, credential-redacted text. */
+function safeProxyErrorMessage(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return redactProxyCredentials(message);
 }
 
 

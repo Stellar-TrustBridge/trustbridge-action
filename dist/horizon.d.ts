@@ -1,3 +1,4 @@
+import { SimpleCache } from './cache';
 export interface HorizonBalanceNative {
     balance: string;
     asset_type: 'native';
@@ -33,9 +34,16 @@ export declare class HorizonError extends Error {
     readonly retryable: boolean;
     constructor(message: string, statusCode: number, retryable?: boolean);
 }
+type FetchLike = (url: string | import('node-fetch').Request, init?: import('node-fetch').RequestInit) => Promise<import('node-fetch').Response>;
 export interface FetchAccountOptions {
     timeoutMs?: number;
     maxRetries?: number;
+    horizonUrlFallback?: string;
+    fallbackUrls?: string[];
+    useCache?: boolean;
+    cacheTtlMs?: number;
+    cache?: SimpleCache;
+    fetchFn?: FetchLike;
 }
 export declare function normalizeHorizonUrl(baseUrl: string): string;
 export declare function isRetryableStatus(status: number): boolean;
@@ -65,3 +73,8 @@ export declare function isCreditBalance(balance: HorizonBalance): balance is Hor
 export declare function getNativeBalance(account: HorizonAccount): string;
 export declare function hasTrustline(account: HorizonAccount, assetCode: string, assetIssuer: string): boolean;
 export declare function parseHorizonBalance(balance: string): number;
+export interface HorizonFetchOptions {
+    maxRetries?: number;
+    retryBaseDelayMs?: number;
+}
+export {};
