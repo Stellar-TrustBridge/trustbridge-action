@@ -528,6 +528,14 @@ export interface ActionOutputs {
    * `if: steps.trustbridge.outputs.outputs_truncated == 'true'`.
    */
   outputs_truncated: string;
+  /**
+   * Issue #965 — absolute path of the optional diagnostics bundle when one was
+   * written this run, empty otherwise. index.ts publishes the real value after
+   * the run; this default keeps the output contract total.
+   */
+  diagnostics_zip_path: string;
+  /** Issue #965 — outcome code of the diagnostics bundle (default `disabled`). */
+  diagnostics_zip_status: string;
 }
 
 export function toActionOutputs(
@@ -652,6 +660,11 @@ export function toActionOutputs(
     // truncation result (batch_summary_json can be far larger than
     // assets_trustline_status); single-address mode reports whether
     // assets_trustline_status itself was truncated.
+    outputs_truncated: String(assetsTrustlineStatusTruncation.truncated),
+    // Issue #965 — overwritten by index.ts when diagnostics_zip_path is set.
+    diagnostics_zip_path: '',
+    diagnostics_zip_status: 'disabled',
+
     outputs_truncated: toBooleanOutput(assetsTrustlineStatusTruncation.truncated, 'outputs_truncated'),
   };
 }
@@ -1074,6 +1087,24 @@ export interface MatrixOutputsResult {
   totalCount: number;
 }
 
+/**
+ * Serialize an ordered map as a JSON object, keys in map (input) order.
+ *
+ * A plain object cannot do this: JavaScript hoists integer-like keys ("123")
+ * ahead of the others and silently drops a `__proto__` key, so
+ * `JSON.stringify(obj)` would not list assignees in input order. A `Map`
+ * keeps first-insertion order (a later duplicate overwrites the value but
+ * keeps the original position), and this writes it out without reordering
+ * (Issue #964).
+ */
+function stringifyOrderedMap<V>(entries: ReadonlyMap<string, V>): string {
+  const parts: string[] = [];
+  for (const [key, value] of entries) {
+    parts.push(`${JSON.stringify(key)}:${JSON.stringify(value)}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+
 function buildAssigneeResultsMap(
   subset: Array<{
     assigneeLogin: string;
@@ -1081,10 +1112,10 @@ function buildAssigneeResultsMap(
     validationResult: ValidationResult;
     validatedAt?: string;
   }>,
-): AssigneeResultsMap {
-  const assigneeResults: AssigneeResultsMap = {};
+): Map<string, AssigneeResult> {
+  const assigneeResults = new Map<string, AssigneeResult>();
   for (const { assigneeLogin, stellarAddress, validationResult, validatedAt } of subset) {
-    assigneeResults[assigneeLogin] = {
+    assigneeResults.set(assigneeLogin, {
       ready: validationResult.valid,
       stellar_address: stellarAddress,
       xlm_balance: validationResult.xlmBalance,
@@ -1092,7 +1123,7 @@ function buildAssigneeResultsMap(
       trustline_exists: validationResult.trustlineExists,
       reason_code: validationResult.reasonCode ?? (validationResult.valid ? 'SUCCESS' : 'FAILED'),
       validated_at: validatedAt ?? new Date().toISOString(),
-    };
+    });
   }
   return assigneeResults;
 }
@@ -1115,17 +1146,17 @@ export function buildMatrixOutputs(
   // two maps never disagree about which assignees are present.
   const { json: assigneeResultsJson, truncated, includedCount, totalCount } = truncateJsonArray(
     results,
-    (subset) => JSON.stringify(buildAssigneeResultsMap(subset)),
+    (subset) => stringifyOrderedMap(buildAssigneeResultsMap(subset)),
   );
 
-  const readyMap: MatrixReadyMap = {};
+  const readyMap = new Map<string, boolean>();
   for (const { assigneeLogin, validationResult } of results.slice(0, includedCount)) {
-    readyMap[assigneeLogin] = validationResult.valid;
+    readyMap.set(assigneeLogin, validationResult.valid);
   }
 
   return {
     assigneeResultsJson,
-    matrixReadyMap: JSON.stringify(readyMap),
+    matrixReadyMap: stringifyOrderedMap(readyMap),
     truncated,
     includedCount,
     totalCount,

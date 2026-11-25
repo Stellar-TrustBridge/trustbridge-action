@@ -61,6 +61,22 @@ import { configureTraceSampling } from './tracing';
 import { capSnoozeWindow } from './snooze';
 import { inferStellarNetworkPreset } from './links';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
+import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
+import { logger, emitInputsLogRecord } from './logger';
+import {
+  describeLinkRejection,
+  explainLinkRejection,
+  LinkAllowlistError,
+  LinkHostPolicy,
+  parseIdnHostAllowlist,
+} from './links';
+import {
+  writeDiagnosticsZip,
+  parseDiagnosticsZipMaxBytes,
+  DIAGNOSTICS_ZIP_REASONS,
+  DiagnosticsInputSnapshot,
+} from './diagnostics';
+
 import {
   setValidationOutputs,
   validateActionOutput,
@@ -610,6 +626,55 @@ export async function run(): Promise<void> {
   const homeDomainCheckEnabled = parseBooleanInput(core.getInput('home_domain_check_enabled'), false);
   const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
   const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
+  // Optional redacted diagnostics bundle for artifact upload (Issue #965).
+  const diagnosticsZipPath = (core.getInput('diagnostics_zip_path') || '').trim();
+  const diagnosticsZipMaxBytesInput = core.getInput('diagnostics_zip_max_bytes') || '';
+  let diagnosticsZipEmitted = false;
+  const emitDiagnosticsZipOnce = (): void => {
+    if (diagnosticsZipEmitted) return;
+    diagnosticsZipEmitted = true;
+    emitDiagnosticsZip(diagnosticsZipPath, diagnosticsZipMaxBytesInput, {
+      horizonUrl,
+      horizonUrlFallback,
+      assetCode,
+      assetIssuer,
+      minXlmReserve: minXlmReserveRaw,
+      horizonTimeoutMs,
+      useCache,
+      cacheTtlMs: horizonCacheTtlMs,
+      allowCrossNetworkFallback: false,
+      debugMode,
+      stellarAddress,
+    });
+  };
+
+  // Link overrides (Issue #963): docs/dashboard bases are rendered as clickable
+  // links in issue comments, so look-alike (non-ASCII / punycode) hosts are
+  // rejected unless the exact host is listed in `idn_host_allowlist`.
+  let idnHostAllowlist: string[] = [];
+  try {
+    idnHostAllowlist = parseIdnHostAllowlist(core.getInput('idn_host_allowlist'));
+  } catch (allowlistError) {
+    if (!(allowlistError instanceof LinkAllowlistError)) throw allowlistError;
+    core.warning(
+      `idn_host_allowlist ignored (${allowlistError.code}): ${allowlistError.message} No look-alike hosts will be allowed.`,
+    );
+  }
+  const linkHostPolicy: LinkHostPolicy = { allowedIdnHosts: idnHostAllowlist };
+  const resolveLinkOverride = (inputName: string): string | undefined => {
+    const value = (core.getInput(inputName) || '').trim();
+    if (!value) return undefined;
+    const reason = explainLinkRejection(value, linkHostPolicy);
+    if (reason) {
+      core.warning(
+        `${inputName} ignored (${reason}): the value ${describeLinkRejection(reason)}. The default link target is used instead.`,
+      );
+      return undefined;
+    }
+    return value;
+  };
+  const docsBaseUrl = resolveLinkOverride('docs_base_url');
+  const sep0010DashboardUrl = resolveLinkOverride('sep0010_dashboard_url');
 
   // Comment threading + batch inputs.
   const { postingMode, commentThreadingMode } = resolveCommentModes(
@@ -1060,6 +1125,10 @@ export async function run(): Promise<void> {
     sep0007DeepLinks,
     sep0007OriginDomain,
     assets: assetsTrustlineStatusExtras,
+    docsBaseUrl,
+    sep0010DashboardUrl,
+    linkHostPolicy,
+
     correlationId: correlation.correlationId,
     correlationFooter: debugMode,
   });
@@ -1186,6 +1255,7 @@ export async function run(): Promise<void> {
     // batch outputs.
     core.setOutput('outputs_truncated', toBooleanOutput(batchOutputsTruncated, 'outputs_truncated'));
   }
+  emitDiagnosticsZipOnce();
 
   // ---------------------------------------------------------------------------
   // Wallet labels (Issue #200)
@@ -1328,6 +1398,8 @@ export async function run(): Promise<void> {
     });
   }
 
+  emitDiagnosticsZipOnce();
+
   if (debugMode) {
     logger.debug('Metrics summary (JSON artifact)', { component: 'metrics' });
     core.debug(globalMetrics.toJSON());
@@ -1360,6 +1432,41 @@ export async function run(): Promise<void> {
   } else {
     core.warning(failureMessage);
   }
+}
+
+/**
+ * Write the optional diagnostics bundle and publish `diagnostics_zip_path` /
+ * `diagnostics_zip_status`. A failure here is a warning, never a failed run:
+ * the bundle is a debugging aid and must not change the validation verdict.
+ */
+function emitDiagnosticsZip(
+  outputPath: string,
+  maxBytesInput: string,
+  snapshot: DiagnosticsInputSnapshot,
+): void {
+  if (!outputPath) {
+    core.setOutput('diagnostics_zip_path', '');
+    core.setOutput('diagnostics_zip_status', DIAGNOSTICS_ZIP_REASONS.disabled);
+    return;
+  }
+  const maxBytes = parseDiagnosticsZipMaxBytes(maxBytesInput);
+  if (!maxBytes.ok) {
+    core.warning(`Diagnostics bundle skipped: ${maxBytes.message}`);
+    core.setOutput('diagnostics_zip_path', '');
+    core.setOutput('diagnostics_zip_status', DIAGNOSTICS_ZIP_REASONS.invalidMaxBytes);
+    return;
+  }
+  const outcome = writeDiagnosticsZip({
+    config: { inputs: snapshot },
+    outputPath,
+    maxBytes: maxBytes.value,
+    now: new Date(),
+  });
+  const published = outcome.status === 'written' || outcome.status === 'unchanged';
+  core.setOutput('diagnostics_zip_path', published ? (outcome.path ?? '') : '');
+  core.setOutput('diagnostics_zip_status', outcome.reason);
+  if (published) core.info(outcome.message);
+  else core.warning(`Diagnostics bundle not written (${outcome.reason}): ${outcome.message}`);
 }
 
 function writeSarifOutput(

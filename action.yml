@@ -416,6 +416,17 @@ inputs:
       URL; invalid values fall back to the default silently. (Issue #104)
     required: false
     default: ""
+  idn_host_allowlist:
+    description: >-
+      Comma- or newline-separated exact host names allowed to be
+      internationalized (non-ASCII or punycode `xn--`) in `docs_base_url` and
+      `sep0010_dashboard_url`. By default every such host is rejected as a
+      possible look-alike (homograph) of another site and the default link is
+      used instead; a warning names the reason. Entries must be bare hosts, no
+      scheme, port, path, or wildcard (max 50). Default empty. See
+      docs/USAGE.md#link-host-safety. (Issue #963)
+    required: false
+    default: ""
   network:
     description: >-
       Stellar network shorthand: "testnet", "public", or "mainnet". When set
@@ -613,6 +624,25 @@ inputs:
     required: false
     default: ""
 
+  diagnostics_zip_path:
+    description: >-
+      Optional path (inside GITHUB_WORKSPACE, must end in ".zip") where a
+      redacted diagnostics bundle is written for artifact upload. The zip holds
+      manifest.json (file list, sizes, SHA-256, anything omitted), inputs.json,
+      diagnostics.md and run-info.json. Secrets, tokens and unmasked Stellar
+      addresses are never included. Empty (default) disables the bundle. Attach
+      it with actions/upload-artifact. Enable it when asking maintainers for help
+      with a failing run; see docs/TROUBLESHOOTING.md#diagnostics-bundle.
+    required: false
+    default: ""
+  diagnostics_zip_max_bytes:
+    description: >-
+      Maximum size of the diagnostics bundle in bytes (4096 to 52428800).
+      Optional files are dropped, largest first, to fit; if the mandatory files
+      still do not fit, no zip is written and diagnostics_zip_status is
+      "too_large". Default 1048576 (1 MiB).
+    required: false
+    default: "1048576"
   use_plugin_runner:
     description: >-
       Use the plugin-based check pipeline (runPlugins + core plugins)
@@ -1092,6 +1122,16 @@ outputs:
       Number of addresses that failed at least one validation check (numeric
       string). Each entry appears in the `failures` array of
       `batch_summary_json` with a human-readable reason. Empty in single-address mode.
+
+  diagnostics_zip_path:
+    description: >-
+      Absolute path of the diagnostics bundle when one was written (or already
+      up to date) this run, empty otherwise. Upload it with actions/upload-artifact.
+  diagnostics_zip_status:
+    description: >-
+      Outcome of the optional diagnostics bundle: written, unchanged, disabled,
+      invalid_path, invalid_max_bytes, too_large, or write_failed. See
+      docs/TROUBLESHOOTING.md#diagnostics-bundle.
 
 runs:
   using: "node20"

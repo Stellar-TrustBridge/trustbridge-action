@@ -554,6 +554,98 @@ async function validateOneAddressTimed(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic ordering guarantee (Issue #964)
+//
+// Wave matrix jobs fan out over batch outputs, so the same input must always
+// produce the same row order or downstream jobs flake. The contract:
+//
+//   1. Input order: `parseBatchAddresses` keeps the first occurrence of each
+//      address in the order given (JSON array and newline lists alike).
+//   2. Result order: `runBatchValidation` returns exactly one row per input
+//      address, in input order, regardless of concurrency or the order in
+//      which Horizon responses arrive. `results[i]` is always for
+//      `addresses[i]`.
+//   3. Summary order: `buildBatchSummary().failures` keeps result (input)
+//      order; `fatalReasonCodes` is sorted; `failureTaxonomy` keys are fixed.
+//   4. Matrix outputs (`assignee_results_json`, `matrix_ready_map`) list
+//      assignees in input order (see `buildMatrixOutputs` in outputs.ts).
+//
+// `verifyBatchOrdering` enforces (2) at runtime, so a regression fails loudly
+// instead of silently reordering payouts. See docs/USAGE.md#deterministic-ordering.
+// ---------------------------------------------------------------------------
+
+/** Most addresses accepted in one batch run. Larger inputs fail with `BATCH_INPUT_TOO_LARGE`. */
+export const MAX_BATCH_ADDRESSES = 1000;
+
+export type BatchInputErrorCode =
+  | 'BATCH_INPUT_EMPTY'
+  | 'BATCH_INPUT_INVALID_JSON'
+  | 'BATCH_INPUT_NOT_ARRAY'
+  | 'BATCH_INPUT_ITEM_NOT_STRING'
+  | 'BATCH_INPUT_NO_ENTRIES'
+  | 'BATCH_INPUT_TOO_LARGE';
+
+/** Malformed or oversized `stellar_addresses`; `code` is stable and documented. */
+export class BatchInputError extends Error {
+  constructor(
+    public readonly code: BatchInputErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'BatchInputError';
+  }
+}
+
+export type BatchOrderingErrorCode =
+  | 'BATCH_ORDER_COUNT_MISMATCH'
+  | 'BATCH_ORDER_ROW_MISSING'
+  | 'BATCH_ORDER_ADDRESS_MISMATCH';
+
+/** A batch result list that does not line up with its input addresses. */
+export class BatchOrderingError extends Error {
+  constructor(
+    public readonly code: BatchOrderingErrorCode,
+    message: string,
+    public readonly index?: number,
+  ) {
+    super(message);
+    this.name = 'BatchOrderingError';
+  }
+}
+
+/**
+ * Assert `results[i]` belongs to `addresses[i]` for every index.
+ *
+ * @throws {BatchOrderingError} `BATCH_ORDER_COUNT_MISMATCH`,
+ *   `BATCH_ORDER_ROW_MISSING` or `BATCH_ORDER_ADDRESS_MISMATCH` (with the
+ *   offending `index`).
+ */
+export function verifyBatchOrdering(
+  addresses: readonly string[],
+  results: ReadonlyArray<BatchAddressResult | undefined>,
+): void {
+  if (results.length !== addresses.length) {
+    throw new BatchOrderingError(
+      'BATCH_ORDER_COUNT_MISMATCH',
+      `Batch produced ${results.length} result row(s) for ${addresses.length} input address(es).`,
+    );
+  }
+  for (let i = 0; i < addresses.length; i++) {
+    const row = results[i];
+    if (row === undefined) {
+      throw new BatchOrderingError('BATCH_ORDER_ROW_MISSING', `Batch result row ${i} is missing.`, i);
+    }
+    if (row.address !== addresses[i]) {
+      throw new BatchOrderingError(
+        'BATCH_ORDER_ADDRESS_MISMATCH',
+        `Batch result row ${i} is for a different address than input position ${i}; output order must match input order.`,
+        i,
+      );
+    }
+  }
+}
+
 /**
  * Parse the `stellar_addresses` input into a deduplicated list of addresses.
  *
@@ -568,7 +660,7 @@ async function validateOneAddressTimed(
 export function parseBatchAddresses(raw: string, options: { maxAddresses?: number } = {}): string[] {
   const trimmed = raw.trim();
   if (!trimmed) {
-    throw new Error('stellar_addresses input is empty. Provide at least one Stellar address.');
+    throw new BatchInputError('BATCH_INPUT_EMPTY', 'stellar_addresses input is empty. Provide at least one Stellar address.');
   }
 
   let addresses: string[];
@@ -579,15 +671,15 @@ export function parseBatchAddresses(raw: string, options: { maxAddresses?: numbe
     try {
       parsed = JSON.parse(trimmed);
     } catch {
-      throw new Error('stellar_addresses looks like a JSON array but could not be parsed. Check the JSON syntax.');
+      throw new BatchInputError('BATCH_INPUT_INVALID_JSON', 'stellar_addresses looks like a JSON array but could not be parsed. Check the JSON syntax.');
     }
     if (!Array.isArray(parsed)) {
-      throw new Error('stellar_addresses JSON must be an array of strings.');
+      throw new BatchInputError('BATCH_INPUT_NOT_ARRAY', 'stellar_addresses JSON must be an array of strings.');
     }
     addresses = (parsed as unknown[])
       .map((item, i) => {
         if (typeof item !== 'string') {
-          throw new Error(`stellar_addresses JSON array item at index ${i} is not a string.`);
+          throw new BatchInputError('BATCH_INPUT_ITEM_NOT_STRING', `stellar_addresses JSON array item at index ${i} is not a string.`);
         }
         return item.trim();
       })
@@ -601,7 +693,7 @@ export function parseBatchAddresses(raw: string, options: { maxAddresses?: numbe
   }
 
   if (addresses.length === 0) {
-    throw new Error('stellar_addresses input contains no non-empty entries.');
+    throw new BatchInputError('BATCH_INPUT_NO_ENTRIES', 'stellar_addresses input contains no non-empty entries.');
   }
 
   // Deduplicate, preserving order
@@ -612,6 +704,13 @@ export function parseBatchAddresses(raw: string, options: { maxAddresses?: numbe
       seen.add(addr);
       deduped.push(addr);
     }
+  }
+
+  if (deduped.length > MAX_BATCH_ADDRESSES) {
+    throw new BatchInputError(
+      'BATCH_INPUT_TOO_LARGE',
+      `stellar_addresses contains ${deduped.length} unique addresses; at most ${MAX_BATCH_ADDRESSES} are supported per run. Split the batch.`,
+    );
   }
 
   enforceBatchAddressLimit(deduped, options.maxAddresses);
@@ -740,6 +839,7 @@ export async function runBatchValidation(
     globalMetrics.recordMetric('batch_passed', 0, 'count');
     globalMetrics.recordMetric('batch_failed', results.filter(Boolean).length, 'count');
     globalMetrics.incrementCounter('batch_run_complete');
+    verifyBatchOrdering(addresses, results);
     return results as BatchAddressResult[];
   }
 
@@ -894,6 +994,9 @@ export async function runBatchValidation(
     }
   }
 
+  // Issue #964: results[i] must be for addresses[i]. Fail loudly rather than
+  // hand a Wave matrix a silently reordered payout list.
+  verifyBatchOrdering(addresses, results);
   const finalResults = results as BatchAddressResult[];
 
   globalMetrics.recordMetric('batch_passed', finalResults.filter((r) => r.valid).length, 'count');
@@ -918,7 +1021,8 @@ export function buildBatchSummary(
 ): BatchSummary {
   const passed = results.filter((r) => r.valid).length;
   const failed = results.length - passed;
-  const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code): code is string => Boolean(code && (code.startsWith('FATAL_') || code === BATCH_REASON_CODES.rateBudgetExhausted)))));
+  // Sorted so the list never depends on which row happened to fail first (Issue #964).
+  const fatalReasonCodes = Array.from(new Set(results.map((r) => r.reasonCode).filter((code): code is string => Boolean(code && (code.startsWith('FATAL_') || code === BATCH_REASON_CODES.rateBudgetExhausted))))).sort();
 
   const failures = results
     .filter((r) => !r.valid)

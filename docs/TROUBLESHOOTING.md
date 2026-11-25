@@ -301,6 +301,49 @@ GitHub Job Summaries have a 1 MiB UTF-8 budget. TrustBridge treats the verbose m
 
 A `horizon_retry_after_wait` metric records each actual jittered wait in milliseconds. The `horizon_retry_after_waits` and `horizon_retry_after_wait_ms` counters show how often and how long the action waited on server guidance. The wait is always bounded by `retry_max_delay_ms` and the cumulative `retry_max_total_wait_ms` budget.
 
+## Diagnostics bundle
+
+When a run fails in a way you cannot explain, or maintainers ask for details, enable the optional diagnostics bundle and attach it to the workflow run as an artifact. It is **off by default**; turn it on only while debugging or when asked for support.
+
+```yaml
+- id: trustbridge
+  uses: Stellar-TrustBridge/trustbridge-action@v1
+  with:
+    diagnostics_zip_path: trustbridge-diagnostics.zip
+    diagnostics_zip_max_bytes: "1048576" # optional, default 1 MiB
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: trustbridge-diagnostics
+    path: ${{ steps.trustbridge.outputs.diagnostics_zip_path }}
+    if-no-files-found: ignore
+```
+
+The zip contains:
+
+| File | Contents |
+|------|----------|
+| `manifest.json` | Schema version, optional timestamp, size cap, redaction policy, every file with its size and SHA-256, and anything omitted to fit the cap |
+| `inputs.json` | The resolved action inputs after redaction |
+| `diagnostics.md` | The same expert diagnostics block used in `debug_mode` comments |
+| `run-info.json` | Horizon status, latency, retries and (redacted) error, when available |
+
+Nothing sensitive is included: `github_token`, webhook secrets, anything whose name contains `token`, `secret` or `password`, Stellar secret seeds, GitHub and bearer tokens, JWTs and PEM private keys are replaced, and every Stellar address is masked to first-4/last-4. Lines longer than 1 KiB are cut before redaction, and each file is capped at 256 KiB. The same input always produces the same bytes, so re-running writes nothing new, and the archive is written to a temporary file and renamed, so an interrupted run never leaves a truncated zip.
+
+The `diagnostics_zip_path` must end in `.zip` and resolve inside `GITHUB_WORKSPACE`. If the bundle exceeds `diagnostics_zip_max_bytes`, optional files are dropped (extra files first, then `diagnostics.md`, then `run-info.json`) and listed under `omitted` in the manifest.
+
+A bundle problem never changes the validation verdict: it logs a warning and sets the `diagnostics_zip_status` output.
+
+| `diagnostics_zip_status` | Meaning and fix |
+|--------------------------|-----------------|
+| `written` | The bundle was created at `diagnostics_zip_path`. |
+| `unchanged` | An identical bundle already existed; nothing was rewritten. |
+| `disabled` | `diagnostics_zip_path` is empty. |
+| `invalid_path` | The path is empty, does not end in `.zip`, escapes the workspace (including through a symlink), or is a directory. Use a workspace-relative `.zip` path. |
+| `invalid_max_bytes` | `diagnostics_zip_max_bytes` is not a whole number between 4096 and 52428800. |
+| `too_large` | Even the mandatory `manifest.json` and `inputs.json` do not fit. Raise `diagnostics_zip_max_bytes`. |
+| `write_failed` | The file could not be written (permissions, a file where a directory is needed, full disk). The warning names the cause; make the workspace path writable. |
+
 ## SARIF upload failures
 
 Playbook for `github/codeql-action/upload-sarif` failures after TrustBridge

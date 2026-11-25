@@ -703,6 +703,7 @@ export interface Inputs {
   webhook_auth_mode?: string;
   webhook_oidc_audience?: string;
   docs_base_url?: string;
+  idn_host_allowlist?: string;
   network?: string;
   preset?: string;
   posting_mode?: string;
@@ -729,6 +730,8 @@ export interface Inputs {
   validation_json_path?: string;
   trustbridge_plugins_path?: string;
   sarif_output_path?: string;
+  diagnostics_zip_path?: string;
+  diagnostics_zip_max_bytes?: string;
   use_plugin_runner?: string;
   locale?: string;
   trace_sampling_ratio?: string;

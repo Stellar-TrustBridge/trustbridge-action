@@ -22,6 +22,12 @@
  * - Free-form error messages are scanned with `redactString` before inclusion.
  */
 
+import { createHash } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as zlib from 'zlib';
+import { redactStellarAddress, redactHorizonUrl, redactString } from './logger';
+
 import * as crypto from 'crypto';
 import {
   redactStellarAddress,
@@ -518,6 +524,449 @@ export function buildSponsorshipDiagnostics(
 
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Optional diagnostics bundle (zip) for artifact upload
+//
+// When `diagnostics_zip_path` is set, the action writes a single redacted zip
+// to that workspace path. Attach it with `actions/upload-artifact`. The writer
+// is dependency-free (STORE/DEFLATE only) and deterministic: identical inputs
+// produce byte-identical archives, so repeated runs are idempotent.
+// ---------------------------------------------------------------------------
+
+/** Default cap on the finished zip, in bytes. */
+export const DIAGNOSTICS_ZIP_DEFAULT_MAX_BYTES = 1024 * 1024;
+/** Smallest cap that can hold the mandatory `manifest.json` + `inputs.json`. */
+export const DIAGNOSTICS_ZIP_MIN_BYTES = 4 * 1024;
+/** Hard ceiling for the cap, so a typo cannot ask for an unbounded artifact. */
+export const DIAGNOSTICS_ZIP_MAX_BYTES_CEILING = 50 * 1024 * 1024;
+/** Any single bundled text file is truncated to this many bytes. */
+export const DIAGNOSTICS_ZIP_MAX_ENTRY_BYTES = 256 * 1024;
+
+export const DIAGNOSTICS_ZIP_MANIFEST_SCHEMA = 'trustbridge.diagnostics.bundle/v1';
+
+/**
+ * Stable, documented outcome codes (docs/TROUBLESHOOTING.md#diagnostics-bundle).
+ * Surfaced as the `diagnostics_zip_status` output.
+ */
+export const DIAGNOSTICS_ZIP_REASONS = {
+  written: 'written',
+  unchanged: 'unchanged',
+  disabled: 'disabled',
+  invalidPath: 'invalid_path',
+  invalidMaxBytes: 'invalid_max_bytes',
+  tooLarge: 'too_large',
+  writeFailed: 'write_failed',
+} as const;
+
+export type DiagnosticsZipReason =
+  (typeof DIAGNOSTICS_ZIP_REASONS)[keyof typeof DIAGNOSTICS_ZIP_REASONS];
+
+export class DiagnosticsZipError extends Error {
+  constructor(
+    public readonly reason: DiagnosticsZipReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DiagnosticsZipError';
+  }
+}
+
+export interface DiagnosticsZipExtraFile {
+  /** File name inside `extra/` (letters, digits, `.`, `_`, `-`; max 64 chars). */
+  name: string;
+  content: string;
+}
+
+export interface DiagnosticsZipOptions {
+  config: DiagnosticsConfig;
+  /** Destination, relative to the workspace (or absolute inside it). Must end in `.zip`. */
+  outputPath: string;
+  /** Size cap for the finished archive. Defaults to {@link DIAGNOSTICS_ZIP_DEFAULT_MAX_BYTES}. */
+  maxBytes?: number;
+  /** Workspace root the output must stay inside. Defaults to `GITHUB_WORKSPACE`, then `cwd`. */
+  workspaceRoot?: string;
+  /** Extra text files (for example a log tail); redacted and size-capped like everything else. */
+  extraFiles?: DiagnosticsZipExtraFile[];
+  /** Recorded in the manifest. Omit for a fully reproducible archive. */
+  now?: Date;
+  actionVersion?: string;
+}
+
+export interface DiagnosticsZipResult {
+  status: 'written' | 'unchanged' | 'skipped' | 'failed';
+  reason: DiagnosticsZipReason;
+  /** Absolute path of the archive when one exists after this call. */
+  path?: string;
+  bytes?: number;
+  /** Names of the files inside the archive. */
+  entries?: string[];
+  /** Names dropped to stay under the cap. */
+  omitted?: string[];
+  /** Actionable, already-redacted message. */
+  message: string;
+}
+
+/** Linear-time patterns: Stellar secret seeds and common token shapes. */
+function redactLinear(value: string): string {
+  return value
+    .replace(/\bS[A-D][A-Z2-7]{54}\b/g, '[REDACTED_SECRET_SEED]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_TOKEN]')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [REDACTED_TOKEN]');
+}
+
+/** Defence in depth on top of `redactString`: seeds and common token shapes. */
+export function redactBundleText(value: string): string {
+  return redactString(redactLinear(value));
+}
+
+/** Lines longer than this are cut before the (backtracking) `redactString` pass. */
+export const DIAGNOSTICS_ZIP_MAX_LINE_CHARS = 1024;
+
+function boundLineLengths(text: string): string {
+  return text
+    .split('\n')
+    .map((line) =>
+      line.length > DIAGNOSTICS_ZIP_MAX_LINE_CHARS
+        ? `${line.slice(0, DIAGNOSTICS_ZIP_MAX_LINE_CHARS)}...[line truncated]`
+        : line,
+    )
+    .join('\n');
+}
+
+/** Parse the `diagnostics_zip_max_bytes` input. Empty means the default. */
+export function parseDiagnosticsZipMaxBytes(
+  raw: string | undefined,
+): { ok: true; value: number } | { ok: false; message: string } {
+  const text = (raw ?? '').trim();
+  if (text === '') return { ok: true, value: DIAGNOSTICS_ZIP_DEFAULT_MAX_BYTES };
+  if (!/^\d+$/.test(text)) {
+    return { ok: false, message: `diagnostics_zip_max_bytes must be a whole number of bytes, got "${redactString(text)}"` };
+  }
+  const value = Number(text);
+  if (value < DIAGNOSTICS_ZIP_MIN_BYTES || value > DIAGNOSTICS_ZIP_MAX_BYTES_CEILING) {
+    return {
+      ok: false,
+      message: `diagnostics_zip_max_bytes must be between ${DIAGNOSTICS_ZIP_MIN_BYTES} and ${DIAGNOSTICS_ZIP_MAX_BYTES_CEILING} bytes, got ${value}`,
+    };
+  }
+  return { ok: true, value };
+}
+
+// --- minimal zip writer ----------------------------------------------------
+
+const CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+export function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i++) crc = CRC_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+export interface ZipEntry {
+  name: string;
+  data: Buffer;
+}
+
+// Fixed timestamp (2000-01-01 00:00:00) so archives are reproducible.
+const DOS_TIME = 0;
+const DOS_DATE = ((2000 - 1980) << 9) | (1 << 5) | 1;
+
+function assertSafeEntryName(name: string): void {
+  if (
+    !name ||
+    name.length > 128 ||
+    name.startsWith('/') ||
+    name.includes('\\') ||
+    name.includes('\0') ||
+    name.split('/').some((part) => part === '' || part === '.' || part === '..')
+  ) {
+    throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.writeFailed, `unsafe zip entry name: ${JSON.stringify(redactString(name))}`);
+  }
+}
+
+/** Build a zip archive in memory. Entries are written sorted by name. */
+export function buildZip(entries: ZipEntry[]): Buffer {
+  const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const seen = new Set<string>();
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+
+  for (const entry of sorted) {
+    assertSafeEntryName(entry.name);
+    if (seen.has(entry.name)) {
+      throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.writeFailed, `duplicate zip entry: ${entry.name}`);
+    }
+    seen.add(entry.name);
+
+    const name = Buffer.from(entry.name, 'utf8');
+    const crc = crc32(entry.data);
+    const deflated = zlib.deflateRawSync(entry.data, { level: 9 });
+    const useDeflate = deflated.length < entry.data.length;
+    const payload = useDeflate ? deflated : entry.data;
+    const method = useDeflate ? 8 : 0;
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0x0800, 6); // UTF-8 names
+    local.writeUInt16LE(method, 8);
+    local.writeUInt16LE(DOS_TIME, 10);
+    local.writeUInt16LE(DOS_DATE, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    locals.push(local, name, payload);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE((3 << 8) | 20, 4); // made by: unix, v2.0
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt16LE(DOS_TIME, 12);
+    central.writeUInt16LE(DOS_DATE, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(entry.data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(((0o100644 << 16) >>> 0), 38); // regular file, rw-r--r--
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+
+    offset += local.length + name.length + payload.length;
+  }
+
+  const centralBuf = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(sorted.length, 8);
+  end.writeUInt16LE(sorted.length, 10);
+  end.writeUInt32LE(centralBuf.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuf, end]);
+}
+
+function truncateText(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return { text, truncated: false };
+  const marker = '\n[truncated by trustbridge-action]\n';
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'));
+  // Cut on a character boundary: slice bytes, then drop any partial trailing code point.
+  const cut = Buffer.from(text, 'utf8').subarray(0, budget).toString('utf8').replace(/�$/, '');
+  return { text: cut + marker, truncated: true };
+}
+
+interface BundleFile {
+  name: string;
+  data: Buffer;
+  truncated: boolean;
+  /** Lower number is dropped last. */
+  priority: number;
+}
+
+function textFile(name: string, text: string, priority: number): BundleFile {
+  // Seeds/tokens first (linear), then bound line length so the backtracking
+  // secret-assignment pattern in `redactString` cannot go quadratic on a huge
+  // unbroken blob, then the full redaction pass.
+  const safe = truncateText(redactString(boundLineLengths(redactLinear(text))), DIAGNOSTICS_ZIP_MAX_ENTRY_BYTES);
+  return { name, data: Buffer.from(safe.text, 'utf8'), truncated: safe.truncated, priority };
+}
+
+/**
+ * Assemble the bundle in memory. Throws {@link DiagnosticsZipError} with
+ * reason `too_large` when even the mandatory files cannot fit under `maxBytes`.
+ */
+export function buildDiagnosticsZip(options: DiagnosticsZipOptions): {
+  zip: Buffer;
+  entries: string[];
+  omitted: string[];
+} {
+  const maxBytes = options.maxBytes ?? DIAGNOSTICS_ZIP_DEFAULT_MAX_BYTES;
+  const { config } = options;
+
+  const optional: BundleFile[] = [];
+  const mandatory: BundleFile[] = [
+    textFile('inputs.json', JSON.stringify(buildSafeInputsSnapshot(config.inputs), null, 2), 0),
+  ];
+
+  optional.push(textFile('diagnostics.md', buildDiagnosticsBlock(config), 1));
+  if (config.runInfo) {
+    optional.push(
+      textFile(
+        'run-info.json',
+        JSON.stringify(
+          { ...config.runInfo, horizonError: config.runInfo.horizonError ? redactBundleText(config.runInfo.horizonError) : undefined },
+          null,
+          2,
+        ),
+        2,
+      ),
+    );
+  }
+  for (const extra of options.extraFiles ?? []) {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(extra.name) || extra.name.startsWith('.')) {
+      throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.writeFailed, `invalid extra file name: ${JSON.stringify(redactString(extra.name))}`);
+    }
+    optional.push(textFile(`extra/${extra.name}`, extra.content, 3));
+  }
+
+  const omitted: Array<{ name: string; reason: 'size_cap' }> = [];
+  const render = (files: BundleFile[]): Buffer => {
+    const manifest = {
+      schema: DIAGNOSTICS_ZIP_MANIFEST_SCHEMA,
+      generatedAt: options.now ? options.now.toISOString() : undefined,
+      actionVersion: options.actionVersion,
+      maxBytes,
+      redaction: {
+        policy: 'logger.redactString + secret-field blocklist + seed/token patterns',
+        addressesMasked: true,
+        secretsIncluded: false,
+      },
+      files: files
+        .map((f) => ({
+          name: f.name,
+          bytes: f.data.length,
+          sha256: createHash('sha256').update(f.data).digest('hex'),
+          truncated: f.truncated,
+        }))
+        .sort((a, b) => (a.name < b.name ? -1 : 1)),
+      omitted: [...omitted].sort((a, b) => (a.name < b.name ? -1 : 1)),
+    };
+    const manifestFile = textFile('manifest.json', JSON.stringify(manifest, null, 2), 0);
+    return buildZip([...files, manifestFile].map((f) => ({ name: f.name, data: f.data })));
+  };
+
+  let included = [...mandatory, ...optional];
+  let zip = render(included);
+  // Drop the least valuable (highest priority number, then largest) optional files until it fits.
+  while (zip.length > maxBytes) {
+    const droppable = included.filter((f) => f.priority > 0);
+    if (droppable.length === 0) {
+      throw new DiagnosticsZipError(
+        DIAGNOSTICS_ZIP_REASONS.tooLarge,
+        `diagnostics bundle needs ${zip.length} bytes for its mandatory files but diagnostics_zip_max_bytes is ${maxBytes}; raise the cap or reduce inputs`,
+      );
+    }
+    droppable.sort((a, b) => b.priority - a.priority || b.data.length - a.data.length || (a.name < b.name ? -1 : 1));
+    const drop = droppable[0];
+    omitted.push({ name: drop.name, reason: 'size_cap' });
+    included = included.filter((f) => f !== drop);
+    zip = render(included);
+  }
+
+  return {
+    zip,
+    entries: [...included.map((f) => f.name), 'manifest.json'].sort(),
+    omitted: omitted.map((o) => o.name),
+  };
+}
+
+/** Resolve and validate the destination. Throws `invalid_path` with an actionable message. */
+export function resolveDiagnosticsZipPath(outputPath: string, workspaceRoot?: string): string {
+  const raw = (outputPath ?? '').trim();
+  if (!raw) {
+    throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.invalidPath, 'diagnostics_zip_path is empty');
+  }
+  if (raw.includes('\0')) {
+    throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.invalidPath, 'diagnostics_zip_path contains a NUL byte');
+  }
+  if (!raw.toLowerCase().endsWith('.zip')) {
+    throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.invalidPath, 'diagnostics_zip_path must end in ".zip"');
+  }
+  const root = path.resolve(workspaceRoot || process.env.GITHUB_WORKSPACE || process.cwd());
+  const resolved = path.resolve(root, raw);
+  const inside = (base: string, target: string): boolean => {
+    const rel = path.relative(base, target);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+  if (!inside(root, resolved)) {
+    throw new DiagnosticsZipError(
+      DIAGNOSTICS_ZIP_REASONS.invalidPath,
+      'diagnostics_zip_path must resolve inside GITHUB_WORKSPACE (path traversal and absolute paths outside it are rejected)',
+    );
+  }
+  // A symlinked parent could still point outside the workspace.
+  try {
+    let probe = path.dirname(resolved);
+    while (!fs.existsSync(probe) && probe !== root) probe = path.dirname(probe);
+    if (fs.existsSync(probe) && !inside(fs.realpathSync(root), fs.realpathSync(probe)) && fs.realpathSync(probe) !== fs.realpathSync(root)) {
+      throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.invalidPath, 'diagnostics_zip_path resolves outside GITHUB_WORKSPACE through a symlink');
+    }
+  } catch (err) {
+    if (err instanceof DiagnosticsZipError) throw err;
+  }
+  if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+    throw new DiagnosticsZipError(DIAGNOSTICS_ZIP_REASONS.invalidPath, 'diagnostics_zip_path points at a directory');
+  }
+  return resolved;
+}
+
+/**
+ * Write the diagnostics bundle. Never throws: failures come back as
+ * `status: 'failed'` with a stable `reason` and an actionable message, so the
+ * caller can warn without affecting the validation verdict.
+ *
+ * The archive is written to a temporary file and renamed into place, so an
+ * interrupted run never leaves a truncated zip. When the existing file is
+ * already byte-identical the call is a no-op (`unchanged`).
+ */
+export function writeDiagnosticsZip(options: DiagnosticsZipOptions): DiagnosticsZipResult {
+  let resolved: string;
+  try {
+    resolved = resolveDiagnosticsZipPath(options.outputPath, options.workspaceRoot);
+  } catch (err) {
+    const e = err as DiagnosticsZipError;
+    return { status: 'failed', reason: e.reason ?? DIAGNOSTICS_ZIP_REASONS.invalidPath, message: e.message };
+  }
+
+  let built: ReturnType<typeof buildDiagnosticsZip>;
+  try {
+    built = buildDiagnosticsZip(options);
+  } catch (err) {
+    if (err instanceof DiagnosticsZipError) return { status: 'failed', reason: err.reason, message: err.message };
+    return { status: 'failed', reason: DIAGNOSTICS_ZIP_REASONS.writeFailed, message: redactBundleText(err instanceof Error ? err.message : String(err)) };
+  }
+
+  const base = { path: resolved, bytes: built.zip.length, entries: built.entries, omitted: built.omitted };
+  try {
+    if (fs.existsSync(resolved) && fs.readFileSync(resolved).equals(built.zip)) {
+      return { status: 'unchanged', reason: DIAGNOSTICS_ZIP_REASONS.unchanged, ...base, message: `Diagnostics bundle already up to date at ${resolved}` };
+    }
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    const tmp = `${resolved}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(tmp, built.zip);
+      fs.renameSync(tmp, resolved);
+    } catch (err) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
+    const dropped = built.omitted.length ? ` (omitted to fit the size cap: ${built.omitted.join(', ')})` : '';
+    return { status: 'written', reason: DIAGNOSTICS_ZIP_REASONS.written, ...base, message: `Wrote diagnostics bundle (${built.zip.length} bytes) to ${resolved}${dropped}` };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const hint = code === 'EACCES' || code === 'EPERM' ? ' (permission denied: check the workspace is writable)' : code === 'ENOSPC' ? ' (disk full)' : '';
+    return {
+      status: 'failed',
+      reason: DIAGNOSTICS_ZIP_REASONS.writeFailed,
+      message: `Could not write diagnostics bundle to ${resolved}${hint}: ${redactBundleText(err instanceof Error ? err.message : String(err))}`,
+    };
+  }
 
 /**
  * Render captured plugin stderr (Issue #954) as a Markdown diagnostics

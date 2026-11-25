@@ -64,6 +64,11 @@
 
 import * as github from '@actions/github';
 import { resolveIssueOrPullRequestNumber } from './comment';
+import {
+  checkCodeownersCoverage,
+  CodeownersIgnoreOptions,
+  CodeownersRule,
+} from './codeowners';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -412,6 +417,68 @@ function extractHttpStatus(error: unknown): number | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Ownership coverage preflight (Issue #966)
+//
+// Reports touched paths that no CODEOWNERS rule covers. Generated output
+// (`dist/`, `coverage/`) is ignored by default so build artifacts never
+// produce a false "missing owner" warning on a Wave PR.
+// ---------------------------------------------------------------------------
+
+/** Most uncovered paths named in a single warning line. */
+export const OWNERSHIP_WARNING_PATH_LIMIT = 10;
+
+export interface OwnershipPreflightResult {
+  /** Human-readable warnings; empty when every non-ignored path has an owner. */
+  warnings: string[];
+  /** Non-ignored paths without an owner. */
+  uncovered: string[];
+  /** Paths skipped as generated output. */
+  ignored: string[];
+  /** True when no CODEOWNERS rules were available to check against. */
+  missingCodeowners: boolean;
+}
+
+/**
+ * Evaluate ownership coverage for the paths a PR touches.
+ *
+ * By default `dist/` and `coverage/` are ignored; pass `options.ignorePatterns`
+ * to add more (see docs/MAINTAINER_CHECKLIST.md#ignoring-generated-paths) or
+ * `{ ignoreGenerated: false }` to check everything.
+ *
+ * @throws {CodeownersIgnoreError} when `options.ignorePatterns` is malformed or oversized.
+ */
+export function evaluateOwnershipPreflight(
+  touchedPaths: string[],
+  rules: CodeownersRule[],
+  options: CodeownersIgnoreOptions = {},
+): OwnershipPreflightResult {
+  const effective: CodeownersIgnoreOptions = {
+    ignoreGenerated: options.ignoreGenerated ?? true,
+    ignorePatterns: options.ignorePatterns ?? [],
+  };
+  const result = checkCodeownersCoverage(touchedPaths, rules, effective);
+  const ignored = result.ignored ?? [];
+  const warnings: string[] = [];
+
+  if (result.uncovered.length > 0) {
+    const shown = result.uncovered.slice(0, OWNERSHIP_WARNING_PATH_LIMIT).join(', ');
+    const more =
+      result.uncovered.length > OWNERSHIP_WARNING_PATH_LIMIT
+        ? ` (+${result.uncovered.length - OWNERSHIP_WARNING_PATH_LIMIT} more)`
+        : '';
+    warnings.push(
+      result.missingCodeowners
+        ? `No CODEOWNERS rules were found, so ${result.uncovered.length} touched path(s) have no reviewer: ${shown}${more}`
+        : `${result.uncovered.length} touched path(s) have no CODEOWNERS owner: ${shown}${more}`,
+    );
+  }
+
+  return {
+    warnings,
+    uncovered: result.uncovered,
+    ignored,
+    missingCodeowners: result.missingCodeowners,
+
 // Issue #955 — required-label presence gate
 // ---------------------------------------------------------------------------
 

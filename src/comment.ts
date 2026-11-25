@@ -19,6 +19,7 @@ import {
   buildSep0010ChallengeSnippet,
   inferStellarNetwork,
   buildFaqLinkForCheck,
+  type LinkHostPolicy,
 } from './links';
 import {
   buildOnboardingChecklist,
@@ -112,6 +113,11 @@ export interface CommentConfig extends CheckConfig {
    * default silently so comment posting is never blocked. (Issue #104)
    */
   docsBaseUrl?: string;
+  /**
+   * Host policy applied to `docsBaseUrl` and `sep0010DashboardUrl`: look-alike
+   * (non-ASCII / punycode) hosts are rejected unless allowlisted here (Issue #963).
+   */
+  linkHostPolicy?: LinkHostPolicy;
   /**
    * Delta vs previous validation run (Issue #148). When present, a delta
    * section is appended to the comment showing newly-passed/failed checks.
@@ -284,7 +290,7 @@ export function formatCommentBody(
       // the happy path clean.
       let faqSuffix = "";
       if (!check.passed) {
-        const faqUrl = buildFaqLinkForCheck(check.label, config.docsBaseUrl);
+        const faqUrl = buildFaqLinkForCheck(check.label, config.docsBaseUrl, config.linkHostPolicy);
         if (faqUrl) {
           faqSuffix = ` [→ FAQ](${faqUrl})`;
         }
@@ -308,6 +314,7 @@ export function formatCommentBody(
       const authFaqUrl = buildFaqLinkForCheck(
         `${config.assetCode} trustline`,
         config.docsBaseUrl,
+        config.linkHostPolicy,
       );
       lines.push(
         "",
@@ -484,6 +491,7 @@ export function formatCommentBody(
     const sep0010Snippet = buildSep0010ChallengeSnippet({
       challengeXdr: config.sep0010ChallengeXdr,
       dashboardUrl: config.sep0010DashboardUrl,
+      linkHostPolicy: config.linkHostPolicy,
       network: stellarLabNetwork,
       stellarAddress: displayAddress,
     });

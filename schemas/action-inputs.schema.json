@@ -462,6 +462,11 @@
         "https://github.com/Stellar-TrustBridge/trustbridge-action/blob/main/docs/FAQ.md"
       ]
     },
+    "idn_host_allowlist": {
+      "type": "string",
+      "description": "Exact host names allowed to be internationalized (non-ASCII or punycode) in docs_base_url and sep0010_dashboard_url. All other look-alike hosts are rejected.",
+      "default": ""
+    },
     "network": {
       "type": "string",
       "description": "Stellar network shorthand: testnet, public, or mainnet. Overrides horizon_url, asset_code, and asset_issuer defaults via campaign preset. (Issue #207)",
@@ -617,6 +622,16 @@
       "type": "string",
       "description": "Path to write SARIF 2.1.0 output file for GitHub Advanced Security integration.",
       "default": ""
+    },
+    "diagnostics_zip_path": {
+      "type": "string",
+      "description": "Optional workspace path (must end in .zip) where a redacted diagnostics bundle is written for artifact upload. Empty disables it.",
+      "default": ""
+    },
+    "diagnostics_zip_max_bytes": {
+      "type": "string",
+      "description": "Maximum size of the diagnostics bundle in bytes (4096 to 52428800). Optional files are dropped to fit.",
+      "default": "1048576"
     },
     "use_plugin_runner": {
       "type": "string",

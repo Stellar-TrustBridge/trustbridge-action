@@ -18,6 +18,8 @@
   "comment_id",
   "comment_url",
   "conflict_report",
+  "diagnostics_zip_path",
+  "diagnostics_zip_status",
   "expected_network_passphrase",
   "friendbot_called",
   "friendbot_success",

@@ -157,6 +157,166 @@ export function findCoveringRule(
   return match;
 }
 
+// ---------------------------------------------------------------------------
+// Generated-path ignore patterns (Issue #966)
+//
+// Build output such as `dist/` and `coverage/` is never reviewed by a human
+// owner, so listing it as "missing an owner" only adds noise to Wave PR
+// preflight. Ignore patterns exclude those paths from coverage checks before
+// any CODEOWNERS rule is consulted.
+//
+// Pattern syntax (gitignore-lite; documented in docs/MAINTAINER_CHECKLIST.md):
+//   dist/          a directory named `dist` at any depth, and everything in it
+//   /dist/         only the root-level `dist` directory
+//   build/out/     a path containing a slash is anchored to the repository root
+//   *.min.js       a file glob without a slash matches at any depth
+//   **/generated/  `**` crosses directory boundaries
+// Negation (`!pattern`), backslashes, `..` segments, and NUL bytes are rejected.
+// ---------------------------------------------------------------------------
+
+/** Generated-output locations ignored when `ignoreGenerated` is requested. */
+export const DEFAULT_GENERATED_PATH_PATTERNS: readonly string[] = Object.freeze(['dist/', 'coverage/']);
+
+/** Upper bounds so a hostile or mistyped input cannot build a huge matcher. */
+export const MAX_IGNORE_PATTERNS = 100;
+export const MAX_IGNORE_PATTERN_LENGTH = 200;
+
+export type CodeownersIgnoreErrorCode =
+  | 'IGNORE_PATTERN_INVALID'
+  | 'IGNORE_PATTERN_TOO_LONG'
+  | 'IGNORE_TOO_MANY_PATTERNS';
+
+/** Thrown for malformed or oversized ignore patterns; `code` is stable and documented. */
+export class CodeownersIgnoreError extends Error {
+  constructor(
+    public readonly code: CodeownersIgnoreErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CodeownersIgnoreError';
+  }
+}
+
+/**
+ * Normalize ignore patterns from a comma/newline separated string or an array.
+ * Blank entries and `#` comments are skipped; the rest are validated.
+ *
+ * @throws {CodeownersIgnoreError} on malformed or oversized input.
+ */
+export function parseIgnorePatterns(input: string | readonly string[] | undefined): string[] {
+  const raw: string[] =
+    typeof input === 'string'
+      ? input.split(/[\r\n,]+/)
+      : Array.isArray(input)
+        ? [...input]
+        : [];
+
+  const patterns: string[] = [];
+  for (const entry of raw) {
+    const pattern = String(entry).trim();
+    if (!pattern || pattern.startsWith('#')) continue;
+    if (pattern.length > MAX_IGNORE_PATTERN_LENGTH) {
+      throw new CodeownersIgnoreError(
+        'IGNORE_PATTERN_TOO_LONG',
+        `Ignore pattern is longer than ${MAX_IGNORE_PATTERN_LENGTH} characters: ${pattern.slice(0, 40)}...`,
+      );
+    }
+    if (pattern.startsWith('!')) {
+      throw new CodeownersIgnoreError('IGNORE_PATTERN_INVALID', `Negated ignore patterns are not supported: ${pattern}`);
+    }
+    if (pattern.includes('\\') || pattern.includes('\0')) {
+      throw new CodeownersIgnoreError('IGNORE_PATTERN_INVALID', `Ignore pattern contains a backslash or NUL byte: ${JSON.stringify(pattern)}`);
+    }
+    if (pattern.split('/').some((segment) => segment === '..')) {
+      throw new CodeownersIgnoreError('IGNORE_PATTERN_INVALID', `Ignore pattern must not contain "..": ${pattern}`);
+    }
+    if (/^[A-Za-z]:/.test(pattern)) {
+      throw new CodeownersIgnoreError('IGNORE_PATTERN_INVALID', `Ignore pattern must be repository-relative, not a drive path: ${pattern}`);
+    }
+    patterns.push(pattern);
+    if (patterns.length > MAX_IGNORE_PATTERNS) {
+      throw new CodeownersIgnoreError(
+        'IGNORE_TOO_MANY_PATTERNS',
+        `At most ${MAX_IGNORE_PATTERNS} ignore patterns are supported.`,
+      );
+    }
+  }
+  return patterns;
+}
+
+/** Translate one (already validated) ignore pattern into an anchored RegExp. */
+function ignorePatternToRegExp(pattern: string): RegExp {
+  let body = pattern.trim();
+  const rootAnchored = body.startsWith('/');
+  if (rootAnchored) body = body.slice(1);
+  body = body.replace(/\/+$/, ''); // a trailing slash only means "directory"
+  // A slash anywhere else anchors the pattern to the repository root.
+  const anchored = rootAnchored || body.includes('/');
+
+  let regex = '';
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '*') {
+      if (body[i + 1] === '*') {
+        regex += '.*';
+        i++;
+        if (body[i + 1] === '/') i++;
+      } else {
+        regex += '[^/]*';
+      }
+    } else if (ch === '?') {
+      regex += '[^/]';
+    } else if ('\\^$.|+()[]{}'.includes(ch)) {
+      regex += `\\${ch}`;
+    } else {
+      regex += ch;
+    }
+  }
+  return new RegExp(`^${anchored ? '' : '(?:.*/)?'}${regex}(?:/.*)?$`);
+}
+
+export interface CompiledIgnorePattern {
+  pattern: string;
+  matcher: RegExp;
+}
+
+export function compileIgnorePatterns(patterns: readonly string[]): CompiledIgnorePattern[] {
+  return patterns.map((pattern) => ({ pattern, matcher: ignorePatternToRegExp(pattern) }));
+}
+
+/** Return the first ignore pattern matching `filePath`, or `null`. */
+export function findIgnoringPattern(
+  filePath: string,
+  compiled: readonly CompiledIgnorePattern[],
+): string | null {
+  const normalized = filePath.replace(/^\.?\//, '').replace(/^\/+/, '');
+  for (const { pattern, matcher } of compiled) {
+    if (matcher.test(normalized)) return pattern;
+  }
+  return null;
+}
+
+export function isIgnoredPath(filePath: string, patterns: readonly string[]): boolean {
+  return findIgnoringPattern(filePath, compileIgnorePatterns(patterns)) !== null;
+}
+
+export interface CodeownersIgnoreOptions {
+  /** Extra ignore patterns (see {@link parseIgnorePatterns} for the syntax). */
+  ignorePatterns?: string | readonly string[];
+  /** Also ignore {@link DEFAULT_GENERATED_PATH_PATTERNS} (`dist/`, `coverage/`). */
+  ignoreGenerated?: boolean;
+}
+
+/** Resolve options to a deduplicated, compiled pattern list, or `null` when ignoring is off. */
+function resolveIgnore(options?: CodeownersIgnoreOptions): CompiledIgnorePattern[] | null {
+  if (!options || (options.ignorePatterns === undefined && !options.ignoreGenerated)) return null;
+  const merged = [
+    ...(options.ignoreGenerated ? DEFAULT_GENERATED_PATH_PATTERNS : []),
+    ...parseIgnorePatterns(options.ignorePatterns),
+  ];
+  return compileIgnorePatterns(Array.from(new Set(merged)));
+}
+
 export interface CodeownersCoverageResult {
   /** Paths that have at least one owner. */
   covered: string[];
@@ -164,20 +324,37 @@ export interface CodeownersCoverageResult {
   uncovered: string[];
   /** True when no CODEOWNERS rules were loaded at all. */
   missingCodeowners: boolean;
+  /**
+   * Paths skipped because they match an ignore pattern (Issue #966). Only
+   * present when ignoring was requested via {@link CodeownersIgnoreOptions}.
+   */
+  ignored?: string[];
 }
 
 /**
  * Check reviewer coverage for a set of TrustBridge-touched paths against parsed
  * CODEOWNERS rules. Used by preflight to surface missing reviewer coverage.
+ *
+ * Pass `options` to skip generated output such as `dist/` and `coverage/`
+ * (Issue #966). Without options the behavior is unchanged.
+ *
+ * @throws {CodeownersIgnoreError} when `options.ignorePatterns` is malformed.
  */
 export function checkCodeownersCoverage(
   touchedPaths: string[],
   rules: CodeownersRule[],
+  options?: CodeownersIgnoreOptions,
 ): CodeownersCoverageResult {
   const covered: string[] = [];
   const uncovered: string[] = [];
+  const ignored: string[] = [];
+  const ignore = resolveIgnore(options);
 
   for (const filePath of touchedPaths) {
+    if (ignore && findIgnoringPattern(filePath, ignore) !== null) {
+      ignored.push(filePath);
+      continue;
+    }
     const rule = findCoveringRule(filePath, rules);
     if (rule && rule.owners.length > 0) {
       covered.push(filePath);
@@ -190,6 +367,7 @@ export function checkCodeownersCoverage(
     covered,
     uncovered,
     missingCodeowners: rules.length === 0,
+    ...(ignore ? { ignored } : {}),
   };
 }
 
@@ -229,21 +407,32 @@ export interface CodeownersCoverageDetail {
  *
  * @param touchedPaths - File paths relative to the repository root.
  * @param rules        - Parsed rules in file order (first → last).
+ * @param options      - Optional generated-path ignores (Issue #966). Ignored
+ *                       paths appear only in `ignored`, never in `details`.
  */
 export function checkCodeownersCoverageWithDetail(
   touchedPaths: string[],
   rules: CodeownersRule[],
+  options?: CodeownersIgnoreOptions,
 ): {
   details: CodeownersCoverageDetail[];
   covered: string[];
   uncovered: string[];
   missingCodeowners: boolean;
+  ignored?: Array<{ filePath: string; pattern: string }>;
 } {
   const details: CodeownersCoverageDetail[] = [];
   const covered: string[] = [];
   const uncovered: string[] = [];
+  const ignored: Array<{ filePath: string; pattern: string }> = [];
+  const ignore = resolveIgnore(options);
 
   for (const filePath of touchedPaths) {
+    const ignoringPattern = ignore ? findIgnoringPattern(filePath, ignore) : null;
+    if (ignoringPattern !== null) {
+      ignored.push({ filePath, pattern: ignoringPattern });
+      continue;
+    }
     const rule = findCoveringRule(filePath, rules);
     if (rule && rule.owners.length > 0) {
       covered.push(filePath);
@@ -254,7 +443,7 @@ export function checkCodeownersCoverageWithDetail(
     }
   }
 
-  return { details, covered, uncovered, missingCodeowners: rules.length === 0 };
+  return { details, covered, uncovered, missingCodeowners: rules.length === 0, ...(ignore ? { ignored } : {}) };
 }
 
 /**
