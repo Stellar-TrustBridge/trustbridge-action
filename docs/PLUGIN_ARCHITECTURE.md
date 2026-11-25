@@ -1,8 +1,14 @@
+
+
+
+
 # Plugin Architecture
 
 This document describes how TrustBridge discovers, loads, and runs third-party
 plugins. It is intended for plugin authors and operators who rely on plugin
 behavior in CI.
+
+Clarified whether plugins may perform network I/O, which hosts are allowlisted, and how SSRF controls apply. Add a negative test if enforcement exists.
 
 ## Overview
 
@@ -43,7 +49,8 @@ reordering a core plugin fails CI until this table is updated too.
 | 4 | `trustbridge/home-domain` | SEP-0001 home domain |
 
 User plugins must not reuse a `trustbridge/` id; the `trustbridge/` prefix is
-reserved for built-in checks.
+reserved for built-in checks. This is enforced by `src/pluginLoader.ts`
+(reason `reserved_id`) — see [Plugin id naming and collisions](#plugin-id-naming-and-collisions-issue-918).
 
 <!-- core-plugins:start -->
 | Export | Plugin id | Label |
@@ -182,6 +189,10 @@ security checks before a plugin file is imported:
    files are rejected with reason `not_file`.
 5. **Module must export a valid `CheckPlugin` interface** — missing `id`,
    `label`, or `run()` are rejected with reason `invalid_export`.
+6. **Plugin id must be well formed** — empty, longer than 128 characters, or
+   containing whitespace/control characters is rejected with reason
+   `invalid_id` (Issue #918).
+7. **Plugin id must not collide** — see below; collisions fail closed.
 
 ### `PluginLoadError` reason codes
 
@@ -193,7 +204,72 @@ security checks before a plugin file is imported:
 | `not_file` | Path resolves to a directory or non-regular file |
 | `load_failed` | Module threw an error during `import()` |
 | `invalid_export` | Module export does not match the `CheckPlugin` interface |
-| `duplicate_id` | Two allowlisted plugins export the same `id` |
+| `invalid_id` | Plugin `id` is empty, longer than 128 characters, or contains whitespace/control characters |
+| `duplicate_id` | Two allowlisted plugins export the same `id` (case-insensitive), or an external id is already registered |
+| `reserved_id` | An external plugin uses the reserved `trustbridge/` namespace or a core plugin id |
+
+`path_traversal`, `symlink_escape`, `not_found`, `not_file`, `load_failed`,
+`invalid_export`, and `invalid_id` are **isolated**: `loadPluginsFromAllowlist`
+logs a warning, skips that plugin, and keeps loading the rest.
+`duplicate_id` and `reserved_id` **fail closed**: loading throws and no partial
+plugin list is returned, because a silently dropped or shadowed check would
+vanish from the Wave readiness gate.
+
+## Plugin id naming and collisions (Issue #918)
+
+**Naming convention.** Use `<owner>/<check-name>` in lower-case kebab-case,
+for example `acme/kyc-verified` or `wave-org/payout-region`. The owner
+segment should be your GitHub org or another namespace you control, so ids
+from different authors never clash. Ids are compared **case-insensitively**:
+`acme/KYC` and `acme/kyc` are the same id.
+
+**Reserved namespace.** `trustbridge/` (any case) belongs to the built-in
+checks in `src/corePlugins.ts`. An external plugin with an id such as
+`trustbridge/trustline` or `TrustBridge/new-check` is rejected with
+`reserved_id` before it can shadow a core check. Pass `CORE_PLUGIN_IDS` (or
+any other ids you have already registered) as `reservedIds` to reserve more.
+
+**Collisions fail closed.** Two plugins that resolve to the same id are never
+deduplicated silently:
+
+| Collision | Where it is caught | Reason |
+|---|---|---|
+| Two allowlisted files export the same id | `loadPluginsFromAllowlist` | `duplicate_id` |
+| Ids differ only by case | `loadPluginsFromAllowlist` / `registerExternalPlugins` | `duplicate_id` |
+| The same path listed twice in the allowlist | `loadPluginsFromAllowlist` | `duplicate_id` |
+| External plugin uses a core id or `trustbridge/` | `loadPluginsFromAllowlist` / `registerExternalPlugins` | `reserved_id` |
+| External id already in the target registry | `registerExternalPlugins` | `duplicate_id` |
+
+Because the allowlist is sorted before loading, the plugin reported in
+`pluginPath` is always the one that sorts later, whatever order the workflow
+listed the paths in.
+
+`PluginRegistry.register()` keeps its first-wins, idempotent behaviour for
+core registration. To add external plugins to a registry that already holds
+the core plugins, use `registerExternalPlugins(registry, plugins)`: it checks
+every plugin first and registers nothing if any of them collides.
+
+```ts
+import { registerCorePlugins, CORE_PLUGIN_IDS } from './corePlugins';
+import { loadPluginsFromAllowlist, registerExternalPlugins } from './pluginLoader';
+import { defaultRegistry } from './plugin';
+
+registerCorePlugins();
+const external = await loadPluginsFromAllowlist({
+  workspaceRoot: process.env.GITHUB_WORKSPACE!,
+  allowedPluginPaths: ['plugins/kyc.cjs'],
+  reservedIds: CORE_PLUGIN_IDS,
+});
+registerExternalPlugins(defaultRegistry, external); // throws on any collision
+```
+
+Example error:
+
+```
+PluginLoadError: Reserved plugin id "trustbridge/trustline": plugins/shadow.cjs uses an id reserved for built-in TrustBridge checks. Use your own namespace, e.g. "<org>/<check-name>".
+```
+
+## Plugin tests
 
 Unit tests under `__tests__/plugin.test.ts` cover the plugin runner's happy
 path, the timeout boundary (a slow plugin that returns late fails closed
@@ -218,3 +294,13 @@ The plugin loader tests under `__tests__/plugin-loader.test.ts` cover:
 - Failure isolation: a bad plugin in the allowlist is skipped; remaining
   plugins still load.
 - Duplicate id detection.
+
+`__tests__/plugin-id-collisions.test.ts` (Issue #918) covers id validation
+(`invalid_id`), the reserved namespace, core-vs-external and
+external-vs-external collisions (including case-only differences and a path
+listed twice), order-independent error reporting, and that
+`registerExternalPlugins` leaves the registry unchanged on a collision:
+
+```bash
+npx jest __tests__/plugin-loader.test.ts __tests__/plugin-id-collisions.test.ts
+```

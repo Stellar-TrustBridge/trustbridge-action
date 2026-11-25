@@ -20,7 +20,34 @@ import { CheckResultItem, ValidationGate, ValidationResult } from './checks';
 export interface CheckSnapshot {
     label: string;
     passed: boolean;
+    /**
+     * Any other per-check fields (e.g. `detail`, `checkedAt`). Compared for
+     * {@link ValidationDelta.changed} unless listed in the ignore-list.
+     */
+    [field: string]: unknown;
 }
+/**
+ * Volatile per-check fields that change on every run without meaning
+ * anything changed. Ignored by default when computing the delta.
+ */
+export declare const DEFAULT_DELTA_IGNORED_FIELDS: readonly string[];
+export interface ComputeValidationDeltaOptions {
+    /**
+     * Extra per-check field names to ignore, merged with
+     * {@link DEFAULT_DELTA_IGNORED_FIELDS}. `label` and `passed` can never be
+     * ignored: status transitions are always reported.
+     */
+    ignoreFields?: readonly string[];
+}
+/**
+ * Parse a comma/newline separated ignore-list (e.g. from an action input).
+ * Blank entries are dropped; names must be identifiers, otherwise they are
+ * returned in `invalid` so the caller can fail with a stable message.
+ */
+export declare function parseDeltaIgnoreFields(raw: string | undefined): {
+    fields: string[];
+    invalid: string[];
+};
 /**
  * Machine-readable validation artifact schema written to `validation.json`.
  * Compatible with the Security artifact introduced for auditing (#83).
@@ -50,6 +77,12 @@ export interface ValidationDelta {
     newlyPassed: string[];
     newlyFailed: string[];
     unchanged: string[];
+    /**
+     * Checks whose status did not change but whose non-volatile fields did
+     * (e.g. a different `detail`). Volatile fields from the ignore-list and
+     * embedded ISO timestamps never land here. Omitted when empty.
+     */
+    changed?: string[];
     improved: boolean;
     regressed: boolean;
 }
@@ -80,7 +113,7 @@ export declare function computeValidationDelta(previous: {
     timestamp?: string;
 } | null | undefined, current: {
     checks: CheckSnapshot[];
-}): ValidationDelta | null;
+}, options?: ComputeValidationDeltaOptions): ValidationDelta | null;
 /**
  * Load a previous `validation.json` from disk. Returns `null` (no throw) when
  * the path is empty, the file is missing, or JSON is unreadable/invalid —

@@ -23,10 +23,48 @@
  *    for KEY, making it safe to reference translated copy without bypassing i18n.
  * 6. Unknown placeholders are replaced with an empty string (never silently
  *    passed through) so unexpected `{{foo}}` tokens cannot leak raw data.
+ * 7. Rendered output cap (Issue #905) — the *interpolated* partial must not
+ *    exceed MAX_TEMPLATE_RENDERED_BYTES (16 KB) and the raw template may hold
+ *    at most MAX_TEMPLATE_PLACEHOLDERS (200) placeholders. A small file that
+ *    repeats a long `{{locale:KEY}}` or `{{horizon}}` thousands of times (an
+ *    "expansion bomb") fails fast with a stable `TEMPLATE_OUTPUT_TOO_LARGE`
+ *    / `TEMPLATE_TOO_MANY_PLACEHOLDERS` error instead of producing a body
+ *    that exceeds GitHub's comment limit.
  */
 import type { Locale } from './i18n';
 /** Maximum allowed template file size in bytes. */
 export declare const MAX_TEMPLATE_BYTES: number;
+/**
+ * Maximum allowed size of the rendered (interpolated) partial in UTF-8 bytes
+ * (Issue #905). Leaves ample headroom under GitHub's 65,536-character comment
+ * limit for the core TrustBridge sections.
+ */
+export declare const MAX_TEMPLATE_RENDERED_BYTES: number;
+/** Maximum number of `{{…}}` placeholders allowed in one template (Issue #905). */
+export declare const MAX_TEMPLATE_PLACEHOLDERS = 200;
+/**
+ * Stable error codes raised by template rendering limits (Issue #905).
+ *
+ * | Code | Meaning |
+ * |---|---|
+ * | `TEMPLATE_OUTPUT_TOO_LARGE` | Rendered partial exceeds `MAX_TEMPLATE_RENDERED_BYTES`. |
+ * | `TEMPLATE_TOO_MANY_PLACEHOLDERS` | Template holds more than `MAX_TEMPLATE_PLACEHOLDERS` placeholders. |
+ */
+export type TemplateErrorCode = 'TEMPLATE_OUTPUT_TOO_LARGE' | 'TEMPLATE_TOO_MANY_PLACEHOLDERS';
+/** Error thrown when a template breaches a rendering limit (Issue #905). */
+export declare class TemplateRenderError extends Error {
+    readonly code: TemplateErrorCode;
+    constructor(code: TemplateErrorCode, message: string);
+}
+/** Options for {@link interpolateTemplate}. */
+export interface InterpolateOptions {
+    /**
+     * Maximum rendered size in UTF-8 bytes. Defaults to
+     * {@link MAX_TEMPLATE_RENDERED_BYTES}; non-finite or non-positive values
+     * fall back to the default.
+     */
+    maxOutputBytes?: number;
+}
 /**
  * Validate that the given path resolves inside the workspace root.
  *
@@ -69,12 +107,19 @@ export interface TemplateContext {
  *   Only string-typed fields of `CommentStrings` are supported; function
  *   fields are excluded and resolve to an empty string.
  * - Unknown placeholders are replaced with an empty string (never echoed back).
+ * - More than {@link MAX_TEMPLATE_PLACEHOLDERS} placeholders throws
+ *   `TemplateRenderError` (`TEMPLATE_TOO_MANY_PLACEHOLDERS`) before any
+ *   substitution (Issue #905).
+ * - Rendering stops as soon as the output would exceed `maxOutputBytes`
+ *   and throws `TemplateRenderError` (`TEMPLATE_OUTPUT_TOO_LARGE`), so an
+ *   expansion bomb never materialises a huge string (Issue #905).
  *
  * @param template  Raw template content (already validated).
  * @param ctx       Interpolation context.
+ * @param options   Rendering limits.
  * @returns         Interpolated template string.
  */
-export declare function interpolateTemplate(template: string, ctx: TemplateContext): string;
+export declare function interpolateTemplate(template: string, ctx: TemplateContext, options?: InterpolateOptions): string;
 /**
  * Load, validate, and interpolate a custom comment template partial.
  *
@@ -83,14 +128,16 @@ export declare function interpolateTemplate(template: string, ctx: TemplateConte
  * - The file does not exist at the resolved path (non-fatal, emits a warning).
  *
  * Throws `Error` for all hard validation failures (path traversal, size
- * exceeded, forbidden content) so the action can surface them clearly.
+ * exceeded, forbidden content) so the action can surface them clearly, and
+ * `TemplateRenderError` when the rendered output breaches a limit
+ * (Issue #905: `TEMPLATE_OUTPUT_TOO_LARGE`, `TEMPLATE_TOO_MANY_PLACEHOLDERS`).
  *
  * @param templatePath  Workspace-relative or absolute path to the `.md` file.
  * @param ctx           Interpolation context for variable substitution.
  * @param workspaceRoot Workspace root directory.  Defaults to
  *                      `GITHUB_WORKSPACE` env variable or `process.cwd()`.
  */
-export declare function loadCommentTemplate(templatePath: string | undefined | null, ctx: TemplateContext, workspaceRoot?: string): string | undefined;
+export declare function loadCommentTemplate(templatePath: string | undefined | null, ctx: TemplateContext, workspaceRoot?: string, options?: InterpolateOptions): string | undefined;
 /**
  * Build a `TemplateContext` from comment-level values.
  *

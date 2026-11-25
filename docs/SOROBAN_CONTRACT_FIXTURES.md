@@ -141,3 +141,20 @@ The fixture is intentionally separate from self-made test objects in
 `__tests__/soroban.test.ts` so that contract-representative payloads are clearly
 distinguished from synthetic test data. Canonical C-address and SAC examples come from
 `SOROBAN_CONTRACT_FIXTURES` so docs and tests never drift.
+
+---
+
+## Network passphrase verification (Issue #925)
+
+When `ContractConfig.networkPassphrase` is set (built from the `network_passphrase` input by `buildSorobanContractConfig` in `src/inputs.ts`), `src/soroban.ts` calls the RPC's `getNetwork` method before the first `simulateTransaction` / `getContractCode` call. If the reported `passphrase` differs from the configured one:
+
+- `NetworkPassphraseMismatchError` (a non-retryable `ContractLookupError`) is thrown with `reasonCode: "SOROBAN_NETWORK_MISMATCH"`;
+- no contract call is made, so another network's balances or registry state are never interpreted as this network's.
+
+A `getNetwork` response with no passphrase, invalid JSON, or a non-2xx status also fails before any contract call (`429/502/503/504` are retryable). A successful check is cached per (RPC URL, passphrase) for the rest of the process, so repeated lookups cost one extra RPC call per run. If no passphrase is configured, the check is skipped (previous behavior).
+
+Sample `getNetwork` fixture:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "result": { "passphrase": "Test SDF Network ; September 2015", "protocolVersion": 22 } }
+```

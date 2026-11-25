@@ -49470,7 +49470,8 @@ function generateBadgeSnippets(result, label = 'trustbridge') {
  * on Horizon predictable and avoids triggering rate limits.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_BATCH_CONCURRENCY = exports.MIN_BATCH_CONCURRENCY = exports.BATCH_REASON_CODES = exports.CLAWBACK_STRICT_REASON_CODE = void 0;
+exports.MAX_BATCH_CONCURRENCY = exports.MIN_BATCH_CONCURRENCY = exports.BATCH_REASON_CODES = exports.CLAWBACK_STRICT_REASON_CODE = exports.BatchAddressLimitError = exports.BATCH_ADDRESS_LIMIT_REASON_CODE = exports.BATCH_MAX_ADDRESSES_CEILING = exports.DEFAULT_BATCH_MAX_ADDRESSES = void 0;
+exports.enforceBatchAddressLimit = enforceBatchAddressLimit;
 exports.parseBatchAddresses = parseBatchAddresses;
 exports.runBatchValidation = runBatchValidation;
 exports.buildBatchSummary = buildBatchSummary;
@@ -49480,6 +49481,62 @@ const horizon_1 = __nccwpck_require__(9164);
 const resilience_1 = __nccwpck_require__(12334);
 const metrics_1 = __nccwpck_require__(35670);
 const assets_1 = __nccwpck_require__(25462);
+const inputs_1 = __nccwpck_require__(38422);
+Object.defineProperty(exports, "DEFAULT_BATCH_MAX_ADDRESSES", ({ enumerable: true, get: function () { return inputs_1.DEFAULT_BATCH_MAX_ADDRESSES; } }));
+Object.defineProperty(exports, "BATCH_MAX_ADDRESSES_CEILING", ({ enumerable: true, get: function () { return inputs_1.BATCH_MAX_ADDRESSES_CEILING; } }));
+const checks_run_1 = __nccwpck_require__(1346);
+// ---------------------------------------------------------------------------
+// Issue #911 — max addresses per batch run
+// ---------------------------------------------------------------------------
+/** Stable reason code carried by {@link BatchAddressLimitError}. */
+exports.BATCH_ADDRESS_LIMIT_REASON_CODE = 'BATCH_ADDRESS_LIMIT_EXCEEDED';
+/**
+ * Thrown when a batch run is asked to validate more unique addresses than
+ * `batch_max_addresses` allows. Always raised **before** any Horizon request
+ * so an oversized matrix never spends rate budget or runner memory.
+ */
+class BatchAddressLimitError extends Error {
+    constructor(count, limit) {
+        const suggestedJobs = Math.ceil(count / limit);
+        super(`stellar_addresses contains ${count} unique addresses, which exceeds the ` +
+            `batch_max_addresses limit of ${limit} (${exports.BATCH_ADDRESS_LIMIT_REASON_CODE}). ` +
+            'No Horizon requests were made. Split the addresses across a job matrix ' +
+            `with at most ${limit} addresses per leg (at least ${suggestedJobs} legs), ` +
+            `or raise batch_max_addresses (maximum ${inputs_1.BATCH_MAX_ADDRESSES_CEILING}). ` +
+            'See docs/USAGE.md#batch-address-limit.');
+        this.reasonCode = exports.BATCH_ADDRESS_LIMIT_REASON_CODE;
+        this.name = 'BatchAddressLimitError';
+        this.count = count;
+        this.limit = limit;
+        this.suggestedJobs = suggestedJobs;
+    }
+}
+exports.BatchAddressLimitError = BatchAddressLimitError;
+/**
+ * Resolve the effective address limit: `undefined` → default, otherwise a
+ * whole number in `[1, BATCH_MAX_ADDRESSES_CEILING]`.
+ *
+ * @throws On a non-integer or out-of-range limit.
+ */
+function resolveBatchAddressLimit(maxAddresses) {
+    if (maxAddresses === undefined)
+        return inputs_1.DEFAULT_BATCH_MAX_ADDRESSES;
+    if (!Number.isInteger(maxAddresses) || maxAddresses < 1 || maxAddresses > inputs_1.BATCH_MAX_ADDRESSES_CEILING) {
+        throw new Error(`batch_max_addresses must be a whole number between 1 and ${inputs_1.BATCH_MAX_ADDRESSES_CEILING}. Received: ${maxAddresses}`);
+    }
+    return maxAddresses;
+}
+/**
+ * Enforce the per-run address cap (Issue #911).
+ *
+ * @throws {BatchAddressLimitError} When `addresses` exceeds the limit.
+ */
+function enforceBatchAddressLimit(addresses, maxAddresses) {
+    const limit = resolveBatchAddressLimit(maxAddresses);
+    if (addresses.length > limit) {
+        throw new BatchAddressLimitError(addresses.length, limit);
+    }
+}
 // ---------------------------------------------------------------------------
 // Issue #725 — `clawback_strict_mode` propagation into batch summaries.
 //
@@ -49516,6 +49573,11 @@ exports.BATCH_REASON_CODES = {
      * spent, the run was cancelled by the caller.
      */
     cancelled: 'CANCELLED',
+    /**
+     * This address exceeded `perAddressTimeoutMs` (Issue #928). Only this row
+     * fails; remaining addresses keep being validated.
+     */
+    addressTimeout: 'ADDRESS_TIMEOUT',
 };
 /** Lower bound for {@link BatchRunOptions.maxConcurrency} (also the default). */
 exports.MIN_BATCH_CONCURRENCY = 1;
@@ -49541,6 +49603,21 @@ function cancelledBatchRow(address) {
         xlmReserveMet: false,
         failureReason: 'Batch run cancelled before checking this address',
         reasonCode: exports.BATCH_REASON_CODES.cancelled,
+        clawbackStrictFailure: false,
+        clawbackStrictAssets: [],
+    };
+}
+/** Row for an address that exceeded `perAddressTimeoutMs` (Issue #928). */
+function addressTimeoutRow(address, deadlineMs) {
+    return {
+        address,
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: 'unknown',
+        xlmReserveMet: false,
+        failureReason: `Address validation exceeded the per-address deadline of ${deadlineMs} ms`,
+        reasonCode: exports.BATCH_REASON_CODES.addressTimeout,
         clawbackStrictFailure: false,
         clawbackStrictAssets: [],
     };
@@ -49734,9 +49811,11 @@ async function validateOneAddress(address, config, horizonUrl, fetchOptions, ext
  * - Newline-separated list: one address per line (blank lines ignored)
  * - JSON array: `["GABC...", "GDEF..."]`
  *
- * Throws if the resulting list is empty.
+ * Throws if the resulting list is empty, or (Issue #911) a
+ * {@link BatchAddressLimitError} when the deduplicated list exceeds
+ * `options.maxAddresses` (default {@link DEFAULT_BATCH_MAX_ADDRESSES}).
  */
-function parseBatchAddresses(raw) {
+function parseBatchAddresses(raw, options = {}) {
     const trimmed = raw.trim();
     if (!trimmed) {
         throw new Error('stellar_addresses input is empty. Provide at least one Stellar address.');
@@ -49782,6 +49861,7 @@ function parseBatchAddresses(raw) {
             deduped.push(addr);
         }
     }
+    enforceBatchAddressLimit(deduped, options.maxAddresses);
     return deduped;
 }
 /**
@@ -49856,6 +49936,8 @@ function collectClawbackStrictAssets(account, config, extraAssets) {
     return failures;
 }
 async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
+    // Issue #911: fail before any Horizon call, metric, or worker is started.
+    enforceBatchAddressLimit(addresses, options.maxAddresses);
     const requestDelayMs = options.requestDelayMs ?? DEFAULT_REQUEST_DELAY_MS;
     const extraAssets = options.extraAssets ?? [];
     const maxConcurrency = clampConcurrency(options.maxConcurrency);
@@ -49927,7 +50009,32 @@ async function runBatchValidation(addresses, config, horizonUrl, options = {}) {
                 await sleep(requestDelayMs);
             }
             dispatchedBefore = true;
-            const outcome = await validateOneAddress(addresses[i], config, horizonUrl, fetchOptions, extraAssets, issuerAccount);
+            // Issue #928: each address gets its own deadline; the per-address
+            // signal also follows the batch-level signal so cancellation wins.
+            // Without a deadline the original call path is used unchanged.
+            const deadlineOutcome = !(options.perAddressTimeoutMs !== undefined && options.perAddressTimeoutMs > 0)
+                ? {
+                    status: 'completed',
+                    value: await validateOneAddress(addresses[i], config, horizonUrl, fetchOptions, extraAssets, issuerAccount),
+                }
+                : await (0, checks_run_1.runWithAddressDeadline)((addressSignal) => validateOneAddress(addresses[i], config, horizonUrl, { ...fetchOptions, signal: addressSignal }, extraAssets, issuerAccount), options.perAddressTimeoutMs, fetchOptions.signal);
+            if (deadlineOutcome.status === 'cancelled') {
+                // Leave the row unset: the fill loop below marks it CANCELLED.
+                stopDispatch = true;
+                return;
+            }
+            let outcome;
+            if (deadlineOutcome.status === 'timed_out') {
+                metrics_1.globalMetrics.incrementCounter('batch_fail_address_timeout');
+                metrics_1.globalMetrics.incrementCounter('batch_address_failed');
+                outcome = {
+                    budgetExhausted: false,
+                    result: addressTimeoutRow(addresses[i], deadlineOutcome.deadlineMs),
+                };
+            }
+            else {
+                outcome = deadlineOutcome.value;
+            }
             results[i] = outcome.result;
             if (outcome.budgetExhausted || signal?.aborted) {
                 stopDispatch = true;
@@ -50598,6 +50705,7 @@ exports.determineCheckConclusion = determineCheckConclusion;
 exports.buildCheckAnnotations = buildCheckAnnotations;
 exports.buildCheckRunSummary = buildCheckRunSummary;
 exports.createCheckRun = createCheckRun;
+exports.runWithAddressDeadline = runWithAddressDeadline;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const logger_1 = __nccwpck_require__(86999);
@@ -50770,6 +50878,48 @@ async function createCheckRun(result, token, options = {}) {
             message: errorMsg,
             error: message,
         };
+    }
+}
+async function runWithAddressDeadline(task, deadlineMs, parentSignal) {
+    const controller = new AbortController();
+    if (parentSignal?.aborted)
+        return { status: 'cancelled' };
+    const onParentAbort = () => controller.abort();
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    const enabled = deadlineMs !== undefined && Number.isFinite(deadlineMs) && deadlineMs > 0;
+    let timer;
+    let timedOut = false;
+    const deadline = new Promise((resolve) => {
+        if (!enabled)
+            return;
+        timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+            resolve('deadline');
+        }, deadlineMs);
+    });
+    try {
+        const raced = await Promise.race([
+            task(controller.signal).then((value) => ({ value })),
+            deadline,
+        ]);
+        if (parentSignal?.aborted)
+            return { status: 'cancelled' };
+        if (raced === 'deadline' || timedOut)
+            return { status: 'timed_out', deadlineMs: deadlineMs };
+        return { status: 'completed', value: raced.value };
+    }
+    catch (error) {
+        if (parentSignal?.aborted)
+            return { status: 'cancelled' };
+        if (timedOut)
+            return { status: 'timed_out', deadlineMs: deadlineMs };
+        throw error;
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+        parentSignal?.removeEventListener('abort', onParentAbort);
     }
 }
 
@@ -52317,6 +52467,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MAX_STICKY_COMMENT_SEARCH_PAGES = exports.TRUSTBRIDGE_IDENTITY_LINES = exports.VALID_POSTING_MODES = exports.VALID_COMMENT_MODES = exports.COMMENT_TRUNCATION_NOTICE_BYTES = exports.COMMENT_SIZE_LIMIT_BYTES = exports.MAX_METRICS_JSON_BYTES = exports.COMMENT_TRUNCATED_MARKER = exports.MAX_COMMENT_LENGTH = exports.STICKY_COMMENT_MARKER = exports.STICKY_COMMENT_MARKER_LEGACY = exports.TRUSTBRIDGE_FOOTER = exports.COMMENT_SCHEMA_VERSION = void 0;
+exports.buildSnoozeSuppressionLogContext = buildSnoozeSuppressionLogContext;
 exports.formatCommentBody = formatCommentBody;
 exports.buildHardenedMetricsJson = buildHardenedMetricsJson;
 exports.buildTruncatedCommentBody = buildTruncatedCommentBody;
@@ -52358,6 +52509,29 @@ const logger_1 = __nccwpck_require__(86999);
  * versions of this action need to detect.
  */
 exports.COMMENT_SCHEMA_VERSION = "1.1.0";
+/**
+ * Structured log context for a snooze-suppressed comment update (Issue #908).
+ * Mirrors `buildSnoozeAuditLogContext` in `src/snooze.ts` (same stable
+ * `reason_code` / `check` keys) with `event: snooze_comment_suppressed`.
+ */
+function buildSnoozeSuppressionLogContext(state, snoozeWindowMs, issueNumber) {
+    const remainingMs = state.elapsedMs !== undefined ? Math.max(0, snoozeWindowMs - state.elapsedMs) : undefined;
+    const expiresAt = state.lastTimestamp !== undefined ? state.lastTimestamp + snoozeWindowMs : undefined;
+    const context = {
+        component: 'snooze',
+        event: 'snooze_comment_suppressed',
+        reason_code: snooze_1.SNOOZE_REASON_CODE,
+        check: snooze_1.SNOOZE_AUDIT_CHECK,
+        source: state.lastStatus !== undefined ? 'marker' : 'reaction',
+        snoozeWindowMs,
+        elapsedMs: state.elapsedMs ?? null,
+        remainingMs: remainingMs ?? null,
+        expiresAt: (0, snooze_1.formatSnoozeExpiry)(expiresAt),
+    };
+    if (issueNumber !== undefined)
+        context['issueNumber'] = issueNumber;
+    return context;
+}
 exports.TRUSTBRIDGE_FOOTER = "_Posted by [trustbridge-action](https://github.com/Stellar-TrustBridge/trustbridge-action)_";
 /**
  * Legacy hidden marker (pre-schema-version). Kept for backward
@@ -52631,6 +52805,14 @@ function formatCommentBody(result, config) {
             }
         }
         lines.push("", "---", exports.TRUSTBRIDGE_FOOTER);
+        // Correlation id footer (Issue #904) — opt-in, rendered after the
+        // standard footer so the contributor-facing content is unchanged.
+        if (config.correlationFooter) {
+            const correlationFooter = (0, diagnostics_1.formatCorrelationFooter)(config.correlationId);
+            if (correlationFooter) {
+                lines.push((0, diagnostics_1.formatCorrelationMarker)(config.correlationId), correlationFooter);
+            }
+        }
         return lines.join("\n");
     };
     let fullBody = buildWithRemediation(result.remediation);
@@ -53245,7 +53427,8 @@ async function upsertIssueComment(token, body, options = {}) {
             const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingCommentReactions, snoozeWindowMs);
             snoozeExpired = snoozeState.snoozeExpired;
             if (snoozeState.isSnoozed) {
-                core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`);
+                // Structured audit line (Issue #908) so a suppressed update is never silent.
+                (0, logger_1.logInfo)(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing comment update. Outputs remain updated.`, buildSnoozeSuppressionLogContext(snoozeState, snoozeWindowMs, issueNumber));
                 return {
                     url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${existingCommentId}`,
                     id: existingCommentId,
@@ -53575,7 +53758,7 @@ async function postDiscussionComment(token, body, options = {}) {
         const currentPassed = body.includes("<!-- trustbridge-action:snooze:status=pass");
         const snoozeState = (0, snooze_1.evaluateCombinedSnoozeState)(currentPassed, lastMarker, existingComment.reactions?.nodes, snoozeWindowMs);
         if (snoozeState.isSnoozed) {
-            core.info(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`);
+            (0, logger_1.logInfo)(`Snooze window active (${Math.round((snoozeState.elapsedMs ?? 0) / 1000)}s elapsed). Suppressing discussion comment update. Outputs remain updated.`, buildSnoozeSuppressionLogContext(snoozeState, snoozeWindowMs));
             return undefined;
         }
     }
@@ -53629,7 +53812,8 @@ async function postDiscussionComment(token, body, options = {}) {
  *   3. Secret redaction — known secret field names (token, api_key, …) are
  *      never logged; they are replaced with "***" in any diagnostic output.
  *
- * The reader is intentionally conservative: unknown keys are ignored, and
+ * The reader is intentionally conservative: unknown keys are ignored (or, in
+ * strict mode, rejected with a "did you mean" hint — Issue #927), and
  * only the fields declared in `TrustbridgeConsumerConfig` are surfaced to
  * the caller.  This keeps the attack surface small and prevents a malicious
  * config from injecting unexpected values into the action runtime.
@@ -53668,7 +53852,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.KNOWN_CONFIG_KEYS = void 0;
 exports.parseSimpleYaml = parseSimpleYaml;
+exports.suggestConfigKey = suggestConfigKey;
+exports.findUnknownConfigKeys = findUnknownConfigKeys;
 exports.readTrustbridgeConfigs = readTrustbridgeConfigs;
 exports.readTrustbridgeConfig = readTrustbridgeConfig;
 exports.mergeConsumerConfig = mergeConsumerConfig;
@@ -53735,17 +53922,74 @@ function parseYamlValue(raw) {
     // Plain string
     return raw;
 }
+// ---------------------------------------------------------------------------
+// Known keys / strict mode (Issue #927)
+// ---------------------------------------------------------------------------
+/** Every key `.trustbridge.yml` understands (mirrors `TrustbridgeConsumerConfig`). */
+exports.KNOWN_CONFIG_KEYS = [
+    'horizon_url',
+    'horizon_url_fallback',
+    'rpc_fallback_url',
+    'asset_code',
+    'asset_issuer',
+    'min_xlm_reserve',
+    'min_asset_balance',
+    'fail_on_missing',
+];
+function editDistance(a, b) {
+    const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const tmp = dp[j];
+            dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+            prev = tmp;
+        }
+    }
+    return dp[b.length];
+}
+/** Closest known key within edit distance 3, for "did you mean" hints. */
+function suggestConfigKey(unknown) {
+    let best = null;
+    let bestDistance = 4;
+    const normalized = unknown.toLowerCase().replace(/-/g, '_');
+    for (const known of exports.KNOWN_CONFIG_KEYS) {
+        const d = editDistance(normalized, known);
+        if (d < bestDistance) {
+            best = known;
+            bestDistance = d;
+        }
+    }
+    return best;
+}
+/**
+ * Lists unknown top-level keys with stable messages. Key names are passed
+ * through `redactString` so a pasted secret used as a key is never echoed.
+ */
+function findUnknownConfigKeys(raw) {
+    const messages = [];
+    for (const key of Object.keys(raw)) {
+        if (exports.KNOWN_CONFIG_KEYS.includes(key))
+            continue;
+        const suggestion = suggestConfigKey(key);
+        messages.push(`Unknown trustbridge config key "${(0, logger_1.redactString)(key)}"` +
+            (suggestion ? ` (did you mean "${suggestion}"?)` : '') +
+            `. Known keys: ${exports.KNOWN_CONFIG_KEYS.join(', ')}.`);
+    }
+    return messages;
+}
 /**
  * Reads and merges organization-level and repository-level configuration files.
  * Organization config (.github/trustbridge.yml) is loaded first.
  * Repository config (repoConfigPath or .trustbridge.yml) overrides the org config.
  */
-function readTrustbridgeConfigs(repoConfigPath, workspaceRoot) {
+function readTrustbridgeConfigs(repoConfigPath, workspaceRoot, options = {}) {
     const root = workspaceRoot ?? process.cwd();
-    const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root);
+    const orgResult = readTrustbridgeConfig('.github/trustbridge.yml', root, options);
     // Use the explicit repo path, or fallback to default repo path
     const targetRepoPath = repoConfigPath && repoConfigPath.trim() ? repoConfigPath : '.trustbridge.yml';
-    const repoResult = readTrustbridgeConfig(targetRepoPath, root);
+    const repoResult = readTrustbridgeConfig(targetRepoPath, root, options);
     const valid = orgResult.validation.valid && repoResult.validation.valid;
     const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
     const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
@@ -53781,8 +54025,9 @@ function readTrustbridgeConfigs(repoConfigPath, workspaceRoot) {
  *                    workspace root when omitted or empty.
  * @param workspaceRoot  Absolute path to the repository root.  Defaults to
  *                       `process.cwd()` when omitted.
+ * @param options  `strict: true` rejects unknown keys (Issue #927).
  */
-function readTrustbridgeConfig(configPath, workspaceRoot) {
+function readTrustbridgeConfig(configPath, workspaceRoot, options = {}) {
     const root = workspaceRoot ?? process.cwd();
     const targetPath = configPath && configPath.trim()
         ? path.isAbsolute(configPath)
@@ -53841,6 +54086,15 @@ function readTrustbridgeConfig(configPath, workspaceRoot) {
     }
     // Validate security policy
     const validation = (0, validation_1.validateTrustbridgeConfig)(raw);
+    // Issue #927: strict mode turns unknown keys (usually typos that would
+    // silently fall back to defaults) into errors; lenient mode ignores them.
+    if (options.strict) {
+        const unknownKeys = findUnknownConfigKeys(raw);
+        if (unknownKeys.length > 0) {
+            validation.errors.push(...unknownKeys);
+            validation.valid = false;
+        }
+    }
     // Redacted snapshot for safe diagnostic logging (never log raw)
     const redactedSnapshot = (0, validation_1.redactSecretFields)(raw);
     if (!validation.valid) {
@@ -53978,7 +54232,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.VALIDATION_ARTIFACT_SCHEMA_VERSION = void 0;
+exports.VALIDATION_ARTIFACT_SCHEMA_VERSION = exports.DEFAULT_DELTA_IGNORED_FIELDS = void 0;
+exports.parseDeltaIgnoreFields = parseDeltaIgnoreFields;
 exports.hashAddressForPrivacy = hashAddressForPrivacy;
 exports.privacyMaskAddress = privacyMaskAddress;
 exports.stripSensitiveFields = stripSensitiveFields;
@@ -53996,6 +54251,61 @@ const path = __importStar(__nccwpck_require__(16928));
 const zlib_1 = __nccwpck_require__(43106);
 const checks_1 = __nccwpck_require__(42122);
 const logger_1 = __nccwpck_require__(86999);
+/**
+ * Volatile per-check fields that change on every run without meaning
+ * anything changed. Ignored by default when computing the delta.
+ */
+exports.DEFAULT_DELTA_IGNORED_FIELDS = [
+    'timestamp',
+    'checkedAt',
+    'fetchedAt',
+    'durationMs',
+    'latencyMs',
+    'elapsedMs',
+    'requestId',
+    'traceId',
+];
+/** ISO-8601 timestamps embedded in free-text fields such as `detail`. */
+const ISO_TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+/**
+ * Parse a comma/newline separated ignore-list (e.g. from an action input).
+ * Blank entries are dropped; names must be identifiers, otherwise they are
+ * returned in `invalid` so the caller can fail with a stable message.
+ */
+function parseDeltaIgnoreFields(raw) {
+    const fields = [];
+    const invalid = [];
+    for (const entry of (raw ?? '').split(/[,\n]/)) {
+        const name = entry.trim();
+        if (!name)
+            continue;
+        if (/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
+            if (!fields.includes(name))
+                fields.push(name);
+        }
+        else {
+            invalid.push(name);
+        }
+    }
+    return { fields, invalid };
+}
+/**
+ * True when a non-volatile field present on *both* snapshots differs. Fields
+ * missing on either side are skipped: older artifacts persist only
+ * `label`/`passed`, and that absence is not a meaningful change.
+ */
+function fieldsChanged(previous, current, ignored) {
+    const normalize = (value) => JSON.stringify(typeof value === 'string' ? value.replace(ISO_TIMESTAMP_RE, '<timestamp>') : value);
+    for (const key of Object.keys(current)) {
+        if (key === 'label' || key === 'passed' || ignored.has(key))
+            continue;
+        if (!(key in previous) || previous[key] === undefined || current[key] === undefined)
+            continue;
+        if (normalize(previous[key]) !== normalize(current[key]))
+            return true;
+    }
+    return false;
+}
 exports.VALIDATION_ARTIFACT_SCHEMA_VERSION = '1.0.0';
 /** Keys that must never appear in a validation / delta payload. */
 const FORBIDDEN_SENSITIVE_KEYS = new Set([
@@ -54058,19 +54368,23 @@ function stripSensitiveFields(value) {
  * Returns `null` when there is no previous snapshot (first run) — callers
  * should omit the delta section entirely rather than erroring.
  */
-function computeValidationDelta(previous, current) {
+function computeValidationDelta(previous, current, options = {}) {
     if (!previous || !Array.isArray(previous.checks) || previous.checks.length === 0) {
         return null;
     }
+    const ignored = new Set([...exports.DEFAULT_DELTA_IGNORED_FIELDS, ...(options.ignoreFields ?? [])]);
     const previousByLabel = new Map();
+    const previousChecks = new Map();
     for (const check of previous.checks) {
         if (check && typeof check.label === 'string') {
             previousByLabel.set(check.label, Boolean(check.passed));
+            previousChecks.set(check.label, check);
         }
     }
     const newlyPassed = [];
     const newlyFailed = [];
     const unchanged = [];
+    const changed = [];
     for (const check of current.checks) {
         const prior = previousByLabel.get(check.label);
         if (prior === undefined) {
@@ -54083,6 +54397,10 @@ function computeValidationDelta(previous, current) {
         }
         if (prior === check.passed) {
             unchanged.push(check.label);
+            const prev = previousChecks.get(check.label);
+            if (prev && fieldsChanged(prev, check, ignored)) {
+                changed.push(check.label);
+            }
         }
         else if (check.passed && !prior) {
             newlyPassed.push(check.label);
@@ -54096,6 +54414,9 @@ function computeValidationDelta(previous, current) {
         newlyPassed,
         newlyFailed,
         unchanged,
+        // Only present when something changed, keeping the shape stable for
+        // existing consumers of `validation.json`.
+        ...(changed.length > 0 ? { changed } : {}),
         improved: newlyPassed.length > 0,
         regressed: newlyFailed.length > 0,
     };
@@ -54223,6 +54544,9 @@ function formatDeltaMarkdown(delta) {
         if (delta.newlyFailed.length > 0) {
             lines.push(`- ❌ **Newly failed:** ${delta.newlyFailed.join(', ')}`);
         }
+    }
+    if (delta.changed && delta.changed.length > 0) {
+        lines.push(`- ✏️ **Details changed:** ${delta.changed.join(', ')}`);
     }
     if (delta.unchanged.length > 0) {
         lines.push(`- Unchanged: ${delta.unchanged.length} check(s)`);
@@ -54494,7 +54818,7 @@ function formatAddressChangeWarning(changeResult) {
 /***/ }),
 
 /***/ 94851:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
@@ -54521,13 +54845,177 @@ function formatAddressChangeWarning(changeResult) {
  * - Horizon URLs are redacted via `redactHorizonUrl`.
  * - Free-form error messages are scanned with `redactString` before inclusion.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DIAGNOSTICS_CLOSE_MARKER = exports.DIAGNOSTICS_OPEN_MARKER = void 0;
+exports.DIAGNOSTICS_CLOSE_MARKER = exports.DIAGNOSTICS_OPEN_MARKER = exports.CORRELATION_ID_MARKER_PREFIX = exports.CORRELATION_ID_INVALID_REASON_CODE = exports.CORRELATION_ID_MAX_LENGTH = exports.CORRELATION_ID_MIN_LENGTH = exports.CORRELATION_ID_PREFIX = exports.CORRELATION_ID_ENV = void 0;
+exports.generateCorrelationId = generateCorrelationId;
+exports.validateCorrelationId = validateCorrelationId;
+exports.isValidCorrelationId = isValidCorrelationId;
+exports.initCorrelationId = initCorrelationId;
+exports.getCorrelationId = getCorrelationId;
+exports.resetCorrelationId = resetCorrelationId;
+exports.formatCorrelationMarker = formatCorrelationMarker;
+exports.parseCorrelationMarker = parseCorrelationMarker;
+exports.formatCorrelationFooter = formatCorrelationFooter;
 exports.buildSafeInputsSnapshot = buildSafeInputsSnapshot;
 exports.buildDiagnosticsBlock = buildDiagnosticsBlock;
 exports.buildSponsorshipDiagnostics = buildSponsorshipDiagnostics;
+const crypto = __importStar(__nccwpck_require__(76982));
 const logger_1 = __nccwpck_require__(86999);
 const markdown_1 = __nccwpck_require__(83758);
+// ---------------------------------------------------------------------------
+// Correlation id (Issue #904)
+// ---------------------------------------------------------------------------
+/**
+ * Environment variable a caller can set to propagate an existing correlation
+ * id into this run (e.g. a reusable workflow fanning out to several jobs).
+ */
+exports.CORRELATION_ID_ENV = 'TRUSTBRIDGE_CORRELATION_ID';
+/** Prefix of every generated correlation id. */
+exports.CORRELATION_ID_PREFIX = 'tb-';
+/** Minimum / maximum accepted correlation id length. */
+exports.CORRELATION_ID_MIN_LENGTH = 8;
+exports.CORRELATION_ID_MAX_LENGTH = 64;
+/** Stable reason code logged when a propagated correlation id is rejected. */
+exports.CORRELATION_ID_INVALID_REASON_CODE = 'CORRELATION_ID_INVALID';
+/** Hidden comment marker prefix carrying the correlation id. */
+exports.CORRELATION_ID_MARKER_PREFIX = '<!-- trustbridge-action:correlation-id:';
+const CORRELATION_ID_CHARSET = /^[A-Za-z0-9._-]+$/;
+/**
+ * Generate a fresh correlation id: `tb-` followed by 16 random hex chars.
+ * Random (not derived from tokens, addresses or run metadata) so it can be
+ * quoted publicly without leaking anything.
+ */
+function generateCorrelationId() {
+    return `${exports.CORRELATION_ID_PREFIX}${crypto.randomBytes(8).toString('hex')}`;
+}
+/**
+ * Validate a correlation id. Returns `undefined` when valid, otherwise a
+ * stable human-readable reason. A value is rejected when it is empty,
+ * shorter than {@link CORRELATION_ID_MIN_LENGTH} or longer than
+ * {@link CORRELATION_ID_MAX_LENGTH}, uses characters outside
+ * `[A-Za-z0-9._-]`, or would be altered by the log redaction policy
+ * (i.e. it looks like a token, secret, or Stellar address).
+ */
+function validateCorrelationId(value) {
+    if (typeof value !== 'string' || value.length === 0) {
+        return 'correlation id must be a non-empty string';
+    }
+    if (value.length < exports.CORRELATION_ID_MIN_LENGTH || value.length > exports.CORRELATION_ID_MAX_LENGTH) {
+        return `correlation id must be ${exports.CORRELATION_ID_MIN_LENGTH}-${exports.CORRELATION_ID_MAX_LENGTH} characters (got ${value.length})`;
+    }
+    if (!CORRELATION_ID_CHARSET.test(value)) {
+        return 'correlation id may only contain letters, digits, ".", "_" and "-"';
+    }
+    if ((0, logger_1.redactString)(value) !== value) {
+        return 'correlation id resembles a secret or Stellar address and would be redacted';
+    }
+    return undefined;
+}
+/** True when `value` is an acceptable correlation id. */
+function isValidCorrelationId(value) {
+    return validateCorrelationId(value) === undefined;
+}
+let currentCorrelationId;
+let currentCorrelationInit;
+/**
+ * Resolve this run's correlation id and propagate it to the logger so every
+ * structured log line carries `correlation_id` (Issue #904).
+ *
+ * A valid `TRUSTBRIDGE_CORRELATION_ID` is reused; a missing value yields a
+ * freshly generated id; a malformed value is **not** used or echoed — a new
+ * id is generated and `rejectedReason` explains why. Idempotent: repeated
+ * calls in the same process return the same id until
+ * {@link resetCorrelationId} is called.
+ */
+function initCorrelationId(env = process.env) {
+    if (currentCorrelationInit) {
+        return currentCorrelationInit;
+    }
+    const raw = env[exports.CORRELATION_ID_ENV]?.trim();
+    let result;
+    if (raw) {
+        const reason = validateCorrelationId(raw);
+        result = reason
+            ? { correlationId: generateCorrelationId(), source: 'generated', rejectedReason: reason }
+            : { correlationId: raw, source: 'env' };
+    }
+    else {
+        result = { correlationId: generateCorrelationId(), source: 'generated' };
+    }
+    currentCorrelationInit = result;
+    currentCorrelationId = result.correlationId;
+    (0, logger_1.setLogCorrelationId)(currentCorrelationId);
+    return result;
+}
+/** The current run's correlation id, or `undefined` before {@link initCorrelationId}. */
+function getCorrelationId() {
+    return currentCorrelationId;
+}
+/** Forget the current correlation id (tests / a new run in the same process). */
+function resetCorrelationId() {
+    currentCorrelationId = undefined;
+    currentCorrelationInit = undefined;
+    (0, logger_1.setLogCorrelationId)(undefined);
+}
+/**
+ * Hidden marker embedding the correlation id in a comment body, so support
+ * tooling can grep it even when the visible footer is not rendered.
+ * Returns an empty string for an invalid id.
+ */
+function formatCorrelationMarker(correlationId) {
+    if (!isValidCorrelationId(correlationId))
+        return '';
+    return `${exports.CORRELATION_ID_MARKER_PREFIX}${correlationId} -->`;
+}
+/** Extract a correlation id from a comment body's hidden marker, if present. */
+function parseCorrelationMarker(body) {
+    if (!body)
+        return undefined;
+    const match = /<!-- trustbridge-action:correlation-id:([A-Za-z0-9._-]{8,64}) -->/.exec(body);
+    return match ? match[1] : undefined;
+}
+/**
+ * Visible comment footer line quoting the correlation id. Returns an empty
+ * string for an invalid id so callers can append unconditionally.
+ */
+function formatCorrelationFooter(correlationId) {
+    if (!isValidCorrelationId(correlationId))
+        return '';
+    return `<sub>Correlation ID: \`${correlationId}\` — quote this when contacting support.</sub>`;
+}
 // ---------------------------------------------------------------------------
 // Secret field block-list (mirrors configReader.ts)
 // ---------------------------------------------------------------------------
@@ -54639,6 +55127,10 @@ function buildDiagnosticsBlock(config) {
         '> **No secrets are included.** All addresses are redacted to first-4/last-4.',
         '',
     ];
+    // --- Correlation id (Issue #904) ---
+    if (isValidCorrelationId(config.correlationId)) {
+        lines.push(`**Correlation ID:** \`${config.correlationId}\``, '');
+    }
     // --- Horizon run info ---
     if (runInfo) {
         lines.push('#### Horizon request details', '');
@@ -54821,6 +55313,7 @@ const links_1 = __nccwpck_require__(73346);
 const metrics_1 = __nccwpck_require__(35670);
 const resilience_1 = __nccwpck_require__(12334);
 const validation_1 = __nccwpck_require__(24344);
+const tracing_1 = __nccwpck_require__(77145);
 class HorizonError extends Error {
     constructor(message, statusCode, retryable = false) {
         super(message);
@@ -54873,9 +55366,12 @@ exports.HorizonPinMismatchError = HorizonPinMismatchError;
  * working unchanged.
  */
 class HorizonCircuitOpenError extends HorizonError {
-    constructor(message) {
+    constructor(message, remainingCooldownMs) {
         super(message, 0, false);
         this.name = "HorizonCircuitOpenError";
+        if (remainingCooldownMs !== undefined) {
+            this.remainingCooldownMs = remainingCooldownMs;
+        }
     }
 }
 exports.HorizonCircuitOpenError = HorizonCircuitOpenError;
@@ -55213,10 +55709,38 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     attempt,
                 }));
                 metrics_1.globalHorizonHistogram.record(endpointKind, latencyMs);
+                // Issue #913: span error with status only — no body, no account id.
+                (0, tracing_1.recordHorizonHttpError)({
+                    horizonUrl: normalizedHorizonUrl,
+                    statusCode: 404,
+                    retryable: false,
+                    endpointKind,
+                    attempt,
+                    latencyMs,
+                });
                 throw new HorizonError(`Account ${stellarAddress} was not found on Horizon (not funded or activated).`, 404, false);
             }
             if (!response.ok) {
                 const retryable = isRetryableStatus(response.status);
+                // Issue #920: feed a server-requested Retry-After into the circuit
+                // breaker so, if the circuit opens, it cannot go half-open (and
+                // half-open probes are not admitted) before Horizon's deadline.
+                if (retryable && circuitBreaker && typeof response.headers?.get === 'function') {
+                    const breakerRetryAfterMs = parseRetryAfterMs(response);
+                    if (breakerRetryAfterMs !== null) {
+                        circuitBreaker.noteRetryAfter(breakerRetryAfterMs);
+                    }
+                }
+                // Issue #913: record the span error before the body is read, so the
+                // Horizon problem document (detail/title/extras) can never reach it.
+                (0, tracing_1.recordHorizonHttpError)({
+                    horizonUrl: normalizedHorizonUrl,
+                    statusCode: response.status,
+                    retryable,
+                    endpointKind,
+                    attempt,
+                    latencyMs,
+                });
                 let detail = response.statusText;
                 try {
                     const body = (await response.json());
@@ -55386,7 +55910,7 @@ async function fetchAccountOnce(fetch, targetHorizonUrl, stellarAddress, timeout
                     attempt,
                     final: true,
                 }));
-                throw new HorizonCircuitOpenError(`Horizon request blocked by circuit breaker: ${error.message}`);
+                throw new HorizonCircuitOpenError(`Horizon request blocked by circuit breaker: ${error.message}`, error.remainingCooldownMs);
             }
             const tlsCode = tlsErrorCode(error);
             if (tlsCode) {
@@ -57083,6 +57607,7 @@ const inputs_1 = __nccwpck_require__(38422);
 const summary_1 = __nccwpck_require__(28855);
 const outputs_1 = __nccwpck_require__(7729);
 const logger_1 = __nccwpck_require__(86999);
+const diagnostics_1 = __nccwpck_require__(94851);
 const sarif_1 = __nccwpck_require__(20866);
 const metrics_1 = __nccwpck_require__(35670);
 const validation_1 = __nccwpck_require__(24344);
@@ -57296,6 +57821,18 @@ async function run() {
     emitDeprecatedInputWarnings();
     // Issue #899: each run records exactly one job outcome.
     metrics_1.globalMetrics.resetJobOutcome();
+    // Issue #904: one correlation id per run, attached to every structured log
+    // line (and the comment footer when debug_mode is on).
+    const correlation = (0, diagnostics_1.initCorrelationId)();
+    metrics_1.globalMetrics.setCorrelationId(correlation.correlationId);
+    if (correlation.rejectedReason) {
+        (0, logger_1.logWarning)(`Ignoring ${diagnostics_1.CORRELATION_ID_ENV}: ${correlation.rejectedReason}. Generated a new correlation id instead.`, { component: 'diagnostics', reason_code: diagnostics_1.CORRELATION_ID_INVALID_REASON_CODE, check: 'correlation_id' });
+    }
+    (0, logger_1.logInfo)(`TrustBridge correlation id: ${correlation.correlationId} (source=${correlation.source})`, {
+        component: 'diagnostics',
+        reason_code: 'CORRELATION_ID',
+        check: 'correlation_id',
+    });
     try {
         process.on('SIGINT', () => jobController.abort());
         process.on('SIGTERM', () => jobController.abort());
@@ -57324,6 +57861,11 @@ async function run() {
         await (0, metrics_1.writeJobSummary)(metrics_1.globalMetrics.buildJobSummary(metrics_1.globalHorizonHistogram));
         return;
     }
+    // Issue #901: reject unknown enum values (network, enforcement modes)
+    // before any Horizon traffic so a workflow typo fails fast with the list
+    // of allowed values. See docs/INPUT_VALIDATION.md.
+    (0, inputs_1.parseNetworkInput)(core.getInput('network'));
+    const homeDomainCheckMode = (0, inputs_1.parseHomeDomainCheckModeInput)(core.getInput('home_domain_check_mode'));
     const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
     const assetCode = core.getInput('asset_code') || 'USDC';
     const assetIssuer = core.getInput('asset_issuer') ||
@@ -57391,7 +57933,6 @@ async function run() {
     // SEP-0001 home domain check (Issue #708). See docs/SEP0001_HOME_DOMAIN.md.
     const homeDomainCheckEnabled = (0, inputs_1.parseBooleanInput)(core.getInput('home_domain_check_enabled'), false);
     const expectedHomeDomain = (core.getInput('expected_home_domain') || '').trim() || undefined;
-    const homeDomainCheckMode = (core.getInput('home_domain_check_mode') || '').trim().toLowerCase() === 'strict' ? 'strict' : 'warn';
     const sarifOutputPath = (core.getInput('sarif_output_path') || '').trim();
     // Comment threading + batch inputs.
     const { postingMode, commentThreadingMode } = resolveCommentModes(core.getInput('posting_mode'), core.getInput('comment_mode'));
@@ -57400,12 +57941,20 @@ async function run() {
         min: 0,
         max: 60 * 24 * 30,
     });
+    // Snooze window duration in milliseconds (Issue #873: UTC physical duration invariant across DST boundaries).
     const snoozeWindowMs = snoozeWindowMinutes * 60 * 1000;
     const issueNumberInputRaw = core.getInput('issue_number') || '';
     const issueNumberInput = issueNumberInputRaw.trim()
         ? (0, inputs_1.parseNumberInput)(issueNumberInputRaw, 0, { min: 1 })
         : undefined;
     const stellarAddressesRaw = core.getInput('stellar_addresses') || '';
+    const batchMaxAddresses = (0, inputs_1.parseBatchMaxAddressesInput)(core.getInput('batch_max_addresses'));
+    // Issue #911: parse and cap the batch list up front so an oversized matrix
+    // throws BatchAddressLimitError before *any* Horizon request (including the
+    // single-address checks below) is made.
+    const batchAddresses = stellarAddressesRaw.trim()
+        ? (0, batch_1.parseBatchAddresses)(stellarAddressesRaw, { maxAddresses: batchMaxAddresses })
+        : [];
     // Check runs, labels, unassign, Projects v2 (Issues #228, #222, #200, #421).
     const useCheckRuns = (0, inputs_1.parseBooleanInput)(core.getInput('use_check_runs'), false);
     const autoWalletLabels = (0, inputs_1.parseBooleanInput)(core.getInput('auto_wallet_labels'), false);
@@ -57441,7 +57990,9 @@ async function run() {
     // readTrustbridgeConfig is non-throwing: a missing file returns found=false,
     // validation errors surface via result.validation.errors so we fail fast
     // with a clear message rather than silently ignoring bad configuration.
-    const consumerConfig = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath);
+    const consumerConfig = (0, configReader_1.readTrustbridgeConfig)(trustbridgeConfigPath, undefined, {
+        strict: core.getInput('trustbridge_config_strict').trim().toLowerCase() === 'true',
+    });
     if (consumerConfig.found && !consumerConfig.validation.valid) {
         core.setFailed(`trustbridge_config_path validation failed:\n  ${consumerConfig.validation.errors.join('\n  ')}`);
         return;
@@ -57692,8 +58243,7 @@ async function run() {
     // summary comment. Batch outputs are published after the single-address
     // outputs below so they are never clobbered by the defaults.
     let batchSummary;
-    if (stellarAddressesRaw.trim()) {
-        const batchAddresses = (0, batch_1.parseBatchAddresses)(stellarAddressesRaw);
+    if (batchAddresses.length > 0) {
         core.info(`Batch mode: validating ${batchAddresses.length} address(es)…`);
         const batchCheckConfig = {
             ...normalizedAsset,
@@ -57712,6 +58262,9 @@ async function run() {
                 retryBaseDelayMs,
                 retryMaxDelayMs,
             },
+            maxAddresses: batchMaxAddresses,
+            // Issue #928: optional per-address deadline (0/empty disables it).
+            perAddressTimeoutMs: Number(core.getInput('per_address_timeout_ms') || '0') || undefined,
         });
         const batchSummaryLocal = (0, batch_1.buildBatchSummary)(batchResults, {
             clawbackStrictMode: checkConfig.clawbackStrictMode,
@@ -57761,6 +58314,8 @@ async function run() {
         sep0007DeepLinks,
         sep0007OriginDomain,
         assets: assetsTrustlineStatusExtras,
+        correlationId: correlation.correlationId,
+        correlationFooter: debugMode,
     });
     // Issue #696 — comment_id is only published from a successful
     // createComment/updateComment response. dry-run, off, a missing issue
@@ -57872,7 +58427,7 @@ async function run() {
         // Authoritative for batch mode — overwrites setValidationOutputs's
         // single-address-derived value above, same precedence as the other
         // batch outputs.
-        core.setOutput('outputs_truncated', String(batchOutputsTruncated));
+        core.setOutput('outputs_truncated', (0, outputs_1.toBooleanOutput)(batchOutputsTruncated, 'outputs_truncated'));
     }
     // ---------------------------------------------------------------------------
     // Wallet labels (Issue #200)
@@ -58092,21 +58647,28 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRUSTBRIDGE_ENV_MAP = exports.DECLARED_INPUTS = void 0;
+exports.TRUSTBRIDGE_ENV_MAP = exports.VALID_HOME_DOMAIN_CHECK_MODES = exports.VALID_NETWORK_INPUTS = exports.BATCH_MAX_ADDRESSES_CEILING = exports.DEFAULT_BATCH_MAX_ADDRESSES = exports.DECLARED_INPUTS = void 0;
 exports.parseBooleanInput = parseBooleanInput;
 exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
+exports.parseBatchMaxAddressesInput = parseBatchMaxAddressesInput;
 exports.getErrorMessage = getErrorMessage;
 exports.parseAssigneeAddressMap = parseAssigneeAddressMap;
 exports.resolveAddressFromAssigneeMap = resolveAddressFromAssigneeMap;
 exports.parseUnauthorizedTrustlinePolicy = parseUnauthorizedTrustlinePolicy;
+exports.parseNetworkInput = parseNetworkInput;
+exports.parseHomeDomainCheckModeInput = parseHomeDomainCheckModeInput;
+exports.parseExplorerBaseUrlInput = parseExplorerBaseUrlInput;
 exports.resolveInput = resolveInput;
 exports.parsePresetInput = parsePresetInput;
 exports.resolveGitHubAuthToken = resolveGitHubAuthToken;
 exports.resolveReadyLabelInputs = resolveReadyLabelInputs;
 exports.listDeprecatedInputAliases = listDeprecatedInputAliases;
+exports.buildSorobanContractConfig = buildSorobanContractConfig;
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
+const validation_1 = __nccwpck_require__(24344);
+const links_1 = __nccwpck_require__(73346);
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
         return defaultValue;
@@ -58203,6 +58765,36 @@ function parseNumberInput(value, defaultValue, options = {}) {
     }
     if (options.max !== undefined && parsed > options.max) {
         throw new Error(`Value must be at most ${options.max}. Received: ${parsed}`);
+    }
+    return parsed;
+}
+// ---------------------------------------------------------------------------
+// Issue #911 — `batch_max_addresses` hard cap
+// ---------------------------------------------------------------------------
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+exports.DEFAULT_BATCH_MAX_ADDRESSES = 500;
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+exports.BATCH_MAX_ADDRESSES_CEILING = 2000;
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+function parseBatchMaxAddressesInput(value) {
+    if (value === undefined || value.trim() === '') {
+        return exports.DEFAULT_BATCH_MAX_ADDRESSES;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > exports.BATCH_MAX_ADDRESSES_CEILING) {
+        throw new Error(`batch_max_addresses must be a whole number between 1 and ${exports.BATCH_MAX_ADDRESSES_CEILING}. Received: "${value}"`);
     }
     return parsed;
 }
@@ -58314,6 +58906,70 @@ function parseUnauthorizedTrustlinePolicy(value) {
         return normalized;
     }
     throw new Error(`unauthorized_trustline_policy must be one of "fail", "warn", or "ignore". Received: "${value}"`);
+}
+// ---------------------------------------------------------------------------
+// Issue #901 — enum validation for `network` and enforcement modes
+// ---------------------------------------------------------------------------
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+exports.VALID_NETWORK_INPUTS = ['testnet', 'public', 'mainnet'];
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+exports.VALID_HOME_DOMAIN_CHECK_MODES = ['warn', 'strict'];
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+function parseNetworkInput(value) {
+    const result = (0, validation_1.validateEnumInput)(value, 'network', exports.VALID_NETWORK_INPUTS);
+    if (!result.valid) {
+        throw new Error(result.errors[0]);
+    }
+    return (value ?? '').trim().toLowerCase();
+}
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+function parseHomeDomainCheckModeInput(value) {
+    const result = (0, validation_1.validateEnumInput)(value, 'home_domain_check_mode', exports.VALID_HOME_DOMAIN_CHECK_MODES);
+    if (!result.valid) {
+        throw new Error(result.errors[0]);
+    }
+    const normalized = (value ?? '').trim().toLowerCase();
+    return (normalized || 'warn');
+}
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+function parseExplorerBaseUrlInput(value, network, inputName = 'explorer_base_url') {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed)
+        return '';
+    const result = (0, links_1.validateExplorerBaseUrl)(trimmed, network);
+    if (!result.ok) {
+        throw new Error(`${inputName} rejected (${result.code}): ${result.message}`);
+    }
+    return result.baseUrl;
 }
 // ---------------------------------------------------------------------------
 // #147 — TRUSTBRIDGE_* environment variable support
@@ -58444,6 +59100,20 @@ function listDeprecatedInputAliases(options) {
     ];
     return aliases.filter(([, value]) => Boolean(value?.trim())).map(([name]) => name);
 }
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+function buildSorobanContractConfig(raw) {
+    const sorobanRpcUrl = raw.soroban_rpc_url?.trim();
+    const contractId = raw.contract_id?.trim();
+    if (!sorobanRpcUrl || !contractId)
+        return null;
+    const networkPassphrase = raw.network_passphrase?.trim();
+    return { sorobanRpcUrl, contractId, ...(networkPassphrase ? { networkPassphrase } : {}) };
+}
 
 
 /***/ }),
@@ -58454,7 +59124,7 @@ function listDeprecatedInputAliases(options) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.KNOWN_HORIZON_NETWORKS = exports.STELLAR_NETWORK_PRESETS = exports.FAQ_ANCHORS = exports.DEFAULT_FAQ_BASE_URL = void 0;
+exports.MAX_EXPLORER_URL_LENGTH = exports.EXPLORER_HOST_ALLOWLIST = exports.DEFAULT_EXPLORER_BASE_URLS = exports.KNOWN_HORIZON_NETWORKS = exports.STELLAR_NETWORK_PRESETS = exports.FAQ_ANCHORS = exports.DEFAULT_FAQ_BASE_URL = void 0;
 exports.getFaqAnchorForCheck = getFaqAnchorForCheck;
 exports.isSafeExternalLink = isSafeExternalLink;
 exports.buildFaqLink = buildFaqLink;
@@ -58463,6 +59133,9 @@ exports.inferStellarNetwork = inferStellarNetwork;
 exports.inferStellarNetworkPreset = inferStellarNetworkPreset;
 exports.oppositeNetwork = oppositeNetwork;
 exports.canonicalHorizonUrl = canonicalHorizonUrl;
+exports.validateExplorerBaseUrl = validateExplorerBaseUrl;
+exports.resolveExplorerBaseUrl = resolveExplorerBaseUrl;
+exports.buildExplorerAccountLink = buildExplorerAccountLink;
 exports.buildAccountViewerLink = buildAccountViewerLink;
 exports.buildChangeTrustLink = buildChangeTrustLink;
 exports.buildLobstrLink = buildLobstrLink;
@@ -58727,6 +59400,134 @@ function canonicalHorizonUrl(network) {
         ? 'https://horizon.stellar.org'
         : 'https://horizon-testnet.stellar.org';
 }
+// ---------------------------------------------------------------------------
+// Explorer base URL overrides (Issue #910)
+// ---------------------------------------------------------------------------
+/**
+ * Safe default explorer base URL per network. Account links are built as
+ * `<base>/account/<G-address>`. Documented in
+ * docs/USAGE.md#explorer-url-overrides — keep both in sync.
+ */
+exports.DEFAULT_EXPLORER_BASE_URLS = {
+    public: 'https://stellar.expert/explorer/public',
+    testnet: 'https://stellar.expert/explorer/testnet',
+};
+/**
+ * Hosts an explorer override may point at, per network. Matching is exact on
+ * the lowercased hostname — subdomains are **not** implied, so
+ * `stellar.expert.attacker.example` and `evil-stellar.expert` never match.
+ */
+exports.EXPLORER_HOST_ALLOWLIST = {
+    public: ['stellar.expert', 'stellarchain.io', 'laboratory.stellar.org'],
+    testnet: ['stellar.expert', 'testnet.stellarchain.io', 'laboratory.stellar.org'],
+};
+/** Longest accepted explorer override, in characters. */
+exports.MAX_EXPLORER_URL_LENGTH = 2048;
+/**
+ * Validate an explorer base URL override for `network` (Issue #910).
+ *
+ * Rules, in order:
+ * 1. Must be non-empty and at most {@link MAX_EXPLORER_URL_LENGTH} chars.
+ * 2. Must parse as an absolute URL.
+ * 3. Scheme: `https:` everywhere. `http:` is rejected on `public` (pubnet)
+ *    and tolerated on `testnet` only for an allowlisted host; any other
+ *    scheme (`javascript:`, `data:`, …) is rejected on every network.
+ * 4. No embedded credentials.
+ * 5. Host must be on {@link EXPLORER_HOST_ALLOWLIST} for that network.
+ * 6. Must pass the same Markdown/SSRF link guard as every other rendered
+ *    link ({@link isSafeExternalLink}, with `http:` testnet exception).
+ *
+ * The rejection message names the network and the host only — never the
+ * full override — so a crafted value cannot smuggle text into logs.
+ * Query strings and fragments are stripped from the accepted base.
+ */
+function validateExplorerBaseUrl(url, network) {
+    const trimmed = (url ?? '').trim();
+    if (!trimmed) {
+        return { ok: false, code: 'EXPLORER_URL_EMPTY', message: 'Explorer URL override is empty.' };
+    }
+    if (trimmed.length > exports.MAX_EXPLORER_URL_LENGTH) {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_TOO_LONG',
+            message: `Explorer URL override exceeds ${exports.MAX_EXPLORER_URL_LENGTH} characters.`,
+        };
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_MALFORMED',
+            message: 'Explorer URL override is not an absolute URL.',
+        };
+    }
+    const isHttp = parsed.protocol === 'http:';
+    if (parsed.protocol !== 'https:' && !(isHttp && network === 'testnet')) {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_INSECURE_SCHEME',
+            message: isHttp
+                ? `Explorer URL override must use https:// on ${network}; http:// is only tolerated on testnet.`
+                : `Explorer URL override must use https:// (got "${parsed.protocol}").`,
+        };
+    }
+    if (parsed.username || parsed.password) {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_CREDENTIALS',
+            message: 'Explorer URL override must not embed credentials.',
+        };
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (!exports.EXPLORER_HOST_ALLOWLIST[network].includes(host)) {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_HOST_NOT_ALLOWED',
+            message: `Explorer host "${host}" is not allowed on ${network}. ` +
+                `Allowed hosts: ${exports.EXPLORER_HOST_ALLOWLIST[network].join(', ')}.`,
+        };
+    }
+    // Reuse the shared link guard (Markdown-breaking characters, blocked
+    // hosts). For a tolerated testnet http URL, check its https equivalent.
+    const guardCandidate = isHttp ? `https://${trimmed.slice('http://'.length)}` : trimmed;
+    if (!isSafeExternalLink(guardCandidate)) {
+        return {
+            ok: false,
+            code: 'EXPLORER_URL_UNSAFE',
+            message: 'Explorer URL override contains characters that are unsafe in a Markdown link.',
+        };
+    }
+    const baseUrl = `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+    return { ok: true, baseUrl };
+}
+/**
+ * Resolve the explorer base URL for `network`: the validated override when
+ * one is supplied and accepted, otherwise {@link DEFAULT_EXPLORER_BASE_URLS}.
+ *
+ * Like {@link buildFaqLink}, an invalid override falls back to the safe
+ * default so comment rendering is never blocked; callers that want to fail
+ * fast should call {@link validateExplorerBaseUrl} (or the input parser in
+ * src/inputs.ts) at input time.
+ */
+function resolveExplorerBaseUrl(network, override) {
+    if (override && override.trim()) {
+        const result = validateExplorerBaseUrl(override, network);
+        if (result.ok)
+            return result.baseUrl;
+    }
+    return exports.DEFAULT_EXPLORER_BASE_URLS[network];
+}
+/**
+ * Build an explorer account link (`<base>/account/<address>`) for `network`,
+ * honoring a validated override.
+ */
+function buildExplorerAccountLink(stellarAddress, network, explorerBaseUrl) {
+    const base = resolveExplorerBaseUrl(network, explorerBaseUrl);
+    return `${base}/account/${encodeURIComponent(stellarAddress.trim())}`;
+}
 function buildAccountViewerLink(stellarAddress, network, dashboardUrl) {
     if (dashboardUrl && !isValidDashboardUrl(dashboardUrl)) {
         throw new Error('Invalid dashboard URL');
@@ -58954,7 +59755,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.horizonRetrySampler = exports.RepeatWarningSampler = exports.HORIZON_RETRY_SAMPLE_WINDOW_MS = exports.HORIZON_RETRY_SAMPLE_BURST = exports.LOG_CONTEXT_KEY_ALLOWLIST = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
+exports.logger = exports.HORIZON_RETRY_REASON_CODES = exports.HORIZON_RETRY_LOG_FIELDS = exports.horizonRetrySampler = exports.RepeatWarningSampler = exports.HORIZON_RETRY_SAMPLE_WINDOW_MS = exports.HORIZON_RETRY_SAMPLE_BURST = exports.LOG_CONTEXT_KEY_ALLOWLIST = exports.CORRELATION_ID_LOG_KEY = exports.DEFAULT_CHECK_LABEL = exports.DEFAULT_REASON_CODE = exports.STRUCTURED_FIELD_KEYS = void 0;
+exports.setLogCorrelationId = setLogCorrelationId;
+exports.getLogCorrelationId = getLogCorrelationId;
 exports.withStructuredFields = withStructuredFields;
 exports.isSensitiveSecretKey = isSensitiveSecretKey;
 exports.redactStellarAddress = redactStellarAddress;
@@ -58993,6 +59796,36 @@ exports.STRUCTURED_FIELD_KEYS = ['reason_code', 'check'];
  */
 exports.DEFAULT_REASON_CODE = 'unknown';
 exports.DEFAULT_CHECK_LABEL = 'unknown';
+// ---------------------------------------------------------------------------
+// Correlation id propagation (Issue #904)
+// ---------------------------------------------------------------------------
+/** Structured log key carrying the per-run correlation id. */
+exports.CORRELATION_ID_LOG_KEY = 'correlation_id';
+let logCorrelationId;
+/**
+ * Set (or clear with `undefined`) the per-run correlation id attached to
+ * every structured log line. Called by `initCorrelationId` in
+ * `src/diagnostics.ts`; the id is validated there, so it is never a secret.
+ */
+function setLogCorrelationId(id) {
+    logCorrelationId = id && id.trim() !== '' ? id.trim() : undefined;
+}
+/** Current correlation id attached to log lines, if any. */
+function getLogCorrelationId() {
+    return logCorrelationId;
+}
+/**
+ * Return `context` with `correlation_id` added when one is set and the
+ * caller did not supply its own. No-op (same object) when none is set, so
+ * log output is byte-identical to earlier releases until a run opts in.
+ */
+function withCorrelationId(context) {
+    if (!logCorrelationId)
+        return context;
+    if (context && context[exports.CORRELATION_ID_LOG_KEY] !== undefined)
+        return context;
+    return { ...(context ?? {}), [exports.CORRELATION_ID_LOG_KEY]: logCorrelationId };
+}
 /**
  * Normalize a structured field value to a non-empty string. Empty, nullish,
  * or whitespace-only values fall back to the provided default so the key is
@@ -59016,7 +59849,7 @@ function normalizeStructuredField(value, fallback) {
  */
 function withStructuredFields(context = {}) {
     return {
-        ...context,
+        ...withCorrelationId(context),
         reason_code: normalizeStructuredField(context.reason_code, exports.DEFAULT_REASON_CODE),
         check: normalizeStructuredField(context.check, exports.DEFAULT_CHECK_LABEL),
     };
@@ -59265,6 +60098,7 @@ exports.LOG_CONTEXT_KEY_ALLOWLIST = new Set([
     'status',
     'count',
     'durationMs',
+    exports.CORRELATION_ID_LOG_KEY,
     ...ADDRESS_CONTEXT_KEYS,
 ]);
 /** True when `key` is in {@link LOG_CONTEXT_KEY_ALLOWLIST} or `extraAllowedKeys`. */
@@ -59536,19 +60370,19 @@ class StructuredLogger {
      * Log an informational message.
      */
     info(message, context) {
-        core.info(this.formatMessage(redactString(message), redactContext(context)));
+        core.info(this.formatMessage(redactString(message), this.redact(context)));
     }
     /**
      * Log a warning message.
      */
     warn(message, context) {
-        core.warning(this.formatMessage(redactString(message), redactContext(context)));
+        core.warning(this.formatMessage(redactString(message), this.redact(context)));
     }
     /**
      * Log an error message.
      */
     error(message, context, error) {
-        let fullMessage = this.formatMessage(redactString(message), redactContext(context));
+        let fullMessage = this.formatMessage(redactString(message), this.redact(context));
         if (error) {
             fullMessage += `\n  Error: ${redactString(error.message)}`;
             if (error.stack) {
@@ -59562,8 +60396,17 @@ class StructuredLogger {
      */
     debug(message, context) {
         if (this.debugMode) {
-            core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, redactContext(context)));
+            core.debug(this.formatMessage(`[DEBUG] ${redactString(message)}`, this.redact(context)));
         }
+    }
+    /**
+     * Redact a context, attaching the per-run correlation id when one is set
+     * (Issue #904). Returns `undefined` for an absent context with no id so
+     * the line layout is unchanged in that case.
+     */
+    redact(context) {
+        const withId = withCorrelationId(context);
+        return withId === undefined ? undefined : redactContext(withId);
     }
     /**
      * Log a structured Horizon retry event (Issue #697).
@@ -60642,6 +61485,14 @@ class MetricsCollector {
         this.counters = new Map();
         this.timers = new Map();
     }
+    /** Attach the per-run correlation id to the metrics summary (Issue #904). */
+    setCorrelationId(id) {
+        this.correlationId = id && id.trim() !== '' ? id.trim() : undefined;
+    }
+    /** The correlation id attached via {@link setCorrelationId}, if any. */
+    getCorrelationId() {
+        return this.correlationId;
+    }
     /**
      * Record a numeric metric. A `contractAddress` tag is rejected outright:
      * callers must go through `recordContractMetric()`, which validates the
@@ -60748,11 +61599,15 @@ class MetricsCollector {
      * Get a summary of all recorded metrics.
      */
     getSummary() {
-        return {
+        const summary = {
             metrics: this.metrics,
             counters: Object.fromEntries(this.counters),
             totalMetrics: this.metrics.length,
         };
+        // Only present once a run attaches one, so existing snapshots are unchanged.
+        if (this.correlationId)
+            summary.correlationId = this.correlationId;
+        return summary;
     }
     /**
      * Export metrics in JSON format.
@@ -61083,7 +61938,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.WORKFLOW_ANNOTATION_LIMITS = exports.GITHUB_OUTPUT_VALUE_LIMIT_BYTES = exports.MAX_OUTPUT_VALUE_BYTES = void 0;
+exports.WORKFLOW_ANNOTATION_LIMITS = exports.GITHUB_OUTPUT_VALUE_LIMIT_BYTES = exports.MAX_OUTPUT_VALUE_BYTES = exports.BooleanOutputError = exports.BOOLEAN_OUTPUT_NAMES = void 0;
+exports.parseBooleanOutput = parseBooleanOutput;
+exports.toBooleanOutput = toBooleanOutput;
+exports.normalizeBooleanOutputs = normalizeBooleanOutputs;
 exports.buildConflictReport = buildConflictReport;
 exports.formatConflictReportMarkdown = formatConflictReportMarkdown;
 exports.resolveOutputTransport = resolveOutputTransport;
@@ -61098,6 +61956,112 @@ const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const badge_1 = __nccwpck_require__(93120);
 const delta_1 = __nccwpck_require__(61493);
+/**
+ * Every action output that carries a boolean. Each one is always published
+ * as exactly `"true"` or `"false"` — lower-case, no whitespace, never empty,
+ * never `"1"`/`"0"`/`"undefined"` — so a workflow can gate with
+ * `if: steps.trustbridge.outputs.<name> == 'true'` and get a stable answer.
+ */
+exports.BOOLEAN_OUTPUT_NAMES = Object.freeze([
+    'ready',
+    'trustline_exists',
+    'account_funded',
+    'snooze_expired',
+    'has_conflicts',
+    'network_passphrase_mismatch',
+    'friendbot_called',
+    'friendbot_success',
+    'outputs_truncated',
+]);
+/**
+ * Thrown by {@link parseBooleanOutput} for a value that is not a recognised
+ * boolean. `received` is a short type/shape description, never the raw
+ * value, so an unexpected object cannot leak into logs.
+ */
+class BooleanOutputError extends TypeError {
+    constructor(outputName, received) {
+        super(`Output "${outputName}" expects a boolean (true/false, or legacy 1/0); received ${received}.`);
+        this.outputName = outputName;
+        this.received = received;
+        this.name = 'BooleanOutputError';
+    }
+}
+exports.BooleanOutputError = BooleanOutputError;
+const TRUE_STRINGS = new Set(['true', '1']);
+const FALSE_STRINGS = new Set(['false', '0', '']);
+function describeReceived(value) {
+    if (typeof value === 'string') {
+        return value.length > 32 ? `a ${value.length}-character string` : `string ${JSON.stringify(value)}`;
+    }
+    if (typeof value === 'number')
+        return `number ${String(value)}`;
+    if (Array.isArray(value))
+        return 'an array';
+    return typeof value;
+}
+/**
+ * Strictly parse a boolean-like value into a real boolean.
+ *
+ * Accepted (case-insensitive, surrounding whitespace ignored for strings):
+ * - `true` / `false` (boolean or string)
+ * - legacy `1` / `0` (number or string)
+ * - `null`, `undefined`, and `""` → `false` (an absent flag is off)
+ *
+ * Anything else — `"yes"`, `2`, `NaN`, objects, arrays — throws a
+ * {@link BooleanOutputError}. Outputs are a machine contract; guessing at
+ * `"yes"` here would hide a producer bug.
+ */
+function parseBooleanOutput(value, outputName = 'value') {
+    if (value === null || value === undefined)
+        return false;
+    if (typeof value === 'boolean')
+        return value;
+    if (typeof value === 'number') {
+        if (value === 1)
+            return true;
+        if (value === 0)
+            return false;
+        throw new BooleanOutputError(outputName, describeReceived(value));
+    }
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (TRUE_STRINGS.has(normalized))
+            return true;
+        if (FALSE_STRINGS.has(normalized))
+            return false;
+    }
+    throw new BooleanOutputError(outputName, describeReceived(value));
+}
+/**
+ * Normalize a boolean-like value to the `"true"` / `"false"` string contract.
+ *
+ * Fails closed: a malformed value publishes `"false"` (so a payout gate
+ * never opens on garbage) and emits a `core.warning` naming the output.
+ */
+function toBooleanOutput(value, outputName = 'value') {
+    try {
+        return parseBooleanOutput(value, outputName) ? 'true' : 'false';
+    }
+    catch (error) {
+        core.warning(`${error instanceof Error ? error.message : String(error)} Publishing "false" (fail closed).`);
+        return 'false';
+    }
+}
+/**
+ * Re-normalize every {@link BOOLEAN_OUTPUT_NAMES} entry of an outputs map in
+ * place-safe fashion (returns a new object). Non-boolean outputs pass
+ * through untouched. Used as the last step before `core.setOutput` so no
+ * code path can publish `"True"`, `"1"`, or `"undefined"`.
+ */
+function normalizeBooleanOutputs(outputs) {
+    const normalized = { ...outputs };
+    for (const name of exports.BOOLEAN_OUTPUT_NAMES) {
+        if (name in normalized) {
+            normalized[name] = toBooleanOutput(normalized[name], name);
+        }
+    }
+    return normalized;
+}
 /**
  * Build a `ConflictReport` from a map of field → sources.
  * A conflict exists when a field has values from ≥ 2 sources that disagree.
@@ -61297,13 +62261,13 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
     // only the JSON array itself is capped.
     const assetsTrustlineStatusTruncation = truncateJsonArray(assetsTrustlineStatus, (subset) => JSON.stringify(subset));
     return {
-        trustline_exists: String(result.trustlineExists),
+        trustline_exists: toBooleanOutput(result.trustlineExists, 'trustline_exists'),
         xlm_balance: result.xlmBalance,
-        account_funded: String(result.accountFunded),
+        account_funded: toBooleanOutput(result.accountFunded, 'account_funded'),
         comment_url: commentUrl ?? '',
         comment_id: extras.commentId ?? '',
         full_report_path: fullReportPath ?? '',
-        ready: String(result.valid),
+        ready: toBooleanOutput(result.valid, 'ready'),
         validated_at: validatedAt,
         reason_code: result.reasonCode ?? (result.valid ? 'SUCCESS' : 'FAILED'),
         horizon_url: extras.horizonUrl ?? '',
@@ -61320,7 +62284,7 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         badge_markdown: badgeMarkdown,
         badge_url: badgeUrl,
         badge_etag: badgeEtag,
-        snooze_expired: String(extras.snoozeExpired ?? false),
+        snooze_expired: toBooleanOutput(extras.snoozeExpired, 'snooze_expired'),
         timings_json: JSON.stringify({
             input_parse_ms: timings.input_parse_ms ?? 0,
             horizon_fetch_ms: timings.horizon_fetch_ms ?? 0,
@@ -61339,8 +62303,8 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         conflict_report: extras.conflictReport
             ? JSON.stringify(extras.conflictReport)
             : '',
-        has_conflicts: String(extras.conflictReport?.hasConflicts ?? false),
-        network_passphrase_mismatch: String(Boolean(mismatch)),
+        has_conflicts: toBooleanOutput(extras.conflictReport?.hasConflicts, 'has_conflicts'),
+        network_passphrase_mismatch: toBooleanOutput(Boolean(mismatch), 'network_passphrase_mismatch'),
         expected_network_passphrase: mismatch?.expectedPassphrase ?? '',
         actual_network_passphrase: mismatch?.actualPassphrase ?? '',
         assignee_results_json: assigneeResultsJson,
@@ -61349,8 +62313,8 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         // Empty strings when no Check Run was created, per the action.yml contract.
         check_run_id: extras.checkRunId ?? '',
         check_run_conclusion: extras.checkRunConclusion ?? '',
-        friendbot_called: String(Boolean(extras.friendbotCalled)),
-        friendbot_success: String(Boolean(extras.friendbotSuccess)),
+        friendbot_called: toBooleanOutput(extras.friendbotCalled, 'friendbot_called'),
+        friendbot_success: toBooleanOutput(extras.friendbotSuccess, 'friendbot_success'),
         friendbot_transaction_hash: extras.friendbotTransactionHash ?? '',
         assets_trustline_status: assetsTrustlineStatusTruncation.json,
         trustlines_summary: `${presentTrustlines} of ${assetsTrustlineStatus.length} additional trustlines present`,
@@ -61363,11 +62327,13 @@ function toActionOutputs(result, commentUrl, fullReportPath, extras = {}) {
         // truncation result (batch_summary_json can be far larger than
         // assets_trustline_status); single-address mode reports whether
         // assets_trustline_status itself was truncated.
-        outputs_truncated: String(assetsTrustlineStatusTruncation.truncated),
+        outputs_truncated: toBooleanOutput(assetsTrustlineStatusTruncation.truncated, 'outputs_truncated'),
     };
 }
 function setValidationOutputs(result, commentUrl, fullReportPath, extras = {}) {
-    const outputs = toActionOutputs(result, commentUrl, fullReportPath, extras);
+    // #919: final normalization pass so every boolean output is exactly
+    // "true" or "false", whatever path produced it.
+    const outputs = normalizeBooleanOutputs(toActionOutputs(result, commentUrl, fullReportPath, extras));
     for (const [name, value] of Object.entries(outputs)) {
         core.setOutput(name, value);
     }
@@ -61825,6 +62791,10 @@ async function updateProjectV2Status(options) {
  *     (Issue #758): loopback, link-local, private ranges, and cloud
  *     metadata endpoints are rejected, as are scheme-smuggling forms
  *     (non-http(s) schemes, embedded credentials, non-canonical hosts).
+
+suffix matches and IPs; ensure SSRF still applies to bypassed destinations as required by policy.
+
+ 
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -62610,9 +63580,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.HttpMockMatrix = exports.CircuitOpenError = exports.CircuitBreaker = exports.RateLimiter = exports.DEFAULT_RETRY_POLICY = exports.RateBudgetTracker = exports.RateBudgetExhaustedError = void 0;
+exports.HttpMockMatrix = exports.CircuitOpenError = exports.CircuitBreaker = exports.DEFAULT_MAX_RETRY_AFTER_MS = exports.RateLimiter = exports.DEFAULT_CRON_BACKOFF_POLICY = exports.HORIZON_DEGRADED_REASON_CODES = exports.DEFAULT_RETRY_POLICY = exports.RateBudgetTracker = exports.RateBudgetExhaustedError = void 0;
 exports.calculateBackoffDelay = calculateBackoffDelay;
 exports.addJitter = addJitter;
+exports.isHorizonDegradedReasonCode = isHorizonDegradedReasonCode;
+exports.shouldPauseCronSweep = shouldPauseCronSweep;
+exports.computeCronBackoffDelayMs = computeCronBackoffDelayMs;
 exports.sleep = sleep;
 exports.retryWithBackoff = retryWithBackoff;
 exports.emitCheckRunAnnotation = emitCheckRunAnnotation;
@@ -62698,6 +63671,77 @@ function addJitter(delayMs, jitterPercent = 10, maxDelayMs) {
     const randomJitter = (Math.random() - 0.5) * 2 * jitter;
     const jittered = Math.max(0, delayMs + randomJitter);
     return maxDelayMs !== undefined ? Math.min(jittered, maxDelayMs) : jittered;
+}
+// ---------------------------------------------------------------------------
+// Cron sweep backoff when Horizon is degraded (Issue #909)
+// ---------------------------------------------------------------------------
+/**
+ * `reason_code` values that mean "Horizon was degraded", not "the wallet is
+ * not ready". A scheduled sweep should count these — never wallet failures
+ * such as `TRUSTLINE_MISSING` — when deciding to pause. Documented in
+ * docs/CRON_REVALIDATION.md#backoff-when-horizon-is-degraded.
+ */
+exports.HORIZON_DEGRADED_REASON_CODES = [
+    'HORIZON_TIMEOUT',
+    'HORIZON_ERROR',
+    'CIRCUIT_OPEN',
+    'RATE_BUDGET_EXHAUSTED',
+    'HORIZON_WAIT_BUDGET_EXHAUSTED',
+];
+/** True when `reasonCode` signals a Horizon-side degradation. */
+function isHorizonDegradedReasonCode(reasonCode) {
+    return exports.HORIZON_DEGRADED_REASON_CODES.includes((reasonCode ?? '').trim());
+}
+/**
+ * Defaults documented in docs/CRON_REVALIDATION.md: pause when ≥ 20 % of at
+ * least 5 results are Horizon-degraded, then back off 15 min → 30 → 60 → …
+ * capped at 6 h, with ± 20 % jitter so many Wave orgs do not resume together.
+ */
+exports.DEFAULT_CRON_BACKOFF_POLICY = {
+    degradedRateThreshold: 0.2,
+    minSampleSize: 5,
+    baseDelayMs: 15 * 60 * 1000,
+    maxDelayMs: 6 * 60 * 60 * 1000,
+    jitterPercent: 20,
+};
+/**
+ * Decide whether a cron sweep should stop dispatching further checks because
+ * Horizon looks degraded (Issue #909).
+ *
+ * @param reasonCodes  `reason_code` outputs collected so far in this sweep.
+ * @returns `true` once at least `minSampleSize` results were seen and the
+ *          share of {@link HORIZON_DEGRADED_REASON_CODES} reaches
+ *          `degradedRateThreshold`. Wallet failures never count.
+ */
+function shouldPauseCronSweep(reasonCodes, policy = exports.DEFAULT_CRON_BACKOFF_POLICY) {
+    if (reasonCodes.length === 0 || reasonCodes.length < policy.minSampleSize) {
+        return false;
+    }
+    const degraded = reasonCodes.filter(isHorizonDegradedReasonCode).length;
+    return degraded / reasonCodes.length >= policy.degradedRateThreshold;
+}
+/**
+ * Delay before the next cron sweep after `consecutiveDegradedSweeps`
+ * degraded sweeps in a row (Issue #909).
+ *
+ * `0` sweeps → `0` (run on the normal schedule). Otherwise
+ * `min(baseDelayMs * 2^(n-1), maxDelayMs)` with ± `jitterPercent` jitter,
+ * never above `maxDelayMs`. Negative or non-finite counts throw so a broken
+ * counter in a workflow script fails loudly instead of hammering Horizon.
+ *
+ * @param random  Injectable RNG in [0, 1) for deterministic tests.
+ */
+function computeCronBackoffDelayMs(consecutiveDegradedSweeps, policy = exports.DEFAULT_CRON_BACKOFF_POLICY, random = Math.random) {
+    if (!Number.isFinite(consecutiveDegradedSweeps) || consecutiveDegradedSweeps < 0) {
+        throw new Error(`consecutiveDegradedSweeps must be a non-negative finite number. Received: ${consecutiveDegradedSweeps}`);
+    }
+    const n = Math.floor(consecutiveDegradedSweeps);
+    if (n === 0)
+        return 0;
+    const exponent = Math.min(n - 1, 30);
+    const delay = Math.min(policy.baseDelayMs * 2 ** exponent, policy.maxDelayMs);
+    const jitter = delay * (policy.jitterPercent / 100) * (random() * 2 - 1);
+    return Math.round(Math.min(Math.max(0, delay + jitter), policy.maxDelayMs));
 }
 /**
  * Sleep for a given duration.
@@ -62805,6 +63849,20 @@ async function retryWithBackoff(fn, policy = exports.DEFAULT_RETRY_POLICY, shoul
     }
     throw lastError;
 }
+/** Default cap for Retry-After driven cooldowns (5 minutes). */
+exports.DEFAULT_MAX_RETRY_AFTER_MS = 300000;
+/**
+ * Validate a millisecond duration option. Throws a `RangeError` with a stable
+ * message for negative, NaN, or infinite values so misconfiguration fails
+ * loudly at construction time instead of producing a circuit that never (or
+ * instantly) recovers.
+ */
+function assertDurationMs(name, value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new RangeError(`CircuitBreaker option ${name} must be a finite number of milliseconds >= 0 (received ${String(value)}).`);
+    }
+    return value;
+}
 /**
  * Circuit-breaker implementation for the TrustBridge resilience layer.
  *
@@ -62827,6 +63885,15 @@ async function retryWithBackoff(fn, policy = exports.DEFAULT_RETRY_POLICY, shoul
  *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
  *                    allowed; enough consecutive successes closes the circuit,
  *                    any failure re-opens it.
+ *
+ * Issue #920 — wall-clock open-state expiry: the open → half-open transition
+ * is driven only by elapsed time on the injected clock (`options.now`), never
+ * by how many calls were fast-failed. A server-requested `Retry-After`
+ * recorded through `noteRetryAfter()` extends the cooldown: the circuit does
+ * not go half-open, and half-open probes are not admitted, until both the
+ * recovery timeout and the Retry-After deadline have passed. If the clock
+ * moves backwards while open, the cooldown restarts from the new "now"
+ * instead of expiring early.
  */
 class CircuitBreaker {
     constructor(options = {}) {
@@ -62835,6 +63902,8 @@ class CircuitBreaker {
         this.consecutiveSuccesses = 0;
         this.openedAt = null;
         this.lastErrorClass = null;
+        /** Issue #920: epoch ms before which no probe may run (Retry-After floor). */
+        this.retryAfterUntil = null;
         /** Issue #888: in-flight probe count while in half-open state. */
         this.halfOpenProbesInFlight = 0;
         /** Issue #888: total rejections due to probe budget exhaustion. */
@@ -62849,7 +63918,12 @@ class CircuitBreaker {
          */
         this._wasHalfOpenBeforeFailure = false;
         this.failureThreshold = options.failureThreshold ?? 5;
-        this.recoveryTimeoutMs = options.recoveryTimeoutMs ?? 30000;
+        this.recoveryTimeoutMs = assertDurationMs('recoveryTimeoutMs', options.recoveryTimeoutMs ?? 30000);
+        this.maxRetryAfterMs = assertDurationMs('maxRetryAfterMs', options.maxRetryAfterMs ?? exports.DEFAULT_MAX_RETRY_AFTER_MS);
+        if (options.now !== undefined && typeof options.now !== 'function') {
+            throw new TypeError('CircuitBreaker option now must be a function returning epoch milliseconds.');
+        }
+        this.now = options.now ?? (() => Date.now());
         this.successThreshold = options.successThreshold ?? 2;
         this.halfOpenMaxProbes = options.halfOpenMaxProbes ?? 1;
         // Wave #26: default handler surfaces state changes as Check Run annotations.
@@ -62895,7 +63969,17 @@ class CircuitBreaker {
     async execute(fn) {
         this._maybeTransitionToHalfOpen();
         if (this.state === 'open') {
-            throw new CircuitOpenError(`Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures).`);
+            const remainingCooldownMs = this.getRemainingCooldownMs();
+            throw new CircuitOpenError(`Circuit breaker is open. Requests are temporarily blocked while waiting for recovery (threshold: ${this.failureThreshold} failures; ~${remainingCooldownMs}ms cooldown remaining).`, remainingCooldownMs);
+        }
+        // Issue #920: a Retry-After recorded after the circuit went half-open
+        // still gates probes — fast-fail until the server-requested deadline.
+        if (this.state === 'half-open') {
+            const remainingCooldownMs = this.getRemainingCooldownMs();
+            if (remainingCooldownMs > 0) {
+                throw new CircuitOpenError(`Circuit breaker is half-open but Horizon asked to wait (Retry-After); ` +
+                    `probe deferred for ~${remainingCooldownMs}ms.`, remainingCooldownMs);
+            }
         }
         // Issue #888: enforce probe budget in half-open state.
         if (this.state === 'half-open') {
@@ -62941,12 +64025,61 @@ class CircuitBreaker {
         this.consecutiveFailures = 0;
         this.consecutiveSuccesses = 0;
         this.openedAt = null;
+        this.retryAfterUntil = null;
         this.halfOpenProbesInFlight = 0;
         this.halfOpenProbesCompleted = 0;
         this.halfOpenProbeBudgetExhaustedCount = 0;
         if (prev !== 'closed') {
             this.onStateChange(prev, 'closed', 'manual reset');
         }
+    }
+    /**
+     * Record a server-requested cooldown (Issue #920), typically the parsed
+     * `Retry-After` of a Horizon 429/503. The circuit will not move from open
+     * to half-open — and a half-open circuit will not admit probes — until
+     * `delayMs` has elapsed on the breaker's clock.
+     *
+     * - Values are clamped to `maxRetryAfterMs` so a hostile header cannot pin
+     *   the circuit open indefinitely.
+     * - Negative, NaN, or non-finite values are ignored (returns `false`), the
+     *   same way `parseRetryAfterMs` treats them as absent.
+     * - A shorter Retry-After never shortens an existing, longer deadline.
+     * - In the closed state the deadline is remembered but does not block
+     *   calls; the retry loop already sleeps for Retry-After. It only takes
+     *   effect if the circuit opens before the deadline passes.
+     *
+     * Returns `true` when the deadline was recorded or extended.
+     */
+    noteRetryAfter(delayMs) {
+        if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
+            return false;
+        }
+        const until = this.now() + Math.min(delayMs, this.maxRetryAfterMs);
+        if (this.retryAfterUntil !== null && this.retryAfterUntil >= until) {
+            return false;
+        }
+        this.retryAfterUntil = until;
+        return true;
+    }
+    /**
+     * Milliseconds until the next probe may reach the wrapped operation
+     * (Issue #920). Always ≥ 0.
+     *
+     * - **closed**: 0.
+     * - **open**: the larger of the remaining recovery timeout and the
+     *   remaining Retry-After deadline.
+     * - **half-open**: the remaining Retry-After deadline (0 when none).
+     */
+    getRemainingCooldownMs() {
+        this._maybeTransitionToHalfOpen();
+        if (this.state === 'closed')
+            return 0;
+        const now = this.now();
+        const retryAfterRemaining = this.retryAfterUntil !== null ? Math.max(0, this.retryAfterUntil - now) : 0;
+        if (this.state === 'half-open')
+            return retryAfterRemaining;
+        const recoveryRemaining = this.openedAt !== null ? Math.max(0, this.openedAt + this.recoveryTimeoutMs - now) : 0;
+        return Math.max(recoveryRemaining, retryAfterRemaining);
     }
     /**
      * Snapshot of the breaker's internal counters — useful for tests and
@@ -62971,7 +64104,7 @@ class CircuitBreaker {
      *
      * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
      */
-    getOpenMetrics(now = Date.now()) {
+    getOpenMetrics(now = this.now()) {
         const stats = this.getStats();
         return {
             state: stats.state,
@@ -62990,9 +64123,18 @@ class CircuitBreaker {
     }
     // ---- private helpers ----
     _maybeTransitionToHalfOpen() {
-        if (this.state === 'open' &&
-            this.openedAt !== null &&
-            Date.now() - this.openedAt >= this.recoveryTimeoutMs) {
+        if (this.state !== 'open' || this.openedAt === null)
+            return;
+        const now = this.now();
+        // Issue #920: a clock that moved backwards must not expire the cooldown
+        // early (or leave it negative) — restart it from the current reading.
+        if (now < this.openedAt) {
+            this.openedAt = now;
+            return;
+        }
+        const recoveryElapsed = now - this.openedAt >= this.recoveryTimeoutMs;
+        const retryAfterElapsed = this.retryAfterUntil === null || now >= this.retryAfterUntil;
+        if (recoveryElapsed && retryAfterElapsed) {
             const prev = this.state;
             this.state = 'half-open';
             this.consecutiveSuccesses = 0;
@@ -63029,7 +64171,7 @@ class CircuitBreaker {
             this._wasHalfOpenBeforeFailure = true;
             const prev = this.state;
             this.state = 'open';
-            this.openedAt = Date.now();
+            this.openedAt = this.now();
             this.consecutiveSuccesses = 0;
             const reason = err instanceof Error ? err.message : String(err);
             this.onStateChange(prev, 'open', `probe failed in half-open: ${reason}`);
@@ -63040,7 +64182,7 @@ class CircuitBreaker {
             this.consecutiveFailures >= this.failureThreshold) {
             const prev = this.state;
             this.state = 'open';
-            this.openedAt = Date.now();
+            this.openedAt = this.now();
             const reason = err instanceof Error ? err.message : String(err);
             this.onStateChange(prev, 'open', `${this.consecutiveFailures} consecutive failures (threshold: ${this.failureThreshold}): ${reason}`);
         }
@@ -63060,9 +64202,12 @@ function errorClassOf(err) {
  * request was fast-failed without reaching the underlying operation.
  */
 class CircuitOpenError extends Error {
-    constructor(message) {
+    constructor(message, remainingCooldownMs) {
         super(message);
         this.name = 'CircuitOpenError';
+        if (remainingCooldownMs !== undefined && Number.isFinite(remainingCooldownMs)) {
+            this.remainingCooldownMs = Math.max(0, Math.round(remainingCooldownMs));
+        }
     }
 }
 exports.CircuitOpenError = CircuitOpenError;
@@ -64566,7 +65711,7 @@ function validateAgainstJsonSchema(value, schema) {
 /***/ }),
 
 /***/ 80905:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
@@ -64598,30 +65743,209 @@ function validateAgainstJsonSchema(value, schema) {
  *
  * **Force Post**: An optional `force_comment` input bypasses snooze logic
  * so maintainers can force an immediate comment post if needed.
+ *
+ * **Audit trail (Issue #908)**: Whenever a snooze skips validation, a
+ * structured `snooze_skip` log line (reason_code `snoozed`) is emitted with
+ * the snooze source, elapsed/remaining time, and expiry timestamp, and the
+ * comment notice names the expiry — so a snooze is never silent.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SNOOZE_REACTIONS = exports.SNOOZE_REASON_CODE = exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.SNOOZE_SKIPPED_COUNTER = exports.SNOOZE_AUDIT_CHECK = exports.SNOOZE_AUDIT_EVENT = exports.SNOOZE_REACTIONS = exports.normalizeSnoozeTimestamp = exports.SNOOZE_REASON_CODE = exports.SNOOZE_MARKER_PATTERN = void 0;
+exports.normalizeToUtc = normalizeToUtc;
+exports.getTimezoneOffsetMs = getTimezoneOffsetMs;
+exports.validateSnoozeTimestamp = validateSnoozeTimestamp;
+exports.formatSnoozeTimestampUtc = formatSnoozeTimestampUtc;
+exports.isWithinSnoozeWindow = isWithinSnoozeWindow;
 exports.parseSnoozeMarker = parseSnoozeMarker;
 exports.formatSnoozeMarker = formatSnoozeMarker;
 exports.evaluateSnoozeState = evaluateSnoozeState;
 exports.isSnoozeReaction = isSnoozeReaction;
 exports.evaluateReactionSnooze = evaluateReactionSnooze;
 exports.evaluateCombinedSnoozeState = evaluateCombinedSnoozeState;
+exports.formatSnoozeExpiry = formatSnoozeExpiry;
+exports.buildSnoozeAuditLogContext = buildSnoozeAuditLogContext;
+exports.emitSnoozeAuditLog = emitSnoozeAuditLog;
 exports.formatSnoozeDuration = formatSnoozeDuration;
 exports.enforceSnoozeWindow = enforceSnoozeWindow;
+const logger_1 = __nccwpck_require__(86999);
 /**
  * Hidden marker format in comment body:
- * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms} -->
+ * <!-- trustbridge-action:snooze:status={pass|fail},timestamp={unix-ms|iso-utc}(?:,timezone={tz})? -->
  */
-exports.SNOOZE_MARKER_PATTERN = /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=(\d+) -->/;
+exports.SNOOZE_MARKER_PATTERN = /<!-- trustbridge-action:snooze:status=(pass|fail),timestamp=([^\s,>]+)(?:,timezone=([^\s>]+))? -->/;
 /**
  * Stable reason_code emitted when validation is skipped because the issue is
  * within an active snooze window (Issue #754).
  */
 exports.SNOOZE_REASON_CODE = 'snoozed';
 /**
+ * Normalizes any timestamp representation (unix-ms number, Date instance,
+ * ISO 8601 UTC string with Z, ISO 8601 with explicit timezone offset, or
+ * date/time string stored without timezone context) to UTC epoch milliseconds.
+ *
+ * ### Timezone & DST Boundary Enforcement (Issue #873)
+ *
+ * Snooze windows that cross DST boundaries or are stored without timezone context
+ * can reopen early or late when parsed by naive local-time parsers (such as `new Date(str)`).
+ * This function normalizes all inputs to UTC epoch milliseconds:
+ * - If an ISO string lacks timezone context (e.g. "2026-11-01T01:30:00"), it is treated
+ *   strictly as UTC rather than runner-local time.
+ * - If an explicit timezone name or offset is provided, it is resolved to the exact UTC epoch instant.
+ * - Negative, non-finite, oversized, or malformed inputs return undefined (fail closed).
+ */
+function normalizeToUtc(raw, timezone) {
+    if (raw === undefined || raw === null)
+        return undefined;
+    if (typeof raw === 'number') {
+        if (!Number.isFinite(raw) || raw < 0 || raw > 8.64e15)
+            return undefined;
+        return Math.floor(raw);
+    }
+    if (raw instanceof Date) {
+        const time = raw.getTime();
+        if (isNaN(time) || time < 0 || time > 8.64e15)
+            return undefined;
+        return time;
+    }
+    if (typeof raw !== 'string')
+        return undefined;
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return undefined;
+    // Pure digits: unix timestamp in ms
+    if (/^\d+$/.test(trimmed)) {
+        const num = Number(trimmed);
+        if (!Number.isFinite(num) || num < 0 || num > 8.64e15)
+            return undefined;
+        return Math.floor(num);
+    }
+    // Explicit negative number: invalid
+    if (/^-\d+$/.test(trimmed))
+        return undefined;
+    // Explicit UTC indicator (Z or z)
+    if (/[Zz]$/.test(trimmed)) {
+        const parsed = Date.parse(trimmed);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15)
+            return parsed;
+        return undefined;
+    }
+    // Explicit timezone offset (+HH:MM, -HH:MM, +HHMM, -HHMM, +HH, -HH)
+    if (/[+-]\d{2}(?::?\d{2})?$/.test(trimmed)) {
+        const parsed = Date.parse(trimmed);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15)
+            return parsed;
+        return undefined;
+    }
+    // Naive date or date-time string without timezone context (e.g. "2026-11-01", "2026-11-01T01:30:00", "2026-11-01 01:30:00")
+    if (/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)?$/.test(trimmed)) {
+        const normalizedIso = trimmed.replace(' ', 'T');
+        const withTime = normalizedIso.includes('T') ? normalizedIso : `${normalizedIso}T00:00:00.000`;
+        // If an explicit timezone is given and it's not UTC/Z/GMT, resolve through IANA timezone
+        if (timezone && !['UTC', 'ETC/UTC', 'Z', 'GMT'].includes(timezone.toUpperCase())) {
+            try {
+                const utcMs = Date.parse(`${withTime}Z`);
+                if (isNaN(utcMs))
+                    return undefined;
+                const offsetMs = getTimezoneOffsetMs(utcMs, timezone);
+                const resolved = utcMs - offsetMs;
+                if (Number.isFinite(resolved) && resolved >= 0 && resolved <= 8.64e15) {
+                    return resolved;
+                }
+            }
+            catch {
+                // Fall back to UTC if timezone lookup fails
+            }
+        }
+        // Default: Normalize to UTC by appending 'Z'
+        const parsed = Date.parse(`${withTime}Z`);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 8.64e15)
+            return parsed;
+        return undefined;
+    }
+    // Generic ISO parse attempt
+    const fallback = Date.parse(trimmed);
+    if (!isNaN(fallback) && fallback >= 0 && fallback <= 8.64e15) {
+        return fallback;
+    }
+    return undefined;
+}
+/**
+ * Calculates the UTC offset in milliseconds for a given UTC timestamp and IANA timeZone.
+ */
+function getTimezoneOffsetMs(utcTimestamp, timeZone) {
+    try {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23',
+        });
+        const parts = formatter.formatToParts(new Date(utcTimestamp));
+        const getPart = (type) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+        const asUtc = Date.UTC(getPart('year'), getPart('month') - 1, getPart('day'), getPart('hour'), getPart('minute'), getPart('second'));
+        return asUtc - utcTimestamp;
+    }
+    catch {
+        return 0;
+    }
+}
+/**
+ * Alias for {@link normalizeToUtc} specific to snooze timestamps.
+ */
+exports.normalizeSnoozeTimestamp = normalizeToUtc;
+/**
+ * Validates a snooze timestamp and returns structured validation status.
+ * Fails closed on empty, oversized, negative, or malformed inputs.
+ */
+function validateSnoozeTimestamp(raw) {
+    if (raw === undefined || raw === null || raw === '') {
+        return { valid: false, error: 'Snooze timestamp cannot be empty' };
+    }
+    if (typeof raw !== 'string' && typeof raw !== 'number' && !(raw instanceof Date)) {
+        return { valid: false, error: 'Snooze timestamp must be a number, string, or Date' };
+    }
+    const ms = normalizeToUtc(raw);
+    if (ms === undefined) {
+        return {
+            valid: false,
+            error: `Malformed snooze timestamp: "${String(raw)}" is not a valid unix ms or ISO 8601 UTC date`,
+        };
+    }
+    return {
+        valid: true,
+        timestamp: ms,
+        utcIso: new Date(ms).toISOString(),
+    };
+}
+/**
+ * Formats a timestamp into canonical operator ISO 8601 UTC format (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+ */
+function formatSnoozeTimestampUtc(timestamp) {
+    const ms = normalizeToUtc(timestamp);
+    if (ms === undefined) {
+        throw new Error(`Cannot format invalid snooze timestamp: "${String(timestamp)}"`);
+    }
+    return new Date(ms).toISOString();
+}
+/**
+ * Evaluates whether a physical duration has elapsed between startTimestamp and now,
+ * evaluated strictly in UTC milliseconds to ensure invariance across DST boundaries.
+ */
+function isWithinSnoozeWindow(startTimestamp, snoozeWindowMs, now = Date.now()) {
+    const startMs = normalizeToUtc(startTimestamp);
+    const nowMs = normalizeToUtc(now) ?? Date.now();
+    if (startMs === undefined || snoozeWindowMs <= 0)
+        return false;
+    const elapsed = nowMs - startMs;
+    return elapsed >= 0 && elapsed < snoozeWindowMs;
+}
+/**
  * Extract snooze marker from a comment body. Returns undefined if marker
- * not found (backward compatible with older comments).
+ * not found or if the timestamp is malformed/invalid (backward compatible with older comments).
  */
 function parseSnoozeMarker(commentBody) {
     if (!commentBody)
@@ -64629,16 +65953,28 @@ function parseSnoozeMarker(commentBody) {
     const match = commentBody.match(exports.SNOOZE_MARKER_PATTERN);
     if (!match)
         return undefined;
-    return {
+    const rawTimestamp = match[2];
+    const timezone = match[3];
+    const timestamp = normalizeToUtc(rawTimestamp, timezone);
+    if (timestamp === undefined)
+        return undefined;
+    const marker = {
         status: match[1],
-        timestamp: Number(match[2]),
+        timestamp,
     };
+    if (timezone) {
+        marker.timezone = timezone;
+    }
+    return marker;
 }
 /**
  * Generate a snooze marker string to embed in comment body.
  */
 function formatSnoozeMarker(status, timestamp = Date.now()) {
-    return `<!-- trustbridge-action:snooze:status=${status},timestamp=${timestamp} -->`;
+    const normalized = typeof timestamp === 'number'
+        ? timestamp
+        : (normalizeToUtc(timestamp) ?? Date.now());
+    return `<!-- trustbridge-action:snooze:status=${status},timestamp=${normalized} -->`;
 }
 /**
  * Determine snooze state based on current result, last marker, and snooze duration.
@@ -64652,9 +65988,12 @@ function formatSnoozeMarker(status, timestamp = Date.now()) {
  *   - **Snoozed** (suppress comment, but still update outputs).
  * - If current result **fails** AND prior status **failed** AND elapsed >= snoozeMs:
  *   - **Post** (reminder after timeout; reset timer).
+ *
+ * Both `now` and `lastMarker.timestamp` are evaluated in normalized UTC epoch milliseconds,
+ * guaranteeing physical duration invariance across DST boundaries.
  */
-function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
-    const now = Date.now();
+function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs, now = Date.now()) {
+    const nowMs = normalizeToUtc(now) ?? Date.now();
     // If current check passes, always post (unsnooze) — not an expiry, the
     // check itself changed outcome.
     if (currentPassed) {
@@ -64677,7 +66016,10 @@ function evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs) {
         };
     }
     // Current failed, prior status known.
-    const elapsedMs = now - lastMarker.timestamp;
+    // Both nowMs and lastMarker.timestamp are normalized to UTC epoch milliseconds,
+    // ensuring physical elapsed time is invariant across daylight saving time (DST)
+    // boundaries and host timezones.
+    const elapsedMs = nowMs - lastMarker.timestamp;
     // Status changed from pass to fail — post it. Not an expiry: this is a
     // fresh failure, not a resumed one.
     if (lastMarker.status === 'pass') {
@@ -64726,8 +66068,10 @@ function isSnoozeReaction(content) {
 }
 /**
  * Evaluates whether any user (non-bot) reactions on the comment trigger an active snooze.
+ * Reaction timestamps are normalized to UTC to prevent DST early/late reopen.
  */
 function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = Date.now()) {
+    const nowMs = normalizeToUtc(now) ?? Date.now();
     if (currentPassed || !reactions || reactions.length === 0) {
         return { isSnoozed: false, snoozeExpired: false };
     }
@@ -64741,15 +66085,16 @@ function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = 
         return { isSnoozed: false, snoozeExpired: false };
     }
     // Extract timestamps (supporting both REST created_at and GraphQL createdAt)
+    // Normalized to UTC to ensure invariance across DST boundaries.
     const timestamps = eligibleReactions
         .map((r) => {
         const raw = r.created_at || r.createdAt;
-        const parsed = raw ? new Date(raw).getTime() : now;
-        return isNaN(parsed) ? now : parsed;
+        const parsed = raw ? normalizeToUtc(raw) : nowMs;
+        return parsed !== undefined ? parsed : nowMs;
     })
         .sort((a, b) => b - a);
     const latestTimestamp = timestamps[0];
-    const elapsedMs = now - latestTimestamp;
+    const elapsedMs = nowMs - latestTimestamp;
     const withinWindow = elapsedMs >= 0 && elapsedMs < snoozeWindowMs;
     return {
         isSnoozed: withinWindow,
@@ -64766,13 +66111,16 @@ function evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now = 
  * An issue comment is snoozed if:
  * 1. Current check fails (not passed), AND
  * 2. Either an active failure marker OR a maintainer :zzz:/eyes reaction exists within the snooze window.
+ *
+ * Evaluated in UTC physical milliseconds to prevent DST transition discrepancies.
  */
 function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, now = Date.now()) {
+    const nowMs = normalizeToUtc(now) ?? Date.now();
     if (currentPassed) {
         return { isSnoozed: false, snoozeExpired: false };
     }
-    const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs);
-    const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, now);
+    const markerState = evaluateSnoozeState(currentPassed, lastMarker, snoozeWindowMs, nowMs);
+    const reactionState = evaluateReactionSnooze(currentPassed, reactions, snoozeWindowMs, nowMs);
     if (reactionState.isSnoozed) {
         return reactionState;
     }
@@ -64789,6 +66137,56 @@ function evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snooz
         elapsedMs: reactionState.elapsedMs ?? markerState.elapsedMs,
     };
 }
+/** Stable `event` field on the snooze audit log line (Issue #908). */
+exports.SNOOZE_AUDIT_EVENT = 'snooze_skip';
+/** Stable `check` label on the snooze audit log line (Issue #908). */
+exports.SNOOZE_AUDIT_CHECK = 'snooze';
+/** In-process counter incremented once per snooze-skipped run (Issue #908). */
+exports.SNOOZE_SKIPPED_COUNTER = 'snooze_skipped';
+/**
+ * Format a unix-ms timestamp as an ISO-8601 string, or `'unknown'` when the
+ * value is missing or not a valid date.
+ */
+function formatSnoozeExpiry(expiresAt) {
+    if (expiresAt === undefined || !Number.isFinite(expiresAt))
+        return 'unknown';
+    const date = new Date(expiresAt);
+    return Number.isNaN(date.getTime()) ? 'unknown' : date.toISOString();
+}
+/**
+ * Build the structured log context for a snooze-skip audit line (Issue #908).
+ *
+ * The context carries only bounded, non-sensitive fields (no addresses, no
+ * reaction user logins), and always includes the stable `reason_code`
+ * (`snoozed`) and `check` (`snooze`) keys so Wave operators can grep for it.
+ */
+function buildSnoozeAuditLogContext(enforcement, snoozeWindowMs, extra = {}) {
+    const context = {
+        component: 'snooze',
+        event: exports.SNOOZE_AUDIT_EVENT,
+        reason_code: exports.SNOOZE_REASON_CODE,
+        check: exports.SNOOZE_AUDIT_CHECK,
+        source: enforcement.source ?? 'unknown',
+        snoozeWindowMs,
+        elapsedMs: enforcement.state.elapsedMs ?? null,
+        remainingMs: enforcement.remainingMs ?? null,
+        expiresAt: formatSnoozeExpiry(enforcement.expiresAt),
+    };
+    if (extra.issueNumber !== undefined) {
+        context['issueNumber'] = extra.issueNumber;
+    }
+    return context;
+}
+/**
+ * Emit the structured snooze-skip audit log line (Issue #908). No-op when
+ * the enforcement did not skip validation.
+ */
+function emitSnoozeAuditLog(enforcement, snoozeWindowMs, extra = {}) {
+    if (!enforcement.skipValidation)
+        return;
+    const expiry = formatSnoozeExpiry(enforcement.expiresAt);
+    (0, logger_1.logInfo)(`Validation skipped: issue is within an active snooze window (source=${enforcement.source ?? 'unknown'}, expires ${expiry}).`, buildSnoozeAuditLogContext(enforcement, snoozeWindowMs, extra));
+}
 /**
  * Format a human-readable duration for snooze notices (e.g. "2h 15m").
  */
@@ -64803,32 +66201,66 @@ function formatSnoozeDuration(ms) {
     return `${minutes}m`;
 }
 /**
- * Enforce a snooze window at the validation call site (Issue #754).
+ * Enforce a snooze window at the validation call site (Issue #754, Issue #873).
  *
  * Wraps {@link evaluateCombinedSnoozeState} and, when the issue is within an
  * active snooze window, returns a stable `reason_code` (`snoozed`) plus a
  * user-visible comment notice. Callers should skip validation and post the
  * notice instead of failing the assignee.
  *
+ * Normalizes all timestamps and `options.now` to UTC physical milliseconds,
+ * guaranteeing snooze duration integrity across DST boundaries.
+ *
  * `forceComment` bypasses enforcement so maintainers can force a run.
+ *
+ * When validation is skipped (Issue #908):
+ * - a structured `snooze_skip` audit log line is emitted (disable with
+ *   `audit: false` when the caller emits it itself);
+ * - the comment notice states the expiry time (ISO-8601, UTC);
+ * - when `metrics` is passed, the `snooze_skipped` counter is incremented, a
+ *   `snooze_skipped` metric tagged with the source is recorded, and the job
+ *   outcome is recorded as `skipped`.
  */
 function enforceSnoozeWindow(currentPassed, lastMarker, reactions, snoozeWindowMs, options = {}) {
-    const state = evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, options.now);
+    const nowMs = options.now !== undefined ? (normalizeToUtc(options.now) ?? Date.now()) : Date.now();
+    const state = evaluateCombinedSnoozeState(currentPassed, lastMarker, reactions, snoozeWindowMs, nowMs);
     if (options.forceComment || !state.isSnoozed) {
         return { skipValidation: false, state };
     }
     const remainingMs = state.elapsedMs !== undefined ? Math.max(0, snoozeWindowMs - state.elapsedMs) : undefined;
     const remaining = formatSnoozeDuration(remainingMs);
+    const expiresAt = state.lastTimestamp !== undefined
+        ? state.lastTimestamp + snoozeWindowMs
+        : remainingMs !== undefined
+            ? nowMs + remainingMs
+            : undefined;
+    // The marker path records the prior check status; the reaction path does not.
+    const source = state.lastStatus !== undefined ? 'marker' : 'reaction';
+    const expiry = formatSnoozeExpiry(expiresAt);
     const commentNotice = `⏸️ **Validation snoozed** — this issue is within an active snooze window ` +
         `(reason_code: \`${exports.SNOOZE_REASON_CODE}\`). Validation will resume automatically ` +
-        `in ~${remaining}. Remove the :zzz:/:eyes: reaction or wait for the window to ` +
+        `in ~${remaining}` +
+        (expiry !== 'unknown' ? ` (snooze expires \`${expiry}\`)` : '') +
+        `. Remove the :zzz:/:eyes: reaction or wait for the window to ` +
         `expire to re-run validation.`;
-    return {
+    const enforcement = {
         skipValidation: true,
         reasonCode: exports.SNOOZE_REASON_CODE,
         commentNotice,
         state,
+        source,
+        remainingMs,
+        expiresAt,
     };
+    if (options.audit !== false) {
+        emitSnoozeAuditLog(enforcement, snoozeWindowMs, { issueNumber: options.issueNumber });
+    }
+    if (options.metrics) {
+        options.metrics.incrementCounter(exports.SNOOZE_SKIPPED_COUNTER);
+        options.metrics.recordMetric(exports.SNOOZE_SKIPPED_COUNTER, 1, 'count', { source });
+        options.metrics.recordJobOutcome('skipped');
+    }
+    return enforcement;
 }
 
 
@@ -65332,6 +66764,9 @@ async function fetchSSRFSafe(urlStr, options = {}) {
                 status: response.status,
                 headers: response.headers,
                 text: async () => text,
+                // Final URL after any (same-origin) redirect hops, so callers such as
+                // the stellar.toml cache can key entries on the resolved host (#914).
+                url: currentUrl,
             };
         }
         catch (err) {
@@ -65802,6 +67237,13 @@ function formatJobSummaryMarkdown(report, options = {}) {
  *    for KEY, making it safe to reference translated copy without bypassing i18n.
  * 6. Unknown placeholders are replaced with an empty string (never silently
  *    passed through) so unexpected `{{foo}}` tokens cannot leak raw data.
+ * 7. Rendered output cap (Issue #905) — the *interpolated* partial must not
+ *    exceed MAX_TEMPLATE_RENDERED_BYTES (16 KB) and the raw template may hold
+ *    at most MAX_TEMPLATE_PLACEHOLDERS (200) placeholders. A small file that
+ *    repeats a long `{{locale:KEY}}` or `{{horizon}}` thousands of times (an
+ *    "expansion bomb") fails fast with a stable `TEMPLATE_OUTPUT_TOO_LARGE`
+ *    / `TEMPLATE_TOO_MANY_PLACEHOLDERS` error instead of producing a body
+ *    that exceeds GitHub's comment limit.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -65837,7 +67279,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_TEMPLATE_BYTES = void 0;
+exports.TemplateRenderError = exports.MAX_TEMPLATE_PLACEHOLDERS = exports.MAX_TEMPLATE_RENDERED_BYTES = exports.MAX_TEMPLATE_BYTES = void 0;
 exports.validateTemplatePath = validateTemplatePath;
 exports.validateTemplateContent = validateTemplateContent;
 exports.interpolateTemplate = interpolateTemplate;
@@ -65849,6 +67291,28 @@ const markdown_1 = __nccwpck_require__(83758);
 const i18n_1 = __nccwpck_require__(84859);
 /** Maximum allowed template file size in bytes. */
 exports.MAX_TEMPLATE_BYTES = 8 * 1024; // 8 KB
+/**
+ * Maximum allowed size of the rendered (interpolated) partial in UTF-8 bytes
+ * (Issue #905). Leaves ample headroom under GitHub's 65,536-character comment
+ * limit for the core TrustBridge sections.
+ */
+exports.MAX_TEMPLATE_RENDERED_BYTES = 16 * 1024; // 16 KB
+/** Maximum number of `{{…}}` placeholders allowed in one template (Issue #905). */
+exports.MAX_TEMPLATE_PLACEHOLDERS = 200;
+/** Error thrown when a template breaches a rendering limit (Issue #905). */
+class TemplateRenderError extends Error {
+    constructor(code, message) {
+        super(`[${code}] ${message}`);
+        this.name = 'TemplateRenderError';
+        this.code = code;
+    }
+}
+exports.TemplateRenderError = TemplateRenderError;
+function resolveMaxOutputBytes(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? Math.floor(value)
+        : exports.MAX_TEMPLATE_RENDERED_BYTES;
+}
 /**
  * Dangerous prototype-pollution / prototype-chain placeholder names.
  * Any template that uses these as `{{name}}` tokens is rejected outright.
@@ -65941,6 +67405,33 @@ const SUPPORTED_VARIABLES = new Set([
     'status',
 ]);
 /**
+ * Resolve a single placeholder key to its (escaped) substitution value.
+ */
+function resolvePlaceholder(rawKey, ctx, strings) {
+    const key = rawKey.trim();
+    // Handle {{locale:KEY}} for i18n string lookups.
+    if (key.toLowerCase().startsWith('locale:')) {
+        const i18nKey = key.slice('locale:'.length).trim();
+        const value = strings[i18nKey];
+        // Only allow string-typed fields (not function-typed check helpers).
+        if (typeof value === 'string') {
+            return (0, markdown_1.escapeMarkdownInline)(value);
+        }
+        return '';
+    }
+    const lowerKey = key.toLowerCase();
+    // Unknown or unsupported variable → empty string (safe default).
+    if (!SUPPORTED_VARIABLES.has(lowerKey)) {
+        return '';
+    }
+    // status is safe symbolic text, no escaping needed.
+    if (lowerKey === 'status') {
+        return ctx.status;
+    }
+    const raw = ctx[lowerKey] ?? '';
+    return (0, markdown_1.escapeMarkdownInline)(raw);
+}
+/**
  * Interpolate `{{variable}}` and `{{locale:KEY}}` placeholders in a template
  * string.
  *
@@ -65950,37 +67441,48 @@ const SUPPORTED_VARIABLES = new Set([
  *   Only string-typed fields of `CommentStrings` are supported; function
  *   fields are excluded and resolve to an empty string.
  * - Unknown placeholders are replaced with an empty string (never echoed back).
+ * - More than {@link MAX_TEMPLATE_PLACEHOLDERS} placeholders throws
+ *   `TemplateRenderError` (`TEMPLATE_TOO_MANY_PLACEHOLDERS`) before any
+ *   substitution (Issue #905).
+ * - Rendering stops as soon as the output would exceed `maxOutputBytes`
+ *   and throws `TemplateRenderError` (`TEMPLATE_OUTPUT_TOO_LARGE`), so an
+ *   expansion bomb never materialises a huge string (Issue #905).
  *
  * @param template  Raw template content (already validated).
  * @param ctx       Interpolation context.
+ * @param options   Rendering limits.
  * @returns         Interpolated template string.
  */
-function interpolateTemplate(template, ctx) {
+function interpolateTemplate(template, ctx, options = {}) {
+    const maxOutputBytes = resolveMaxOutputBytes(options.maxOutputBytes);
     const strings = (0, i18n_1.getStrings)(ctx.locale);
-    return template.replace(/\{\{([^{}]+?)\}\}/g, (_match, rawKey) => {
-        const key = rawKey.trim();
-        // Handle {{locale:KEY}} for i18n string lookups.
-        if (key.toLowerCase().startsWith('locale:')) {
-            const i18nKey = key.slice('locale:'.length).trim();
-            const value = strings[i18nKey];
-            // Only allow string-typed fields (not function-typed check helpers).
-            if (typeof value === 'string') {
-                return (0, markdown_1.escapeMarkdownInline)(value);
-            }
-            return '';
+    const placeholderPattern = /\{\{([^{}]+?)\}\}/g;
+    const placeholderCount = (template.match(placeholderPattern) ?? []).length;
+    if (placeholderCount > exports.MAX_TEMPLATE_PLACEHOLDERS) {
+        throw new TemplateRenderError('TEMPLATE_TOO_MANY_PLACEHOLDERS', `custom comment template contains ${placeholderCount} placeholders; ` +
+            `the maximum is ${exports.MAX_TEMPLATE_PLACEHOLDERS}.`);
+    }
+    const parts = [];
+    let renderedBytes = 0;
+    const append = (segment) => {
+        if (segment === '')
+            return;
+        renderedBytes += Buffer.byteLength(segment, 'utf8');
+        if (renderedBytes > maxOutputBytes) {
+            throw new TemplateRenderError('TEMPLATE_OUTPUT_TOO_LARGE', `custom comment template renders to more than ${maxOutputBytes} bytes. ` +
+                'Reduce repeated placeholders or the amount of static text in the partial.');
         }
-        const lowerKey = key.toLowerCase();
-        // Unknown or unsupported variable → empty string (safe default).
-        if (!SUPPORTED_VARIABLES.has(lowerKey)) {
-            return '';
-        }
-        // status is safe symbolic text, no escaping needed.
-        if (lowerKey === 'status') {
-            return ctx.status;
-        }
-        const raw = ctx[lowerKey] ?? '';
-        return (0, markdown_1.escapeMarkdownInline)(raw);
-    });
+        parts.push(segment);
+    };
+    let lastIndex = 0;
+    let match;
+    while ((match = placeholderPattern.exec(template)) !== null) {
+        append(template.slice(lastIndex, match.index));
+        append(resolvePlaceholder(match[1], ctx, strings));
+        lastIndex = match.index + match[0].length;
+    }
+    append(template.slice(lastIndex));
+    return parts.join('');
 }
 /**
  * Load, validate, and interpolate a custom comment template partial.
@@ -65990,14 +67492,16 @@ function interpolateTemplate(template, ctx) {
  * - The file does not exist at the resolved path (non-fatal, emits a warning).
  *
  * Throws `Error` for all hard validation failures (path traversal, size
- * exceeded, forbidden content) so the action can surface them clearly.
+ * exceeded, forbidden content) so the action can surface them clearly, and
+ * `TemplateRenderError` when the rendered output breaches a limit
+ * (Issue #905: `TEMPLATE_OUTPUT_TOO_LARGE`, `TEMPLATE_TOO_MANY_PLACEHOLDERS`).
  *
  * @param templatePath  Workspace-relative or absolute path to the `.md` file.
  * @param ctx           Interpolation context for variable substitution.
  * @param workspaceRoot Workspace root directory.  Defaults to
  *                      `GITHUB_WORKSPACE` env variable or `process.cwd()`.
  */
-function loadCommentTemplate(templatePath, ctx, workspaceRoot) {
+function loadCommentTemplate(templatePath, ctx, workspaceRoot, options = {}) {
     if (!templatePath || templatePath.trim() === '') {
         return undefined;
     }
@@ -66019,8 +67523,8 @@ function loadCommentTemplate(templatePath, ctx, workspaceRoot) {
     const raw = fs.readFileSync(resolvedPath, 'utf8');
     // 4. Content security validation.
     validateTemplateContent(raw);
-    // 5. Interpolate placeholders.
-    return interpolateTemplate(raw, ctx);
+    // 5. Interpolate placeholders under the rendered-output cap (Issue #905).
+    return interpolateTemplate(raw, ctx, options);
 }
 /**
  * Build a `TemplateContext` from comment-level values.
@@ -66086,7 +67590,10 @@ exports.STELLAR_TOML_MAX_REDIRECTS = exports.STELLAR_TOML_ALLOWED_CONTENT_TYPES 
 exports.parseHashPin = parseHashPin;
 exports.computeHash = computeHash;
 exports.validateTomlHash = validateTomlHash;
+exports.buildStellarTomlUrl = buildStellarTomlUrl;
+exports.normalizeTomlRequestUrl = normalizeTomlRequestUrl;
 exports.buildTomlCacheKey = buildTomlCacheKey;
+exports.buildTomlFinalHostAliasKey = buildTomlFinalHostAliasKey;
 exports.isAllowedTomlContentType = isAllowedTomlContentType;
 exports.fetchTomlWithCache = fetchTomlWithCache;
 exports.runStellarTomlCheck = runStellarTomlCheck;
@@ -66124,8 +67631,70 @@ function validateTomlHash(content, pin) {
         ? { valid: true, hash: computed }
         : { valid: false, error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}` };
 }
-function buildTomlCacheKey(domain) {
-    return `toml:${domain.trim().toLowerCase()}`;
+// ---------------------------------------------------------------------------
+// Issue #914 — cache keys carry the request URL and the redirect-final host
+// ---------------------------------------------------------------------------
+/** Build the canonical SEP-0001 stellar.toml URL for `domain`. */
+function buildStellarTomlUrl(domain) {
+    return `https://${domain.trim().toLowerCase()}/.well-known/stellar.toml`;
+}
+/**
+ * Normalize a stellar.toml request target. A bare domain is expanded to its
+ * canonical `/.well-known/stellar.toml` URL; a full URL is parsed so the
+ * scheme and host are lower-cased (the path is kept verbatim).
+ *
+ * @throws When `target` is empty or is not a parseable URL.
+ */
+function normalizeTomlRequestUrl(target) {
+    const trimmed = typeof target === 'string' ? target.trim() : '';
+    if (!trimmed) {
+        throw new Error('toml: cache key target must be a non-empty domain or URL');
+    }
+    const candidate = trimmed.includes('://') ? trimmed : buildStellarTomlUrl(trimmed);
+    let parsed;
+    try {
+        parsed = new URL(candidate);
+    }
+    catch {
+        throw new Error(`toml: cache key target is not a valid URL: ${trimmed}`);
+    }
+    return parsed.toString();
+}
+/** Lower-cased hostname of `url`, or `''` when it cannot be parsed. */
+function hostOf(url) {
+    try {
+        return new URL(url).hostname.toLowerCase();
+    }
+    catch {
+        return '';
+    }
+}
+/**
+ * Build the cache key for a stellar.toml document (Issue #914).
+ *
+ * The key always includes both the normalized request URL **and** the host
+ * that actually served the document after redirects (`finalHost`). Two
+ * fetches of the same URL that resolve to different hosts therefore never
+ * share an entry, so a redirect remap can never serve a document that was
+ * cached for another host (which would turn into a false home_domain pass
+ * or fail).
+ *
+ * @param target    A bare domain (`example.com`) or a full stellar.toml URL.
+ * @param finalHost Host that served the response after redirects. Defaults
+ *                  to the request URL's own host (no redirect).
+ */
+function buildTomlCacheKey(target, finalHost) {
+    const requestUrl = normalizeTomlRequestUrl(target);
+    const resolvedHost = (finalHost ?? '').trim().toLowerCase() || hostOf(requestUrl);
+    return `toml:${requestUrl}|final:${resolvedHost}`;
+}
+/**
+ * Key of the alias entry that remembers which final host last served
+ * `target` (Issue #914). Lookups read the alias first so they can build the
+ * full {@link buildTomlCacheKey} before the network is touched.
+ */
+function buildTomlFinalHostAliasKey(target) {
+    return `toml-final-host:${normalizeTomlRequestUrl(target)}`;
 }
 /** Default stellar.toml cache TTL (1 hour), mirrors action.yml. */
 exports.DEFAULT_STELLAR_TOML_CACHE_TTL_MS = 3600000;
@@ -66184,6 +67753,9 @@ function clampTomlTtl(ttl) {
  *   never cached.
  * - Redirects are refused (`followRedirects: false`, `maxRedirects: 0`), so
  *   a 3xx to another host can never bypass the SSRF policy.
+ * - Cache entries are keyed on the request URL **and** the redirect-final
+ *   host (Issue #914, {@link buildTomlCacheKey}); a remap to another host
+ *   evicts the old entry instead of serving it.
  * - The body is capped at `MAX_STELLAR_TOML_BYTES`, a declared Content-Type
  *   must be on `STELLAR_TOML_ALLOWED_CONTENT_TYPES`, and an empty body is
  *   rejected. Rejected bodies are never cached.
@@ -66201,13 +67773,29 @@ async function fetchTomlWithCache(domain, options = {}) {
             cachedAt: startTime,
         };
     }
-    const cacheKey = buildTomlCacheKey(domainNorm);
+    let requestUrl;
+    try {
+        requestUrl = normalizeTomlRequestUrl(domainNorm);
+    }
+    catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err), cachedAt: startTime };
+    }
+    const requestHost = hostOf(requestUrl);
+    const aliasKey = buildTomlFinalHostAliasKey(requestUrl);
+    // Issue #914: resolve the host that last served this URL, then read the
+    // entry keyed on both. An entry whose recorded URL/host do not match the
+    // key it was read from is never served.
+    const alias = cacheTtlMs > 0 ? cache_1.defaultCache.get(aliasKey) : null;
+    const knownFinalHost = alias?.finalHost || requestHost;
+    const cacheKey = buildTomlCacheKey(requestUrl, knownFinalHost);
     const cached = cacheTtlMs > 0 ? cache_1.defaultCache.get(cacheKey) : null;
     if (cached) {
         const age = startTime - cached.fetchedAt;
         const fresh = age >= 0 && age < cacheTtlMs;
         const pinOk = !options.hashPin || validateTomlHash(cached.content, options.hashPin).valid;
-        if (fresh && pinOk) {
+        const keyOk = (cached.requestUrl === undefined || cached.requestUrl === requestUrl) &&
+            (cached.finalHost === undefined || cached.finalHost === knownFinalHost);
+        if (fresh && pinOk && keyOk) {
             return { ok: true, content: cached.content, hash: cached.hash, cachedAt: cached.fetchedAt, fetched: false };
         }
         cache_1.defaultCache.delete(cacheKey);
@@ -66218,7 +67806,7 @@ async function fetchTomlWithCache(domain, options = {}) {
             });
         }
     }
-    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(`https://${domainNorm}/.well-known/stellar.toml`, {
+    const fetchResult = await (0, ssrf_1.fetchSSRFSafe)(requestUrl, {
         maxBodyBytes: clampTomlMaxBytes(options.maxBodyBytes),
         timeoutMs: 10000,
         followRedirects: false,
@@ -66250,7 +67838,21 @@ async function fetchTomlWithCache(domain, options = {}) {
     }
     const hash = validation.hash || computeHash(content, 'sha256');
     if (cacheTtlMs > 0) {
-        cache_1.defaultCache.set(cacheKey, { content, fetchedAt: startTime, hash }, cacheTtlMs);
+        // Issue #914: key the body on the host that actually served it. When a
+        // redirect remaps the URL to a different host, the entry cached for the
+        // previous host is evicted so it can never be served for this URL again.
+        const finalHost = hostOf(fetchResult.url ?? requestUrl) || requestHost;
+        if (alias?.finalHost && alias.finalHost !== finalHost) {
+            cache_1.defaultCache.delete(buildTomlCacheKey(requestUrl, alias.finalHost));
+            logger_1.logger.warn(`stellar.toml for ${domainNorm} now resolves to a different final host; cache entry re-keyed`, {
+                component: 'toml',
+                domain: domainNorm,
+                previousFinalHost: alias.finalHost,
+                finalHost,
+            });
+        }
+        cache_1.defaultCache.set(buildTomlCacheKey(requestUrl, finalHost), { content, fetchedAt: startTime, hash, requestUrl, finalHost }, cacheTtlMs);
+        cache_1.defaultCache.set(aliasKey, { finalHost }, cacheTtlMs);
     }
     return { ok: true, content, hash, cachedAt: startTime, fetched: true };
 }
@@ -66330,7 +67932,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
+exports.HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES = exports.HORIZON_HTTP_ERROR_SPAN_NAME = exports.ALL_WALLET_LABELS = exports.DEFAULT_RETRY_MAX_TOTAL_WAIT_MS = exports.DEFAULT_RETRY_MAX_DELAY_MS = exports.DEFAULT_NEGATIVE_CACHE_TTL_MS = exports.HorizonCircuitOpenError = exports.HorizonPinMismatchError = exports.HorizonTlsError = exports.HorizonRateLimitError = exports.HorizonError = void 0;
 exports.isCircuitOpenError = isCircuitOpenError;
 exports.checkCertificatePin = checkCertificatePin;
 exports.normalizeHorizonUrl = normalizeHorizonUrl;
@@ -66362,6 +67964,10 @@ exports.getExporterType = getExporterType;
 exports.getTraceSpans = getTraceSpans;
 exports.clearTraceSpans = clearTraceSpans;
 exports.redactSpanAttributes = redactSpanAttributes;
+exports.horizonStatusClass = horizonStatusClass;
+exports.safeSpanErrorMessage = safeSpanErrorMessage;
+exports.horizonErrorSpanAttributes = horizonErrorSpanAttributes;
+exports.recordHorizonHttpError = recordHorizonHttpError;
 exports.withSpan = withSpan;
 exports.withHorizonSpan = withHorizonSpan;
 exports.withSpanSync = withSpanSync;
@@ -67989,6 +69595,117 @@ function redactSpanAttributes(attrs) {
     return safe;
 }
 // ---------------------------------------------------------------------------
+// Horizon error recording without payload bodies (Issue #913)
+// ---------------------------------------------------------------------------
+/** Span name for a single non-2xx Horizon response. */
+exports.HORIZON_HTTP_ERROR_SPAN_NAME = 'horizon.http_error';
+/**
+ * The complete, fixed set of attribute keys a `horizon.http_error` span may
+ * carry. Response bodies (`detail`, `title`, `type`, `extras`, …) are never
+ * among them: Horizon problem documents can echo account data back, so only
+ * the status code and request metadata are recorded. Documented in
+ * docs/ARCHITECTURE.md#horizon-error-spans.
+ */
+exports.HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES = [
+    'horizon.url',
+    'http.response.status_code',
+    'horizon.status_class',
+    'horizon.retryable',
+    'horizon.endpoint_kind',
+    'horizon.attempt',
+    'horizon.latency_ms',
+    'error.type',
+];
+function isHorizonLikeError(err) {
+    return (err instanceof Error &&
+        typeof err.statusCode === 'number');
+}
+/** Bucket an HTTP status for low-cardinality span attributes. */
+function horizonStatusClass(statusCode) {
+    // 0 and 408 are how horizon.ts encodes transport failures and timeouts.
+    if (statusCode === 0 || statusCode === 408)
+        return 'transport';
+    if (statusCode >= 400 && statusCode < 500)
+        return '4xx';
+    if (statusCode >= 500 && statusCode < 600)
+        return '5xx';
+    return 'other';
+}
+/**
+ * Body-free span error message (Issue #913).
+ *
+ * `HorizonError` messages for non-2xx responses embed the Horizon problem
+ * `detail`/`title` (`Horizon request failed (400): <detail>`), and the 404
+ * message embeds the account id. For any Horizon-like error with an HTTP
+ * status >= 400 the span message is therefore rebuilt from the status code
+ * alone. Every other error message is passed through `redactString` so
+ * addresses, JWTs and secret assignments are masked.
+ */
+function safeSpanErrorMessage(err) {
+    if (isHorizonLikeError(err) && err.statusCode >= 400) {
+        return `Horizon request failed (${err.statusCode})`;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return (0, logger_1.redactString)(message);
+}
+/**
+ * Error attributes for a Horizon span: status, class, retryability and
+ * error type only — never the message or response body.
+ */
+function horizonErrorSpanAttributes(err) {
+    if (!isHorizonLikeError(err)) {
+        return { 'error.type': err instanceof Error ? err.name : 'Error' };
+    }
+    return {
+        'error.type': err.name,
+        'http.response.status_code': err.statusCode,
+        'horizon.status_class': horizonStatusClass(err.statusCode),
+        'horizon.retryable': err.retryable === true,
+    };
+}
+/**
+ * Record one ERROR span for a non-2xx Horizon response (Issue #913).
+ *
+ * Called once per failed attempt from `fetchOnce` in src/horizon.ts, before
+ * the response body is read, so retried 429/5xx attempts are visible as
+ * individual spans for Wave latency incidents. The signature deliberately
+ * has no body/detail parameter: only the attributes in
+ * {@link HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES} are recorded.
+ *
+ * No-op when tracing is disabled. Never throws.
+ */
+function recordHorizonHttpError(opts) {
+    if (!isTracingEnabled())
+        return;
+    try {
+        const latencyMs = Number.isFinite(opts.latencyMs) ? Math.max(0, Math.round(opts.latencyMs)) : 0;
+        const attributes = {
+            'horizon.url': opts.horizonUrl,
+            'http.response.status_code': opts.statusCode,
+            'horizon.status_class': horizonStatusClass(opts.statusCode),
+            'horizon.retryable': opts.retryable,
+            'horizon.endpoint_kind': opts.endpointKind,
+            'horizon.attempt': opts.attempt,
+            'horizon.latency_ms': latencyMs,
+            'error.type': 'HorizonError',
+        };
+        const span = {
+            name: exports.HORIZON_HTTP_ERROR_SPAN_NAME,
+            startTimeMs: Date.now() - latencyMs,
+            durationMs: latencyMs,
+            status: 'ERROR',
+            attributes: redactSpanAttributes(attributes),
+            error: `Horizon request failed (${opts.statusCode})`,
+            parentName: opts.parentName,
+        };
+        storeSpan(span);
+        exportSpan(span);
+    }
+    catch {
+        // Observability must never break the action.
+    }
+}
+// ---------------------------------------------------------------------------
 // Span recording
 // ---------------------------------------------------------------------------
 /**
@@ -68014,7 +69731,7 @@ async function withSpan(opts, fn) {
     }
     catch (err) {
         status = 'ERROR';
-        error = err instanceof Error ? err.message : String(err);
+        error = safeSpanErrorMessage(err);
         throw err;
     }
     finally {
@@ -68059,13 +69776,16 @@ async function withHorizonSpan(opts, fn) {
     const retryCount = opts.retryCount ?? 0;
     let status = 'OK';
     let error;
+    let errorAttributes = {};
     try {
         const result = await fn();
         return result;
     }
     catch (err) {
         status = 'ERROR';
-        error = err instanceof Error ? err.message : String(err);
+        // Issue #913: status/type attributes only — never the response body.
+        error = safeSpanErrorMessage(err);
+        errorAttributes = horizonErrorSpanAttributes(err);
         throw err;
     }
     finally {
@@ -68074,6 +69794,7 @@ async function withHorizonSpan(opts, fn) {
             'horizon.url': opts.horizonUrl,
             'horizon.retry_count': retryCount,
             'horizon.latency_ms': durationMs,
+            ...errorAttributes,
         };
         if (opts.accountId) {
             attributes['stellar_address'] = opts.accountId;
@@ -68111,7 +69832,7 @@ function withSpanSync(opts, fn) {
     }
     catch (err) {
         status = 'ERROR';
-        error = err instanceof Error ? err.message : String(err);
+        error = safeSpanErrorMessage(err);
         throw err;
     }
     finally {
@@ -68326,13 +70047,14 @@ function emitTraceSummary() {
  * A real OTEL exporter can be plugged in by replacing `recordSpan()`.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SECRET_FIELD_NAMES = exports.SSRF_BLOCKED_PATTERNS = void 0;
+exports.SECRET_FIELD_NAMES = exports.SSRF_BLOCKED_PATTERNS = exports.ENUM_INPUT_MAX_ECHO_LENGTH = void 0;
 exports.getSpans = getSpans;
 exports.clearSpans = clearSpans;
 exports.validateNumericInput = validateNumericInput;
 exports.validateContractAddress = validateContractAddress;
 exports.validateAssetCode = validateAssetCode;
 exports.validateUrl = validateUrl;
+exports.validateEnumInput = validateEnumInput;
 exports.combineResults = combineResults;
 exports.validateSsrfSafeUrl = validateSsrfSafeUrl;
 exports.validateHorizonUrl = validateHorizonUrl;
@@ -68546,6 +70268,40 @@ function validateUrl(url, fieldName, options = {}) {
             errors,
             warnings,
         };
+    });
+}
+/**
+ * Longest raw value echoed back in an enum validation error. Longer values
+ * are truncated so an oversized (or pasted-secret) input never floods the
+ * log line. See docs/INPUT_VALIDATION.md#enum-inputs-network-and-enforcement-modes.
+ */
+exports.ENUM_INPUT_MAX_ECHO_LENGTH = 32;
+/**
+ * Validates a string enum input (Issue #901).
+ *
+ * Case policy: the value is trimmed and lowercased before matching, so
+ * `Testnet` and ` STRICT ` are accepted. An empty value is valid — callers
+ * apply the documented default. Anything else is rejected with a stable,
+ * actionable message that lists every allowed value:
+ *
+ *   `<field> must be one of "a", "b". Received: "<value>"`
+ *
+ * The span records only the field name, the input length and the result —
+ * never the raw value.
+ */
+function validateEnumInput(value, fieldName, allowed) {
+    const raw = value ?? '';
+    return withSpan('validateEnumInput', { fieldName, inputLength: raw.length, allowedCount: allowed.length }, () => {
+        const errors = [];
+        const warnings = [];
+        const normalized = raw.trim().toLowerCase();
+        if (normalized && !allowed.includes(normalized)) {
+            const echoed = raw.length > exports.ENUM_INPUT_MAX_ECHO_LENGTH
+                ? `${raw.slice(0, exports.ENUM_INPUT_MAX_ECHO_LENGTH)}…`
+                : raw;
+            errors.push(`${fieldName} must be one of ${allowed.map((v) => `"${v}"`).join(', ')}. Received: "${echoed}"`);
+        }
+        return { valid: errors.length === 0, errors, warnings };
     });
 }
 /**

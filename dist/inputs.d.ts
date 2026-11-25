@@ -1,3 +1,4 @@
+import { StellarNetwork } from './links';
 export declare function parseBooleanInput(value: string, defaultValue: boolean): boolean;
 /**
  * Canonical list of input names declared in `action.yml`.
@@ -53,6 +54,24 @@ export declare function parseNumberInput(value: string, defaultValue: number, op
     min?: number;
     max?: number;
 }): number;
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+export declare const DEFAULT_BATCH_MAX_ADDRESSES = 500;
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+export declare const BATCH_MAX_ADDRESSES_CEILING = 2000;
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+export declare function parseBatchMaxAddressesInput(value: string | undefined): number;
 export declare function getErrorMessage(error: unknown): string;
 /**
  * Maintainer-provided roster: GitHub username (assignee login) → Stellar G-address.
@@ -88,6 +107,47 @@ export type UnauthorizedTrustlinePolicy = 'fail' | 'warn' | 'ignore';
  *   - "ignore" — no additional check or warning (pre-#72 behavior).
  */
 export declare function parseUnauthorizedTrustlinePolicy(value: string): UnauthorizedTrustlinePolicy;
+/**
+ * Allowed values for the `network` input. `mainnet` is an alias for `public`.
+ * Documented in action.yml and docs/INPUT_VALIDATION.md — keep all three in
+ * sync (`__tests__/inputs-enum-validation.test.ts` enforces it).
+ */
+export declare const VALID_NETWORK_INPUTS: readonly ["testnet", "public", "mainnet"];
+export type NetworkInput = (typeof VALID_NETWORK_INPUTS)[number];
+/**
+ * Allowed values for the `home_domain_check_mode` enforcement mode.
+ */
+export declare const VALID_HOME_DOMAIN_CHECK_MODES: readonly ["warn", "strict"];
+export type HomeDomainCheckModeInput = (typeof VALID_HOME_DOMAIN_CHECK_MODES)[number];
+/**
+ * Parse and validate the `network` input (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant (`" Testnet "` → `testnet`).
+ * Empty means "no network preset" and returns `''`. Any other value throws
+ * before a Horizon request is made, so a typo such as `testnett` fails fast
+ * instead of silently falling back to the default `horizon_url`.
+ */
+export declare function parseNetworkInput(value: string | undefined): NetworkInput | '';
+/**
+ * Parse and validate the `home_domain_check_mode` enforcement mode
+ * (Issue #901).
+ *
+ * Case-insensitive and whitespace-tolerant. Empty falls back to `warn`.
+ * Unknown values throw: before #901 a typo such as `stirct` silently
+ * downgraded enforcement to `warn`.
+ */
+export declare function parseHomeDomainCheckModeInput(value: string | undefined): HomeDomainCheckModeInput;
+/**
+ * Parse an explorer base URL override for `network` (Issue #910).
+ *
+ * Empty returns `''` (use the safe per-network default from
+ * `DEFAULT_EXPLORER_BASE_URLS` in src/links.ts). Any override that fails
+ * `validateExplorerBaseUrl` — wrong scheme (http is rejected on public),
+ * embedded credentials, a host outside the per-network allowlist, or
+ * Markdown-unsafe characters — throws with the stable reason code so the
+ * run fails before a phishing link could reach an issue comment.
+ */
+export declare function parseExplorerBaseUrlInput(value: string | undefined, network: StellarNetwork, inputName?: string): string;
 /**
  * Mapping of TRUSTBRIDGE_* environment variable names to action input names.
  * Explicit `with:` values always win; env is only used when with: is empty.
@@ -188,6 +248,7 @@ export interface Inputs {
     issue_number?: string;
     debug_mode?: string;
     horizon_timeout_ms?: string;
+    per_address_timeout_ms?: string;
     sticky_comment?: string;
     comment_mode?: string;
     wait_until_funded?: string;
@@ -204,6 +265,7 @@ export interface Inputs {
     allow_cross_network_fallback?: string;
     log_inputs?: string;
     trustbridge_config_path?: string;
+    trustbridge_config_strict?: string;
     milestone_allowlist?: string;
     milestone_fail_on_skip?: string;
     github_token: string;
@@ -251,6 +313,7 @@ export interface Inputs {
     use_plugin_runner?: string;
     locale?: string;
     stellar_addresses?: string;
+    batch_max_addresses?: string;
     unassign_on_not_ready?: string;
     project_id?: string;
     project_status_field?: string;
@@ -287,3 +350,10 @@ export interface Inputs {
     soroban_rpc_url?: string;
     contract_id?: string;
 }
+/**
+ * Build the Soroban registry client config from raw action inputs. Returns
+ * `null` when `soroban_rpc_url` or `contract_id` is unset. `network_passphrase`
+ * is forwarded so `src/soroban.ts` verifies the RPC network before any
+ * contract read (reason_code `SOROBAN_NETWORK_MISMATCH` on mismatch).
+ */
+export declare function buildSorobanContractConfig(raw: Pick<Inputs, 'soroban_rpc_url' | 'contract_id' | 'network_passphrase'>): import('./soroban').ContractConfig | null;

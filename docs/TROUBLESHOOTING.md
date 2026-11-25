@@ -28,6 +28,18 @@ The account exists but its native XLM balance is below `min_xlm_reserve`. Send a
 
 Retry later or switch `horizon_url` to a trusted endpoint for the target network.
 
+## Cron sweep fails across many issues during a Horizon incident
+
+If a scheduled re-validation sweep reports `HORIZON_TIMEOUT`, `HORIZON_ERROR`,
+`CIRCUIT_OPEN`, `RATE_BUDGET_EXHAUSTED` or `HORIZON_WAIT_BUDGET_EXHAUSTED` for
+a large share of issues, Horizon is degraded — the wallets are not the
+problem. Do not shorten the schedule or raise `max_retries`; that amplifies the
+outage. Instead pause the sweep once ≥ 20 % of results are degraded, back off
+the next sweep (15 min doubling up to 6 h, ± 20 % jitter), and lower
+`max_retries` / `retry_max_total_wait_ms` for the incident. The full policy,
+the resilience settings to tune, and a copy-paste workflow snippet are in
+[CRON_REVALIDATION.md → Backoff when Horizon is degraded](CRON_REVALIDATION.md#backoff-when-horizon-is-degraded).
+
 ## Horizon retry wait budget exhausted
 
 For `429`, `502`, `503`, and `504` responses, TrustBridge honors `Retry-After`
@@ -105,7 +117,7 @@ redactContext({ component: 'checks', rawPayload: accountResponse }, { strict: tr
 ```
 
 The base allowlist covers `component`, `stellarAddress`, `horizonUrl`,
-`reason_code`, `check`, the generic operational metadata keys `operation`,
+`reason_code`, `check`, `correlation_id` (Issue #904), the generic operational metadata keys `operation`,
 `status`, `count`, `durationMs`, and every key with a defined address
 redaction policy (`assetIssuer`, `accountId`, `contractAddress`, etc.). Pass
 `extraAllowedKeys` to accept additional fields at a specific call site:
@@ -126,6 +138,44 @@ logger — `redactValue` detects the cycle (`[CIRCULAR]`) or caps the depth
 `__tests__/logger.test.ts`'s "Issue #858" suites for the full regression
 coverage (nested objects/arrays at multiple depths, strict-mode drop
 behavior, and both malformed-input edge cases).
+
+## Quoting the correlation id to support (Issue #904)
+
+Every run generates one **correlation id** (`tb-` + 16 random hex chars, e.g.
+`tb-3f9c1a7e5b2d4c60`) in `initCorrelationId` (`src/diagnostics.ts`). It is
+random — never derived from tokens, addresses or run metadata — so it is
+safe to paste publicly. It appears in:
+
+| Surface | Where |
+|---|---|
+| Actions log | One `TrustBridge correlation id: tb-… (source=generated\|env)` line at the start of the run, plus a `correlation_id` field on **every** structured log line (`logInfo`/`logWarning`/`logError` JSON context and `logger.info`/`.warn`/`.error`/`.debug` `(…)` suffix). |
+| Metrics JSON | Top-level `correlationId` field of `MetricsCollector.getSummary()` / `toJSON()`. It is never a metric tag, so it cannot create an unbounded label series. |
+| Issue comment | Only when `debug_mode: true`: a hidden `<!-- trustbridge-action:correlation-id:tb-… -->` marker and a visible `Correlation ID: tb-…` line under the footer, plus a row at the top of the expert diagnostics block. Without `debug_mode` the comment is unchanged. |
+
+**How support should use it:** ask the reporter to copy the id from the
+comment footer (or the first lines of the job log) and search the Actions log
+for it — `correlation_id":"tb-…"` / `correlation_id=tb-…` matches every line
+from that run. Quote only the id; never ask for tokens or full addresses.
+
+**Propagating an existing id:** set `TRUSTBRIDGE_CORRELATION_ID` in the step
+`env:` (e.g. from a reusable workflow that fans out to several jobs) to reuse
+one id across runs:
+
+```yaml
+- uses: Stellar-TrustBridge/trustbridge-action@v1
+  env:
+    TRUSTBRIDGE_CORRELATION_ID: wave-${{ github.run_id }}-${{ github.run_attempt }}
+```
+
+A propagated id must be 8–64 characters of `[A-Za-z0-9._-]` and must survive
+the log redaction policy unchanged (anything that looks like a token,
+secret assignment or Stellar address is rejected). An invalid value is
+**never echoed**: the run logs a warning with reason code
+`CORRELATION_ID_INVALID` and the reason (e.g. `correlation id must be 8-64
+characters (got 3)`), then generates a fresh id. The `correlation_id` key is
+on `LOG_CONTEXT_KEY_ALLOWLIST`, so strict-mode redaction keeps it.
+
+Test coverage: `__tests__/correlation-id.test.ts`.
 
 ## Friendbot funding failed
 

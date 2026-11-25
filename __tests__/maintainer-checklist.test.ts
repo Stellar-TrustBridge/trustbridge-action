@@ -26,8 +26,9 @@ describe('Wave freeze labeling docs (#778)', () => {
   const checklist = read('MAINTAINER_CHECKLIST.md');
 
   it('lists label, snooze, freeze and unfreeze steps in order', () => {
-    const section = checklist.split('## Wave freeze labeling')[1];
-    expect(section).toBeDefined();
+    const raw = checklist.split('## Wave freeze labeling')[1];
+    expect(raw).toBeDefined();
+    const section = raw.split(/\n## /)[0];
     const order = ['**Label**', '**Snooze**', '**Freeze**', '**Unfreeze**'].map((s) => section.indexOf(s));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -44,7 +45,8 @@ describe('Wave freeze labeling docs (#778)', () => {
     const known = new Set(
       [actionYml, gateYml].flatMap((yml) => [...topLevelKeys(yml, 'inputs'), ...topLevelKeys(yml, 'outputs')]),
     );
-    const section = checklist.split('## Wave freeze labeling')[1];
+    const raw = checklist.split('## Wave freeze labeling')[1];
+    const section = raw.split(/\n## /)[0];
     const names = [...section.matchAll(/`([a-z_]+)(?::[^`]*)?`/g)].map((m) => m[1]).filter((n) => n.includes('_'));
     expect(names.length).toBeGreaterThan(0);
     for (const name of names) {

@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import * as github from '@actions/github';
 /** Standard locations where CODEOWNERS can reside in a repository. */
 export declare const CODEOWNERS_STANDARD_PATHS: string[];
@@ -107,17 +108,61 @@ export interface LoadCodeownersOptions {
     baseRef?: string;
     owner?: string;
     repo?: string;
+    /**
+     * What to do when no CODEOWNERS file exists at any searched path
+     * (Issue #912). Defaults to `'warn'`.
+     */
+    missingMode?: CodeownersMissingMode;
+    /**
+     * Injectable warning sink for tests. Defaults to `core.warning`, which
+     * emits a GitHub warning annotation.
+     */
+    warn?: (message: string, properties?: core.AnnotationProperties) => void;
 }
+/**
+ * How a missing CODEOWNERS file is handled (Issue #912).
+ *
+ * - `warn` (default): emit a warning annotation and continue with no
+ *   CODEOWNERS-derived maintainers (`maintainers_allowlist` still applies).
+ * - `strict`: throw {@link CodeownersMissingError} so the run fails.
+ */
+export type CodeownersMissingMode = 'warn' | 'strict';
+/** Every supported {@link CodeownersMissingMode}. */
+export declare const CODEOWNERS_MISSING_MODES: readonly CodeownersMissingMode[];
+/** Stable reason code carried by {@link CodeownersMissingError}. */
+export declare const CODEOWNERS_MISSING_REASON_CODE = "CODEOWNERS_MISSING";
+/** Title of the warning annotation emitted in `warn` mode. */
+export declare const CODEOWNERS_MISSING_ANNOTATION_TITLE = "TrustBridge: CODEOWNERS not found";
+/**
+ * Parse a CODEOWNERS missing-mode value. Empty input yields `'warn'`.
+ *
+ * @throws On any value other than `warn` / `strict` (case-insensitive).
+ */
+export declare function parseCodeownersMissingMode(value: string | undefined): CodeownersMissingMode;
+/** Thrown in `strict` mode when no CODEOWNERS file is found (Issue #912). */
+export declare class CodeownersMissingError extends Error {
+    readonly reasonCode = "CODEOWNERS_MISSING";
+    /** Repository-relative paths that were searched, in order. */
+    readonly searchedPaths: string[];
+    constructor(searchedPaths: string[]);
+}
+/** Human-readable, actionable message for a missing CODEOWNERS file. */
+export declare function formatCodeownersMissingMessage(searchedPaths: readonly string[], mode: CodeownersMissingMode): string;
 /**
  * Load CODEOWNERS content with strict Branch Safety guarantees:
  * - On pull requests from forks (or untrusted PR heads), NEVER reads from the local PR workspace.
  * - Instead, fetches the trusted CODEOWNERS file from the base branch / default branch via GitHub API.
  * - When running in a trusted context (push, default branch, or workflow_dispatch), reads from local workspace.
+ *
+ * Issue #912: when no CODEOWNERS file exists at any searched path, the default
+ * `missingMode: 'warn'` emits a warning annotation and returns an empty set;
+ * `missingMode: 'strict'` throws {@link CodeownersMissingError} instead.
  */
 export declare function loadCodeowners(options?: LoadCodeownersOptions): Promise<Set<string>>;
 /**
  * Load CODEOWNERS rules (pattern + owners) using the same branch-safety guarantees
- * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found.
+ * as {@link loadCodeowners}. Returns an empty array when no CODEOWNERS file is found
+ * (after a warning annotation, or throws in `strict` missing mode — Issue #912).
  */
 export declare function loadCodeownersRules(options?: LoadCodeownersOptions): Promise<CodeownersRule[]>;
 /**
