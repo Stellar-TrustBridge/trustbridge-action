@@ -2293,6 +2293,150 @@ export function redactSpanAttributes(
 }
 
 // ---------------------------------------------------------------------------
+// Horizon error recording without payload bodies (Issue #913)
+// ---------------------------------------------------------------------------
+
+/** Span name for a single non-2xx Horizon response. */
+export const HORIZON_HTTP_ERROR_SPAN_NAME = 'horizon.http_error';
+
+/**
+ * The complete, fixed set of attribute keys a `horizon.http_error` span may
+ * carry. Response bodies (`detail`, `title`, `type`, `extras`, …) are never
+ * among them: Horizon problem documents can echo account data back, so only
+ * the status code and request metadata are recorded. Documented in
+ * docs/ARCHITECTURE.md#horizon-error-spans.
+ */
+export const HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES = [
+  'horizon.url',
+  'http.response.status_code',
+  'horizon.status_class',
+  'horizon.retryable',
+  'horizon.endpoint_kind',
+  'horizon.attempt',
+  'horizon.latency_ms',
+  'error.type',
+] as const;
+
+/** Duck-typed HorizonError (horizon.ts and this module each declare one). */
+interface HorizonLikeError {
+  name: string;
+  message: string;
+  statusCode: number;
+  retryable?: boolean;
+}
+
+function isHorizonLikeError(err: unknown): err is HorizonLikeError {
+  return (
+    err instanceof Error &&
+    typeof (err as Partial<HorizonLikeError>).statusCode === 'number'
+  );
+}
+
+/** Bucket an HTTP status for low-cardinality span attributes. */
+export function horizonStatusClass(statusCode: number): '4xx' | '5xx' | 'transport' | 'other' {
+  // 0 and 408 are how horizon.ts encodes transport failures and timeouts.
+  if (statusCode === 0 || statusCode === 408) return 'transport';
+  if (statusCode >= 400 && statusCode < 500) return '4xx';
+  if (statusCode >= 500 && statusCode < 600) return '5xx';
+  return 'other';
+}
+
+/**
+ * Body-free span error message (Issue #913).
+ *
+ * `HorizonError` messages for non-2xx responses embed the Horizon problem
+ * `detail`/`title` (`Horizon request failed (400): <detail>`), and the 404
+ * message embeds the account id. For any Horizon-like error with an HTTP
+ * status >= 400 the span message is therefore rebuilt from the status code
+ * alone. Every other error message is passed through `redactString` so
+ * addresses, JWTs and secret assignments are masked.
+ */
+export function safeSpanErrorMessage(err: unknown): string {
+  if (isHorizonLikeError(err) && err.statusCode >= 400) {
+    return `Horizon request failed (${err.statusCode})`;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return redactString(message);
+}
+
+/**
+ * Error attributes for a Horizon span: status, class, retryability and
+ * error type only — never the message or response body.
+ */
+export function horizonErrorSpanAttributes(
+  err: unknown,
+): Record<string, string | number | boolean> {
+  if (!isHorizonLikeError(err)) {
+    return { 'error.type': err instanceof Error ? err.name : 'Error' };
+  }
+  return {
+    'error.type': err.name,
+    'http.response.status_code': err.statusCode,
+    'horizon.status_class': horizonStatusClass(err.statusCode),
+    'horizon.retryable': err.retryable === true,
+  };
+}
+
+/** Options for {@link recordHorizonHttpError}. */
+export interface HorizonHttpErrorSpanOptions {
+  /** Horizon base URL (path stripped before recording). */
+  horizonUrl: string;
+  /** HTTP status of the non-2xx response. */
+  statusCode: number;
+  /** Whether the status is retryable (429 / 5xx). */
+  retryable: boolean;
+  /** `primary` (horizon_url) or `fallback`. */
+  endpointKind: 'primary' | 'fallback';
+  /** Zero-based attempt index. */
+  attempt: number;
+  /** Latency of this attempt in milliseconds. */
+  latencyMs: number;
+  /** Parent span name for nesting context. */
+  parentName?: string;
+}
+
+/**
+ * Record one ERROR span for a non-2xx Horizon response (Issue #913).
+ *
+ * Called once per failed attempt from `fetchOnce` in src/horizon.ts, before
+ * the response body is read, so retried 429/5xx attempts are visible as
+ * individual spans for Wave latency incidents. The signature deliberately
+ * has no body/detail parameter: only the attributes in
+ * {@link HORIZON_HTTP_ERROR_SPAN_ATTRIBUTES} are recorded.
+ *
+ * No-op when tracing is disabled. Never throws.
+ */
+export function recordHorizonHttpError(opts: HorizonHttpErrorSpanOptions): void {
+  if (!isTracingEnabled()) return;
+  try {
+    const latencyMs = Number.isFinite(opts.latencyMs) ? Math.max(0, Math.round(opts.latencyMs)) : 0;
+    const attributes: Record<string, string | number | boolean> = {
+      'horizon.url': opts.horizonUrl,
+      'http.response.status_code': opts.statusCode,
+      'horizon.status_class': horizonStatusClass(opts.statusCode),
+      'horizon.retryable': opts.retryable,
+      'horizon.endpoint_kind': opts.endpointKind,
+      'horizon.attempt': opts.attempt,
+      'horizon.latency_ms': latencyMs,
+      'error.type': 'HorizonError',
+    };
+    const span: TraceSpan = {
+      name: HORIZON_HTTP_ERROR_SPAN_NAME,
+      startTimeMs: Date.now() - latencyMs,
+      durationMs: latencyMs,
+      status: 'ERROR',
+      attributes: redactSpanAttributes(attributes),
+      error: `Horizon request failed (${opts.statusCode})`,
+      parentName: opts.parentName,
+    };
+    storeSpan(span);
+    exportSpan(span);
+  } catch {
+    // Observability must never break the action.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Span recording
 // ---------------------------------------------------------------------------
 
@@ -2323,7 +2467,7 @@ export async function withSpan<T>(
     return result;
   } catch (err) {
     status = 'ERROR';
-    error = err instanceof Error ? err.message : String(err);
+    error = safeSpanErrorMessage(err);
     throw err;
   } finally {
     const durationMs = Date.now() - startTimeMs;
@@ -2374,13 +2518,16 @@ export async function withHorizonSpan<T>(
   const retryCount = opts.retryCount ?? 0;
   let status: TraceSpanStatus = 'OK';
   let error: string | undefined;
+  let errorAttributes: Record<string, string | number | boolean> = {};
 
   try {
     const result = await fn();
     return result;
   } catch (err) {
     status = 'ERROR';
-    error = err instanceof Error ? err.message : String(err);
+    // Issue #913: status/type attributes only — never the response body.
+    error = safeSpanErrorMessage(err);
+    errorAttributes = horizonErrorSpanAttributes(err);
     throw err;
   } finally {
     const durationMs = Date.now() - startTimeMs;
@@ -2389,6 +2536,7 @@ export async function withHorizonSpan<T>(
       'horizon.url': opts.horizonUrl,
       'horizon.retry_count': retryCount,
       'horizon.latency_ms': durationMs,
+      ...errorAttributes,
     };
     if (opts.accountId) {
       attributes['stellar_address'] = opts.accountId;
@@ -2433,7 +2581,7 @@ export function withSpanSync<T>(
     return result;
   } catch (err) {
     status = 'ERROR';
-    error = err instanceof Error ? err.message : String(err);
+    error = safeSpanErrorMessage(err);
     throw err;
   } finally {
     const durationMs = Date.now() - startTimeMs;

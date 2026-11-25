@@ -8,7 +8,11 @@ const MAX_ROSTER_SIZE_BYTES = 1024 * 1024; // 1 MB limit
 export interface RosterFilterOptions {
   /** Exact addresses or bounded globs using `*` and `?`. */
   allowlist?: string[];
-  /** Exact addresses or bounded globs using `*` and `?`; deny wins. */
+  /** Exact addresses or bounded globs using `*` and `?`; deny wins. 
+  ocument operator remediation; test both paths in batch mode.
+  */
+
+  
   denylist?: string[];
 }
 

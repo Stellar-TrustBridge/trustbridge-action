@@ -139,6 +139,18 @@
       "pattern": "^[0-9]+$",
       "default": "15000"
     },
+    "per_address_timeout_ms": {
+      "type": "string",
+      "description": "Batch mode: per-address deadline in milliseconds; exceeding it yields ADDRESS_TIMEOUT for that address only. \"0\" disables it (Issue #928).",
+      "pattern": "^[0-9]+$",
+      "default": "0"
+    },
+    "trustbridge_config_strict": {
+      "type": "string",
+      "description": "When \"true\", unknown keys in the trustbridge config fail validation with a did-you-mean hint; \"false\" ignores them (Issue #927).",
+      "enum": ["true", "false"],
+      "default": "false"
+    },
     "sticky_comment": {
       "type": "string",
       "description": "Update TrustBridge's previous issue comment instead of posting a new one each run.",
@@ -494,8 +506,13 @@
     },
     "home_domain_check_mode": {
       "type": "string",
-      "description": "Home domain check mode: warn or strict.",
-      "default": "warn"
+      "description": "Home domain check mode: warn or strict. Case-insensitive; unknown values fail before any Horizon call. (Issue #901)",
+      "default": "warn",
+      "enum": [
+        "",
+        "warn",
+        "strict"
+      ]
     },
     "locale": {
       "type": "string",
@@ -511,6 +528,11 @@
       "type": "string",
       "description": "Newline-separated or JSON array of Stellar addresses for batch validation.",
       "default": ""
+    },
+    "batch_max_addresses": {
+      "type": "string",
+      "description": "Hard cap on unique addresses validated per run in batch mode (stellar_addresses). Whole number between 1 and 2000. A larger list fails with BATCH_ADDRESS_LIMIT_EXCEEDED before any Horizon request. Default 500. (Issue #911)",
+      "default": "500"
     },
     "use_actions_cache_backend": {
       "type": "string",

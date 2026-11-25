@@ -56,14 +56,87 @@ export function validateTomlHash(
     : { valid: false, error: `TOML hash mismatch: got ${computed}, expected ${parsed.expectedHex}` };
 }
 
-export function buildTomlCacheKey(domain: string): string {
-  return `toml:${domain.trim().toLowerCase()}`;
+// ---------------------------------------------------------------------------
+// Issue #914 — cache keys carry the request URL and the redirect-final host
+// ---------------------------------------------------------------------------
+
+/** Build the canonical SEP-0001 stellar.toml URL for `domain`. */
+export function buildStellarTomlUrl(domain: string): string {
+  return `https://${domain.trim().toLowerCase()}/.well-known/stellar.toml`;
+}
+
+/**
+ * Normalize a stellar.toml request target. A bare domain is expanded to its
+ * canonical `/.well-known/stellar.toml` URL; a full URL is parsed so the
+ * scheme and host are lower-cased (the path is kept verbatim).
+ *
+ * @throws When `target` is empty or is not a parseable URL.
+ */
+export function normalizeTomlRequestUrl(target: string): string {
+  const trimmed = typeof target === 'string' ? target.trim() : '';
+  if (!trimmed) {
+    throw new Error('toml: cache key target must be a non-empty domain or URL');
+  }
+  const candidate = trimmed.includes('://') ? trimmed : buildStellarTomlUrl(trimmed);
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error(`toml: cache key target is not a valid URL: ${trimmed}`);
+  }
+  return parsed.toString();
+}
+
+/** Lower-cased hostname of `url`, or `''` when it cannot be parsed. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Build the cache key for a stellar.toml document (Issue #914).
+ *
+ * The key always includes both the normalized request URL **and** the host
+ * that actually served the document after redirects (`finalHost`). Two
+ * fetches of the same URL that resolve to different hosts therefore never
+ * share an entry, so a redirect remap can never serve a document that was
+ * cached for another host (which would turn into a false home_domain pass
+ * or fail).
+ *
+ * @param target    A bare domain (`example.com`) or a full stellar.toml URL.
+ * @param finalHost Host that served the response after redirects. Defaults
+ *                  to the request URL's own host (no redirect).
+ */
+export function buildTomlCacheKey(target: string, finalHost?: string): string {
+  const requestUrl = normalizeTomlRequestUrl(target);
+  const resolvedHost = (finalHost ?? '').trim().toLowerCase() || hostOf(requestUrl);
+  return `toml:${requestUrl}|final:${resolvedHost}`;
+}
+
+/**
+ * Key of the alias entry that remembers which final host last served
+ * `target` (Issue #914). Lookups read the alias first so they can build the
+ * full {@link buildTomlCacheKey} before the network is touched.
+ */
+export function buildTomlFinalHostAliasKey(target: string): string {
+  return `toml-final-host:${normalizeTomlRequestUrl(target)}`;
 }
 
 interface CachedTomlEntry {
   content: string;
   fetchedAt: number;
   hash?: string;
+  /** Normalized request URL the entry was fetched for (Issue #914). */
+  requestUrl?: string;
+  /** Host that served the body after redirects (Issue #914). */
+  finalHost?: string;
+}
+
+interface CachedTomlFinalHostAlias {
+  finalHost: string;
 }
 
 /** Default stellar.toml cache TTL (1 hour), mirrors action.yml. */
@@ -139,6 +212,9 @@ function clampTomlTtl(ttl: number | undefined): number {
  *   never cached.
  * - Redirects are refused (`followRedirects: false`, `maxRedirects: 0`), so
  *   a 3xx to another host can never bypass the SSRF policy.
+ * - Cache entries are keyed on the request URL **and** the redirect-final
+ *   host (Issue #914, {@link buildTomlCacheKey}); a remap to another host
+ *   evicts the old entry instead of serving it.
  * - The body is capped at `MAX_STELLAR_TOML_BYTES`, a declared Content-Type
  *   must be on `STELLAR_TOML_ALLOWED_CONTENT_TYPES`, and an empty body is
  *   rejected. Rejected bodies are never cached.
@@ -160,13 +236,30 @@ export async function fetchTomlWithCache(
     };
   }
 
-  const cacheKey = buildTomlCacheKey(domainNorm);
+  let requestUrl: string;
+  try {
+    requestUrl = normalizeTomlRequestUrl(domainNorm);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), cachedAt: startTime };
+  }
+  const requestHost = hostOf(requestUrl);
+  const aliasKey = buildTomlFinalHostAliasKey(requestUrl);
+
+  // Issue #914: resolve the host that last served this URL, then read the
+  // entry keyed on both. An entry whose recorded URL/host do not match the
+  // key it was read from is never served.
+  const alias = cacheTtlMs > 0 ? defaultCache.get<CachedTomlFinalHostAlias>(aliasKey) : null;
+  const knownFinalHost = alias?.finalHost || requestHost;
+  const cacheKey = buildTomlCacheKey(requestUrl, knownFinalHost);
   const cached = cacheTtlMs > 0 ? defaultCache.get<CachedTomlEntry>(cacheKey) : null;
   if (cached) {
     const age = startTime - cached.fetchedAt;
     const fresh = age >= 0 && age < cacheTtlMs;
     const pinOk = !options.hashPin || validateTomlHash(cached.content, options.hashPin).valid;
-    if (fresh && pinOk) {
+    const keyOk =
+      (cached.requestUrl === undefined || cached.requestUrl === requestUrl) &&
+      (cached.finalHost === undefined || cached.finalHost === knownFinalHost);
+    if (fresh && pinOk && keyOk) {
       return { ok: true, content: cached.content, hash: cached.hash, cachedAt: cached.fetchedAt, fetched: false };
     }
     defaultCache.delete(cacheKey);
@@ -178,7 +271,7 @@ export async function fetchTomlWithCache(
     }
   }
 
-  const fetchResult = await fetchSSRFSafe(`https://${domainNorm}/.well-known/stellar.toml`, {
+  const fetchResult = await fetchSSRFSafe(requestUrl, {
     maxBodyBytes: clampTomlMaxBytes(options.maxBodyBytes),
     timeoutMs: 10000,
     followRedirects: false,
@@ -212,7 +305,25 @@ export async function fetchTomlWithCache(
   }
   const hash = validation.hash || computeHash(content, 'sha256');
   if (cacheTtlMs > 0) {
-    defaultCache.set<CachedTomlEntry>(cacheKey, { content, fetchedAt: startTime, hash }, cacheTtlMs);
+    // Issue #914: key the body on the host that actually served it. When a
+    // redirect remaps the URL to a different host, the entry cached for the
+    // previous host is evicted so it can never be served for this URL again.
+    const finalHost = hostOf(fetchResult.url ?? requestUrl) || requestHost;
+    if (alias?.finalHost && alias.finalHost !== finalHost) {
+      defaultCache.delete(buildTomlCacheKey(requestUrl, alias.finalHost));
+      logger.warn(`stellar.toml for ${domainNorm} now resolves to a different final host; cache entry re-keyed`, {
+        component: 'toml',
+        domain: domainNorm,
+        previousFinalHost: alias.finalHost,
+        finalHost,
+      });
+    }
+    defaultCache.set<CachedTomlEntry>(
+      buildTomlCacheKey(requestUrl, finalHost),
+      { content, fetchedAt: startTime, hash, requestUrl, finalHost },
+      cacheTtlMs,
+    );
+    defaultCache.set<CachedTomlFinalHostAlias>(aliasKey, { finalHost }, cacheTtlMs);
   }
   return { ok: true, content, hash, cachedAt: startTime, fetched: true };
 }
