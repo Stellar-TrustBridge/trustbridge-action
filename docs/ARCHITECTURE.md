@@ -30,6 +30,8 @@ graph LR
     CHK[checks.ts]
     HOR[horizon.ts]
     CMT[comment.ts]
+    RES[resilience.ts]
+    LOG[logger.ts + proxy.ts]
   end
 
   subgraph External
@@ -51,6 +53,8 @@ graph LR
 | `horizon.ts` | HTTP client, response typing, retries, `HorizonError` |
 | `checks.ts` | Address validation, trustline/XLM rules, result aggregation, validation-gate summary |
 | `comment.ts` | Markdown rendering, Octokit `issues.createComment`, sticky comment upsert |
+| `resilience.ts` | Retry helpers and circuit open-duration metric primitive |
+| `logger.ts` / `proxy.ts` | Structured redacted logs and proxy URL credential redaction |
 
 ---
 
@@ -169,6 +173,13 @@ Default `1.5` reflects Stellar protocol economics: **1 XLM** minimum account bal
 | URL normalization | Strips trailing slashes from `horizon_url` |
 
 Errors are classified as **retryable** vs **terminal** to avoid masking real problems with infinite loops.
+
+`CircuitOpenDurationTracker` measures each open interval and records the
+`circuit_open_duration` metric in milliseconds when the circuit closes. A
+repeated open notification does not reset the start time; closing an already
+closed circuit records nothing. The injected clock keeps tests deterministic.
+The tracker is an instrumentable primitive; this action does not currently run
+a circuit breaker around Horizon requests.
 
 ---
 

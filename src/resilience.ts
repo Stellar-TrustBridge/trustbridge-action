@@ -1,3 +1,5 @@
+import { MetricsCollector, globalMetrics } from './metrics';
+
 /**
  * Advanced retry and rate-limiting strategies for resilient API interactions.
  */
@@ -20,6 +22,41 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   backoffMultiplier: 2,
   timeoutMs: 15000,
 };
+
+/**
+ * Records how long a named circuit remains open. Repeated open notifications
+ * are idempotent; closing a circuit that was not open does nothing.
+ */
+export class CircuitOpenDurationTracker {
+  private openedAt: number | undefined;
+
+  constructor(
+    private readonly circuitName: string,
+    private readonly metrics: MetricsCollector = globalMetrics,
+    private readonly now: () => number = Date.now,
+  ) {
+    if (!circuitName.trim()) throw new Error('Circuit name must not be empty.');
+  }
+
+  open(): void {
+    if (this.openedAt === undefined) this.openedAt = this.now();
+  }
+
+  /** Returns the recorded duration in ms, or null when no open period existed. */
+  close(): number | null {
+    if (this.openedAt === undefined) return null;
+    const durationMs = Math.max(0, this.now() - this.openedAt);
+    this.openedAt = undefined;
+    this.metrics.recordMetric('circuit_open_duration', durationMs, 'ms', {
+      circuit: this.circuitName,
+    });
+    return durationMs;
+  }
+
+  isOpen(): boolean {
+    return this.openedAt !== undefined;
+  }
+}
 
 /**
  * Calculate the delay for a retry attempt using exponential backoff.
