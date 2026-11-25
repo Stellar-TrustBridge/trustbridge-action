@@ -1,5 +1,6 @@
 import { ValidationResult } from './checks';
 import { CircuitOpenMetrics } from './resilience';
+import { CHECK_KINDS, type CheckKind } from './metrics';
 export interface CheckSummary {
     total: number;
     passed: number;
@@ -7,6 +8,19 @@ export interface CheckSummary {
     failedLabels: string[];
 }
 export declare function summarizeChecks(result: ValidationResult): CheckSummary;
+export { CHECK_KINDS };
+export type { CheckKind };
+/** True when a check row was not evaluated and only reports why. */
+export declare function isCheckSkipped(check: {
+    detail?: unknown;
+}): boolean;
+/** Map a check label to its bounded {@link CheckKind}. */
+export declare function classifyCheckKind(label: string): CheckKind;
+/**
+ * Kinds of every skipped check in `result`, in check order. A kind repeats
+ * when several rows of the same kind were skipped.
+ */
+export declare function listSkippedCheckKinds(result: Pick<ValidationResult, 'checks'>): CheckKind[];
 export declare function formatFailureSummary(result: ValidationResult): string;
 /**
  * Render a Job Summary section explaining why Horizon checks paused. Returns
@@ -135,6 +149,17 @@ export declare function formatDeltaSection(changes: DeltaChange[]): string;
 export declare const JOB_SUMMARY_MAX_BYTES: number;
 /** Stable marker appended to every truncated Job Summary. */
 export declare const JOB_SUMMARY_TRUNCATED_MARKER = "<!-- trustbridge-action:summary-truncated -->";
+/**
+ * True when the runner exposes a Job Summary file (`GITHUB_STEP_SUMMARY`).
+ *
+ * github.com runners always set it. GHES runners only set it on releases
+ * that support Job Summaries; elsewhere `core.summary.write()` throws and
+ * `writeJobSummary()` (src/metrics.ts) skips the summary without failing the
+ * run. The size limit, when supported, is the same
+ * {@link JOB_SUMMARY_MAX_BYTES} on both. See
+ * docs/GHES_COMPATIBILITY.md#actions-outputs-summaries-and-annotations-issue-897.
+ */
+export declare function isJobSummaryAvailable(env?: Record<string, string | undefined>): boolean;
 export interface JobSummaryGuardResult {
     markdown: string;
     truncated: boolean;
@@ -155,4 +180,23 @@ export interface JobSummaryGuardResult {
 export declare function guardJobSummaryMarkdown(markdown: string, options?: {
     maxBytes?: number;
     commentUrl?: string;
+}): JobSummaryGuardResult;
+/**
+ * Minimal report shape consumed by the Job Summary renderer. Kept structural
+ * so metrics.ts can use this helper without creating a runtime import cycle.
+ */
+export interface JobSummaryReportLike {
+    latencyMs: number | null;
+    failureCodes: number[];
+    totalRuns: number;
+    totalErrors: number;
+    jsonArtifact: string;
+}
+/**
+ * Render the metrics report in priority order before applying the byte guard.
+ * The overview is always retained; the JSON artifact is lower priority and is
+ * removed before failure-code detail when the configured budget is tight.
+ */
+export declare function formatJobSummaryMarkdown(report: JobSummaryReportLike, options?: {
+    maxBytes?: number;
 }): JobSummaryGuardResult;

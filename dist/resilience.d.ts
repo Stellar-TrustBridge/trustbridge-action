@@ -10,6 +10,16 @@
  * factories (timeout, rate-limit, outage, success) for use in unit tests and
  * local dev without a live Horizon endpoint.
  *
+ * Issue #888: Half-open probe budget — the circuit breaker now enforces a
+ * configurable limit on the number of concurrent probe calls permitted while
+ * the circuit is in half-open state. Without this guard, a burst of parallel
+ * callers (e.g. a Wave batch run) can all pass the half-open gate
+ * simultaneously and stampede a recovering Horizon endpoint. The budget is
+ * enforced by tracking `halfOpenProbesInFlight`; calls beyond the budget
+ * receive a `CircuitOpenError` immediately (fast-fail), identical to full-open
+ * behavior. See `CircuitBreakerOptions.halfOpenMaxProbes` and
+ * `docs/ARCHITECTURE.md#circuit-breaker-half-open-probe-budget`.
+ *
  * Also exposes a local CLI check command that exercises the full resilience
  * pipeline against a live or stubbed Horizon endpoint (with optional secondary
  * Horizon failover).
@@ -153,7 +163,7 @@ export interface CircuitBreakerOptions {
     failureThreshold?: number;
     /**
      * Milliseconds to wait in 'open' state before transitioning to 'half-open'
-     * and allowing a single probe request. Default: 30 000.
+     * and allowing probe requests. Default: 30 000.
      */
     recoveryTimeoutMs?: number;
     /**
@@ -161,6 +171,20 @@ export interface CircuitBreakerOptions {
      * close the circuit again. Default: 2.
      */
     successThreshold?: number;
+    /**
+     * Maximum number of probe calls allowed **concurrently** while the circuit
+     * is in `half-open` state. Default: 1.
+     *
+     * Issue #888 — without this cap, a burst of parallel callers (e.g. a Wave
+     * batch run reaching half-open simultaneously) can stampede a recovering
+     * Horizon endpoint. When the in-flight probe count reaches this limit any
+     * additional callers receive a `CircuitOpenError` immediately (fast-fail),
+     * identical to behavior in the fully-open state. The count is decremented
+     * when each probe resolves (success or failure).
+     *
+     * Set to `Infinity` to restore the pre-#888 behavior (unlimited probes).
+     */
+    halfOpenMaxProbes?: number;
     /**
      * Optional callback fired on every state transition. Receives the previous
      * state, the next state, and a human-readable reason string.
@@ -170,6 +194,14 @@ export interface CircuitBreakerOptions {
      * summary panel without requiring `debug_mode: true`.
      */
     onStateChange?: (from: CircuitState, to: CircuitState, reason: string) => void;
+    /**
+     * Optional callback fired when a half-open probe is rejected because the
+     * probe budget is exhausted. Receives the current in-flight count and the
+     * configured maximum. Useful for metrics emission and observability.
+     *
+     * Issue #888.
+     */
+    onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
 }
 /**
  * Circuit-breaker implementation for the TrustBridge resilience layer.
@@ -179,12 +211,20 @@ export interface CircuitBreakerOptions {
  * circuit trips and recoveries are always visible as GitHub Check Run
  * annotations in the Actions UI, even without `debug_mode: true`.
  *
+ * Issue #888 — half-open probe budget: `halfOpenMaxProbes` (default: 1)
+ * limits how many concurrent probe calls may be in-flight while the circuit
+ * is in `half-open` state. Additional callers beyond the budget receive a
+ * `CircuitOpenError` immediately (identical to open-state fast-fail) and
+ * the rejection is counted in `halfOpenProbeBudgetExhaustedCount`. This
+ * prevents stampeding retries during Horizon recovery under Wave batch peaks.
+ *
  * States:
  *  - **closed** — normal operation; failures are counted.
  *  - **open**   — requests are short-circuited (fast-fail); a recovery timer
  *                 controls transition to 'half-open'.
- *  - **half-open** — a single probe request is allowed; success closes the
- *                    circuit, failure re-opens it.
+ *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
+ *                    allowed; enough consecutive successes closes the circuit,
+ *                    any failure re-opens it.
  */
 export declare class CircuitBreaker {
     private state;
@@ -192,10 +232,18 @@ export declare class CircuitBreaker {
     private consecutiveSuccesses;
     private openedAt;
     private lastErrorClass;
+    /** Issue #888: in-flight probe count while in half-open state. */
+    private halfOpenProbesInFlight;
+    /** Issue #888: total rejections due to probe budget exhaustion. */
+    private halfOpenProbeBudgetExhaustedCount;
+    /** Issue #888: total probes that completed (resolved or rejected) in half-open. */
+    private halfOpenProbesCompleted;
     private readonly failureThreshold;
     private readonly recoveryTimeoutMs;
     private readonly successThreshold;
+    private readonly halfOpenMaxProbes;
     private readonly onStateChange;
+    private readonly onProbeBudgetExhausted;
     constructor(options?: CircuitBreakerOptions);
     /**
      * Current circuit state.
@@ -204,10 +252,21 @@ export declare class CircuitBreaker {
     /**
      * Execute `fn` through the circuit breaker.
      *
-     * - **closed / half-open**: delegates to `fn`; records success or failure.
+     * - **closed**: delegates to `fn`; records success or failure.
      * - **open**: throws a `CircuitOpenError` immediately without calling `fn`.
+     * - **half-open**: allows up to `halfOpenMaxProbes` concurrent probes.
+     *   Callers beyond the budget receive `CircuitOpenError` immediately.
+     *   Success closes the circuit after `successThreshold` consecutive wins;
+     *   any failure re-opens it and resets the in-flight count.
      */
     execute<T>(fn: () => Promise<T>): Promise<T>;
+    /**
+     * One-shot flag: set by `_recordFailure` when the circuit was half-open at
+     * the time of the failure (and was re-opened). Used by the `finally` block
+     * in `execute` to know it should still decrement `halfOpenProbesInFlight`
+     * even though `this.state` is now `'open'` by the time `finally` runs.
+     */
+    private _wasHalfOpenBeforeFailure;
     /**
      * Force-reset the circuit to closed state. Useful in tests and for manual
      * operator intervention.
@@ -222,11 +281,19 @@ export declare class CircuitBreaker {
         consecutiveFailures: number;
         consecutiveSuccesses: number;
         openedAt: number | null;
+        /** Issue #888: probes currently in-flight during half-open. */
+        halfOpenProbesInFlight: number;
+        /** Issue #888: total probes rejected due to budget exhaustion. */
+        halfOpenProbeBudgetExhaustedCount: number;
+        /** Issue #888: configured maximum concurrent probes. */
+        halfOpenMaxProbes: number;
     };
     /**
      * Circuit-open metrics for the Job Summary (#788). Reports only the error
      * class name — never the error message — so raw Horizon response bodies
      * cannot leak into the summary.
+     *
+     * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
      */
     getOpenMetrics(now?: number): CircuitOpenMetrics;
     private _maybeTransitionToHalfOpen;
@@ -243,6 +310,20 @@ export interface CircuitOpenMetrics {
     /** Class name of the last recorded failure (e.g. 'TypeError'), or null. */
     lastErrorClass: string | null;
     consecutiveFailures: number;
+    /**
+     * Issue #888: half-open probe budget stats. Always present; callers can
+     * read `inFlight` and `budgetExhaustedCount` to populate dashboards.
+     */
+    halfOpenProbeStats: {
+        /** Probes currently in-flight (concurrent) in half-open state. */
+        inFlight: number;
+        /** Configured maximum concurrent probes (`halfOpenMaxProbes`). */
+        maxProbes: number;
+        /** Total calls rejected due to budget exhaustion since last transition to half-open. */
+        budgetExhaustedCount: number;
+        /** Total probes that completed (resolved or rejected) since last transition to half-open. */
+        completed: number;
+    };
 }
 /**
  * Thrown by `CircuitBreaker.execute` when the circuit is open and the

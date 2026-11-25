@@ -15,6 +15,11 @@
 import { ValidationResult } from './checks';
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
 export declare const HOME_DOMAIN_CHECK_LABEL = "SEP-0001 home domain";
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+export declare const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 /**
  * Result of attempting to create a Check Run.
