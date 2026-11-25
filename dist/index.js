@@ -57043,6 +57043,7 @@ const proxy_1 = __nccwpck_require__(28903);
 const projects_1 = __nccwpck_require__(77233);
 const inputs_1 = __nccwpck_require__(38422);
 const i18n_1 = __nccwpck_require__(84859);
+const tracing_1 = __nccwpck_require__(77145);
 const summary_1 = __nccwpck_require__(28855);
 const outputs_1 = __nccwpck_require__(7729);
 const logger_1 = __nccwpck_require__(86999);
@@ -57256,6 +57257,10 @@ function evaluateMilestoneGate(milestoneAllowlistRaw, _milestoneFailOnSkip, payl
 }
 async function run() {
     const jobController = new AbortController();
+    // Issue #967 — configure sampling before any instrumented work. Empty input
+    // means full sampling outside PRs and no sampling on pull_request runs;
+    // explicit ratios must be in [0, 1] or the run fails closed.
+    (0, tracing_1.configureTraceSampling)((0, inputs_1.resolveTraceSamplingRatio)(core.getInput('trace_sampling_ratio'), github.context.eventName));
     emitDeprecatedInputWarnings();
     // Issue #899: each run records exactly one job outcome.
     metrics_1.globalMetrics.resetJobOutcome();
@@ -58061,6 +58066,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TRUSTBRIDGE_ENV_MAP = exports.DECLARED_INPUTS = void 0;
 exports.getRunnerLanguage = getRunnerLanguage;
+exports.resolveTraceSamplingRatio = resolveTraceSamplingRatio;
 exports.parseBooleanInput = parseBooleanInput;
 exports.resolveMaintainerSkipInput = resolveMaintainerSkipInput;
 exports.parseNumberInput = parseNumberInput;
@@ -58083,6 +58089,31 @@ const path = __importStar(__nccwpck_require__(16928));
  */
 function getRunnerLanguage(env = process.env) {
     return env['LANGUAGE'] || env['LC_ALL'] || env['LANG'] || '';
+}
+/**
+ * Resolve the OpenTelemetry trace sampling ratio (Issue #967).
+ *
+ * Tracing remains opt-in via `OTEL_TRACES_ENABLED`; this ratio decides what
+ * fraction of enabled runs actually record/export spans. Values outside the
+ * inclusive `[0, 1]` range, non-decimal strings, and non-finite numbers are
+ * treated as `0` (fail closed). When the input is empty, `pull_request` runs
+ * default to `0` so untrusted fork events cannot inflate CI cost or export
+ * telemetry; other events retain the prior "sample everything" behavior.
+ */
+function resolveTraceSamplingRatio(value, eventName) {
+    const raw = (value ?? '').trim();
+    if (raw === '') {
+        return eventName === 'pull_request' ? 0 : 1;
+    }
+    // Decimal ratios only: reject hex, exponent notation, NaN and Infinity.
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) {
+        return 0;
+    }
+    const ratio = Number(raw);
+    if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+        return 0;
+    }
+    return ratio;
 }
 function parseBooleanInput(value, defaultValue) {
     if (value === undefined || value === '') {
@@ -66133,6 +66164,9 @@ exports.fetchNetworkPassphrase = fetchNetworkPassphrase;
 exports.isFriendbotAllowed = isFriendbotAllowed;
 exports.isTestnetHorizon = isTestnetHorizon;
 exports.callFriendbot = callFriendbot;
+exports.getTraceSamplingRatio = getTraceSamplingRatio;
+exports.configureTraceSampling = configureTraceSampling;
+exports.resetTraceSampling = resetTraceSampling;
 exports.isTracingEnabled = isTracingEnabled;
 exports.getExporterType = getExporterType;
 exports.getTraceSpans = getTraceSpans;
@@ -67687,13 +67721,48 @@ const core = __importStar(__nccwpck_require__(37484));
 // Configuration
 // ---------------------------------------------------------------------------
 /**
+ * In-process sampling state (Issue #967).
+ *
+ * The default ratio is `1` so pre-existing callers that explicitly enable
+ * tracing keep recording every span. `configureTraceSampling()` is called at
+ * the start of the Action run with the resolved `trace_sampling_ratio` input;
+ * PR runs default to `0` unless the operator opts in explicitly.
+ */
+let traceSamplingRatio = 1;
+let traceSampleSelected = true;
+/** Return the resolved sampling ratio for the current run. */
+function getTraceSamplingRatio() {
+    return traceSamplingRatio;
+}
+/**
+ * Configure sampling for the current run.
+ *
+ * @param ratio  Value from `resolveTraceSamplingRatio()`; clamped to `[0, 1]`.
+ * @param random Injectable random source for deterministic tests. Defaults to
+ *               `Math.random`, so `ratio` is a probability of sampling each
+ *               Action run (not each span).
+ */
+function configureTraceSampling(ratio, random = Math.random) {
+    const safeRatio = Number.isFinite(ratio) && ratio > 0 && ratio <= 1 ? ratio : 0;
+    traceSamplingRatio = safeRatio;
+    traceSampleSelected = safeRatio >= 1 || (safeRatio > 0 && random() < safeRatio);
+}
+/** Restore the pre-configuration default (used by tests and repeat runs). */
+function resetTraceSampling() {
+    traceSamplingRatio = 1;
+    traceSampleSelected = true;
+}
+/**
  * Whether tracing is enabled.
- * Reads `OTEL_TRACES_ENABLED` environment variable.
- * Default: false.
+ *
+ * Both `OTEL_TRACES_ENABLED` and the sampling decision must be true. The
+ * latter is true by default, before the Action wires the input, keeping the
+ * historical opt-in behavior intact for direct library callers.
  */
 function isTracingEnabled() {
     const val = process.env['OTEL_TRACES_ENABLED'] ?? '';
-    return val.toLowerCase() === 'true' || val === '1';
+    const enabledByEnv = val.toLowerCase() === 'true' || val === '1';
+    return enabledByEnv && traceSampleSelected;
 }
 function getExporterType() {
     const val = (process.env['OTEL_TRACES_EXPORTER'] ?? 'log').toLowerCase();

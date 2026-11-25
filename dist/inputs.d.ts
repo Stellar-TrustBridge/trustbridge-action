@@ -5,6 +5,17 @@
  * verbatim — `negotiateLocale()` handles parsing and fallback.
  */
 export declare function getRunnerLanguage(env?: NodeJS.ProcessEnv): string;
+/**
+ * Resolve the OpenTelemetry trace sampling ratio (Issue #967).
+ *
+ * Tracing remains opt-in via `OTEL_TRACES_ENABLED`; this ratio decides what
+ * fraction of enabled runs actually record/export spans. Values outside the
+ * inclusive `[0, 1]` range, non-decimal strings, and non-finite numbers are
+ * treated as `0` (fail closed). When the input is empty, `pull_request` runs
+ * default to `0` so untrusted fork events cannot inflate CI cost or export
+ * telemetry; other events retain the prior "sample everything" behavior.
+ */
+export declare function resolveTraceSamplingRatio(value: string | undefined, eventName: string | undefined): number;
 export declare function parseBooleanInput(value: string, defaultValue: boolean): boolean;
 /**
  * Canonical list of input names declared in `action.yml`.
@@ -257,6 +268,7 @@ export interface Inputs {
     sarif_output_path?: string;
     use_plugin_runner?: string;
     locale?: string;
+    trace_sampling_ratio?: string;
     stellar_addresses?: string;
     unassign_on_not_ready?: string;
     project_id?: string;

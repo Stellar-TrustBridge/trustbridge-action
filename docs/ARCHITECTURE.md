@@ -386,6 +386,49 @@ The test suite now includes three test files that benchmark parser resilience:
 
 ---
 
+## Trace sampling policy (Issue #967)
+
+`src/tracing.ts` stays opt-in: spans are only recorded when
+`OTEL_TRACES_ENABLED=true` (or `1`). The new `trace_sampling_ratio` input adds
+a second gate so Wave operators can cap telemetry volume without disabling the
+feature entirely.
+
+| Input value | `pull_request` | Other events |
+|---|---|---|
+| `""` (default) | `0` — no spans | `1` — every enabled run |
+| `0` | no spans | no spans |
+| `0 < r < 1` | sample ~`r` of runs | sample ~`r` of runs |
+| `1` | every enabled run | every enabled run |
+| invalid / out of range | `0` (fail closed) | `0` (fail closed) |
+
+`resolveTraceSamplingRatio()` in `src/inputs.ts` parses decimal ratios in the
+inclusive `[0, 1]` range; whitespace is trimmed, and malformed, negative,
+over-1, non-finite or oversized values resolve to `0` rather than throwing.
+`configureTraceSampling()` in `src/tracing.ts` stores the ratio and makes one
+per-run sampling decision using `Math.random` (injectable in tests). A ratio of
+`1` short-circuits the random draw, so the default outside PRs preserves the
+previous "record everything when enabled" behavior. Callers that never invoke
+`configureTraceSampling()` also keep that behavior.
+
+**Cost policy.** Each sampled run emits at most one span per instrumented
+operation (Horizon fetch, comment post, webhook delivery, action run). With
+`OTEL_TRACES_EXPORTER=none` spans stay in memory for diagnostics; with
+`otlp` they incur network egress, so use a low ratio on high-volume workflows.
+The `pull_request` default of `0` prevents untrusted fork events from creating
+telemetry cost or exporting data before a maintainer opts in explicitly.
+
+**PII policy.** Sampling never relaxes redaction. `redactSpanAttributes()` is
+applied before a span is stored or exported: Stellar addresses are masked to
+`first4...last4`, Horizon URLs are reduced to host only, and token/secret-like
+attribute keys are blocked. Sampled spans therefore follow the same policy as
+the original always-on tracing path.
+
+Verified by `__tests__/tracing-sampling.test.ts` (valid bounds, PR default,
+invalid inputs, sampling decision, PII redaction) and the pre-existing
+`__tests__/tracing.test.ts` suite.
+
+---
+
 ## Security considerations
 
 - **No secrets in logs** — addresses are public; tokens are never logged.

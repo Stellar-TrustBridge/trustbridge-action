@@ -567,6 +567,16 @@ inputs:
     required: false
     default: ""
 
+  trace_sampling_ratio:
+    description: >-
+      Fraction of tracing-enabled runs that record/export spans (0 to 1,
+      inclusive). Requires OTEL_TRACES_ENABLED=true to have any effect.
+      Leave empty for the event default: 0 on pull_request (conservative for
+      fork CI cost/PII), 1 otherwise. Invalid or out-of-range values fail
+      closed to 0. (Issue #967)
+    required: false
+    default: ""
+
   stellar_addresses:
     description: >-
       Newline-separated list or JSON array of Stellar addresses for batch

@@ -4194,6 +4194,25 @@ env:
 | `none` | Spans collected in-process but not exported — used in tests to inspect spans without log noise. |
 | `otlp` | Spans exported via OTLP/HTTP JSON to `OTEL_EXPORTER_OTLP_ENDPOINT` — compatible with any standard OTel collector. |
 
+### Trace sampling ratio (Issue #967)
+
+When tracing is enabled, the `trace_sampling_ratio` input controls what fraction of Action runs actually record/export spans:
+
+```yaml
+with:
+  trace_sampling_ratio: '0.25'   # sample about 1 in 4 runs
+```
+
+| Value | `pull_request` | Other events |
+|-------|----------------|--------------|
+| `''` (default) | `0` — no spans | `1` — all enabled runs |
+| `0` | no spans | no spans |
+| `0 < r < 1` | sample ~`r` of runs | sample ~`r` of runs |
+| `1` | all enabled runs | all enabled runs |
+| invalid / out of range | `0` (fail closed) | `0` (fail closed) |
+
+The PR default of `0` is deliberately conservative: fork events cannot create telemetry cost or export data unless a maintainer opts in. Invalid values never throw; they resolve to `0` so a typo cannot silently enable full tracing. Sampling does **not** change redaction — sampled spans still mask Stellar addresses (`first4...last4`), strip URL paths, and drop secret-like attributes. See [docs/ARCHITECTURE.md#trace-sampling-policy-issue-967](ARCHITECTURE.md#trace-sampling-policy-issue-967) for the cost/PII policy.
+
 ### Instrumented phases
 
 | Phase | Span name | Key attributes |

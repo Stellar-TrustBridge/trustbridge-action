@@ -43,9 +43,11 @@ import {
   parseBooleanInput,
   parseNumberInput,
   resolveReadyLabelInputs,
+  resolveTraceSamplingRatio,
   listDeprecatedInputAliases,
 } from './inputs';
 import { negotiateLocale } from './i18n';
+import { configureTraceSampling } from './tracing';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
 import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
@@ -372,6 +374,15 @@ export function evaluateMilestoneGate(
 
 export async function run(): Promise<void> {
   const jobController = new AbortController();
+  // Issue #967 — configure sampling before any instrumented work. Empty input
+  // means full sampling outside PRs and no sampling on pull_request runs;
+  // explicit ratios must be in [0, 1] or the run fails closed.
+  configureTraceSampling(
+    resolveTraceSamplingRatio(
+      core.getInput('trace_sampling_ratio'),
+      github.context.eventName,
+    ),
+  );
   emitDeprecatedInputWarnings();
   // Issue #899: each run records exactly one job outcome.
   globalMetrics.resetJobOutcome();
