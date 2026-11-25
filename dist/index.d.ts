@@ -2,6 +2,8 @@ import { ValidationResult } from './checks';
 export type PostingMode = 'post' | 'dry-run' | 'off';
 export declare const VALID_POSTING_MODES: PostingMode[];
 export type CommentThreadingMode = 'sticky' | 'new' | 'reply';
+/** Emit legacy input migration guidance once for the current action run. */
+export declare function emitDeprecatedInputWarnings(): void;
 export declare function resolveCommentModes(postingModeInput: string, commentModeInput: string): {
     postingMode: PostingMode;
     commentThreadingMode?: CommentThreadingMode;

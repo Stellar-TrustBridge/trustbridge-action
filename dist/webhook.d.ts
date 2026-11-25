@@ -351,6 +351,52 @@ export declare const WEBHOOK_STELLAR_ADDRESS_PATTERN = "^[GC][A-Z2-7]{3}\\.{3}[A
  */
 export declare function validateWebhookPayload(payload: unknown): string[];
 /**
+ * Every `schema_version` this release can read. A receiver routes on this
+ * list: additive fields never change it, a breaking change adds a new
+ * version (see docs/SCHEMA.md#webhook-payload-versioning-policy-issue-917).
+ */
+export declare const WEBHOOK_SUPPORTED_SCHEMA_VERSIONS: readonly string[];
+/** Stable error codes returned by {@link readWebhookPayloadForConsumer}. */
+export declare const WEBHOOK_CONSUMER_ERROR_CODES: readonly ["WEBHOOK_PAYLOAD_MALFORMED", "WEBHOOK_PAYLOAD_TOO_LARGE", "WEBHOOK_SCHEMA_VERSION_UNSUPPORTED"];
+export type WebhookConsumerErrorCode = (typeof WEBHOOK_CONSUMER_ERROR_CODES)[number];
+/** Maximum number of ignored field paths listed individually. */
+export declare const WEBHOOK_MAX_IGNORED_FIELDS_LISTED = 100;
+export type WebhookConsumerReadResult = {
+    ok: true;
+    /** The payload reduced to the fields this release knows about. */
+    payload: WebhookPayload;
+    /** Paths of unknown (additive) fields that were dropped, e.g. `payload.run_id`. */
+    ignoredFields: string[];
+    /** Unknown values in closed sets (asset `reason_code`, `dropped_fields`), kept as-is. */
+    unknownReasonCodes: string[];
+} | {
+    ok: false;
+    code: WebhookConsumerErrorCode;
+    errors: string[];
+};
+/**
+ * Reference implementation of the receiver rules in docs/SCHEMA.md
+ * (Issue #917). Accepts a raw request body (string) or an already parsed
+ * object and applies the versioning policy the way a Wave subscriber
+ * should:
+ *
+ * 1. Bodies over {@link WEBHOOK_MAX_BODY_BYTES} → `WEBHOOK_PAYLOAD_TOO_LARGE`.
+ * 2. Unparsable JSON, a non-object, or a missing / non-string
+ *    `schema_version` → `WEBHOOK_PAYLOAD_MALFORMED`.
+ * 3. A `schema_version` not in {@link WEBHOOK_SUPPORTED_SCHEMA_VERSIONS} →
+ *    `WEBHOOK_SCHEMA_VERSION_UNSUPPORTED` (route or quarantine; never guess).
+ * 4. Unknown fields at any level are **ignored** (dropped from the returned
+ *    payload and listed in `ignoredFields`) — they are additive.
+ * 5. Unknown values in closed sets (an asset `reason_code`, a
+ *    `dropped_fields` entry) are kept and listed in `unknownReasonCodes`;
+ *    they never fail the read.
+ * 6. Frozen v1 fields are still type-checked exactly like the producer-side
+ *    {@link validateWebhookPayload}; a violation → `WEBHOOK_PAYLOAD_MALFORMED`.
+ *
+ * Never throws.
+ */
+export declare function readWebhookPayloadForConsumer(input: unknown): WebhookConsumerReadResult;
+/**
  * Deliver a signed webhook notification to the configured endpoint.
  *
  * - Validates the payload against `schemas/webhook-payload.schema.json` and

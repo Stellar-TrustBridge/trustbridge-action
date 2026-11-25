@@ -42,6 +42,8 @@ export interface RunPluginsOptions {
  * remaining plugins (including core Horizon checks) still run. A bad
  * custom plugin therefore fails the gate but never prevents core checks
  * from executing or reporting.
+
+ Clarify whether plugins may perform network I/O, which hosts are allowlisted, and how SSRF controls apply. Add a negative test if enforcement exists.
  *
  * Timeout boundary
  * ----------------

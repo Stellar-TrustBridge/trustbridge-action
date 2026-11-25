@@ -160,6 +160,7 @@ export declare function fetchSSRFSafe(urlStr: string, options?: SSRFFetchOptions
     status: number;
     text: () => Promise<string>;
     headers: Headers;
+    url?: string;
 } | {
     ok: false;
     error: string;

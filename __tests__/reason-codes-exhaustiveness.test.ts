@@ -37,6 +37,7 @@ function handleReasonCode(code: ReasonCode): string {
     case 'HOME_DOMAIN_MISMATCH':
     case 'HOME_DOMAIN_MISSING':
     case 'MILESTONE_GATE_SKIPPED':
+    case 'REQUIRED_LABELS_MISSING':
     case 'MAINTAINER_SKIPPED':
     case 'SAC_ISSUER_NOT_VERIFIABLE':
     case 'HORIZON_WAIT_BUDGET_EXHAUSTED':

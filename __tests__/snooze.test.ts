@@ -7,6 +7,12 @@ import {
   evaluateReactionSnooze,
   evaluateCombinedSnoozeState,
   enforceSnoozeWindow,
+  normalizeToUtc,
+  normalizeSnoozeTimestamp,
+  validateSnoozeTimestamp,
+  formatSnoozeTimestampUtc,
+  isWithinSnoozeWindow,
+  getTimezoneOffsetMs,
   SnoozeMarker,
   SnoozeState,
   CommentReaction,
@@ -422,6 +428,357 @@ describe('Issue #227 — Reaction-based snooze', () => {
 
       expect(enforcement.skipValidation).toBe(false);
       expect(enforcement.state.snoozeExpired).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #873 — Timezone and DST boundary enforcement
+  // -------------------------------------------------------------------------
+
+  describe('Issue #873 — Timezone and DST boundary enforcement', () => {
+    describe('normalizeToUtc / normalizeSnoozeTimestamp', () => {
+      it('happy path: normalizes numeric unix-ms timestamp unchanged', () => {
+        const ms = 1761960600000;
+        expect(normalizeToUtc(ms)).toBe(ms);
+        expect(normalizeSnoozeTimestamp(ms)).toBe(ms);
+      });
+
+      it('happy path: normalizes ISO-8601 UTC string with Z', () => {
+        const iso = '2026-11-01T01:30:00Z';
+        const expected = Date.parse(iso);
+        expect(normalizeToUtc(iso)).toBe(expected);
+      });
+
+      it('happy path: normalizes ISO-8601 with positive timezone offset to UTC ms', () => {
+        // 03:30:00+02:00 corresponds to 01:30:00Z
+        const withOffset = '2026-11-01T03:30:00+02:00';
+        const expected = Date.parse('2026-11-01T01:30:00Z');
+        expect(normalizeToUtc(withOffset)).toBe(expected);
+      });
+
+      it('happy path: normalizes ISO-8601 with negative timezone offset to UTC ms', () => {
+        // 2026-10-31T21:30:00-04:00 corresponds to 2026-11-01T01:30:00Z
+        const withOffset = '2026-10-31T21:30:00-04:00';
+        const expected = Date.parse('2026-11-01T01:30:00Z');
+        expect(normalizeToUtc(withOffset)).toBe(expected);
+      });
+
+      it('happy path: normalizes naive ISO string without timezone context to UTC', () => {
+        // When stored without timezone context, it must be treated strictly as UTC
+        const naive = '2026-11-01T01:30:00';
+        const expectedUtc = Date.parse('2026-11-01T01:30:00Z');
+        expect(normalizeToUtc(naive)).toBe(expectedUtc);
+      });
+
+      it('happy path: normalizes date-time string with space to UTC', () => {
+        const spaceDelimited = '2026-11-01 01:30:00';
+        const expectedUtc = Date.parse('2026-11-01T01:30:00Z');
+        expect(normalizeToUtc(spaceDelimited)).toBe(expectedUtc);
+      });
+
+      it('happy path: normalizes simple YYYY-MM-DD date to UTC midnight', () => {
+        const dateOnly = '2026-11-01';
+        const expectedUtc = Date.parse('2026-11-01T00:00:00.000Z');
+        expect(normalizeToUtc(dateOnly)).toBe(expectedUtc);
+      });
+
+      it('happy path: normalizes Date object to its UTC epoch ms', () => {
+        const date = new Date('2026-11-01T01:30:00Z');
+        expect(normalizeToUtc(date)).toBe(date.getTime());
+      });
+
+      it('happy path: normalizes string containing unix timestamp digits', () => {
+        expect(normalizeToUtc('1761960600000')).toBe(1761960600000);
+      });
+
+      it('happy path: resolves IANA timezone when specified for wall-clock time', () => {
+        // America/New_York on 2026-11-01 at 00:30 is EDT (UTC-4)
+        // 00:30 EDT = 04:30:00Z UTC
+        const resolved = normalizeToUtc('2026-11-01T00:30:00', 'America/New_York');
+        expect(resolved).toBe(Date.parse('2026-11-01T04:30:00Z'));
+      });
+
+      // Failure paths
+      it('failure path 1: returns undefined for empty or whitespace string', () => {
+        expect(normalizeToUtc('')).toBeUndefined();
+        expect(normalizeToUtc('   ')).toBeUndefined();
+        expect(normalizeToUtc(undefined)).toBeUndefined();
+        expect(normalizeToUtc(null)).toBeUndefined();
+      });
+
+      it('failure path 2: returns undefined for malformed non-date strings', () => {
+        expect(normalizeToUtc('not-a-date')).toBeUndefined();
+        expect(normalizeToUtc('2026-99-99T99:99:99')).toBeUndefined();
+        expect(normalizeToUtc('invalid-timestamp-value')).toBeUndefined();
+      });
+
+      it('failure path 3: returns undefined for negative numbers or negative digit strings', () => {
+        expect(normalizeToUtc(-1)).toBeUndefined();
+        expect(normalizeToUtc(-5000)).toBeUndefined();
+        expect(normalizeToUtc('-1000')).toBeUndefined();
+      });
+
+      it('failure path 4: returns undefined for non-finite numbers', () => {
+        expect(normalizeToUtc(NaN)).toBeUndefined();
+        expect(normalizeToUtc(Infinity)).toBeUndefined();
+        expect(normalizeToUtc(-Infinity)).toBeUndefined();
+      });
+
+      it('failure path 5: returns undefined for oversized timestamps beyond valid range', () => {
+        expect(normalizeToUtc(9e16)).toBeUndefined();
+      });
+    });
+
+    describe('validateSnoozeTimestamp', () => {
+      it('happy path: returns valid status with normalized ms and UTC ISO', () => {
+        const result = validateSnoozeTimestamp('2026-11-01T01:30:00Z');
+        expect(result.valid).toBe(true);
+        expect(result.timestamp).toBe(Date.parse('2026-11-01T01:30:00Z'));
+        expect(result.utcIso).toBe('2026-11-01T01:30:00.000Z');
+        expect(result.error).toBeUndefined();
+      });
+
+      it('failure path 1: rejects empty input with stable error', () => {
+        const result = validateSnoozeTimestamp('');
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Snooze timestamp cannot be empty');
+      });
+
+      it('failure path 2: rejects malformed input with actionable message', () => {
+        const result = validateSnoozeTimestamp('malformed-date');
+        expect(result.valid).toBe(false);
+        expect(result.error).toMatch(/Malformed snooze timestamp/);
+      });
+
+      it('failure path 3: rejects invalid data types', () => {
+        const result = validateSnoozeTimestamp({ foo: 'bar' });
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Snooze timestamp must be a number, string, or Date');
+      });
+    });
+
+    describe('formatSnoozeTimestampUtc', () => {
+      it('happy path: formats unix-ms number into ISO 8601 UTC string', () => {
+        const ms = Date.parse('2026-11-01T01:30:00Z');
+        expect(formatSnoozeTimestampUtc(ms)).toBe('2026-11-01T01:30:00.000Z');
+      });
+
+      it('happy path: formats naive date string into UTC ISO string with Z', () => {
+        expect(formatSnoozeTimestampUtc('2026-11-01T01:30:00')).toBe('2026-11-01T01:30:00.000Z');
+      });
+
+      it('failure path: throws on invalid timestamp input', () => {
+        expect(() => formatSnoozeTimestampUtc('invalid')).toThrow(/Cannot format invalid snooze timestamp/);
+      });
+    });
+
+    describe('isWithinSnoozeWindow', () => {
+      const start = '2026-11-01T01:00:00Z';
+      const windowMs = 60 * 60 * 1000; // 1 hour
+
+      it('happy path: returns true when within UTC physical duration', () => {
+        const now = '2026-11-01T01:30:00Z'; // 30 mins later
+        expect(isWithinSnoozeWindow(start, windowMs, now)).toBe(true);
+      });
+
+      it('happy path: returns false when past UTC physical duration', () => {
+        const now = '2026-11-01T02:00:01Z'; // 60m 1s later
+        expect(isWithinSnoozeWindow(start, windowMs, now)).toBe(false);
+      });
+
+      it('failure path: returns false on invalid start timestamp', () => {
+        expect(isWithinSnoozeWindow('invalid-timestamp', windowMs)).toBe(false);
+      });
+
+      it('failure path: returns false on non-positive snooze window', () => {
+        expect(isWithinSnoozeWindow(start, 0)).toBe(false);
+        expect(isWithinSnoozeWindow(start, -1000)).toBe(false);
+      });
+    });
+
+    describe('parseSnoozeMarker with timezone & ISO timestamps', () => {
+      it('happy path: parses ISO UTC timestamp marker', () => {
+        const body = '<!-- trustbridge-action:snooze:status=fail,timestamp=2026-11-01T01:30:00Z -->';
+        const marker = parseSnoozeMarker(body);
+        expect(marker).toEqual({
+          status: 'fail',
+          timestamp: Date.parse('2026-11-01T01:30:00Z'),
+        });
+      });
+
+      it('happy path: parses naive ISO marker normalized to UTC', () => {
+        const body = '<!-- trustbridge-action:snooze:status=fail,timestamp=2026-11-01T01:30:00 -->';
+        const marker = parseSnoozeMarker(body);
+        expect(marker).toEqual({
+          status: 'fail',
+          timestamp: Date.parse('2026-11-01T01:30:00Z'),
+        });
+      });
+
+      it('happy path: parses marker with timezone parameter', () => {
+        const body = '<!-- trustbridge-action:snooze:status=pass,timestamp=2026-11-01T01:30:00,timezone=UTC -->';
+        const marker = parseSnoozeMarker(body);
+        expect(marker).toEqual({
+          status: 'pass',
+          timestamp: Date.parse('2026-11-01T01:30:00Z'),
+          timezone: 'UTC',
+        });
+      });
+
+      it('failure path 1: returns undefined for marker with malformed timestamp', () => {
+        const body = '<!-- trustbridge-action:snooze:status=fail,timestamp=invalid-time -->';
+        expect(parseSnoozeMarker(body)).toBeUndefined();
+      });
+
+      it('failure path 2: returns undefined for marker with negative timestamp', () => {
+        const body = '<!-- trustbridge-action:snooze:status=fail,timestamp=-500 -->';
+        expect(parseSnoozeMarker(body)).toBeUndefined();
+      });
+    });
+
+    describe('DST boundary enforcement — Autumn Fall-Back (EDT -> EST)', () => {
+      // Transition: America/New_York on 2026-11-01:
+      // At 02:00 EDT (06:00Z), clocks fall back 1 hour to 01:00 EST (06:00Z).
+      // Snooze window: 3 hours (180 mins = 10,800,000 ms).
+      // Start: 2026-11-01T00:30:00-04:00 (UTC 04:30:00Z).
+      const startIso = '2026-11-01T04:30:00Z';
+      const priorMarker: SnoozeMarker = {
+        status: 'fail',
+        timestamp: Date.parse(startIso),
+      };
+      const snoozeWindowMs = 3 * 60 * 60 * 1000; // 3 hours
+
+      it('happy path: remains snoozed across the fall-back boundary at 2 physical hours elapsed', () => {
+        // Physical 2 hours elapsed = UTC 06:30:00Z.
+        // In local wall-clock time in New York, the time is 01:30:00 EST (clocks fell back!).
+        // Wall-clock time difference is (01:30 - 00:30) = 1 hour, but physical elapsed is 2 hours.
+        const now2h = Date.parse('2026-11-01T06:30:00Z');
+        const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs, now2h);
+
+        expect(state.isSnoozed).toBe(true);
+        expect(state.snoozeExpired).toBe(false);
+        expect(state.elapsedMs).toBe(2 * 60 * 60 * 1000);
+      });
+
+      it('happy path: remains snoozed at 2h 59m physical elapsed across fall-back', () => {
+        const now2h59m = Date.parse('2026-11-01T07:29:00Z');
+        const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs, now2h59m);
+
+        expect(state.isSnoozed).toBe(true);
+        expect(state.snoozeExpired).toBe(false);
+      });
+
+      it('happy path: expires precisely when 3 physical hours elapse across fall-back', () => {
+        // Physical 3 hours elapsed = UTC 07:30:00Z (02:30:00 EST).
+        const now3h = Date.parse('2026-11-01T07:30:00Z');
+        const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs, now3h);
+
+        expect(state.isSnoozed).toBe(false);
+        expect(state.snoozeExpired).toBe(true);
+        expect(state.elapsedMs).toBe(3 * 60 * 60 * 1000);
+      });
+    });
+
+    describe('DST boundary enforcement — Spring Forward (EST -> EDT) Wave Freeze Protection', () => {
+      // Transition: America/New_York on 2026-03-08:
+      // At 02:00 EST (07:00Z), clocks spring forward 1 hour to 03:00 EDT (07:00Z).
+      // Snooze window: 2 hours (120 mins = 7,200,000 ms).
+      // Wave freeze begins: 2026-03-08T01:30:00-05:00 (UTC 06:30:00Z).
+      const startIso = '2026-03-08T06:30:00Z';
+      const priorMarker: SnoozeMarker = {
+        status: 'fail',
+        timestamp: Date.parse(startIso),
+      };
+      const snoozeWindowMs = 2 * 60 * 60 * 1000; // 2 hours
+
+      it('CRITICAL: protects assignee from early reopen when local clock jumped forward 1 hour', () => {
+        // At 1 physical hour elapsed (UTC 07:30:00Z):
+        // In local wall-clock time in New York, the time jumped to 03:30:00 EDT!
+        // A naive wall-clock comparison (03:30 - 01:30) would see 2 hours elapsed and reopen early,
+        // prematurely failing the Wave assignee!
+        // With UTC normalization, physical elapsed time is exactly 1 hour (3,600,000 ms).
+        const now1h = Date.parse('2026-03-08T07:30:00Z');
+        const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs, now1h);
+
+        // Verification: Must NOT reopen early! Assignee is protected.
+        expect(state.isSnoozed).toBe(true);
+        expect(state.snoozeExpired).toBe(false);
+        expect(state.elapsedMs).toBe(1 * 60 * 60 * 1000);
+      });
+
+      it('happy path: expires precisely when full 2 physical hours elapse after spring-forward', () => {
+        // Full 2 physical hours elapsed = UTC 08:30:00Z (04:30:00 EDT).
+        const now2h = Date.parse('2026-03-08T08:30:00Z');
+        const state = evaluateSnoozeState(false, priorMarker, snoozeWindowMs, now2h);
+
+        expect(state.isSnoozed).toBe(false);
+        expect(state.snoozeExpired).toBe(true);
+        expect(state.elapsedMs).toBe(2 * 60 * 60 * 1000);
+      });
+    });
+
+    describe('Reaction-based snooze across DST boundaries', () => {
+      // Reaction created at 01:30 EDT before fall-back (UTC 05:30:00Z)
+      const reactionCreatedAt = '2026-11-01T05:30:00Z';
+      const snoozeWindowMs = 2 * 60 * 60 * 1000; // 2 hours
+
+      it('happy path: maintains active reaction snooze across DST fall-back', () => {
+        const reactions: CommentReaction[] = [
+          {
+            content: ':zzz:',
+            created_at: reactionCreatedAt,
+            user: { login: 'wave-operator', type: 'User' },
+          },
+        ];
+        // 1 hour later in physical time: UTC 06:30:00Z
+        const now = Date.parse('2026-11-01T06:30:00Z');
+        const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+
+        expect(state.isSnoozed).toBe(true);
+        expect(state.snoozeExpired).toBe(false);
+        expect(state.elapsedMs).toBe(1 * 60 * 60 * 1000);
+      });
+
+      it('happy path: reaction snooze with naive timestamp is normalized to UTC', () => {
+        const reactions: CommentReaction[] = [
+          {
+            content: 'eyes',
+            // Stored without timezone context
+            createdAt: '2026-11-01T05:30:00',
+            user: { login: 'wave-operator', type: 'User' },
+          },
+        ];
+        const now = Date.parse('2026-11-01T06:30:00Z');
+        const state = evaluateReactionSnooze(false, reactions, snoozeWindowMs, now);
+
+        expect(state.isSnoozed).toBe(true);
+        expect(state.elapsedMs).toBe(1 * 60 * 60 * 1000);
+      });
+    });
+
+    describe('enforceSnoozeWindow across DST boundaries', () => {
+      const startUtc = Date.parse('2026-03-08T06:30:00Z');
+      const priorMarker: SnoozeMarker = { status: 'fail', timestamp: startUtc };
+      const snoozeWindowMs = 2 * 60 * 60 * 1000;
+
+      it('happy path: skips validation with reasonCode snoozed during active DST window', () => {
+        // 1 physical hour after spring forward (clock shows 03:30 EDT)
+        const nowUtc = Date.parse('2026-03-08T07:30:00Z');
+        const enforcement = enforceSnoozeWindow(false, priorMarker, [], snoozeWindowMs, { now: nowUtc });
+
+        expect(enforcement.skipValidation).toBe(true);
+        expect(enforcement.reasonCode).toBe('snoozed');
+        expect(enforcement.commentNotice).toContain('Validation snoozed');
+        expect(enforcement.commentNotice).toContain('~1h 0m');
+      });
+
+      it('happy path: allows validation to proceed when physical window elapses', () => {
+        const nowUtc = Date.parse('2026-03-08T08:30:01Z');
+        const enforcement = enforceSnoozeWindow(false, priorMarker, [], snoozeWindowMs, { now: nowUtc });
+
+        expect(enforcement.skipValidation).toBe(false);
+        expect(enforcement.state.snoozeExpired).toBe(true);
+      });
     });
   });
 });

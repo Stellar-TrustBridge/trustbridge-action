@@ -15,6 +15,10 @@ import {
   isValidLocale,
   parseLocaleInput,
   type CommentStrings,
+  formatAssetFailureCount,
+  failureCountCategory,
+  normalizeFailureCount,
+  ASSET_FAILURE_PHRASES,
 } from '../src/i18n';
 
 // ---------------------------------------------------------------------------
@@ -374,4 +378,63 @@ describe('Markdown table cell width guard', () => {
       }
     });
   }
+});
+
+// Issue #922: plural forms for multi-asset failure counts.
+describe('failure count plurals (Issue #922)', () => {
+  // Fixtures: [locale, count, expected]. 0 / 1 / many per locale, using CLDR rules.
+  const FIXTURES: Array<[string, number, string]> = [
+    ['en', 0, '0 assets failed'],
+    ['en', 1, '1 asset failed'],
+    ['en', 2, '2 assets failed'],
+    ['en', 1000, '1,000 assets failed'],
+    ['es', 0, '0 activos fallaron'],
+    ['es', 1, '1 activo falló'],
+    ['es', 5, '5 activos fallaron'],
+    ['pt', 0, '0 ativo falhou'],
+    ['pt', 1, '1 ativo falhou'],
+    ['pt', 2, '2 ativos falharam'],
+    ['ja', 0, '0 件のアセットが失敗'],
+    ['ja', 1, '1 件のアセットが失敗'],
+    ['ja', 7, '7 件のアセットが失敗'],
+    ['fr', 0, '0 actif a échoué'],
+    ['fr', 1, '1 actif a échoué'],
+    ['fr', 2, '2 actifs ont échoué'],
+    ['de', 0, '0 Assets fehlgeschlagen'],
+    ['de', 1, '1 Asset fehlgeschlagen'],
+    ['de', 3, '3 Assets fehlgeschlagen'],
+  ];
+
+  it.each(FIXTURES)('renders %s count %p as "%s"', (locale, count, expected) => {
+    expect(formatAssetFailureCount(locale, count)).toBe(expected);
+  });
+
+  it('uses CLDR categories, not hand-written === 1 checks', () => {
+    expect(failureCountCategory('en', 0)).toBe('other');
+    expect(failureCountCategory('en', 1)).toBe('one');
+    expect(failureCountCategory('fr', 0)).toBe('one');
+    expect(failureCountCategory('ja', 1)).toBe('other');
+  });
+
+  it('defines an other form for every supported locale', () => {
+    for (const locale of ['en', 'es', 'pt', 'ja', 'fr', 'de'] as const) {
+      expect(typeof ASSET_FAILURE_PHRASES[locale].other).toBe('function');
+    }
+  });
+
+  it('falls back to English for unknown or missing locales', () => {
+    expect(formatAssetFailureCount('xx', 2)).toBe('2 assets failed');
+    expect(formatAssetFailureCount(undefined, 1)).toBe('1 asset failed');
+    expect(formatAssetFailureCount(null, 0)).toBe('0 assets failed');
+  });
+
+  it('normalizes NaN, negative and fractional counts instead of rendering them', () => {
+    expect(normalizeFailureCount(Number.NaN)).toBe(0);
+    expect(normalizeFailureCount(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(normalizeFailureCount(-3)).toBe(0);
+    expect(normalizeFailureCount(2.9)).toBe(2);
+    expect(formatAssetFailureCount('en', -1)).toBe('0 assets failed');
+    expect(formatAssetFailureCount('en', Number.NaN)).toBe('0 assets failed');
+    expect(formatAssetFailureCount('en', 1.5)).toBe('1 asset failed');
+  });
 });

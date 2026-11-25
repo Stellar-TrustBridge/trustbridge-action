@@ -10,6 +10,16 @@
  * factories (timeout, rate-limit, outage, success) for use in unit tests and
  * local dev without a live Horizon endpoint.
  *
+ * Issue #888: Half-open probe budget — the circuit breaker now enforces a
+ * configurable limit on the number of concurrent probe calls permitted while
+ * the circuit is in half-open state. Without this guard, a burst of parallel
+ * callers (e.g. a Wave batch run) can all pass the half-open gate
+ * simultaneously and stampede a recovering Horizon endpoint. The budget is
+ * enforced by tracking `halfOpenProbesInFlight`; calls beyond the budget
+ * receive a `CircuitOpenError` immediately (fast-fail), identical to full-open
+ * behavior. See `CircuitBreakerOptions.halfOpenMaxProbes` and
+ * `docs/ARCHITECTURE.md#circuit-breaker-half-open-probe-budget`.
+ *
  * Also exposes a local CLI check command that exercises the full resilience
  * pipeline against a live or stubbed Horizon endpoint (with optional secondary
  * Horizon failover).
@@ -102,6 +112,57 @@ export declare function calculateBackoffDelay(attempt: number, policy: RetryPoli
  */
 export declare function addJitter(delayMs: number, jitterPercent?: number, maxDelayMs?: number): number;
 /**
+ * `reason_code` values that mean "Horizon was degraded", not "the wallet is
+ * not ready". A scheduled sweep should count these — never wallet failures
+ * such as `TRUSTLINE_MISSING` — when deciding to pause. Documented in
+ * docs/CRON_REVALIDATION.md#backoff-when-horizon-is-degraded.
+ */
+export declare const HORIZON_DEGRADED_REASON_CODES: readonly ["HORIZON_TIMEOUT", "HORIZON_ERROR", "CIRCUIT_OPEN", "RATE_BUDGET_EXHAUSTED", "HORIZON_WAIT_BUDGET_EXHAUSTED"];
+export type HorizonDegradedReasonCode = (typeof HORIZON_DEGRADED_REASON_CODES)[number];
+/** True when `reasonCode` signals a Horizon-side degradation. */
+export declare function isHorizonDegradedReasonCode(reasonCode: string): reasonCode is HorizonDegradedReasonCode;
+/** Tuning for {@link shouldPauseCronSweep} / {@link computeCronBackoffDelayMs}. */
+export interface CronBackoffPolicy {
+    /** Fraction (0–1] of degraded results in one sweep that pauses the sweep. */
+    degradedRateThreshold: number;
+    /** Minimum number of results before the rate is trusted. */
+    minSampleSize: number;
+    /** Delay before the first retry sweep after a degraded sweep. */
+    baseDelayMs: number;
+    /** Upper bound for the (pre-jitter) delay. */
+    maxDelayMs: number;
+    /** Jitter applied to the delay, as a percentage (± jitterPercent %). */
+    jitterPercent: number;
+}
+/**
+ * Defaults documented in docs/CRON_REVALIDATION.md: pause when ≥ 20 % of at
+ * least 5 results are Horizon-degraded, then back off 15 min → 30 → 60 → …
+ * capped at 6 h, with ± 20 % jitter so many Wave orgs do not resume together.
+ */
+export declare const DEFAULT_CRON_BACKOFF_POLICY: CronBackoffPolicy;
+/**
+ * Decide whether a cron sweep should stop dispatching further checks because
+ * Horizon looks degraded (Issue #909).
+ *
+ * @param reasonCodes  `reason_code` outputs collected so far in this sweep.
+ * @returns `true` once at least `minSampleSize` results were seen and the
+ *          share of {@link HORIZON_DEGRADED_REASON_CODES} reaches
+ *          `degradedRateThreshold`. Wallet failures never count.
+ */
+export declare function shouldPauseCronSweep(reasonCodes: readonly string[], policy?: CronBackoffPolicy): boolean;
+/**
+ * Delay before the next cron sweep after `consecutiveDegradedSweeps`
+ * degraded sweeps in a row (Issue #909).
+ *
+ * `0` sweeps → `0` (run on the normal schedule). Otherwise
+ * `min(baseDelayMs * 2^(n-1), maxDelayMs)` with ± `jitterPercent` jitter,
+ * never above `maxDelayMs`. Negative or non-finite counts throw so a broken
+ * counter in a workflow script fails loudly instead of hammering Horizon.
+ *
+ * @param random  Injectable RNG in [0, 1) for deterministic tests.
+ */
+export declare function computeCronBackoffDelayMs(consecutiveDegradedSweeps: number, policy?: CronBackoffPolicy, random?: () => number): number;
+/**
  * Sleep for a given duration.
  */
 export declare function sleep(ms: number): Promise<void>;
@@ -153,7 +214,7 @@ export interface CircuitBreakerOptions {
     failureThreshold?: number;
     /**
      * Milliseconds to wait in 'open' state before transitioning to 'half-open'
-     * and allowing a single probe request. Default: 30 000.
+     * and allowing probe requests. Default: 30 000.
      */
     recoveryTimeoutMs?: number;
     /**
@@ -161,6 +222,20 @@ export interface CircuitBreakerOptions {
      * close the circuit again. Default: 2.
      */
     successThreshold?: number;
+    /**
+     * Maximum number of probe calls allowed **concurrently** while the circuit
+     * is in `half-open` state. Default: 1.
+     *
+     * Issue #888 — without this cap, a burst of parallel callers (e.g. a Wave
+     * batch run reaching half-open simultaneously) can stampede a recovering
+     * Horizon endpoint. When the in-flight probe count reaches this limit any
+     * additional callers receive a `CircuitOpenError` immediately (fast-fail),
+     * identical to behavior in the fully-open state. The count is decremented
+     * when each probe resolves (success or failure).
+     *
+     * Set to `Infinity` to restore the pre-#888 behavior (unlimited probes).
+     */
+    halfOpenMaxProbes?: number;
     /**
      * Optional callback fired on every state transition. Receives the previous
      * state, the next state, and a human-readable reason string.
@@ -170,7 +245,35 @@ export interface CircuitBreakerOptions {
      * summary panel without requiring `debug_mode: true`.
      */
     onStateChange?: (from: CircuitState, to: CircuitState, reason: string) => void;
+    /**
+     * Optional callback fired when a half-open probe is rejected because the
+     * probe budget is exhausted. Receives the current in-flight count and the
+     * configured maximum. Useful for metrics emission and observability.
+     *
+     * Issue #888.
+     */
+    onProbeBudgetExhausted?: (inFlight: number, maxProbes: number) => void;
+    /**
+     * Wall clock used for every open-state expiry decision. Returns epoch
+     * milliseconds. Default: `() => Date.now()` (read at call time, so Jest
+     * modern fake timers keep working).
+     *
+     * Open-state expiry is purely time-based: the circuit stays open until
+     * `recoveryTimeoutMs` of wall-clock time has elapsed since it opened,
+     * no matter how many calls are fast-failed in the meantime. Inject a fake
+     * clock in tests to drive the cooldown deterministically.
+     */
+    now?: () => number;
+    /**
+     * Upper bound, in milliseconds, for a server-requested cooldown recorded
+     * via `CircuitBreaker.noteRetryAfter()`. A hostile or misconfigured
+     * Horizon cannot pin the circuit open longer than this. Default: 300 000
+     * (5 minutes). Must be a finite number ≥ 0.
+     */
+    maxRetryAfterMs?: number;
 }
+/** Default cap for Retry-After driven cooldowns (5 minutes). */
+export declare const DEFAULT_MAX_RETRY_AFTER_MS = 300000;
 /**
  * Circuit-breaker implementation for the TrustBridge resilience layer.
  *
@@ -179,12 +282,29 @@ export interface CircuitBreakerOptions {
  * circuit trips and recoveries are always visible as GitHub Check Run
  * annotations in the Actions UI, even without `debug_mode: true`.
  *
+ * Issue #888 — half-open probe budget: `halfOpenMaxProbes` (default: 1)
+ * limits how many concurrent probe calls may be in-flight while the circuit
+ * is in `half-open` state. Additional callers beyond the budget receive a
+ * `CircuitOpenError` immediately (identical to open-state fast-fail) and
+ * the rejection is counted in `halfOpenProbeBudgetExhaustedCount`. This
+ * prevents stampeding retries during Horizon recovery under Wave batch peaks.
+ *
  * States:
  *  - **closed** — normal operation; failures are counted.
  *  - **open**   — requests are short-circuited (fast-fail); a recovery timer
  *                 controls transition to 'half-open'.
- *  - **half-open** — a single probe request is allowed; success closes the
- *                    circuit, failure re-opens it.
+ *  - **half-open** — up to `halfOpenMaxProbes` concurrent probe requests are
+ *                    allowed; enough consecutive successes closes the circuit,
+ *                    any failure re-opens it.
+ *
+ * Issue #920 — wall-clock open-state expiry: the open → half-open transition
+ * is driven only by elapsed time on the injected clock (`options.now`), never
+ * by how many calls were fast-failed. A server-requested `Retry-After`
+ * recorded through `noteRetryAfter()` extends the cooldown: the circuit does
+ * not go half-open, and half-open probes are not admitted, until both the
+ * recovery timeout and the Retry-After deadline have passed. If the clock
+ * moves backwards while open, the cooldown restarts from the new "now"
+ * instead of expiring early.
  */
 export declare class CircuitBreaker {
     private state;
@@ -192,10 +312,22 @@ export declare class CircuitBreaker {
     private consecutiveSuccesses;
     private openedAt;
     private lastErrorClass;
+    /** Issue #920: epoch ms before which no probe may run (Retry-After floor). */
+    private retryAfterUntil;
+    /** Issue #888: in-flight probe count while in half-open state. */
+    private halfOpenProbesInFlight;
+    /** Issue #888: total rejections due to probe budget exhaustion. */
+    private halfOpenProbeBudgetExhaustedCount;
+    /** Issue #888: total probes that completed (resolved or rejected) in half-open. */
+    private halfOpenProbesCompleted;
     private readonly failureThreshold;
     private readonly recoveryTimeoutMs;
     private readonly successThreshold;
+    private readonly halfOpenMaxProbes;
+    private readonly maxRetryAfterMs;
+    private readonly now;
     private readonly onStateChange;
+    private readonly onProbeBudgetExhausted;
     constructor(options?: CircuitBreakerOptions);
     /**
      * Current circuit state.
@@ -204,15 +336,54 @@ export declare class CircuitBreaker {
     /**
      * Execute `fn` through the circuit breaker.
      *
-     * - **closed / half-open**: delegates to `fn`; records success or failure.
+     * - **closed**: delegates to `fn`; records success or failure.
      * - **open**: throws a `CircuitOpenError` immediately without calling `fn`.
+     * - **half-open**: allows up to `halfOpenMaxProbes` concurrent probes.
+     *   Callers beyond the budget receive `CircuitOpenError` immediately.
+     *   Success closes the circuit after `successThreshold` consecutive wins;
+     *   any failure re-opens it and resets the in-flight count.
      */
     execute<T>(fn: () => Promise<T>): Promise<T>;
+    /**
+     * One-shot flag: set by `_recordFailure` when the circuit was half-open at
+     * the time of the failure (and was re-opened). Used by the `finally` block
+     * in `execute` to know it should still decrement `halfOpenProbesInFlight`
+     * even though `this.state` is now `'open'` by the time `finally` runs.
+     */
+    private _wasHalfOpenBeforeFailure;
     /**
      * Force-reset the circuit to closed state. Useful in tests and for manual
      * operator intervention.
      */
     reset(): void;
+    /**
+     * Record a server-requested cooldown (Issue #920), typically the parsed
+     * `Retry-After` of a Horizon 429/503. The circuit will not move from open
+     * to half-open — and a half-open circuit will not admit probes — until
+     * `delayMs` has elapsed on the breaker's clock.
+     *
+     * - Values are clamped to `maxRetryAfterMs` so a hostile header cannot pin
+     *   the circuit open indefinitely.
+     * - Negative, NaN, or non-finite values are ignored (returns `false`), the
+     *   same way `parseRetryAfterMs` treats them as absent.
+     * - A shorter Retry-After never shortens an existing, longer deadline.
+     * - In the closed state the deadline is remembered but does not block
+     *   calls; the retry loop already sleeps for Retry-After. It only takes
+     *   effect if the circuit opens before the deadline passes.
+     *
+     * Returns `true` when the deadline was recorded or extended.
+     */
+    noteRetryAfter(delayMs: number): boolean;
+    /**
+     * Milliseconds until the next probe may reach the wrapped operation
+     * (Issue #920). Always ≥ 0.
+     *
+     * - **closed**: 0.
+     * - **open**: the larger of the remaining recovery timeout and the
+     *   remaining Retry-After deadline.
+     * - **half-open**: the remaining Retry-After deadline (0 when none).
+     */
+    getRemainingCooldownMs(): number;
     /**
      * Snapshot of the breaker's internal counters — useful for tests and
      * metrics emission without exposing mutable state.
@@ -222,11 +393,19 @@ export declare class CircuitBreaker {
         consecutiveFailures: number;
         consecutiveSuccesses: number;
         openedAt: number | null;
+        /** Issue #888: probes currently in-flight during half-open. */
+        halfOpenProbesInFlight: number;
+        /** Issue #888: total probes rejected due to budget exhaustion. */
+        halfOpenProbeBudgetExhaustedCount: number;
+        /** Issue #888: configured maximum concurrent probes. */
+        halfOpenMaxProbes: number;
     };
     /**
      * Circuit-open metrics for the Job Summary (#788). Reports only the error
      * class name — never the error message — so raw Horizon response bodies
      * cannot leak into the summary.
+     *
+     * Issue #888: adds `halfOpenProbeStats` for probe budget observability.
      */
     getOpenMetrics(now?: number): CircuitOpenMetrics;
     private _maybeTransitionToHalfOpen;
@@ -243,13 +422,33 @@ export interface CircuitOpenMetrics {
     /** Class name of the last recorded failure (e.g. 'TypeError'), or null. */
     lastErrorClass: string | null;
     consecutiveFailures: number;
+    /**
+     * Issue #888: half-open probe budget stats. Always present; callers can
+     * read `inFlight` and `budgetExhaustedCount` to populate dashboards.
+     */
+    halfOpenProbeStats: {
+        /** Probes currently in-flight (concurrent) in half-open state. */
+        inFlight: number;
+        /** Configured maximum concurrent probes (`halfOpenMaxProbes`). */
+        maxProbes: number;
+        /** Total calls rejected due to budget exhaustion since last transition to half-open. */
+        budgetExhaustedCount: number;
+        /** Total probes that completed (resolved or rejected) since last transition to half-open. */
+        completed: number;
+    };
 }
 /**
  * Thrown by `CircuitBreaker.execute` when the circuit is open and the
  * request was fast-failed without reaching the underlying operation.
  */
 export declare class CircuitOpenError extends Error {
-    constructor(message: string);
+    /**
+     * Issue #920: milliseconds until the breaker will admit a probe, when
+     * known. Callers can surface this as a hint ("retry in ~Ns") without
+     * guessing the recovery timeout.
+     */
+    readonly remainingCooldownMs?: number;
+    constructor(message: string, remainingCooldownMs?: number);
 }
 /**
  * Emit a GitHub Check Run annotation for a resilience event (retry, rate
