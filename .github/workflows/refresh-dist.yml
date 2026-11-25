@@ -28,6 +28,12 @@ jobs:
       - name: Verify source-map quality
         run: npm run test:map-paths
 
+      - name: Refresh dist manifest
+        run: node scripts/generate-dist-manifest.js
+
+      - name: Verify dist manifest
+        run: npm run verify:dist
+
       - name: Commit refreshed dist
         run: |
           git config user.name github-actions[bot]

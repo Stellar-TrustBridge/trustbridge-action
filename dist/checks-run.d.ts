@@ -15,6 +15,11 @@
 import { ValidationResult } from './checks';
 /** Label of the SEP-0001 home domain row emitted by `runAccountChecks`. */
 export declare const HOME_DOMAIN_CHECK_LABEL = "SEP-0001 home domain";
+/**
+ * Maximum annotations accepted by one Checks API create/update request, on
+ * github.com and GHES. See docs/GHES_COMPATIBILITY.md.
+ */
+export declare const CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
 /**
  * Result of attempting to create a Check Run.
@@ -91,3 +96,31 @@ export declare function createCheckRun(result: ValidationResult, token: string, 
     stellarAddress?: string;
     signal?: AbortSignal;
 }): Promise<CheckRunResult>;
+/**
+ * Per-address deadline (Issue #928).
+ *
+ * Runs `task` with its own AbortSignal that fires after `deadlineMs`, so one
+ * hung address cannot consume the whole job budget. The per-address signal
+ * also follows `parentSignal` (the global/batch cancellation), giving this
+ * precedence:
+ *
+ *   1. `parentSignal` aborted (global timeout / cancel) → `{ status: 'cancelled' }`
+ *      — global cancellation always wins, even if the deadline also expired.
+ *   2. `deadlineMs` elapsed first → `{ status: 'timed_out' }`; only this
+ *      address is affected and the caller continues with the next one.
+ *   3. Otherwise → `{ status: 'completed', value }`.
+ *
+ * `deadlineMs` that is undefined, non-finite or `<= 0` disables the deadline
+ * (task runs exactly as before, still honoring `parentSignal`). The timer is
+ * always cleared, so nothing keeps the event loop alive after settling.
+ */
+export type DeadlineOutcome<T> = {
+    status: 'completed';
+    value: T;
+} | {
+    status: 'timed_out';
+    deadlineMs: number;
+} | {
+    status: 'cancelled';
+};
+export declare function runWithAddressDeadline<T>(task: (signal: AbortSignal) => Promise<T>, deadlineMs: number | undefined, parentSignal?: AbortSignal): Promise<DeadlineOutcome<T>>;
