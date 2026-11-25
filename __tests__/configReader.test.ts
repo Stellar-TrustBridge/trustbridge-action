@@ -21,6 +21,8 @@ import {
   readTrustbridgeConfig,
   readTrustbridgeConfigs,
   mergeConsumerConfig,
+  deepMerge,
+  isPlainObject,
 } from '../src/configReader';
 import {
   validateSsrfSafeUrl,
@@ -504,6 +506,65 @@ describe('mergeConsumerConfig', () => {
     const original = { ...baseInputs };
     mergeConsumerConfig(baseInputs, consumerConfig, new Set());
     expect(baseInputs.horizonUrl).toBe(original.horizonUrl);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deepMerge — nested config semantics (Issue #978)
+// ---------------------------------------------------------------------------
+
+describe('deepMerge', () => {
+  it('happy path: merges nested objects, preserving sibling keys', () => {
+    const base = {
+      horizon_url: 'https://horizon.stellar.org',
+      limits: { min_xlm: '1.5', min_asset: '10', retries: 3 },
+    };
+    const result = deepMerge(base, { limits: { min_asset: '20' } });
+
+    expect(result).toEqual({
+      horizon_url: 'https://horizon.stellar.org',
+      limits: { min_xlm: '1.5', min_asset: '20', retries: 3 },
+    });
+    // Inputs are untouched and nested objects are cloned.
+    expect(base.limits.min_asset).toBe('10');
+    expect(result.limits).not.toBe(base.limits);
+    expect(isPlainObject(result.limits)).toBe(true);
+  });
+
+  it('failure path: arrays and scalars are replaced, never concatenated', () => {
+    const result = deepMerge(
+      { assets: ['USDC', 'EURC'], flags: { strict: true }, note: 'base' },
+      { assets: ['XLM'], flags: null, note: 'override' },
+    );
+
+    expect(result.assets).toEqual(['XLM']);
+    expect(result.flags).toBeNull();
+    expect(result.note).toBe('override');
+  });
+
+  it('failure path: ignores undefined and prototype-pollution keys, never mutates input', () => {
+    const base = { nested: { keep: 'yes' } };
+    const malicious = JSON.parse(
+      '{"nested":{"added":"x"},"__proto__":{"polluted":true},"constructor":{"bad":true},"prototype":{"bad":true},"skipped":null}',
+    );
+    // undefined is skipped even when supplied explicitly.
+    malicious.skipped = undefined;
+
+    const result = deepMerge(base, malicious);
+
+    expect(result.nested).toEqual({ keep: 'yes', added: 'x' });
+    expect(result).not.toHaveProperty('polluted');
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    expect(result).not.toHaveProperty('skipped');
+    expect(base).toEqual({ nested: { keep: 'yes' } });
+  });
+
+  it('returns a cloned base when there is no override', () => {
+    const base = { nested: { value: 1 } };
+    const result = deepMerge(base, null);
+    expect(result).toEqual(base);
+    expect(result).not.toBe(base);
+    expect(result.nested).not.toBe(base.nested);
   });
 });
 

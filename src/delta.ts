@@ -64,6 +64,41 @@ export interface ValidationDelta {
   regressed: boolean;
 }
 
+/**
+ * Severity tiers for delta comment highlighting (Issue #977).
+ *
+ * A changed check is matched against these patterns in order; the first match
+ * wins and the tier index becomes its rank. Lower rank = higher severity, so
+ * a newly failing fatal code is always shown before softer regressions.
+ * Unknown labels fall into the final (lowest-severity) tier.
+ */
+export const DELTA_SEVERITY_TIERS: readonly RegExp[] = [
+  /\bfatal\b|fatal_/i, // fatal job/config/auth codes
+  /passphrase|circuit|clawback|unauthorized|tls|horizon|rpc/i, // infrastructure & policy blockers
+  /account[\s_-]*(not[\s_-]*)?funded|unfunded/i, // account state
+  /trustline/i, // trustline problems
+  /reserve|balance/i, // balance thresholds
+];
+
+/** Numeric severity rank for a check label (lower is more severe). */
+export function checkSeverityRank(label: string): number {
+  const text = String(label ?? '');
+  const index = DELTA_SEVERITY_TIERS.findIndex((pattern) => pattern.test(text));
+  return index === -1 ? DELTA_SEVERITY_TIERS.length : index;
+}
+
+/**
+ * Sort changed check labels by descending severity, preserving the original
+ * order within a tier. Idempotent, so it is safe to apply both when the delta
+ * is computed and again when it is rendered into a comment.
+ */
+export function rankChangedChecks(labels: readonly string[]): string[] {
+  return labels
+    .map((label, index) => ({ label, index, rank: checkSeverityRank(label) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ label }) => label);
+}
+
 export const VALIDATION_ARTIFACT_SCHEMA_VERSION = '1.0.0';
 
 /** Keys that must never appear in a validation / delta payload. */
@@ -165,8 +200,8 @@ export function computeValidationDelta(
 
   return {
     previousTimestamp: previous.timestamp,
-    newlyPassed,
-    newlyFailed,
+    newlyPassed: rankChangedChecks(newlyPassed),
+    newlyFailed: rankChangedChecks(newlyFailed),
     unchanged,
     improved: newlyPassed.length > 0,
     regressed: newlyFailed.length > 0,
@@ -296,10 +331,16 @@ export function buildValidationArtifact(options: BuildValidationArtifactOptions)
 
 /**
  * Render a Markdown delta section for the issue comment.
- * Returns an empty string when there is no delta (first run).
+ *
+ * Changed checks are ranked by severity (Issue #977) so newly failing fatal
+ * codes are highlighted first. Returns an empty string when there is no delta
+ * (first run).
  */
 export function formatDeltaMarkdown(delta: ValidationDelta | null | undefined): string {
   if (!delta) return '';
+
+  const newlyPassed = rankChangedChecks(delta.newlyPassed);
+  const newlyFailed = rankChangedChecks(delta.newlyFailed);
 
   const lines: string[] = [
     '### Delta vs previous run',
@@ -310,14 +351,14 @@ export function formatDeltaMarkdown(delta: ValidationDelta | null | undefined): 
     lines.push(`_Compared to previous artifact from \`${delta.previousTimestamp}\`._`, '');
   }
 
-  if (delta.newlyPassed.length === 0 && delta.newlyFailed.length === 0) {
+  if (newlyPassed.length === 0 && newlyFailed.length === 0) {
     lines.push('- No check status changes since the previous run.');
   } else {
-    if (delta.newlyPassed.length > 0) {
-      lines.push(`- ✅ **Newly passed:** ${delta.newlyPassed.join(', ')}`);
+    if (newlyPassed.length > 0) {
+      lines.push(`- ✅ **Newly passed:** ${newlyPassed.join(', ')}`);
     }
-    if (delta.newlyFailed.length > 0) {
-      lines.push(`- ❌ **Newly failed:** ${delta.newlyFailed.join(', ')}`);
+    if (newlyFailed.length > 0) {
+      lines.push(`- ❌ **Newly failed:** ${newlyFailed.join(', ')}`);
     }
   }
 

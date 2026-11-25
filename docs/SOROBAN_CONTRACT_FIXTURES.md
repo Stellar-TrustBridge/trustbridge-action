@@ -141,3 +141,22 @@ The fixture is intentionally separate from self-made test objects in
 `__tests__/soroban.test.ts` so that contract-representative payloads are clearly
 distinguished from synthetic test data. Canonical C-address and SAC examples come from
 `SOROBAN_CONTRACT_FIXTURES` so docs and tests never drift.
+
+## Contract existence outcomes (Issue #976)
+
+`checkContractOnChain()` in `src/soroban.ts` returns a structured
+`{ exists, reasonCode }` result so a definitive absence is never confused with
+an unreachable endpoint:
+
+| RPC outcome | `exists` | `reasonCode` |
+|---|---|---|
+| `getContractCode` confirms the contract | `true` | `SUCCESS` |
+| RPC answered, contract absent (`exists: false`) | `false` | `SOROBAN_CONTRACT_NOT_FOUND` |
+| Timeout / HTTP error / invalid JSON / network failure | throws | `SOROBAN_RPC_UNAVAILABLE` |
+
+The boolean-only `contractExistsOnChain()` helper keeps its existing fail-closed
+behavior. On failure it throws a `ContractLookupError` whose `reasonCode`
+defaults to `SOROBAN_RPC_UNAVAILABLE`; `sorobanFailureReasonCode(err)` extracts
+that code from any failure. Both codes are cataloged in
+`schemas/reason-codes.json` and documented in
+[USAGE.md](USAGE.md#failure-reason-code-catalog-reason_code).

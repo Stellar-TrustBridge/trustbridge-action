@@ -5,11 +5,13 @@ import * as path from 'path';
 import {
   VALIDATION_ARTIFACT_SCHEMA_VERSION,
   buildValidationArtifact,
+  checkSeverityRank,
   computeValidationDelta,
   formatDeltaMarkdown,
   hashAddressForPrivacy,
   loadPreviousValidationArtifact,
   privacyMaskAddress,
+  rankChangedChecks,
   stripSensitiveFields,
 } from '../src/delta';
 import { ValidationResult } from '../src/checks';
@@ -107,6 +109,72 @@ describe('computeValidationDelta', () => {
       improved: false,
       regressed: false,
     });
+  });
+});
+
+// Issue #977 — newly failing fatal codes are ranked first for highlighting.
+describe('severity ranking', () => {
+  it('assigns fatal codes the highest (lowest-numbered) severity rank', () => {
+    expect(checkSeverityRank('FATAL_AUTH')).toBeLessThan(checkSeverityRank('Horizon availability'));
+    expect(checkSeverityRank('Horizon availability')).toBeLessThan(
+      checkSeverityRank('USDC trustline'),
+    );
+    expect(checkSeverityRank('USDC trustline')).toBeLessThan(checkSeverityRank('XLM reserve'));
+    expect(checkSeverityRank('unknown check')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('ranks newly failed checks fatal-first in a computed delta', () => {
+    const previous = {
+      checks: [
+        { label: 'XLM reserve', passed: true },
+        { label: 'FATAL_CONFIG', passed: true },
+        { label: 'USDC trustline', passed: true },
+        { label: 'Horizon availability', passed: true },
+      ],
+    };
+    const current = {
+      checks: [
+        { label: 'XLM reserve', passed: false },
+        { label: 'FATAL_CONFIG', passed: false },
+        { label: 'USDC trustline', passed: false },
+        { label: 'Horizon availability', passed: false },
+      ],
+    };
+
+    const delta = computeValidationDelta(previous, current);
+    expect(delta!.newlyFailed).toEqual([
+      'FATAL_CONFIG',
+      'Horizon availability',
+      'USDC trustline',
+      'XLM reserve',
+    ]);
+    expect(delta!.regressed).toBe(true);
+  });
+
+  it('failure path: keeps input order within a tier and tolerates empty/unknown input', () => {
+    expect(rankChangedChecks([])).toEqual([]);
+    expect(rankChangedChecks(['Z trustline', 'A trustline'])).toEqual([
+      'Z trustline',
+      'A trustline',
+    ]);
+    expect(rankChangedChecks(['USDC trustline', 'FATAL_CANCELLED', 'XLM reserve'])).toEqual([
+      'FATAL_CANCELLED',
+      'USDC trustline',
+      'XLM reserve',
+    ]);
+  });
+
+  it('renders a hand-built delta with fatal failures first', () => {
+    const md = formatDeltaMarkdown({
+      newlyPassed: [],
+      newlyFailed: ['XLM reserve', 'FATAL_AUTH', 'USDC trustline'],
+      unchanged: [],
+      improved: false,
+      regressed: true,
+    });
+    const failedLine = md.split('\n').find((line) => line.includes('Newly failed'))!;
+    expect(failedLine.indexOf('FATAL_AUTH')).toBeLessThan(failedLine.indexOf('USDC trustline'));
+    expect(failedLine.indexOf('USDC trustline')).toBeLessThan(failedLine.indexOf('XLM reserve'));
   });
 });
 

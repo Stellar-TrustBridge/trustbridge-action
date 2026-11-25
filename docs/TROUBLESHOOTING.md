@@ -236,3 +236,21 @@ GitHub Job Summaries have a 1 MiB UTF-8 budget. TrustBridge treats the verbose m
 ## Retry-After wait metrics
 
 A `horizon_retry_after_wait` metric records each actual jittered wait in milliseconds. The `horizon_retry_after_waits` and `horizon_retry_after_wait_ms` counters show how often and how long the action waited on server guidance. The wait is always bounded by `retry_max_delay_ms` and the cumulative `retry_max_total_wait_ms` budget.
+
+## Soroban: contract not found vs RPC unavailable
+
+When a C-address payout destination is verified (`soroban_rpc_url` set), two
+distinct reason codes are reported (Issue #976):
+
+- `SOROBAN_CONTRACT_NOT_FOUND` — the RPC was reachable and reported no contract
+  at that address. Check the C-address and that you are on the intended network;
+  redeploy or correct the destination before retrying.
+- `SOROBAN_RPC_UNAVAILABLE` — the RPC timed out, returned an HTTP/network error,
+  or returned invalid JSON. Existence could **not** be determined; check
+  `soroban_rpc_url`, network access from the runner, and endpoint health, then
+  retry. Do not treat this as a missing contract.
+
+The underlying failure is a `ContractLookupError` carrying `reasonCode`, and
+`checkContractOnChain()` returns the same classification as data. The regular
+fail-closed behavior is unchanged: a C-address is never trusted without an
+on-chain confirmation.

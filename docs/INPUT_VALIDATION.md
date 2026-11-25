@@ -138,6 +138,31 @@ TrustBridge has three distinct configuration layers, implemented by two separate
 
 **Conflict resolution when the same key has the wrong type.** `.trustbridge.yml`'s minimal YAML parser (`parseSimpleYaml`) infers a JS type per value — an unquoted `2.5` becomes a number, unquoted `true`/`false` becomes a boolean, anything else (including a quoted `"2.5"` or `"false"`) stays a string. `validateTrustbridgeConfig` then type-checks every field against its declared type (string fields: `asset_code`, `asset_issuer`, `min_xlm_reserve`, `min_asset_balance`; boolean: `fail_on_missing`) **before** any value is extracted. A type mismatch — e.g. `min_xlm_reserve: 2.5` (unquoted, parses as a number) instead of `min_xlm_reserve: "2.5"` — fails the whole config closed with a stable, field-named error (`"min_xlm_reserve must be a string"`, `"fail_on_missing must be a boolean (true or false)"`), not a silent drop or an implicit coercion. See `__tests__/configReader.test.ts` → `readTrustbridgeConfig — type conflicts fail closed with a stable error` for the full regression suite (both directions: the quoted/unquoted form that's accepted, and the one that fails).
 
+### Nested config merge semantics (Issue #978)
+
+`readTrustbridgeConfigs()` merges the org file with the repo file through
+`deepMerge()` in `src/configReader.ts`. The rules are deliberate and locked by
+`__tests__/configReader.test.ts` → `deepMerge`:
+
+- **Plain objects** are merged recursively. If both layers declare an object,
+  only the keys the repo layer actually sets are overridden; sibling keys from
+  the org layer survive. This is the opposite of a shallow spread, which would
+  drop the whole org object when any one child key was overridden.
+- **Arrays are replaced**, never concatenated. A repo layer supplying
+  `["XLM"]` removes every org-level element; there is no append/merge-by-index
+  behavior. **This is the main footgun** — repeat the full list when overriding.
+- **Scalars are replaced** by the repo value; `null` is a real value and
+  overrides, while `undefined` is skipped.
+- Prototype-pollution keys (`__proto__`, `constructor`, `prototype`) are ignored
+  at every depth, and neither input object is mutated (nested values are
+  cloned), so an override cannot poison the base config or the prototype chain.
+
+The same `deepMerge()` is used for the redacted diagnostic snapshot, so its
+nested shape stays consistent with the merged config. The minimal YAML parser
+still produces flat key/value maps today; nested objects can be passed by
+callers of `deepMerge()` directly and are future-proofed for a nested config
+schema without changing precedence.
+
 ## Comment & Posting Modes (#456)
 
 TrustBridge separates the comment threading behavior from the overall comment posting strategy:

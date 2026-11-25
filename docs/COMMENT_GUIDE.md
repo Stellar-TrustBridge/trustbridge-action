@@ -360,3 +360,27 @@ and an entry in `docs/BREAKING_CHANGES.md`, and the old string must stay in
 `TRUSTBRIDGE_IDENTITY_LINES`. `__tests__/comment-marker-collision.test.ts`
 fixes the strings and runs sticky lookup (GraphQL and the REST fallback)
 against an issue shared with several foreign bots.
+
+## Custom template safety (`custom_comment_template_path`) (Issue #975)
+
+The optional Markdown partial loaded by `loadCommentTemplate()` in `src/template.ts`
+is a **literal string replacer**, not an expression engine. It supports only
+`{{account}}`, `{{asset}}`, `{{issuer}}`, `{{network}}`, `{{horizon}}`,
+`{{status}}` and `{{locale:KEY}}`; every unknown placeholder becomes an empty
+string. It never evaluates, compiles, or executes template content.
+
+To keep that guarantee explicit, `validateTemplateContent()` rejects partials
+containing dynamic code-execution tokens before interpolation:
+
+- `eval(...)`, `Function(...)` / `new Function(...)`
+- `require(...)`, dynamic `import(...)`
+- `process.*`, `child_process`, `globalThis`, `__import__`
+- plus the existing prototype-chain placeholders (`constructor`, `__proto__`,
+  `prototype`, `__defineGetter__`, …) and HTML/URI injection patterns.
+
+A rejected partial raises a validation `Error` that the action surfaces as a
+hard failure — it is never silently interpolated. Operators should treat the
+partial as inert copy: no helper calls, no environment access, no computed
+expressions. `src/comment.ts` uses the safe rendered string unchanged, so this
+denial does not affect the core i18n-driven sections. Explicit deny tests live
+in `__tests__/template.test.ts`.

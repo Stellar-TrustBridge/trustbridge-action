@@ -4,8 +4,11 @@ import {
   parseAddressFromSimulateResult,
   parseContractExistsResult,
   contractExistsOnChain,
+  checkContractOnChain,
   ContractLookupError,
   ContractConfig,
+  SOROBAN_REASON_CODES,
+  sorobanFailureReasonCode,
 } from '../src/soroban';
 import fetch from 'node-fetch';
 
@@ -283,6 +286,61 @@ describe('contractExistsOnChain', () => {
       name: 'ContractLookupError',
       retryable: false,
     });
+  });
+});
+
+// Issue #976 — distinct reason codes for contract-absent vs RPC-down.
+describe('checkContractOnChain reason codes', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('happy path: confirmed contract reports SUCCESS', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { exists: true } }),
+    } as never);
+
+    await expect(
+      checkContractOnChain(VALID_CONTRACT, { sorobanRpcUrl: RPC_URL, timeoutMs: 5000 }),
+    ).resolves.toEqual({ exists: true, reasonCode: 'SUCCESS' });
+  });
+
+  it('failure path: reachable RPC with no contract reports SOROBAN_CONTRACT_NOT_FOUND', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { exists: false } }),
+    } as never);
+
+    await expect(
+      checkContractOnChain(VALID_CONTRACT, { sorobanRpcUrl: RPC_URL, timeoutMs: 5000 }),
+    ).resolves.toEqual({
+      exists: false,
+      reasonCode: SOROBAN_REASON_CODES.contractNotFound,
+    });
+  });
+
+  it('failure path: RPC outage throws with SOROBAN_RPC_UNAVAILABLE (not not-found)', async () => {
+    mockStatusResponse(503);
+
+    const promise = checkContractOnChain(VALID_CONTRACT, {
+      sorobanRpcUrl: RPC_URL,
+      timeoutMs: 5000,
+    });
+    await expect(promise).rejects.toMatchObject({
+      name: 'ContractLookupError',
+      retryable: true,
+      reasonCode: SOROBAN_REASON_CODES.rpcUnavailable,
+      message: expect.stringContaining('503'),
+    });
+  });
+
+  it('classifies non-ContractLookupError failures as RPC unavailable', () => {
+    expect(sorobanFailureReasonCode(new Error('boom'))).toBe(
+      SOROBAN_REASON_CODES.rpcUnavailable,
+    );
   });
 });
 

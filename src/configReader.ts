@@ -97,6 +97,64 @@ function parseYamlValue(raw: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// Merge semantics (Issue #978)
+//
+// Organization config is the base, repository config is the override. Merge
+// behavior is deliberately explicit so nested objects do not silently lose
+// sibling keys (the shallow-spread footgun this issue locks down).
+// ---------------------------------------------------------------------------
+
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** True only for plain objects (not arrays, null, dates, class instances). */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function cloneMergeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneMergeValue);
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (UNSAFE_MERGE_KEYS.has(key)) continue;
+      out[key] = cloneMergeValue(child);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Recursively merge plain objects: `override` wins, but sibling keys inside a
+ * nested object survive. Arrays and scalars are **replaced**, never
+ * concatenated; `undefined` values are skipped; `null` replaces; prototype
+ * keys (`__proto__`, `constructor`, `prototype`) are ignored. Neither input is
+ * mutated — nested objects are cloned, so the result is safe to edit.
+ *
+ * Footgun: because arrays are replaced wholesale, an override that supplies a
+ * one-element array removes every base element rather than appending to it.
+ */
+export function deepMerge<T extends object>(
+  base: T,
+  override: Partial<T> | null | undefined,
+): T {
+  const result = cloneMergeValue(base) as Record<string, unknown>;
+  if (!override) return result as T;
+
+  for (const [key, value] of Object.entries(override as Record<string, unknown>)) {
+    if (UNSAFE_MERGE_KEYS.has(key) || value === undefined) continue;
+    const current = result[key];
+    result[key] =
+      isPlainObject(current) && isPlainObject(value)
+        ? (deepMerge(current, value) as unknown)
+        : cloneMergeValue(value);
+  }
+  return result as T;
+}
+
+// ---------------------------------------------------------------------------
 // Config file reader
 // ---------------------------------------------------------------------------
 
@@ -134,22 +192,22 @@ export function readTrustbridgeConfigs(
   const errors = [...orgResult.validation.errors, ...repoResult.validation.errors];
   const warnings = [...orgResult.validation.warnings, ...repoResult.validation.warnings];
 
-  // Merge configs (repo overrides org)
+  // Merge configs (repo overrides org). Nested objects are deep-merged so an
+  // override of one child key cannot drop its siblings (Issue #978).
   let config: TrustbridgeConsumerConfig | null = null;
   if (orgResult.config || repoResult.config) {
-    config = { ...orgResult.config };
-    if (repoResult.config) {
-      for (const [key, value] of Object.entries(repoResult.config)) {
-        if (value !== undefined) {
-          (config as Record<string, unknown>)[key] = value;
-        }
-      }
-    }
+    config = deepMerge<TrustbridgeConsumerConfig>(
+      orgResult.config ?? {},
+      repoResult.config ?? {},
+    );
   }
 
   let redactedSnapshot: Record<string, unknown> | null = null;
   if (orgResult.redactedSnapshot || repoResult.redactedSnapshot) {
-    redactedSnapshot = { ...orgResult.redactedSnapshot, ...repoResult.redactedSnapshot };
+    redactedSnapshot = deepMerge(
+      orgResult.redactedSnapshot ?? {},
+      repoResult.redactedSnapshot ?? {},
+    );
   }
 
   return {

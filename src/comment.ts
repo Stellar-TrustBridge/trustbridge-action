@@ -587,8 +587,9 @@ export function formatCommentBody(
     }
 
     // Custom comment template partial (#312) — injected just before the footer.
-    // Path validation, size check, content security, and interpolation escaping
-    // are all handled in loadCommentTemplate / validateTemplateContent.
+    // Path validation, size check, content security (including the dynamic
+    // code-execution deny list from #975), and interpolation escaping are all
+    // handled in loadCommentTemplate / validateTemplateContent.
     if (config.customCommentTemplatePath) {
       try {
         const templateCtx = buildTemplateContext({

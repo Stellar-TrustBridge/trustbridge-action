@@ -169,6 +169,22 @@ describe('validateTemplateContent', () => {
       /forbidden placeholder name/,
     );
   });
+
+  // Issue #975 — explicit deny of dynamic code execution paths.
+  it.each([
+    ['eval(...)', 'Result: {{ eval("process.exit(1)") }}'],
+    ['new Function(...)', '{{ new Function("return 1")() }}'],
+    ['require(...)', '{{ require("child_process") }}'],
+    ['dynamic import(...)', '{{ import("fs") }}'],
+    ['process.env access', 'Token: {{ process.env.GITHUB_TOKEN }}'],
+    ['globalThis access', '{{ globalThis.process }}'],
+  ])('rejects dynamic execution token: %s', (_name, content) => {
+    expect(() => validateTemplateContent(content)).toThrow(/disallowed pattern/);
+  });
+
+  it('still accepts ordinary Markdown mentioning the word "process"', () => {
+    expect(() => validateTemplateContent('Our onboarding process is documented.')).not.toThrow();
+  });
 });
 
 // ── interpolateTemplate ───────────────────────────────────────────────────────
@@ -363,6 +379,20 @@ describe('loadCommentTemplate', () => {
     writeFile(workspace, 'proto.md', 'Value: {{constructor.prototype.isAdmin}}');
     expect(() => loadCommentTemplate('proto.md', BASE_CTX, workspace)).toThrow(
       /forbidden placeholder name/,
+    );
+  });
+
+  it('failure path: throws on a template attempting eval() (issue #975)', () => {
+    writeFile(workspace, 'eval.md', 'Result: {{eval("process.exit(1)")}}');
+    expect(() => loadCommentTemplate('eval.md', BASE_CTX, workspace)).toThrow(
+      /disallowed pattern/,
+    );
+  });
+
+  it('failure path: throws on a template attempting require() (issue #975)', () => {
+    writeFile(workspace, 'require.md', 'X: {{require("child_process").exec("id")}}');
+    expect(() => loadCommentTemplate('require.md', BASE_CTX, workspace)).toThrow(
+      /disallowed pattern/,
     );
   });
 

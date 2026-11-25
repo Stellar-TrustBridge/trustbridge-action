@@ -204,6 +204,26 @@
       "valid": false,
       "emittedBy": "src/index.ts (assets_json multi-asset gating, when the primary check is SUCCESS)",
       "since": "v1"
+    },
+    {
+      "code": "SOROBAN_CONTRACT_NOT_FOUND",
+      "description": "Soroban RPC answered successfully but the requested contract does not exist on-chain. Distinct from SOROBAN_RPC_UNAVAILABLE: the endpoint was reachable and the absence is definitive. Check the C-address and the configured network before paying out.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/soroban.ts (checkContractOnChain when getContractCode reports no contract)",
+      "since": "v1"
+    },
+    {
+      "code": "SOROBAN_RPC_UNAVAILABLE",
+      "description": "Soroban RPC could not be reached or returned an unusable response (network error, timeout, retryable/non-retryable HTTP status, or invalid JSON). The contract's existence could not be determined; retry or fix soroban_rpc_url.",
+      "accountFunded": false,
+      "trustlineExists": false,
+      "xlmReserveMet": false,
+      "valid": false,
+      "emittedBy": "src/soroban.ts (ContractLookupError on Soroban RPC failure paths)",
+      "since": "v1"
     }
   ]
 }

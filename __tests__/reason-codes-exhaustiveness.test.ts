@@ -41,6 +41,8 @@ function handleReasonCode(code: ReasonCode): string {
     case 'SAC_ISSUER_NOT_VERIFIABLE':
     case 'HORIZON_WAIT_BUDGET_EXHAUSTED':
     case 'EXTRA_TRUSTLINE_MISSING':
+    case 'SOROBAN_CONTRACT_NOT_FOUND':
+    case 'SOROBAN_RPC_UNAVAILABLE':
       return code;
     default:
       // If this line fails to compile, a code was added to REASON_CODES

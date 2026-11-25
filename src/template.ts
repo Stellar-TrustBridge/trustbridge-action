@@ -13,7 +13,10 @@
  *    rejected to prevent comment-flooding attacks and GitHub size-limit hits.
  * 3. Dangerous pattern blocking — any `{{constructor}}`, `{{__proto__}}`,
  *    `{{prototype}}` placeholder or raw `<script`, `javascript:`, or `data:`
- *    URI content is rejected before interpolation.
+ *    URI content is rejected before interpolation. Dynamic code-execution
+ *    tokens (`eval(`, `Function(`, `require(`, `import(`, `process.*`,
+ *    `child_process`, `globalThis`) are denied outright (#975): the engine is
+ *    a literal string replacer and must never be able to execute user input.
  * 4. Interpolation escaping — every substituted value is run through
  *    `escapeMarkdownInline` so contributor-supplied strings (addresses, asset
  *    codes, issuer addresses, network names) cannot inject Markdown structures
@@ -59,6 +62,14 @@ const FORBIDDEN_CONTENT_PATTERNS: RegExp[] = [
   /data\s*:\s*text\s*\/\s*html/i, // data:text/html URIs
   /vbscript\s*:/i,         // vbscript: URIs
   /on\w+\s*=/i,            // inline event handlers (onclick=, etc.)
+  // #975 — no dynamic code execution paths from user-supplied template content.
+  /\beval\s*\(/i,                 // eval(...)
+  /\b(?:new\s+)?Function\s*\(/i,  // Function(...) / new Function(...)
+  /\brequire\s*\(/i,              // CommonJS require(...)
+  /\bimport\s*\(/i,               // dynamic import(...)
+  /\bprocess\s*\./i,              // process.env / process.exit / ...
+  /\bchild_process\b/i,           // Node process spawning
+  /\b(?:globalThis|__import__)\b/i, // ambient / Python-style import hooks
 ];
 
 /**

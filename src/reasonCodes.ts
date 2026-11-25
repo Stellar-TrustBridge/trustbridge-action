@@ -2,6 +2,10 @@
  * Frozen catalog of every `reason_code` the Action's per-account validation
  * path (src/checks.ts) can emit on `ValidationResult.reasonCode`.
  *
+ * A few codes are emitted by adjacent runtime modules (e.g. the two Soroban
+ * classification codes from src/soroban.ts, Issue #976); the catalog is the
+ * single union for all of them.
+ *
  * This is the TypeScript mirror of the public API surface documented at
  * schemas/reason-codes.json (the JSON catalog consumed by dashboards and
  * CI drift checks — see docs/USAGE.md#reason-code-reference). Keeping a
@@ -34,6 +38,9 @@ export const REASON_CODES = [
   'SAC_ISSUER_NOT_VERIFIABLE',
   'HORIZON_WAIT_BUDGET_EXHAUSTED',
   'EXTRA_TRUSTLINE_MISSING',
+  // Issue #976 — Soroban contract existence vs RPC availability are distinct.
+  'SOROBAN_CONTRACT_NOT_FOUND',
+  'SOROBAN_RPC_UNAVAILABLE',
 ] as const;
 
 /** Every value `ValidationResult.reasonCode` (src/checks.ts) may hold. */

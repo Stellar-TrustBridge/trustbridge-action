@@ -7,20 +7,41 @@
  * The lookup is best-effort: callers must handle `ContractLookupError` and
  * fall back to the directly-supplied `stellar_address_input` when the
  * registry is unavailable or the username is not registered.
+ *
+ * Issue #976 — a definitive "contract absent" answer and an unreachable RPC
+ * are different failures and carry distinct, cataloged reason codes so Wave
+ * operators do not have to infer the cause from a free-form error string.
  */
 
 import fetch from 'node-fetch';
 import { classifyAssetIssuer, isSorobanContractIssuer, type AssetIssuerKind } from './assets';
+
+/** Stable reason codes for the two distinct Soroban failure classes (#976). */
+export const SOROBAN_REASON_CODES = {
+  contractNotFound: 'SOROBAN_CONTRACT_NOT_FOUND',
+  rpcUnavailable: 'SOROBAN_RPC_UNAVAILABLE',
+} as const;
+
+export type SorobanReasonCode = (typeof SOROBAN_REASON_CODES)[keyof typeof SOROBAN_REASON_CODES];
 
 /** Errors thrown by the contract registry client. */
 export class ContractLookupError extends Error {
   constructor(
     message: string,
     public readonly retryable: boolean,
+    /** Cataloged reason code; RPC failures default to `SOROBAN_RPC_UNAVAILABLE`. */
+    public readonly reasonCode: SorobanReasonCode = SOROBAN_REASON_CODES.rpcUnavailable,
   ) {
     super(message);
     this.name = 'ContractLookupError';
   }
+}
+
+/** Resolve the cataloged reason code carried by any Soroban failure. */
+export function sorobanFailureReasonCode(err: unknown): SorobanReasonCode {
+  return err instanceof ContractLookupError
+    ? err.reasonCode
+    : SOROBAN_REASON_CODES.rpcUnavailable;
 }
 
 /** Retryable HTTP status codes (rate-limit, gateway errors). */
@@ -315,6 +336,32 @@ export async function contractExistsOnChain(
   }
 
   return parseContractExistsResult(json);
+}
+
+export interface ContractExistenceCheck {
+  /** True only when the RPC confirmed the contract exists on-chain. */
+  exists: boolean;
+  /** `SUCCESS` when found, otherwise a distinct cataloged failure code (#976). */
+  reasonCode: SorobanReasonCode | 'SUCCESS';
+}
+
+/**
+ * Structured companion to {@link contractExistsOnChain} (Issue #976).
+ *
+ * A reachable RPC that reports no contract yields `SOROBAN_CONTRACT_NOT_FOUND`;
+ * an RPC/network failure still throws a `ContractLookupError` carrying
+ * `SOROBAN_RPC_UNAVAILABLE`. The boolean-only helper and all existing callers
+ * keep their current fail-closed semantics.
+ */
+export async function checkContractOnChain(
+  contractAddress: string,
+  config: Pick<ContractConfig, 'sorobanRpcUrl' | 'timeoutMs'>,
+): Promise<ContractExistenceCheck> {
+  const exists = await contractExistsOnChain(contractAddress, config);
+  return {
+    exists,
+    reasonCode: exists ? 'SUCCESS' : SOROBAN_REASON_CODES.contractNotFound,
+  };
 }
 
 export function parseContractExistsResult(json: unknown): boolean {
