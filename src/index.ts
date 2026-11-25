@@ -49,7 +49,13 @@ import {
 import { negotiateLocale } from './i18n';
 import { configureTraceSampling } from './tracing';
 import { formatFailureSummary, isJobSummaryAvailable, listSkippedCheckKinds } from './summary';
-import { setValidationOutputs, AssetTrustlineStatus, truncateJsonArray, resolveOutputTransport } from './outputs';
+import {
+  setValidationOutputs,
+  validateActionOutput,
+  AssetTrustlineStatus,
+  truncateJsonArray,
+  resolveOutputTransport,
+} from './outputs';
 import { logger, emitInputsLogRecord } from './logger';
 import { buildSarifDocument, sarifOutcomeFromResult, serialiseSarif } from './sarif';
 import { globalMetrics, writeJobSummary, globalHorizonHistogram } from './metrics';
@@ -417,6 +423,8 @@ export async function run(): Promise<void> {
 
     core.setOutput('ready', 'false');
     core.setOutput('reason_code', 'MILESTONE_GATE_SKIPPED');
+    // Issue #969 — even early-return paths publish schema-valid JSON.
+    validateActionOutput('checks_json', '[]');
     core.setOutput('checks_json', '[]');
 
     // Issue #899: a gate skip is its own outcome, never pass or fail.
@@ -1060,6 +1068,9 @@ export async function run(): Promise<void> {
       batchSummary.failures,
       (failuresSubset) => JSON.stringify({ ...batchSummary, failures: failuresSubset }),
     );
+    // Issue #969 — batch mode publishes its own JSON output outside
+    // setValidationOutputs, so validate it on that path too.
+    validateActionOutput('batch_summary_json', batchSummaryJson);
     core.setOutput('batch_summary_json', batchSummaryJson);
     core.setOutput('batch_passed_count', String(batchSummary.passed));
     core.setOutput('batch_failed_count', String(batchSummary.failed));

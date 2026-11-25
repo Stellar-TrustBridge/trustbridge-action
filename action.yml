@@ -875,6 +875,11 @@ inputs:
     default: ''
 
 outputs:
+  # Structured JSON outputs (checks_json, timings_json, assignee_results_json,
+  # matrix_ready_map, conflict_report, assets_trustline_status,
+  # batch_summary_json) are validated against schemas in src/outputs.ts before
+  # core.setOutput publishes them. Invalid values fail with path-aware errors
+  # instead of breaking downstream fromJSON() callers. (Issue #969)
   # ── Legacy outputs (kept for backward compatibility) ──────────────────────
   trustline_exists:
     description: "Whether the account has a trustline for the configured asset"
