@@ -8,7 +8,7 @@ branding:
   icon: "shield"
   color: "blue"
 
-# Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md
+# Breaking-change policy for inputs and outputs: docs/BREAKING_CHANGES.md, ensure guidance matches freshness of check results. 
 inputs:
   max_retries:
     description: "Maximum number of retry attempts for Horizon API requests"
