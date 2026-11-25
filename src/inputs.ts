@@ -141,6 +141,42 @@ export function parseNumberInput(
   return parsed;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #911 — `batch_max_addresses` hard cap
+// ---------------------------------------------------------------------------
+
+/** Default for `batch_max_addresses` (mirrors action.yml). */
+export const DEFAULT_BATCH_MAX_ADDRESSES = 500;
+
+/**
+ * Absolute ceiling for `batch_max_addresses`. A larger configured value is
+ * rejected (not clamped) so a typo cannot quietly re-open an unbounded batch
+ * that exhausts runner memory or the org's Horizon rate limit.
+ */
+export const BATCH_MAX_ADDRESSES_CEILING = 2000;
+
+/**
+ * Parse the `batch_max_addresses` input (Issue #911).
+ *
+ * Empty input uses {@link DEFAULT_BATCH_MAX_ADDRESSES}. The value must be a
+ * whole number between 1 and {@link BATCH_MAX_ADDRESSES_CEILING}.
+ *
+ * @throws With a stable `batch_max_addresses …` message on a malformed,
+ *         fractional, or out-of-range value.
+ */
+export function parseBatchMaxAddressesInput(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') {
+    return DEFAULT_BATCH_MAX_ADDRESSES;
+  }
+  const parsed = Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > BATCH_MAX_ADDRESSES_CEILING) {
+    throw new Error(
+      `batch_max_addresses must be a whole number between 1 and ${BATCH_MAX_ADDRESSES_CEILING}. Received: "${value}"`,
+    );
+  }
+  return parsed;
+}
+
 export function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -649,6 +685,7 @@ export interface Inputs {
   use_plugin_runner?: string;
   locale?: string;
   stellar_addresses?: string;
+  batch_max_addresses?: string;
   unassign_on_not_ready?: string;
   project_id?: string;
   project_status_field?: string;
